@@ -82,6 +82,7 @@ config/backend  runtime session-provider backend override for new tasks; LOCAL, 
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
+config/logbook.env   optional logbook attention-board settings; LOCAL, gitignored; opt-in via a truthy LOGBOOK_ENABLE (plus optional LOGBOOK_URL/LOGBOOK_TOKEN/LOGBOOK_TOOL_DIR/LOGBOOK_PORT/LOGBOOK_DRY_RUN); documented example at docs/examples/logbook.env; drives the bin/fm-logbook-*.sh client scripts and section 15
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         captain's personal preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
@@ -101,6 +102,9 @@ state/               volatile runtime signals; gitignored
   x-inbox/           generated X-mode pending mention payloads; fmx-respond drains it (section 14)
   x-outbox/          generated X-mode dry-run reply and dismiss previews; inspect it when FMX_DRY_RUN is set (section 14)
   x-poll.error       generated X-mode relay diagnostic dedupe marker
+  logbook-outbox/    generated logbook dry-run push/sync/resolve previews; inspect it when LOGBOOK_DRY_RUN is set (section 15)
+  logbook-server.log  detached logbook board server output; present only when firstmate launched the board (section 15)
+  logbook.data/      logbook board server runtime store (SQLite + token); firstmate-owned, kept here so nothing is written into projects/ (section 15)
   .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
@@ -785,6 +789,59 @@ On an `x-mention <request_id>` or `x-mode-error ...` `check:` wake, load `fmx-re
 It owns mention classification, acting on the request, reply composition, voice, thread-splitting, image attachments, dry-run preview, and the completion-follow-up procedure in full, including what an `x-mode-error` wake means instead.
 `docs/configuration.md` "X mode (.env)" has the wire-protocol reference.
 The one fact that must survive here because it fires on a generic terminal wake, not the mention wake itself: when an X-mode-linked task reaches a terminal state, post its final completion follow-up per section 8's wake-handling step before tearing down.
+
+## 15. Logbook
+
+Logbook is a local, loopback-only "what needs you" attention board that firstmate FEEDS: a single glanceable surface of every pending decision, ready action, and FYI - each with its options laid out - so the captain never has to scan a busy chat to find what needs them.
+The board is a **separate, standalone tool** with its own repo (a zero-dependency Node HTTP server plus a read-only web UI plus a bearer-token write API); firstmate is only its first client, driving it over a defined API.
+The firstmate side is a handful of `bin/fm-logbook-*.sh` client scripts plus one `logbook_setup()` bootstrap block, copied almost verbatim from the X-mode pattern (section 14) with the public relay swapped for a `127.0.0.1` tool server.
+It ships inside this repo for every user but is **inert until opted in**, so a user who never enables it sees zero behavior change.
+
+**Activation is `config/logbook.env` presence, not a command.**
+Put a truthy `LOGBOOK_ENABLE` (plus, when the defaults do not fit, `LOGBOOK_URL`, `LOGBOOK_TOKEN`, `LOGBOOK_TOOL_DIR`, or `LOGBOOK_PORT`) into `config/logbook.env` at this home's root (`config/logbook.env` is gitignored; a documented example lives at `docs/examples/logbook.env`).
+That is the whole consent and the only required config: `LOGBOOK_URL` defaults to `http://127.0.0.1:8137`, `LOGBOOK_PORT` to `8137`, and `LOGBOOK_TOOL_DIR` to this home's `projects/logbook` clone.
+Set `LOGBOOK_TOKEN` to a private value when you opt in so firstmate's pushes can authenticate and other local processes cannot drive the board.
+An explicit environment variable always wins over the file, exactly as X mode's `fmx_load_config` resolves its settings.
+
+**Read-only in Phase 0+1 (the current phase).**
+firstmate *feeds* the board; the captain *reads* it and answers in chat as always; firstmate then *resolves* the card once it has acted.
+There is no interactive answer-loop yet: the inbound path (a poll shim on the watcher's check/wake rail, a `logbook-respond` skill, and the tool's own respond endpoints) is a **later phase** - note it as future and do not build it here.
+Because Phase 0+1 is outbound-only, unlike X mode this drops **no** inbound poll shim and changes **no** watcher cadence; `logbook_setup()` is structured so that shim is a clean later addition.
+
+**Mechanism (purely additive; the watcher backbone is untouched).**
+On the next locked session-start bootstrap step, a `config/logbook.env` with a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up via `bin/fm-logbook-up.sh` (detached, non-blocking) and print one `LOGBOOK: on - board at <url>` line, mirroring the `FMX:` line.
+On opt-out (the flag removed or falsy) or with no config it is a complete no-op: there are no artifacts to remove in Phase 0+1.
+This layer makes **no** edit to `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`, `bin/fm-wake-lib.sh`, or the afk daemon; logbook lives entirely in the logbook-specific `bin/fm-logbook-*.sh` scripts, the `logbook_setup()` block, and the generated local artifacts.
+`bin/fm-logbook-up.sh` is idempotent: it health-checks `GET $LOGBOOK_URL/health`, prints one line and returns if the board already answers, and otherwise launches `node $LOGBOOK_TOOL_DIR/server.mjs` detached (output to `state/logbook-server.log`, runtime store under `state/logbook.data` so nothing is ever written into `projects/`), briefly polls for readiness, and returns without blocking - the same discipline as arming the watcher, so bootstrap never stalls.
+
+**At session start (after bootstrap).**
+Ensure the server is up with `bin/fm-logbook-up.sh`, then compute the current attention set - the same set firstmate already derives for its session-start digest, from `data/backlog.md`, `state/*.status`, `state/*.meta`, and PR state, with projects from `data/projects.md` - and hand the whole thing to `bin/fm-logbook-sync.sh` as one `{projects, items}` body.
+That call is a declarative full reconcile (`POST /api/sync`): the board becomes exactly that set, so it stays truthful even after a firstmate restart, mirroring firstmate's own "state files are truth, memory is a cache" recovery model.
+Logbook is, like X mode, a reason to keep the watcher armed even with no fleet work, so an opted-in captain is served the board at session start before any task is dispatched.
+
+**On each wake that changes the attention set.**
+Push the new or changed items with `bin/fm-logbook-push.sh` (`POST /api/items` upsert, keyed by `id`, safe to re-push every wake), and clear the items firstmate has acted on with `bin/fm-logbook-resolve.sh <id> [resolved|dismissed]`.
+The tool has no dedicated resolve endpoint, so `fm-logbook-resolve.sh` upserts the item with a terminal `status` (which drops it off the board) rather than calling a nonexistent `/api/items/resolve`.
+Both input paths converge on resolve: whether the captain answered on the board (a later phase) or in chat, firstmate acts through the normal lifecycle and then resolves the card so the board mirrors live state.
+
+**Item-composition contract.**
+firstmate translates internals into captain-facing fields - `title` (one glanceable line), `body` (markdown context), `options` (`{label, value}` choices), `priority`, and `source` - exactly the translation it already does for chat, so no task-internal jargon leaks into `title`/`body`.
+`kind` drives priority: `decision` (needs a call) outranks `action` (a ready thing to do, e.g. merge) which outranks `fyi` (informational); an explicit `priority` int can override the band.
+`source` is the opaque routing blob (`{task, pr, channel}`) firstmate uses to route an answer back to its own domain; the tool stores and echoes it untouched and never inspects it.
+Because an item's text is composed from fleet internals, the client scripts never inline it into a shell argument - the body is passed via `--json-file` or stdin, mirroring `bin/fm-x-reply.sh`.
+
+**Boundary (who owns what).**
+The tool is client-agnostic: it speaks only projects / items / options / responses and knows nothing about tasks, PRs, worktrees, harnesses, or the wake rail.
+firstmate is its only client, and all of that task-awareness lives entirely in these `bin/fm-logbook-*.sh` client scripts and this section, never in the tool - which is what keeps logbook a general attention console another client could drive later.
+Do not modify anything under `projects/logbook`; the tool is a separate repo shipped on its own.
+
+**Security.**
+The board binds `127.0.0.1` only and requires a bearer token on every `/api/*` call; do not add any way to bind it externally or weaken that model.
+firstmate keeps the token in `config/logbook.env` and sends it via a `0600` auth-header temp file, never on a command line, so it never appears in a process listing.
+
+**Preview / dry-run.**
+Setting `LOGBOOK_DRY_RUN` (truthy, in the environment or `config/logbook.env`) makes `bin/fm-logbook-push.sh`, `bin/fm-logbook-sync.sh`, and `bin/fm-logbook-resolve.sh` compose their JSON body and record it to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, or `<id>.json`) instead of posting - no network and no token needed, mirroring `FMX_DRY_RUN`.
+Inspect `state/logbook-outbox/` to see exactly what would have gone out.
 
 ## Maintaining this file
 
