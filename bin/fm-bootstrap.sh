@@ -11,7 +11,8 @@
 #                 "TASKS_AXI: available", "TANGLE: <remediation>",
 #                 "SECONDMATE_SYNC: secondmate <id>: skipped: <reason>",
 #                 "NUDGE_SECONDMATES: <window-targets...>",
-#                 "FMX: X mode on ..." or "FMX: X mode off ...".
+#                 "FMX: X mode on ..." or "FMX: X mode off ...",
+#                 "LOGBOOK: on - board at <url>".
 #          A NUDGE_SECONDMATES line lists the RUNNING secondmate windows whose
 #          worktree was fast-forwarded to firstmate's own current default-branch
 #          commit (a purely LOCAL fast-forward, never an origin fetch) AND whose
@@ -38,12 +39,18 @@
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
+#          Logbook (the local attention board) is OPTIONAL and inert unless
+#          config/logbook.env sets a truthy LOGBOOK_ENABLE. When opted in,
+#          bootstrap ensures the board server is up (detached, non-blocking) and
+#          prints a LOGBOOK line. Phase 0+1 is READ-ONLY: it drops NO poll shim
+#          and changes NO watcher cadence (that inbound answer-loop is a later
+#          phase). On opt-out or no config it is a complete no-op.
 #          Fleet sync fetches, fast-forwards safe default-branch states, reports
 #          recovered and STUCK clone drift, and prunes gone local branches; it is
 #          bounded by FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT, default 20s.
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the three MUTATING sweeps
-#          (secondmate_sync, x_mode_setup, fleet_sync) while still printing
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the MUTATING sweeps
+#          (secondmate_sync, x_mode_setup, logbook_setup, fleet_sync) while still printing
 #          every read-only detect line above; the TANGLE line switches to
 #          advisory-only wording with no checkout command. Used by
 #          fm-session-start.sh's read-only path when another live session holds
@@ -71,6 +78,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-x-lib.sh
 . "$SCRIPT_DIR/fm-x-lib.sh"
+# shellcheck source=bin/fm-logbook-lib.sh
+. "$SCRIPT_DIR/fm-logbook-lib.sh"
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
 
@@ -319,6 +328,24 @@ EOF
   echo "FMX: X mode on - relay poll armed via state/x-watch.check.sh; 30s watcher cadence in config/x-mode.env"
 }
 
+# Logbook (opt-in): when this home's config/logbook.env sets a truthy
+# LOGBOOK_ENABLE, ensure the local attention-board server is up (detached,
+# non-blocking) and announce it with one LOGBOOK line, mirroring x_mode_setup's
+# FMX line. Phase 0+1 is READ-ONLY - firstmate only PUSHES items and reconciles
+# the board while the captain reads it and answers in chat - so unlike X mode this
+# drops NO inbound poll shim and changes NO watcher cadence (that inbound
+# answer-loop is a later phase; keep this block the clean place to add its shim
+# then). On opt-out or no config it is a complete no-op, so non-adopters see zero
+# change. It never blocks: fm-logbook-up.sh launches the server detached. Like
+# x_mode_setup, this runs only on the caller's lock-holding (non-detect) path.
+logbook_setup() {
+  logbook_load_config
+  logbook_enabled || return 0
+  # Best-effort, detached, never blocks; its own diagnostics go to stderr.
+  "$FM_ROOT/bin/fm-logbook-up.sh" >/dev/null 2>&1 || true
+  echo "LOGBOOK: on - board at $LOGBOOK_URL"
+}
+
 crew_dispatch_validate() {
   local file err
   file="$CONFIG/crew-dispatch.json"
@@ -433,6 +460,7 @@ fi
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   secondmate_sync
   x_mode_setup
+  logbook_setup
   fleet_sync
 fi
 exit 0
