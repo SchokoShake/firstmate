@@ -138,6 +138,34 @@ test_config_empty_env_url_falls_back_to_default() {
   pass "logbook config falls back to the default URL for an empty env override"
 }
 
+test_config_lone_url_derives_port() {
+  local home out
+  # A lone LOGBOOK_URL override (file) with no LOGBOOK_PORT must derive the port
+  # from the URL, so the server bind port and the client/health-check URL can never
+  # silently mismatch.
+  home="$TMP_ROOT/cfg-lone-url-file"; mkdir -p "$home/config"
+  printf 'LOGBOOK_ENABLE=1\nLOGBOOK_URL=http://127.0.0.1:9000\n' > "$home/config/logbook.env"
+  out=$(FM_HOME="$home" PATH="$BASE_PATH" resolve_cfg)
+  assert_contains "$out" "http://127.0.0.1:9000|9000|" \
+    "a lone LOGBOOK_URL (file) override derives the port from the URL (9000)"
+  # Same via an env-only URL override with no port set anywhere.
+  home="$TMP_ROOT/cfg-lone-url-env"; mkdir -p "$home"
+  out=$(FM_HOME="$home" LOGBOOK_URL=http://127.0.0.1:9100 PATH="$BASE_PATH" resolve_cfg)
+  assert_contains "$out" "http://127.0.0.1:9100|9100|" \
+    "a lone LOGBOOK_URL (env) override derives the port from the URL (9100)"
+  # An explicit LOGBOOK_PORT still wins over the URL's port.
+  home="$TMP_ROOT/cfg-url-port-explicit"; mkdir -p "$home"
+  out=$(FM_HOME="$home" LOGBOOK_URL=http://127.0.0.1:9000 LOGBOOK_PORT=9500 PATH="$BASE_PATH" resolve_cfg)
+  assert_contains "$out" "http://127.0.0.1:9000|9500|" \
+    "an explicit LOGBOOK_PORT wins over the port derived from LOGBOOK_URL"
+  # A URL with no explicit port falls back to the documented default port.
+  home="$TMP_ROOT/cfg-url-noport"; mkdir -p "$home"
+  out=$(FM_HOME="$home" LOGBOOK_URL=http://127.0.0.1 PATH="$BASE_PATH" resolve_cfg)
+  assert_contains "$out" "http://127.0.0.1|8137|" \
+    "a URL with no explicit port falls back to the default port 8137"
+  pass "logbook config derives LOGBOOK_PORT from a lone LOGBOOK_URL override"
+}
+
 test_push_dry_run_records_no_network_no_token() {
   local home fakebin log out rc
   home="$TMP_ROOT/push-dry"; mkdir -p "$home"
@@ -332,6 +360,28 @@ EOF
   pass "bootstrap opt-in prints the LOGBOOK line and drops no poll shim or cadence file"
 }
 
+test_bootstrap_opt_in_unhealthy_reports_degraded() {
+  local home fakebin out err
+  home="$TMP_ROOT/boot-unhealthy"; mkdir -p "$home/config"
+  fakebin=$(make_fake_curl "$home")
+  cat > "$home/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+LOGBOOK_TOOL_DIR=/nonexistent/logbook
+EOF
+  err="$home/err.txt"
+  # Board is not healthy (000) and the tool dir has no server.mjs, so the launcher
+  # cannot bring the board up and exits non-zero. Bootstrap must not claim a bare
+  # "on": it reports opted-in-but-not-up AND passes the launcher's stderr through.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=000 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>"$err")
+  assert_contains "$out" "LOGBOOK: on - board at http://127.0.0.1:8137 (server not reachable yet" \
+    "an unreachable board must be reported as opted-in-but-not-up, not a bare 'on'"
+  assert_grep "fm-logbook-up:" "$err" "the launcher's own diagnostic must surface on stderr, not be swallowed"
+  pass "bootstrap reports a degraded logbook line and surfaces the launcher diagnostic when the board is down"
+}
+
 test_bootstrap_opt_out_is_noop() {
   local home out
   # No config/logbook.env at all -> complete no-op, no LOGBOOK line.
@@ -361,6 +411,7 @@ test_config_defaults
 test_config_from_file
 test_config_env_wins_over_file
 test_config_empty_env_url_falls_back_to_default
+test_config_lone_url_derives_port
 test_push_dry_run_records_no_network_no_token
 test_push_dry_run_from_json_file
 test_push_rejects_invalid_json
@@ -373,5 +424,6 @@ test_push_live_non_2xx_fails
 test_up_noops_when_healthy
 test_up_hard_noop_when_disabled
 test_bootstrap_opt_in_prints_line_no_shim_no_cadence
+test_bootstrap_opt_in_unhealthy_reports_degraded
 test_bootstrap_opt_out_is_noop
 test_bootstrap_detect_only_skips_logbook

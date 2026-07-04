@@ -47,12 +47,34 @@ logbook_env_get() {
   printf '%s' "$val"
 }
 
+# Extract the explicit port from a URL (scheme://host[:port][/path]); print nothing
+# (and succeed) when the URL carries no explicit numeric port. POSIX parameter
+# expansion only, so it is set -eu/set -u safe and needs no external tools.
+logbook_url_port() {
+  local url=${1-} rest hostport port
+  rest=${url#*://}       # strip scheme://
+  hostport=${rest%%/*}   # strip any /path
+  case "$hostport" in
+    \[*\]) port= ;;                    # bracketed IPv6 literal, no port
+    \[*\]:*) port=${hostport##*:} ;;   # [ipv6]:port
+    *:*) port=${hostport##*:} ;;       # host:port
+    *) port= ;;
+  esac
+  case "$port" in
+    ''|*[!0-9]*) return 0 ;;           # no port or non-numeric: print nothing
+  esac
+  printf '%s' "$port"
+}
+
 # Resolve the logbook settings into LOGBOOK_ENABLE, LOGBOOK_URL, LOGBOOK_TOKEN,
 # LOGBOOK_TOOL_DIR, LOGBOOK_PORT, and LOGBOOK_DRY. An explicit environment variable
 # (even when empty) always wins over config/logbook.env. The board URL defaults to
-# the loopback address, the tool dir to this home's projects/logbook clone, and the
-# port to 8137, all resolved at runtime; LOGBOOK_DRY is "1" when LOGBOOK_DRY_RUN is
-# truthy (anything other than unset/empty/0/false/no/off) and "" otherwise.
+# the loopback address and the tool dir to this home's projects/logbook clone; the
+# port, when not set explicitly, is derived from the resolved LOGBOOK_URL (falling
+# back to 8137 only when the URL carries no explicit port) so a lone URL override
+# cannot mismatch the server bind port and the client URL. All are resolved at
+# runtime; LOGBOOK_DRY is "1" when LOGBOOK_DRY_RUN is truthy (anything other than
+# unset/empty/0/false/no/off) and "" otherwise.
 logbook_load_config() {
   local config_file dry
   config_file="${LOGBOOK_ENV_FILE:-${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/logbook.env}"
@@ -84,12 +106,19 @@ logbook_load_config() {
   fi
   [ -n "$LOGBOOK_TOOL_DIR" ] || LOGBOOK_TOOL_DIR="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}/logbook"
 
+  # An explicit LOGBOOK_PORT (env or file) wins. Otherwise derive the port from the
+  # already-resolved LOGBOOK_URL so a lone URL override cannot silently mismatch the
+  # server bind port and the client/health-check URL; fall back to 8137 only when
+  # the URL carries no explicit port.
   if [ -n "${LOGBOOK_PORT+x}" ]; then
     LOGBOOK_PORT=${LOGBOOK_PORT-}
   else
     LOGBOOK_PORT=$(logbook_env_get LOGBOOK_PORT "$config_file")
   fi
-  [ -n "$LOGBOOK_PORT" ] || LOGBOOK_PORT="$LOGBOOK_DEFAULT_PORT"
+  if [ -z "$LOGBOOK_PORT" ]; then
+    LOGBOOK_PORT=$(logbook_url_port "$LOGBOOK_URL")
+    [ -n "$LOGBOOK_PORT" ] || LOGBOOK_PORT="$LOGBOOK_DEFAULT_PORT"
+  fi
 
   if [ -n "${LOGBOOK_DRY_RUN+x}" ]; then
     dry=${LOGBOOK_DRY_RUN-}
