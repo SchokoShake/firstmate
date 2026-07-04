@@ -211,6 +211,7 @@ In that list, treehouse pools clean task worktrees, no-mistakes runs the validat
 When bootstrap resolves `backend=orca` from `FM_BACKEND` or `config/backend`, it requires `orca`, keeps the universal `node` requirement, and skips `tmux` and `treehouse`.
 When `config/crew-dispatch.json` exists, bootstrap also requires `jq` for dispatch profile validation.
 When X mode is opted in, bootstrap also requires `curl` and `jq` before arming the relay poll shim.
+When logbook is opted in, bootstrap ensures the local board server is up, which uses the already-required `node` plus `curl` to health-check and launch it; the `bin/fm-logbook-*.sh` client scripts additionally need `jq`.
 `tasks-axi` and `quota-axi` are required bootstrap tools in every profile, the same class as `lavish-axi`.
 An absent or incompatible `tasks-axi` reports `MISSING: tasks-axi (install: npm install -g tasks-axi)`; when `config/backlog-backend` is not `manual` and compatible `tasks-axi` is on `PATH`, bootstrap also prints `TASKS_AXI: available` and firstmate uses its verbs for routine backlog mutations, otherwise it hand-edits `data/backlog.md` until installation is approved and completed.
 An absent `quota-axi` reports `MISSING: quota-axi (install: npm install -g quota-axi)`; `bin/fm-dispatch-select.sh` still degrades to the first profile at runtime when quota data is unavailable.
@@ -294,6 +295,27 @@ In dry-run, `fm-x-dismiss.sh` records `{request_id, endpoint:"dismiss"}` to the 
 The live answer and follow-up bodies intentionally stay the same shape, including optional `image`; the relay distinguishes them by endpoint, and dismiss stays `{request_id}`.
 These paths need `jq` to build the JSON payload, but they run before token and network checks, so they need neither `FMX_PAIRING_TOKEN` nor `curl`.
 
+## Logbook (config/logbook.env)
+
+Logbook is a local, loopback-only "what needs you" attention board that firstmate feeds so the captain can see every pending decision, ready action, and FYI on one surface instead of scanning chat.
+The board itself is a separate, standalone tool (a zero-dependency Node HTTP server plus a read-only web UI and bearer-token write API); firstmate is only its first client through the `bin/fm-logbook-*.sh` scripts.
+It is off unless the firstmate home's gitignored `config/logbook.env` sets a truthy `LOGBOOK_ENABLE`; a documented example lives at [`docs/examples/logbook.env`](examples/logbook.env).
+An explicit environment variable always wins over the file, mirroring X mode's resolution.
+Phase 0+1 is read-only: firstmate pushes items and reconciles the board while the captain still answers in chat and firstmate resolves the card, so - unlike X mode - opting in drops no watcher poll shim and changes no watcher cadence.
+
+`LOGBOOK_URL` defaults to `http://127.0.0.1:8137` (loopback only; a trailing slash is trimmed), `LOGBOOK_PORT` is derived from that URL when not set explicitly and otherwise falls back to `8137`, and `LOGBOOK_TOOL_DIR` defaults to this home's `projects/logbook` clone.
+Set `LOGBOOK_TOKEN` to a private value when you opt in so firstmate's pushes can authenticate and other local processes cannot drive the board; without it the client posters cannot authenticate a live post.
+`LOGBOOK_ENV_FILE` can point direct client invocations at another `.env`-style file.
+
+On the locked session-start bootstrap step, a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up through `bin/fm-logbook-up.sh` (detached and non-blocking) and print `LOGBOOK: on - board at <url>`; on opt-out or with no config it is a complete no-op.
+`bin/fm-logbook-up.sh` health-checks `GET $LOGBOOK_URL/health`, and if the board is down launches `node $LOGBOOK_TOOL_DIR/server.mjs` detached with output to `state/logbook-server.log` and its runtime store under `state/logbook.data`, so nothing is ever written into `projects/`.
+At session start firstmate reconciles the whole board with `bin/fm-logbook-sync.sh` (`POST /api/sync {projects?, items?}`, a declarative truth-restore), then upserts changed items with `bin/fm-logbook-push.sh` (`POST /api/items`) and clears acted-on cards with `bin/fm-logbook-resolve.sh <id> [resolved|dismissed]`.
+The tool has no dedicated resolve endpoint, so `fm-logbook-resolve.sh` upserts a terminal `status` that drops the card off the board.
+Item bodies are composed from fleet internals and are always passed via `--json-file` or stdin, never inlined into a shell argument.
+The board binds `127.0.0.1` only and requires a bearer token on every `/api/*` call; the client keeps the token in `config/logbook.env` and sends it via a `0600` auth-header temp file, never on a command line.
+
+Set `LOGBOOK_DRY_RUN` (truthy) to make `fm-logbook-push.sh`, `fm-logbook-sync.sh`, and `fm-logbook-resolve.sh` record the would-be POST body to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, or `<id>.json`) instead of posting, needing neither the token nor the board.
+
 ## Environment variables
 
 Runtime tuning via environment variables (defaults shown):
@@ -340,6 +362,13 @@ FMX_DISCORD_REPLY_MAX_CHARS=1900   # Discord reply per-message split budget; val
 FMX_X_THREAD_MAX=25     # maximum messages in one auto-split reply thread
 FMX_FOLLOWUP_MAX_AGE_SECS=604800   # local window for posting X-mode completion follow-ups (7 days)
 FMX_FOLLOWUP_MAX_COUNT=3   # local cap on X-mode completion follow-ups per linked mention
+LOGBOOK_ENABLE=         # truthy in config/logbook.env opts this home into the local attention board; absent/falsy keeps it off
+LOGBOOK_URL=http://127.0.0.1:8137   # logbook board base URL; loopback only, trailing slash trimmed
+LOGBOOK_PORT=          # logbook server port; derived from LOGBOOK_URL when unset, falling back to 8137
+LOGBOOK_TOKEN=         # bearer token for the board's /api/* calls; set a private value when opting in
+LOGBOOK_TOOL_DIR=      # logbook tool checkout; defaults to <this home>/projects/logbook
+LOGBOOK_ENV_FILE=      # optional alternate .env-style file for direct logbook client invocations
+LOGBOOK_DRY_RUN=       # truthy previews logbook push/sync/resolve bodies to state/logbook-outbox/ without posting or a token
 FM_LOCK_STALE_AFTER=2   # seconds before dead-pid lock records can be reclaimed; mid-acquire locks keep at least 2s grace
 FM_GUARD_GRACE=300      # seconds before guard warnings, arm health checks, and the primary turn-end guard treat a watcher beacon as stale
 FM_ARM_CONFIRM_TIMEOUT=10   # seconds fm-watch-arm waits to confirm a fresh watcher before reporting FAILED

@@ -73,3 +73,8 @@ The shared no-mistakes gate refusal used by `fm-spawn.sh`, `fm-send.sh`, and `fm
 | `fm-x-dismiss.sh`        | Dismiss a skipped X-mode mention at the relay without replying                       |
 | `fm-x-link.sh`           | Link a spawned task to its originating X-mode mention in task meta                   |
 | `fm-x-followup.sh`       | Detect, post, and cap completion follow-ups for an X-mode-linked task                |
+| `fm-logbook-lib.sh`      | Shared logbook config, safe-slug id validation, bearer auth file, and the bounded POST helper |
+| `fm-logbook-up.sh`       | Idempotently ensure the local logbook board server is up, detached and non-blocking |
+| `fm-logbook-push.sh`     | Upsert one attention item or an array of them via `POST /api/items`                  |
+| `fm-logbook-sync.sh`     | Declaratively reconcile the whole board via `POST /api/sync`                         |
+| `fm-logbook-resolve.sh`  | Clear a card by upserting it with a terminal `resolved`/`dismissed` status           |
