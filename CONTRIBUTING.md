@@ -81,6 +81,7 @@ tests/fm-session-start.test.sh            # fm-session-start.sh: ABSENT vs empty
 tests/fm-grok-harness.test.sh             # grok adapter spawn hook, token guard, teardown cleanup, and session-lock detection tests
 tests/fm-fleet-sync.test.sh               # project clone refresh: safe detached recovery, STUCK drift reports, benign skips, and bootstrap relay
 tests/fm-x-mode.test.sh                   # X-mode poll, inbox context round-trip, reply threading, dismiss, completion follow-up counters/caps, dry-run preview, and .env-presence activation tests
+tests/fm-logbook.test.sh                  # logbook client: config resolution and URL-derived port, push/sync/resolve dry-run and live bearer posts (no token leak), safe-slug id guard, detached-launcher inert-vs-healthy no-ops, and bootstrap opt-in that asserts the read-only invariant (no poll shim, no cadence file)
 tests/fm-tangle-guard.test.sh             # primary-checkout tangle detection, read-only remediation suppression, and spawn/brief isolation tests
 tests/fm-brief.test.sh                    # fm-brief.sh bash -n parse regression guard (issue #166) and clean no-mistakes/direct-PR/local-only brief generation tests
 tests/fm-spawn-batch.test.sh              # batch dispatch and FM_HOME project-path scoping tests

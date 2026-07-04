@@ -165,6 +165,19 @@ For preview testing, `FMX_DRY_RUN` makes `fm-x-reply.sh` and `fm-x-dismiss.sh` s
 Attached images are recorded as compact `{media_type, bytes, source_path}` metadata in dry-run instead of base64 bytes.
 The watcher, wake queue, arm wrapper, and afk daemon are unchanged; X mode is layered on top through the existing check mechanism.
 
+## Optional logbook attention board
+
+Logbook is an opt-in local "what needs you" board that firstmate feeds: every pending decision, ready action, and FYI becomes an item on one glanceable surface instead of buried chat.
+The board is a separate, standalone tool (a zero-dependency Node HTTP server with a read-only web UI and a bearer-token write API); firstmate is only its first client, driving it through the `bin/fm-logbook-*.sh` scripts.
+A user enables it by putting a truthy `LOGBOOK_ENABLE` in the firstmate home's gitignored `config/logbook.env`; `LOGBOOK_URL` defaults to the loopback address `http://127.0.0.1:8137` and `LOGBOOK_TOOL_DIR` to this home's `projects/logbook` clone.
+Phase 0+1 is read-only and outbound-only: firstmate pushes and reconciles the board while the captain reads it and still answers in chat, then firstmate resolves the card once it has acted, so - unlike X mode - logbook drops no check-path poll shim and changes no watcher cadence (the inbound answer-loop is a deferred later phase).
+On the locked session-start bootstrap step, a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up through `bin/fm-logbook-up.sh` (detached and non-blocking) and print `LOGBOOK: on - board at <url>`; on opt-out or with no config it is a complete no-op, so non-adopters see no behavior change.
+`bin/fm-logbook-up.sh` health-checks `GET /health` and, when the board is down, launches `node server.mjs` detached with its runtime store under `state/logbook.data`, so nothing is written into the read-only `projects/` tree.
+At session start firstmate reconciles the whole board with `bin/fm-logbook-sync.sh` (`POST /api/sync`, a declarative truth-restore that stays accurate across restarts), then upserts changed items with `bin/fm-logbook-push.sh` (`POST /api/items`) and clears acted-on cards with `bin/fm-logbook-resolve.sh`, which upserts a terminal status because the tool has no dedicated resolve endpoint.
+Item titles and bodies are composed from fleet internals and passed via file or stdin, never inlined into a shell argument, and the board binds `127.0.0.1` only and requires a bearer token sent through a `0600` auth-header temp file.
+`LOGBOOK_DRY_RUN` previews the push, sync, and resolve bodies under `state/logbook-outbox/` without posting or a token.
+The watcher, wake queue, arm wrapper, and afk daemon are untouched; logbook lives entirely in the `bin/fm-logbook-*.sh` scripts and bootstrap's opt-in `logbook_setup` block.
+
 ## Project memory belongs to projects
 
 Durable project-intrinsic agent knowledge lives in each project's committed `AGENTS.md`, with `CLAUDE.md` as a symlink.
