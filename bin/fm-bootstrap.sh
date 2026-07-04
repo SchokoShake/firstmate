@@ -482,9 +482,16 @@ EOF
 logbook_setup() {
   logbook_load_config
   logbook_enabled || return 0
-  # Best-effort, detached, never blocks; its own diagnostics go to stderr.
-  "$FM_ROOT/bin/fm-logbook-up.sh" >/dev/null 2>&1 || true
-  echo "LOGBOOK: on - board at $LOGBOOK_URL"
+  # Best-effort, detached, never blocks. Suppress the launcher's stdout chatter
+  # ("board already up"/"board started") but let its stderr diagnostics (node not
+  # found, board server not found, curl missing, launched-but-not-yet-healthy)
+  # through, and branch on its exit so we never claim the board is up when it is
+  # not. The if-branch keeps a non-zero launcher exit from aborting bootstrap.
+  if "$FM_ROOT/bin/fm-logbook-up.sh" >/dev/null; then
+    echo "LOGBOOK: on - board at $LOGBOOK_URL"
+  else
+    echo "LOGBOOK: on - board at $LOGBOOK_URL (server not reachable yet; see the diagnostic above)"
+  fi
 }
 
 crew_dispatch_validate() {
