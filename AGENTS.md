@@ -81,6 +81,7 @@ config/backlog-backend  backlog backend override; LOCAL, gitignored; absent or "
 config/backend  runtime session-provider backend override for new tasks; LOCAL, gitignored; absent = falls through to runtime auto-detection (the runtime firstmate itself is executing inside), then tmux; tmux is the verified reference backend (docs/tmux-backend.md), while herdr, zellij, and orca are experimental spawn backends (docs/herdr-backend.md, docs/zellij-backend.md, docs/orca-backend.md) - herdr can also be selected by runtime auto-detection, zellij and orca never are (always explicit); not inherited into secondmate homes
 config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
 config/logbook.env   optional logbook attention-board settings; LOCAL, gitignored; opt-in via a truthy LOGBOOK_ENABLE (plus optional LOGBOOK_URL/LOGBOOK_TOKEN/LOGBOOK_TOOL_DIR/LOGBOOK_PORT/LOGBOOK_DRY_RUN); documented example at docs/examples/logbook.env; drives the bin/fm-logbook-*.sh client scripts and section 15
+config/logbook-mode.env  generated logbook watcher cadence (exports FM_CHECK_INTERVAL=15); LOCAL, gitignored; a distinct GENERATED file, never the hand-authored config/logbook.env; source before arming the watcher when present (section 15)
 data/                personal fleet records; LOCAL, gitignored as a whole
   backlog.md         task queue, dependencies, history
   captain.md         captain's curated personal preferences and working style; LOCAL, gitignored, and canonical even if harness memory mirrors it
@@ -100,7 +101,10 @@ state/               volatile runtime signals; gitignored
   x-inbox/           generated X-mode pending mention payloads; fmx-respond drains it (section 14)
   x-outbox/          generated X-mode dry-run reply and dismiss previews; inspect it when FMX_DRY_RUN is set (section 14)
   x-poll.error       generated X-mode relay diagnostic dedupe marker
-  logbook-outbox/    generated logbook dry-run push/sync/resolve previews; inspect it when LOGBOOK_DRY_RUN is set (section 15)
+  logbook-watch.check.sh  generated logbook board-response poll shim; present only when opted in (section 15)
+  logbook-inbox/     generated logbook pending board-response payloads; logbook-respond drains it (section 15)
+  logbook-outbox/    generated logbook dry-run push/sync/resolve/ack previews; inspect it when LOGBOOK_DRY_RUN is set (section 15)
+  logbook-poll.error  generated logbook board-response diagnostic dedupe marker
   logbook-server.log  detached logbook board server output; present only when firstmate launched the board (section 15)
   logbook.data/      logbook board server runtime store (SQLite + token); firstmate-owned, kept here so nothing is written into projects/ (section 15)
   .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
@@ -186,7 +190,7 @@ Otherwise it prints one line per problem or capability fact; handle each:
   This mirrors `/updatefirstmate`'s `nudge-secondmates:` report: it is a gentle steer, never an interruption, and the fast-forward already landed safely.
   A secondmate that was skipped, already current, or whose advance changed no instructions is not listed and must not be disturbed.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local X-mode poll artifacts; follow section 14 for watcher cadence restart only when a running watcher needs the transition applied immediately.
-- `LOGBOOK: on - board at <url>` - the opt-in logbook attention board is enabled and bootstrap ensured its server is up (a trailing `(server not reachable yet; see the diagnostic above)` means the launch is still settling or a launcher diagnostic printed just above); a capability fact, not a problem. Feed and reconcile the board per section 15; steady-state off prints nothing.
+- `LOGBOOK: on - board at <url>` - the opt-in logbook attention board is enabled and bootstrap ensured its server is up (a trailing `(server not reachable yet; see the diagnostic above)` means the launch is still settling or a launcher diagnostic printed just above); a capability fact, not a problem. A following `LOGBOOK: board-response poll armed ...` line means the Phase 2 inbound answer-loop is wired (the poll shim + 15s cadence); apply the cadence to a running watcher with a sourced `--restart` per section 15. `LOGBOOK: off - removed board-response poll shim ...` reports an opt-out that cleared those artifacts. Feed and reconcile the board per section 15; steady-state off prints nothing.
 
 Bootstrap's fleet refresh is bounded by `FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT` seconds, default 20; a timeout is reported as a `FLEET_SYNC` skip and does not block startup.
 
@@ -872,6 +876,7 @@ These skills are not captain-invocable; they are conditional operating reference
 - `stuck-crewmate-recovery` - load after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, recovering, handing backlog to, pushing inherited config into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to classify the mention, act on actionable requests through the normal lifecycle, post or preview a public-safe outcome reply for work that completes immediately, dismiss pure acknowledgments at the relay without replying, or acknowledge and link spawned work so up to three completion follow-ups can post over time, ending with a final one (section 14); relevant only when X mode is on.
+- `logbook-respond` - load on a `logbook-response <response_id>` `check:` wake to drain every stashed board answer, resolve each one's target task from its `item_id` prefix, act on the captain's decision through the normal lifecycle (merge, `no-mistakes axi respond`, dispatch, or a free-text instruction; escalating only destructive/irreversible/security-sensitive steps), then ack the response, resolve the card, and clear the inbox file in that order (section 15); relevant only when logbook is on.
 
 ## 14. X mode
 
@@ -966,7 +971,7 @@ Inspect `state/x-outbox/` to see exactly what would have gone out.
 
 Logbook is a local, loopback-only "what needs you" attention board that firstmate FEEDS: a single glanceable surface of every pending decision, ready action, and FYI - each with its options laid out - so the captain never has to scan a busy chat to find what needs them.
 The board is a **separate, standalone tool** with its own repo (a zero-dependency Node HTTP server plus a read-only web UI plus a bearer-token write API); firstmate is only its first client, driving it over a defined API.
-The firstmate side is a handful of `bin/fm-logbook-*.sh` client scripts plus one `logbook_setup()` bootstrap block, copied almost verbatim from the X-mode pattern (section 14) with the public relay swapped for a `127.0.0.1` tool server.
+The firstmate side is a handful of `bin/fm-logbook-*.sh` client scripts (the outbound feed - `up`/`push`/`sync`/`resolve` - plus the inbound answer-loop `poll`/`ack`), the `logbook-respond` skill, and one `logbook_setup()` bootstrap block, copied almost verbatim from the X-mode pattern (section 14) with the public relay swapped for a `127.0.0.1` tool server.
 It ships inside this repo for every user but is **inert until opted in**, so a user who never enables it sees zero behavior change.
 
 **Activation is `config/logbook.env` presence, not a command.**
@@ -975,16 +980,45 @@ That is the whole consent and the only required config: `LOGBOOK_URL` defaults t
 Set `LOGBOOK_TOKEN` to a private value when you opt in so firstmate's pushes can authenticate and other local processes cannot drive the board.
 An explicit environment variable always wins over the file, exactly as X mode's `fmx_load_config` resolves its settings.
 
-**Read-only in Phase 0+1 (the current phase).**
-firstmate *feeds* the board; the captain *reads* it and answers in chat as always; firstmate then *resolves* the card once it has acted.
-There is no interactive answer-loop yet: the inbound path (a poll shim on the watcher's check/wake rail, a `logbook-respond` skill, and the tool's own respond endpoints) is a **later phase** - note it as future and do not build it here.
-Because Phase 0+1 is outbound-only, unlike X mode this drops **no** inbound poll shim and changes **no** watcher cadence; `logbook_setup()` is structured so that shim is a clean later addition.
+**Two-way as of Phase 2 (the current phase).**
+firstmate *feeds* the board (the outbound half); the captain can now *answer* a card on the board, and firstmate acts on that answer (the inbound half) and *resolves* the card.
+The captain may still answer in chat as always - both paths converge on the same lifecycle action and the same card resolve, so the board and chat never disagree.
+The inbound answer-loop rides the **existing** `state/*.check.sh` watcher rail exactly as X mode does (section 14): a poll shim (`state/logbook-watch.check.sh` -> `bin/fm-logbook-poll.sh`), the `logbook-respond` skill, and the board's own connector endpoints (`GET /api/connector/poll`, `POST /api/connector/ack`).
+It adds **no** edit to the watcher backbone; like X mode, the only cadence change is a generated env file the watcher arm sources.
 
 **Mechanism (purely additive; the watcher backbone is untouched).**
-On the next locked session-start bootstrap step, a `config/logbook.env` with a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up via `bin/fm-logbook-up.sh` (detached, non-blocking) and print one `LOGBOOK: on - board at <url>` line, mirroring the `FMX:` line.
-On opt-out (the flag removed or falsy) or with no config it is a complete no-op: there are no artifacts to remove in Phase 0+1.
-This layer makes **no** edit to `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`, `bin/fm-wake-lib.sh`, or the afk daemon; logbook lives entirely in the logbook-specific `bin/fm-logbook-*.sh` scripts, the `logbook_setup()` block, and the generated local artifacts.
+On the next locked session-start bootstrap step, a `config/logbook.env` with a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up via `bin/fm-logbook-up.sh` (detached, non-blocking), print the `LOGBOOK: on - board at <url>` feed line (mirroring the `FMX:` line), and - Phase 2 - drop two gitignored, idempotent inbound artifacts, mirroring X mode's `state/x-watch.check.sh` + `config/x-mode.env`: `state/logbook-watch.check.sh`, a check shim that execs `bin/fm-logbook-poll.sh`, and `config/logbook-mode.env`, a generated cadence file exporting `FM_CHECK_INTERVAL=15`.
+That cadence file is deliberately its own generated file, distinct from the captain's hand-authored `config/logbook.env` opt-in file, so bootstrap never clobbers the captain's config.
+Arming the poll needs `curl`+`jq`; if either is missing bootstrap reports it via a `MISSING:` line and leaves the poll unarmed while the feed still runs.
+On opt-out (the flag removed or falsy) bootstrap removes both inbound artifacts and prints a `LOGBOOK: off - removed ...` line, reverting to the default 300s no-poll cadence; with no config and no leftover artifacts it is a complete no-op.
+This layer makes **no** edit to `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`, `bin/fm-wake-lib.sh`, or the afk daemon; logbook lives entirely in the logbook-specific `bin/fm-logbook-*.sh` scripts, the `logbook_setup()` block, the `logbook-respond` skill, and the generated local artifacts.
 `bin/fm-logbook-up.sh` is idempotent: it health-checks `GET $LOGBOOK_URL/health`, prints one line and returns if the board already answers, and otherwise launches `node $LOGBOOK_TOOL_DIR/server.mjs` detached (output to `state/logbook-server.log`, runtime store under `state/logbook.data` so nothing is ever written into `projects/`), briefly polls for readiness, and returns without blocking - the same discipline as arming the watcher, so bootstrap never stalls.
+
+**Cadence.**
+An opted-in instance polls the board every 15s instead of the default 300s (snappier than X mode's 30s because a board answer is a direct captain decision worth acting on quickly).
+To get that, arm the watcher with the logbook cadence sourced, exactly as section 8 describes but prefixed:
+
+```sh
+[ -f config/logbook-mode.env ] && . config/logbook-mode.env
+bin/fm-watch-arm.sh        # as the harness's tracked background task
+```
+
+The sourced file exports `FM_CHECK_INTERVAL=15` into the arm, which the watcher it forks inherits, so only an opted-in instance speeds up; a non-adopter has no such file and keeps the 300s default.
+Because `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start and the arm no-ops on an already-healthy watcher, a cadence **transition** (opt-in while a watcher is already running, or opt-out) is applied by restarting the home-scoped watcher with the new environment: `[ -f config/logbook-mode.env ] && . config/logbook-mode.env; bin/fm-watch-arm.sh --restart` (omit the source on opt-out so the 300s default returns), run as the harness's tracked background task.
+Bootstrap deliberately does not restart the watcher itself - it must never block, and `fm-watch-arm.sh --restart` is home-scoped (never a broad `pkill`).
+Logbook is also a reason to keep the watcher armed even with no fleet work, so an opted-in captain's answers are always picked up.
+If both X mode and logbook are on, source both cadence files before arming; each just exports `FM_CHECK_INTERVAL`, so whichever is sourced last sets the interval - source `config/logbook-mode.env` last for the snappier 15s.
+Cadence under away-mode (the supervise daemon owns the watcher then) is unchanged from X mode's note: while afk is active the daemon's default cadence applies.
+
+**The answer-loop (inbound).**
+The poll shim rides the existing `state/*.check.sh` mechanism (section 8): each check cycle `bin/fm-logbook-poll.sh` does one short, bounded poll of `GET $LOGBOOK_URL/api/connector/poll`.
+HTTP 204 (or an empty `responses` array) is silent; each pending answer with a safe `response_id` and an `item_id` is stashed verbatim to `state/logbook-inbox/<response_id>.json` and the poll prints `logbook-response <response_id>`, which the watcher surfaces as a `check:` wake.
+Missing local poll dependencies and board auth/config responses print one rate-limited `logbook-error ...` diagnostic (deduped via `state/logbook-poll.error`), which the watcher surfaces as a `check:` wake for captain-visible repair.
+On a `logbook-response <id>` `check:` wake, load the `logbook-respond` skill; on a `logbook-error ...` wake, report it as a logbook configuration blocker and do not load the skill.
+Because the watcher coalesces same-key `check:` wakes, one wake can stand in for several pending answers, so the skill treats `state/logbook-inbox/` as the source of truth and drains **every** `state/logbook-inbox/*.json` it finds, not just the `response_id` named in the wake.
+For each answer it resolves the target task from the `item_id` (the `<task-id>[:<discriminator>]` prefix, with the opaque `source` blob as the richer route), applies the captain's decision through the normal lifecycle - merge a ready PR with `bin/fm-pr-merge.sh`, feed a no-mistakes ask-user decision back with `no-mistakes axi respond`, dispatch requested work, or apply a free-text instruction - then acks the response with `bin/fm-logbook-ack.sh <response_id>`, resolves the card with `bin/fm-logbook-resolve.sh <item-id>`, and removes the inbox file, **in that order**, so a mid-handle crash is recovered on the next poll (the inbox file persists until the answer is fully handled).
+The board is loopback-only and bearer-token-gated, so a board answer is the captain's own decision on a private, trusted surface and carries in-session trust: firstmate acts on it directly without re-asking in chat, escalating only a genuinely destructive, irreversible, or security-sensitive execution step (the same `yolo` carve-out as sections 1 and 7).
+So the full loop is: the captain answers a card on the board -> `bin/fm-logbook-poll.sh` stashes the answer and prints `logbook-response <id>` -> a watcher `check:` wake -> `logbook-respond` acts through the lifecycle -> ack + resolve clear it from the connector and the board.
 
 **At session start (after bootstrap).**
 Ensure the server is up with `bin/fm-logbook-up.sh`, then compute the current attention set - the same set firstmate already derives for its session-start digest, from `data/backlog.md`, `state/*.status`, `state/*.meta`, and PR state, with projects from `data/projects.md` - and hand the whole thing to `bin/fm-logbook-sync.sh` as one `{projects, items}` body.
@@ -994,12 +1028,12 @@ Logbook is, like X mode, a reason to keep the watcher armed even with no fleet w
 **On each wake that changes the attention set.**
 Push the new or changed items with `bin/fm-logbook-push.sh` (`POST /api/items` upsert, keyed by `id`, safe to re-push every wake), and clear the items firstmate has acted on with `bin/fm-logbook-resolve.sh <id> [resolved|dismissed]`.
 The tool has no dedicated resolve endpoint, so `fm-logbook-resolve.sh` upserts the item with a terminal `status` (which drops it off the board) rather than calling a nonexistent `/api/items/resolve`.
-Both input paths converge on resolve: whether the captain answered on the board (a later phase) or in chat, firstmate acts through the normal lifecycle and then resolves the card so the board mirrors live state.
+Both input paths converge on resolve: whether the captain answered on the board (drained by `logbook-respond`, above) or in chat, firstmate acts through the normal lifecycle and then resolves the card so the board mirrors live state.
 
 **Item-composition contract.**
 firstmate translates internals into captain-facing fields - `title` (one glanceable line), `body` (markdown context), `options` (`{label, value}` choices), `priority`, and `source` - exactly the translation it already does for chat, so no task-internal jargon leaks into `title`/`body`.
 `kind` drives priority: `decision` (needs a call) outranks `action` (a ready thing to do, e.g. merge) which outranks `fyi` (informational); an explicit `priority` int can override the band.
-`source` is the opaque routing blob (`{task, pr, channel}`) firstmate uses to route an answer back to its own domain; the tool stores and echoes it untouched and never inspects it.
+`source` is the opaque routing blob (`{task, pr, channel}`) firstmate uses to route an answer back to its own domain; the tool stores and echoes it untouched and never inspects it, and `logbook-respond` reads it (alongside the `item_id` prefix) to route the captain's answer to the right task.
 Because an item's text is composed from fleet internals, the client scripts never inline it into a shell argument - the body is passed via `--json-file` or stdin, mirroring `bin/fm-x-reply.sh`.
 
 **Boundary (who owns what).**
@@ -1012,5 +1046,6 @@ The board binds `127.0.0.1` only and requires a bearer token on every `/api/*` c
 firstmate keeps the token in `config/logbook.env` and sends it via a `0600` auth-header temp file, never on a command line, so it never appears in a process listing.
 
 **Preview / dry-run.**
-Setting `LOGBOOK_DRY_RUN` (truthy, in the environment or `config/logbook.env`) makes `bin/fm-logbook-push.sh`, `bin/fm-logbook-sync.sh`, and `bin/fm-logbook-resolve.sh` compose their JSON body and record it to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, or `<id>.json`) instead of posting - no network and no token needed, mirroring `FMX_DRY_RUN`.
+Setting `LOGBOOK_DRY_RUN` (truthy, in the environment or `config/logbook.env`) makes `bin/fm-logbook-push.sh`, `bin/fm-logbook-sync.sh`, `bin/fm-logbook-resolve.sh`, and `bin/fm-logbook-ack.sh` compose their JSON body and record it to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting - no network and no token needed, mirroring `FMX_DRY_RUN`.
+The inbound `bin/fm-logbook-poll.sh` needs no dry-run switch: it is read-only against the board and inert unless opted in.
 Inspect `state/logbook-outbox/` to see exactly what would have gone out.

@@ -74,6 +74,57 @@ SH
   printf '%s\n' "$fakebin"
 }
 
+# A fakebin `curl` for the Phase 2 inbound connector: GET /api/connector/poll
+# returns FAKE_POLL_CODE (default 204) writing FAKE_POLL_BODY to the -o file, and
+# POST /api/connector/ack returns FAKE_ACK_CODE (default 200). Each call is logged
+# to FAKE_CURL_LOG (url, auth header, streamed body, full argv) so a test can prove
+# the request shape and that no token leaks into argv.
+make_fake_conn_curl() {
+  local dir=$1 fakebin
+  fakebin=$(fm_fakebin "$dir")
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+ofile="" method=GET data="" url="" auth=""
+argv=$*
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) ofile=$2; shift 2 ;;
+    -X) method=$2; shift 2 ;;
+    --data-binary)
+      case "$2" in
+        @-) data=$(cat) ;;
+        @*) data=$(cat -- "${2#@}") ;;
+        *) data=$2 ;;
+      esac
+      shift 2
+      ;;
+    -H)
+      case "$2" in
+        @*) while IFS= read -r header; do case "$header" in Authorization:*) auth=$header ;; esac; done < "${2#@}" ;;
+        Authorization:*) auth=$2 ;;
+      esac
+      shift 2
+      ;;
+    -m|-w) shift 2 ;;
+    -s) shift ;;
+    http://*|https://*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
+if [ -n "${FAKE_CURL_LOG:-}" ]; then
+  { echo "argv=$argv"; echo "method=$method"; echo "url=$url"; echo "auth=$auth"; echo "data=$data"; } >> "$FAKE_CURL_LOG"
+fi
+case "$url" in
+  */api/connector/poll) [ -n "$ofile" ] && printf '%s' "${FAKE_POLL_BODY:-}" > "$ofile"; printf '%s' "${FAKE_POLL_CODE:-204}" ;;
+  */api/connector/ack) printf '%s' "${FAKE_ACK_CODE:-200}" ;;
+  *) printf '000' ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/curl"
+  printf '%s\n' "$fakebin"
+}
+
 # Resolve the config in a child and print URL|PORT|TOOL_DIR|ENABLE|TOKEN|DRY.
 resolve_cfg() {
   bash -c '. "'"$ROOT"'/bin/fm-logbook-lib.sh"; logbook_load_config
@@ -337,8 +388,8 @@ test_up_hard_noop_when_disabled() {
   pass "fm-logbook-up is a hard no-op when not opted in (inert default)"
 }
 
-test_bootstrap_opt_in_prints_line_no_shim_no_cadence() {
-  local home fakebin out
+test_bootstrap_opt_in_drops_poll_shim_and_cadence() {
+  local home fakebin out sum1 sum2 n inherited
   home="$TMP_ROOT/boot-on"; mkdir -p "$home/config"
   fakebin=$(make_fake_curl "$home")
   cat > "$home/config/logbook.env" <<'EOF'
@@ -350,14 +401,31 @@ EOF
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 \
     "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
   assert_contains "$out" "LOGBOOK: on - board at http://127.0.0.1:8137" \
-    "bootstrap must announce logbook on opt-in"
-  # CRITICAL Phase 0+1 invariant: read-only feed only. No inbound poll shim...
-  assert_absent "$home/state/logbook-watch.check.sh" "opt-in must NOT drop a watcher poll shim in Phase 0+1"
-  # ...and NO cadence file anywhere (nothing may set FM_CHECK_INTERVAL).
-  if grep -rIlF 'FM_CHECK_INTERVAL' "$home/config" "$home/state" 2>/dev/null | grep -q .; then
-    fail "opt-in must NOT write any watcher cadence file in Phase 0+1"
-  fi
-  pass "bootstrap opt-in prints the LOGBOOK line and drops no poll shim or cadence file"
+    "bootstrap must announce the logbook feed on opt-in"
+  assert_contains "$out" "LOGBOOK: board-response poll armed" \
+    "bootstrap must announce the Phase 2 board-response poll arm"
+  # Phase 2: opt-in DROPS the inbound poll shim + 15s cadence (mirroring X mode).
+  assert_present "$home/state/logbook-watch.check.sh" "opt-in must drop the board-response poll shim"
+  [ -x "$home/state/logbook-watch.check.sh" ] || fail "the poll shim must be executable"
+  assert_grep "fm-logbook-poll.sh" "$home/state/logbook-watch.check.sh" "the shim must exec the poll script"
+  assert_present "$home/config/logbook-mode.env" "opt-in must drop the cadence config"
+  assert_grep "export FM_CHECK_INTERVAL=15" "$home/config/logbook-mode.env" "cadence must be 15s"
+  # The generated cadence file must NOT clobber the captain's hand-authored opt-in.
+  assert_grep "LOGBOOK_ENABLE=1" "$home/config/logbook.env" "the hand-authored opt-in file must be untouched"
+  assert_no_grep "FM_CHECK_INTERVAL" "$home/config/logbook.env" "the cadence must not be written into config/logbook.env"
+  # Cadence inheritance: sourcing the config exports the 15s interval to a child,
+  # exactly how fm-watch-arm.sh's forked watcher inherits it.
+  # shellcheck source=/dev/null
+  inherited=$( . "$home/config/logbook-mode.env" && bash -c 'echo "${FM_CHECK_INTERVAL:-300}"' )
+  [ "$inherited" = "15" ] || fail "sourcing the cadence config must export FM_CHECK_INTERVAL=15 to a child"
+  # Idempotent: re-running changes nothing and does not duplicate the shim.
+  sum1=$(cat "$home/state/logbook-watch.check.sh" "$home/config/logbook-mode.env" | shasum)
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+  sum2=$(cat "$home/state/logbook-watch.check.sh" "$home/config/logbook-mode.env" | shasum)
+  [ "$sum1" = "$sum2" ] || fail "bootstrap logbook Phase 2 setup must be idempotent"
+  n=$(find "$home/state" -maxdepth 1 -name 'logbook-watch*' | wc -l | tr -d ' ')
+  [ "$n" = "1" ] || fail "bootstrap must not duplicate the shim (found $n)"
+  pass "bootstrap opt-in drops the board-response poll shim + 15s cadence, idempotently"
 }
 
 test_bootstrap_opt_in_unhealthy_reports_degraded() {
@@ -407,6 +475,225 @@ test_bootstrap_detect_only_skips_logbook() {
   pass "bootstrap detect-only path leaves logbook untouched (read-only session)"
 }
 
+test_bootstrap_opt_out_removes_poll_shim_and_cadence() {
+  local home fakebin out
+  home="$TMP_ROOT/boot-optout"; mkdir -p "$home/config"
+  fakebin=$(make_fake_curl "$home")
+  # Opt in: the Phase 2 artifacts appear.
+  cat > "$home/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+EOF
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+  assert_present "$home/state/logbook-watch.check.sh" "opt-in must create the poll shim before opt-out"
+  assert_present "$home/config/logbook-mode.env" "opt-in must create the cadence config before opt-out"
+  # Opt out: falsy flag -> both artifacts removed + one off line.
+  printf 'LOGBOOK_ENABLE=0\n' > "$home/config/logbook.env"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "LOGBOOK: off - removed board-response poll shim and 15s cadence" \
+    "opt-out must announce logbook off when it removed artifacts"
+  assert_absent "$home/state/logbook-watch.check.sh" "opt-out must remove the poll shim"
+  assert_absent "$home/config/logbook-mode.env" "opt-out must remove the cadence config"
+  # Steady-state off: another run with nothing to remove is silent.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_not_contains "$out" "LOGBOOK:" "steady-state off must be silent"
+  pass "bootstrap removes the logbook poll shim + cadence on opt-out and is silent once off"
+}
+
+# --- inbound board-response poll (fm-logbook-poll.sh) ------------------------
+
+test_poll_no_optin_is_hard_noop() {
+  local home fakebin out rc log
+  home="$TMP_ROOT/poll-noop"; mkdir -p "$home"
+  fakebin=$(make_fake_conn_curl "$home")
+  log="$home/curl.log"
+  # Not opted in: a hard no-op that never even polls the board.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE='' FAKE_CURL_LOG="$log" \
+    "$ROOT/bin/fm-logbook-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll no-optin exit"
+  [ -z "$out" ] || fail "poll must be silent when not opted in (got: $out)"
+  [ ! -f "$log" ] || fail "poll must not even call the board when not opted in"
+  assert_absent "$home/state/logbook-inbox" "poll no-optin must not create an inbox"
+  pass "fm-logbook-poll is a hard no-op when not opted in (inert default)"
+}
+
+test_poll_204_is_silent() {
+  local home fakebin log out rc
+  home="$TMP_ROOT/poll-204"; mkdir -p "$home"
+  fakebin=$(make_fake_conn_curl "$home")
+  log="$home/curl.log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=tok-204 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_POLL_CODE=204 \
+    "$ROOT/bin/fm-logbook-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll 204 exit"
+  [ -z "$out" ] || fail "poll 204 must be silent (got: $out)"
+  assert_grep "auth=Authorization: Bearer tok-204" "$log" "poll must send the bearer token"
+  grep '^argv=' "$log" | grep -F 'tok-204' >/dev/null 2>&1 \
+    && fail "poll must not expose the bearer token in curl argv"
+  assert_grep "url=http://127.0.0.1:8137/api/connector/poll" "$log" "poll must hit /api/connector/poll"
+  ls "$home/state/logbook-inbox/"*.json >/dev/null 2>&1 && fail "poll 204 must not stash an inbox file"
+  pass "fm-logbook-poll stays silent on HTTP 204 (the common case)"
+}
+
+test_poll_pending_stashes_and_marks() {
+  local home fakebin out rc body f1 f2
+  home="$TMP_ROOT/poll-pending"; mkdir -p "$home"
+  fakebin=$(make_fake_conn_curl "$home")
+  # Two answers in one poll: an option answer and a free-text answer. The full
+  # object must round-trip so logbook-respond can route and act on it.
+  body='{"responses":[{"response_id":"r-1","item_id":"fix-login-k3:merge","kind":"option","value":"merge","text":null,"created":"t1"},{"response_id":"r-2","item_id":"scout-x","kind":"text","value":null,"text":"go with plan B","created":"t2"}]}'
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_POLL_CODE=200 FAKE_POLL_BODY="$body" \
+    "$ROOT/bin/fm-logbook-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll pending exit"
+  assert_contains "$out" "logbook-response r-1" "poll must print a wake line for r-1"
+  assert_contains "$out" "logbook-response r-2" "poll must print a wake line for r-2"
+  f1="$home/state/logbook-inbox/r-1.json"; f2="$home/state/logbook-inbox/r-2.json"
+  assert_present "$f1" "poll must stash r-1"
+  assert_present "$f2" "poll must stash r-2"
+  [ "$(jq -r .item_id "$f1")" = "fix-login-k3:merge" ] || fail "stashed r-1 must preserve item_id"
+  [ "$(jq -r .value "$f1")" = "merge" ] || fail "stashed r-1 must preserve the option value"
+  [ "$(jq -r .kind "$f2")" = "text" ] || fail "stashed r-2 must preserve kind"
+  [ "$(jq -r .text "$f2")" = "go with plan B" ] || fail "stashed r-2 must preserve the free text"
+  pass "fm-logbook-poll stashes every pending answer and prints one wake line each"
+}
+
+test_poll_empty_responses_is_silent() {
+  local home fakebin out rc
+  home="$TMP_ROOT/poll-empty"; mkdir -p "$home"
+  fakebin=$(make_fake_conn_curl "$home")
+  # A 200 with an empty responses array is a defensive equivalent of 204.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_POLL_CODE=200 FAKE_POLL_BODY='{"responses":[]}' \
+    "$ROOT/bin/fm-logbook-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll empty responses exit"
+  [ -z "$out" ] || fail "poll must be silent for an empty responses array (got: $out)"
+  assert_absent "$home/state/logbook-inbox" "empty responses must not create an inbox"
+  pass "fm-logbook-poll stays silent when the board returns no responses"
+}
+
+test_poll_error_reports_once() {
+  local home fakebin out rc
+  home="$TMP_ROOT/poll-err"; mkdir -p "$home"
+  fakebin=$(make_fake_conn_curl "$home")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_POLL_CODE=401 "$ROOT/bin/fm-logbook-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll auth error exit"
+  [ "$out" = "logbook-error board returned HTTP 401" ] \
+    || fail "poll auth error must emit one visible diagnostic (got: $out)"
+  assert_present "$home/state/logbook-poll.error" "poll auth error must write a dedupe marker"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_POLL_CODE=401 "$ROOT/bin/fm-logbook-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll repeated auth error exit"
+  [ -z "$out" ] || fail "repeated poll auth error must be quiet after the first diagnostic (got: $out)"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_POLL_CODE=204 "$ROOT/bin/fm-logbook-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll recovered error exit"
+  [ -z "$out" ] || fail "poll recovery 204 must stay silent (got: $out)"
+  assert_absent "$home/state/logbook-poll.error" "poll 204 must clear the error marker"
+  pass "fm-logbook-poll surfaces board errors once and clears on recovery"
+}
+
+test_poll_rejects_unsafe_response_id() {
+  local home fakebin out rc
+  home="$TMP_ROOT/poll-evil"; mkdir -p "$home"
+  fakebin=$(make_fake_conn_curl "$home")
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_POLL_CODE=200 \
+    FAKE_POLL_BODY='{"responses":[{"response_id":"../../etc/x","item_id":"t","kind":"text","text":"hi"}]}' \
+    "$ROOT/bin/fm-logbook-poll.sh"); rc=$?
+  expect_code 0 "$rc" "poll unsafe id exit"
+  [ -z "$out" ] || fail "poll must not emit a marker for an unsafe response_id (got: $out)"
+  assert_absent "$home/state/logbook-inbox/../../etc/x.json" "poll must not write outside the inbox"
+  pass "fm-logbook-poll rejects an unsafe response_id (path-traversal guard)"
+}
+
+test_poll_missing_jq_reports_error() {
+  local home fakebin out rc
+  home="$TMP_ROOT/poll-nojq"; mkdir -p "$home"
+  # A fakebin with curl but deliberately no jq on PATH: the poll must not stash or
+  # wake for nothing; it surfaces one repairable diagnostic.
+  fakebin=$(make_fake_conn_curl "$home")
+  out=$(PATH="$fakebin:/usr/bin:/bin" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 "$ROOT/bin/fm-logbook-poll.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "poll missing-jq exit"
+  # Only assert the diagnostic when the bare PATH genuinely lacks jq (some hosts put
+  # jq in /usr/bin); otherwise this degenerates to the 204 path, still a valid no-op.
+  if ! PATH="/usr/bin:/bin" command -v jq >/dev/null 2>&1; then
+    [ "$out" = "logbook-error missing jq" ] || fail "poll must report a missing jq once (got: $out)"
+    assert_present "$home/state/logbook-poll.error" "missing jq must write a dedupe marker"
+  fi
+  assert_absent "$home/state/logbook-inbox" "missing jq must not stash an inbox file"
+  pass "fm-logbook-poll surfaces a missing jq dependency instead of a silent failure"
+}
+
+# --- inbound connector ack (fm-logbook-ack.sh) ------------------------------
+
+test_ack_dry_run_records() {
+  local home out rc
+  home="$TMP_ROOT/ack-dry"; mkdir -p "$home"
+  # Dry-run, NO token: compose {response_id}, record it, never call the board.
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-ack.sh" resp-42 2>"$home/err"); rc=$?
+  expect_code 0 "$rc" "ack dry-run exit"
+  [ "$out" = "resp-42" ] || fail "ack dry-run must echo the response_id (got: $out)"
+  assert_present "$home/state/logbook-outbox/resp-42.json" "ack dry-run must record the would-be body"
+  [ "$(jq -r .response_id "$home/state/logbook-outbox/resp-42.json")" = "resp-42" ] \
+    || fail "recorded ack body must carry the response_id"
+  assert_grep "DRY RUN" "$home/err" "ack dry-run must surface a DRY RUN summary on stderr"
+  pass "fm-logbook-ack dry-run records {response_id} with no network and no token"
+}
+
+test_ack_live_posts_with_bearer_no_leak() {
+  local home fakebin log out rc data
+  home="$TMP_ROOT/ack-live"; mkdir -p "$home"
+  fakebin=$(make_fake_conn_curl "$home")
+  log="$home/curl.log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=secrettok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_ACK_CODE=200 \
+    "$ROOT/bin/fm-logbook-ack.sh" resp-7); rc=$?
+  expect_code 0 "$rc" "ack live exit"
+  [ "$out" = "resp-7" ] || fail "ack must echo only the response_id (got: $out)"
+  assert_grep "url=http://127.0.0.1:8137/api/connector/ack" "$log" "ack must POST to /api/connector/ack"
+  assert_grep "method=POST" "$log" "ack must use POST"
+  assert_grep "auth=Authorization: Bearer secrettok" "$log" "ack must send the bearer token"
+  grep '^argv=' "$log" | grep -F 'secrettok' >/dev/null 2>&1 \
+    && fail "ack must not expose the bearer token in curl argv"
+  data=$(grep '^data=' "$log" | tail -1 | sed 's/^data=//')
+  [ "$(printf '%s' "$data" | jq -r .response_id)" = "resp-7" ] || fail "ack must stream {response_id}"
+  pass "fm-logbook-ack posts {response_id} with a bearer header and never leaks the token"
+}
+
+test_ack_live_non_2xx_fails() {
+  local home fakebin out rc err
+  home="$TMP_ROOT/ack-500"; mkdir -p "$home"
+  fakebin=$(make_fake_conn_curl "$home")
+  err="$home/err.txt"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=t \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_ACK_CODE=500 \
+    "$ROOT/bin/fm-logbook-ack.sh" resp-7 2>"$err"); rc=$?
+  [ "$rc" -ne 0 ] || fail "ack must exit non-zero on a non-2xx response"
+  [ -z "$out" ] || fail "failed ack must not echo the response_id (got: $out)"
+  assert_grep "HTTP 500" "$err" "ack must report the failing status"
+  pass "fm-logbook-ack exits non-zero on a non-2xx board response"
+}
+
+test_ack_rejects_bad_id() {
+  local home rc
+  home="$TMP_ROOT/ack-bad"; mkdir -p "$home"
+  PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 "$ROOT/bin/fm-logbook-ack.sh" '../evil' >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "ack traversal id exit"
+  PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 "$ROOT/bin/fm-logbook-ack.sh" '.hidden' >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "ack leading-dot id exit"
+  PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 "$ROOT/bin/fm-logbook-ack.sh" 'a..b' >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "ack dotdot id exit"
+  PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 "$ROOT/bin/fm-logbook-ack.sh" >/dev/null 2>&1; rc=$?
+  expect_code 2 "$rc" "ack missing id exit"
+  assert_absent "$home/state/logbook-outbox" "a rejected id must not write any outbox preview"
+  pass "fm-logbook-ack rejects an unsafe or missing response_id (safe-slug guard)"
+}
+
 test_config_defaults
 test_config_from_file
 test_config_env_wins_over_file
@@ -423,7 +710,19 @@ test_push_live_posts_with_bearer_no_leak
 test_push_live_non_2xx_fails
 test_up_noops_when_healthy
 test_up_hard_noop_when_disabled
-test_bootstrap_opt_in_prints_line_no_shim_no_cadence
+test_bootstrap_opt_in_drops_poll_shim_and_cadence
 test_bootstrap_opt_in_unhealthy_reports_degraded
 test_bootstrap_opt_out_is_noop
+test_bootstrap_opt_out_removes_poll_shim_and_cadence
 test_bootstrap_detect_only_skips_logbook
+test_poll_no_optin_is_hard_noop
+test_poll_204_is_silent
+test_poll_pending_stashes_and_marks
+test_poll_empty_responses_is_silent
+test_poll_error_reports_once
+test_poll_rejects_unsafe_response_id
+test_poll_missing_jq_reports_error
+test_ack_dry_run_records
+test_ack_live_posts_with_bearer_no_leak
+test_ack_live_non_2xx_fails
+test_ack_rejects_bad_id
