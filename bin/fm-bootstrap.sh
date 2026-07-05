@@ -13,7 +13,8 @@
 #                 "NUDGE_SECONDMATES: fm-<id>...",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: already-live|respawned|skipped: <reason>|respawn failed: <reason>",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...",
-#                 "LOGBOOK: on - board at <url>".
+#                 "LOGBOOK: on - board at <url>" plus a "board-response poll armed"
+#                 line, or "LOGBOOK: off - removed ..." on opt-out.
 #          A NUDGE_SECONDMATES line lists the RUNNING secondmate task selectors
 #          (fm-<id>) whose worktree was fast-forwarded to firstmate's own
 #          current default-branch commit (a purely LOCAL fast-forward, never an
@@ -57,10 +58,14 @@
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
 #          Logbook (the local attention board) is OPTIONAL and inert unless
 #          config/logbook.env sets a truthy LOGBOOK_ENABLE. When opted in,
-#          bootstrap ensures the board server is up (detached, non-blocking) and
-#          prints a LOGBOOK line. Phase 0+1 is READ-ONLY: it drops NO poll shim
-#          and changes NO watcher cadence (that inbound answer-loop is a later
-#          phase). On opt-out or no config it is a complete no-op.
+#          bootstrap ensures the board server is up (detached, non-blocking),
+#          prints the LOGBOOK feed line, and - Phase 2 - arms the board-response
+#          poll on the EXISTING watcher check rail: it writes the
+#          state/logbook-watch.check.sh shim and the config/logbook-mode.env
+#          cadence (FM_CHECK_INTERVAL=15), requiring curl+jq. On opt-out (flag
+#          removed/falsy) it removes both artifacts, reverting to the default 300s
+#          no-poll cadence; absent config and with no leftover artifacts it is a
+#          complete no-op. It never edits fm-watch.sh or any watcher-backbone file.
 #          Fleet sync fetches, fast-forwards safe default-branch states, reports
 #          recovered and STUCK clone drift, and prunes gone local branches; it is
 #          bounded by FM_FLEET_SYNC_BOOTSTRAP_TIMEOUT when it is a non-empty
@@ -471,17 +476,54 @@ EOF
 
 # Logbook (opt-in): when this home's config/logbook.env sets a truthy
 # LOGBOOK_ENABLE, ensure the local attention-board server is up (detached,
-# non-blocking) and announce it with one LOGBOOK line, mirroring x_mode_setup's
-# FMX line. Phase 0+1 is READ-ONLY - firstmate only PUSHES items and reconciles
-# the board while the captain reads it and answers in chat - so unlike X mode this
-# drops NO inbound poll shim and changes NO watcher cadence (that inbound
-# answer-loop is a later phase; keep this block the clean place to add its shim
-# then). On opt-out or no config it is a complete no-op, so non-adopters see zero
-# change. It never blocks: fm-logbook-up.sh launches the server detached. Like
-# x_mode_setup, this runs only on the caller's lock-holding (non-detect) path.
+# non-blocking), announce it with a LOGBOOK line, and - Phase 2 - wire the
+# board-response poll into the EXISTING watcher check mechanism, mirroring
+# x_mode_setup, without touching fm-watch.sh or any other watcher-backbone file.
+# Two layers:
+#   Feed (Phase 0+1): firstmate PUSHES items and reconciles the board; the server
+#     launch and the "LOGBOOK: on - board at <url>" line.
+#   Answer loop (Phase 2): the captain answers a card on the board, and two
+#     idempotent, gitignored artifacts carry that answer back:
+#       state/logbook-watch.check.sh - check shim that execs bin/fm-logbook-poll.sh
+#       config/logbook-mode.env      - exports FM_CHECK_INTERVAL=15, sourced by the
+#                                      watcher arm so an opted-in home polls the
+#                                      board every 15s (its own generated file, so
+#                                      it never clobbers the captain's hand-authored
+#                                      config/logbook.env opt-in file)
+# The poll shim needs curl+jq; if either is missing, the feed still runs but the
+# poll is not armed (reported via MISSING). On opt-out (flag removed or falsy) it
+# removes both artifacts so the instance reverts to the default 300s no-poll
+# behavior. Absent config AND with no leftover artifacts it is a complete no-op
+# (nothing written, nothing printed), so a non-adopter sees zero change. It never
+# blocks: fm-logbook-up.sh launches the server detached, and applying a cadence
+# transition to a running watcher is the caller's job via
+# 'bin/fm-watch-arm.sh --restart' (see AGENTS.md section 15). Like x_mode_setup,
+# this runs only on the caller's lock-holding (non-detect) path.
 logbook_setup() {
+  local shim cadence shim_body cadence_body tool missing
   logbook_load_config
-  logbook_enabled || return 0
+  shim="$STATE/logbook-watch.check.sh"
+  cadence="$CONFIG/logbook-mode.env"
+
+  logbook_remove_inbound_artifacts() {
+    rm -f "$shim" "$cadence" 2>/dev/null || true
+    [ ! -e "$shim" ] && [ ! -e "$cadence" ]
+  }
+
+  if ! logbook_enabled; then
+    # Opt-out (or never opted in): drop any inbound poll artifacts; stay silent
+    # unless we actually removed something.
+    if [ -e "$shim" ] || [ -e "$cadence" ]; then
+      if logbook_remove_inbound_artifacts; then
+        echo "LOGBOOK: off - removed board-response poll shim and 15s cadence; restart the watcher (bin/fm-watch-arm.sh --restart) to drop back to the default cadence"
+      else
+        echo "LOGBOOK: off - failed to remove board-response poll shim or 15s cadence"
+      fi
+    fi
+    return 0
+  fi
+
+  # Opted in - Feed (Phase 0+1): ensure the board server is up and announce it.
   # Best-effort, detached, never blocks. Suppress the launcher's stdout chatter
   # ("board already up"/"board started") but let its stderr diagnostics (node not
   # found, board server not found, curl missing, launched-but-not-yet-healthy)
@@ -492,6 +534,57 @@ logbook_setup() {
   else
     echo "LOGBOOK: on - board at $LOGBOOK_URL (server not reachable yet; see the diagnostic above)"
   fi
+
+  # Opted in - Answer loop (Phase 2): arm the board-response poll shim + cadence.
+  # The poll needs curl+jq; if either is missing, report it and skip arming so a
+  # poll that cannot run is never left in place - the feed above still works.
+  missing=0
+  for tool in curl jq; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "MISSING: $tool (install: $(install_cmd "$tool"))"
+      missing=1
+    fi
+  done
+  if [ "$missing" -ne 0 ]; then
+    # Never leave a poll shim armed that cannot run; the MISSING line is the signal.
+    if [ -e "$shim" ] || [ -e "$cadence" ]; then
+      logbook_remove_inbound_artifacts >/dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+
+  logbook_arm_failed() {
+    if logbook_remove_inbound_artifacts; then
+      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim or 15s cadence"
+    else
+      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim or 15s cadence; stale artifacts remain"
+    fi
+  }
+
+  mkdir -p "$STATE" "$CONFIG" 2>/dev/null || { logbook_arm_failed; return 0; }
+
+  shim_body=$(cat <<EOF
+#!/usr/bin/env bash
+# Auto-generated by fm-bootstrap.sh - logbook board-response poll shim.
+# The watcher runs this each check cycle; output becomes a check: wake.
+export FM_HOME=$(printf '%q' "$FM_HOME")
+exec $(printf '%q' "$FM_ROOT/bin/fm-logbook-poll.sh")
+EOF
+)
+  write_if_changed "$shim" "$shim_body" || { logbook_arm_failed; return 0; }
+  chmod +x "$shim" 2>/dev/null || { logbook_arm_failed; return 0; }
+
+  cadence_body=$(cat <<'EOF'
+# Auto-generated by fm-bootstrap.sh - logbook watcher cadence.
+# Source this before arming the watcher (see AGENTS.md section 15) so fm-watch.sh
+# polls the logbook board-response check every 15s. Non-adopters have no such file
+# and keep the default 300s cadence.
+export FM_CHECK_INTERVAL=15
+EOF
+)
+  write_if_changed "$cadence" "$cadence_body" || { logbook_arm_failed; return 0; }
+
+  echo "LOGBOOK: board-response poll armed via state/logbook-watch.check.sh; 15s watcher cadence in config/logbook-mode.env"
 }
 
 crew_dispatch_validate() {

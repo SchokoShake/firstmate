@@ -17,3 +17,4 @@ config/x-mode.env
 config/cmux-socket-password
 config/wedge-alarm
 config/logbook.env
+config/logbook-mode.env
