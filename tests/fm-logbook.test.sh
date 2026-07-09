@@ -25,9 +25,11 @@ JQ_DIR=$(command -v jq 2>/dev/null) && JQ_DIR=$(dirname "$JQ_DIR") || JQ_DIR=
 TMP_ROOT=$(fm_test_tmproot fm-logbook-tests)
 
 # A fakebin `curl` that mimics the board: /health returns FAKE_HEALTH_CODE (default
-# 200); a POST to /api/* returns FAKE_POST_CODE (default 200). Each call is recorded
-# to FAKE_CURL_LOG (url, auth header, streamed body, full argv) so a test can assert
-# the request shape and prove no token leaks into argv.
+# 200); GET /api/board writes FAKE_BOARD_BODY to the -o file and returns
+# FAKE_BOARD_CODE (default 200); any other POST to /api/* returns FAKE_POST_CODE
+# (default 200). Each call is recorded to FAKE_CURL_LOG (url, auth header, streamed
+# body, full argv) so a test can assert the request shape and prove no token leaks
+# into argv.
 make_fake_curl() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -65,6 +67,7 @@ if [ -n "${FAKE_CURL_LOG:-}" ]; then
 fi
 case "$url" in
   */health) [ -n "$ofile" ] && : > "$ofile"; printf '%s' "${FAKE_HEALTH_CODE:-200}" ;;
+  */api/board) [ -n "$ofile" ] && printf '%s' "${FAKE_BOARD_BODY:-}" > "$ofile"; printf '%s' "${FAKE_BOARD_CODE:-200}" ;;
   */api/*) [ -n "$ofile" ] && : > "$ofile"; printf '%s' "${FAKE_POST_CODE:-200}" ;;
   *) printf '000' ;;
 esac
@@ -277,26 +280,122 @@ test_sync_dry_run_records() {
   pass "fm-logbook-sync dry-run records the declarative reconcile body"
 }
 
+# A board with two cards, used by the resolve tests. Composing the full upsert body
+# means fetching these fields via GET /api/board, so the fake curl serves this as
+# FAKE_BOARD_BODY. Note the null priority/source and empty options: the composed
+# body must still validate.
+RESOLVE_BOARD_BODY='{"projects":[{"name":"aura"}],"items":[{"id":"aura-bench-e4:nm-review","project":"aura","kind":"decision","title":"Two findings need a call","body":"pick one","options":[{"label":"Fix","value":"fix"},{"label":"Ship","value":"ship"}],"priority":null,"status":"submitted","source":{"task":"aura-bench-e4"},"created":"2026-07-09T10:00:00Z","updated":"2026-07-09T10:05:00Z"},{"id":"mb-fast-search","project":"","kind":"action","title":"PR ready","body":"","options":[],"priority":72,"status":"pending","source":null,"created":"2026-07-09T09:00:00Z","updated":"2026-07-09T09:00:00Z"}]}'
+
 test_resolve_dry_run_records() {
-  local home out rc
+  local home fakebin log out rc obx
   home="$TMP_ROOT/resolve-dry"; mkdir -p "$home"
-  # Default status is resolved; the tool has no resolve endpoint, so this upserts
-  # {id,status} which drops the card off the board.
-  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
-    "$ROOT/bin/fm-logbook-resolve.sh" 'aura-bench-e4:nm-review' 2>/dev/null); rc=$?
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  # A bare {id,status} upsert is rejected by the tool's validateItem (missing kind),
+  # so resolve fetches the card via GET /api/board and re-posts the WHOLE item with
+  # a terminal status. Dry-run still performs that read-only GET (a GET has no side
+  # effects) to compose a faithful preview, but records the body instead of posting.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 LOGBOOK_TOKEN=drytok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_BOARD_BODY="$RESOLVE_BOARD_BODY" \
+    "$ROOT/bin/fm-logbook-resolve.sh" 'aura-bench-e4:nm-review' 2>"$home/err"); rc=$?
   expect_code 0 "$rc" "resolve dry-run exit"
-  assert_present "$home/state/logbook-outbox/aura-bench-e4:nm-review.json" "resolve dry-run must record the upsert body"
-  [ "$(jq -r .id "$home/state/logbook-outbox/aura-bench-e4:nm-review.json")" = "aura-bench-e4:nm-review" ] \
+  obx="$home/state/logbook-outbox/aura-bench-e4:nm-review.json"
+  assert_present "$obx" "resolve dry-run must record the upsert body"
+  [ "$(jq -r .id "$obx")" = "aura-bench-e4:nm-review" ] \
     || fail "resolve body must carry the item id (colon slug accepted, as the tool allows)"
-  [ "$(jq -r .status "$home/state/logbook-outbox/aura-bench-e4:nm-review.json")" = "resolved" ] \
+  [ "$(jq -r .status "$obx")" = "resolved" ] \
     || fail "resolve body must default status to resolved"
-  # An explicit dismissed status is also accepted.
-  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+  # The whole point of the fix: the recorded body is a FULL valid item, not a bare
+  # {id,status}. kind and title (the fields validateItem rejected the old body for)
+  # must be carried over from the board.
+  [ "$(jq -r .kind "$obx")" = "decision" ] \
+    || fail "resolve body must carry the card's kind (a full valid item, not {id,status})"
+  [ "$(jq -r .title "$obx")" = "Two findings need a call" ] \
+    || fail "resolve body must carry the card's title"
+  [ "$(jq -r '.options[0].value' "$obx")" = "fix" ] \
+    || fail "resolve body must carry the card's options"
+  # Dry-run reads the board (GET) but never writes it (no POST /api/items).
+  assert_grep "url=http://127.0.0.1:8137/api/board" "$log" "resolve dry-run must GET the board to compose the body"
+  assert_no_grep "method=POST" "$log" "resolve dry-run must not POST anything (send nothing)"
+  # An explicit dismissed status carries the OTHER card's fields through, too.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 LOGBOOK_TOKEN=drytok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_BODY="$RESOLVE_BOARD_BODY" \
     "$ROOT/bin/fm-logbook-resolve.sh" mb-fast-search dismissed 2>/dev/null); rc=$?
   expect_code 0 "$rc" "resolve dismissed exit"
-  [ "$(jq -r .status "$home/state/logbook-outbox/mb-fast-search.json")" = "dismissed" ] \
-    || fail "resolve must honor an explicit dismissed status"
-  pass "fm-logbook-resolve dry-run upserts a terminal status to clear a card"
+  obx="$home/state/logbook-outbox/mb-fast-search.json"
+  [ "$(jq -r .status "$obx")" = "dismissed" ] || fail "resolve must honor an explicit dismissed status"
+  [ "$(jq -r .kind "$obx")" = "action" ] || fail "resolve dismissed body must carry the card's kind"
+  [ "$(jq -r .priority "$obx")" = "72" ] || fail "resolve body must carry the card's numeric priority"
+  pass "fm-logbook-resolve dry-run records a full valid item (kind/title) with a terminal status"
+}
+
+test_resolve_live_posts_full_item() {
+  local home fakebin log out rc data
+  home="$TMP_ROOT/resolve-live"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  # Live: GET the board, then upsert the FULL item with a terminal status. The
+  # posted body must carry kind/title (what the old {id,status} body lacked) so the
+  # tool's validateItem accepts it instead of 400ing.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=secrettok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_BOARD_BODY="$RESOLVE_BOARD_BODY" \
+    FAKE_BOARD_CODE=200 FAKE_POST_CODE=200 \
+    "$ROOT/bin/fm-logbook-resolve.sh" 'aura-bench-e4:nm-review'); rc=$?
+  expect_code 0 "$rc" "resolve live exit"
+  assert_grep "url=http://127.0.0.1:8137/api/board" "$log" "resolve must GET the board first"
+  assert_grep "url=http://127.0.0.1:8137/api/items" "$log" "resolve must upsert to /api/items"
+  assert_grep "method=POST" "$log" "resolve must POST the upsert"
+  assert_grep "auth=Authorization: Bearer secrettok" "$log" "resolve must send the bearer token"
+  grep '^argv=' "$log" | grep -F 'secrettok' >/dev/null 2>&1 \
+    && fail "resolve must not expose the bearer token in curl argv"
+  # The streamed POST body (last curl call) is the full item with status=resolved.
+  data=$(grep '^data={' "$log" | tail -1 | sed 's/^data=//')
+  [ "$(printf '%s' "$data" | jq -r .id)" = "aura-bench-e4:nm-review" ] || fail "posted body must carry the id"
+  [ "$(printf '%s' "$data" | jq -r .kind)" = "decision" ] || fail "posted body must carry kind (full valid item)"
+  [ -n "$(printf '%s' "$data" | jq -r .title)" ] || fail "posted body must carry a non-empty title"
+  [ "$(printf '%s' "$data" | jq -r .status)" = "resolved" ] || fail "posted body must set the terminal status"
+  pass "fm-logbook-resolve upserts a full valid item (kind/title) that the tool accepts"
+}
+
+test_resolve_unknown_id_is_noop() {
+  local home fakebin log out rc
+  home="$TMP_ROOT/resolve-unknown"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  # The board does not contain this id (already resolved/dismissed, or unknown):
+  # there is nothing to clear. It is a clean no-op success - GET happens, but no
+  # upsert is posted and nothing is recorded.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_BOARD_BODY="$RESOLVE_BOARD_BODY" \
+    "$ROOT/bin/fm-logbook-resolve.sh" 'not-on-the-board' 2>"$home/err"); rc=$?
+  expect_code 0 "$rc" "resolve unknown-id exit (clean no-op)"
+  assert_grep "url=http://127.0.0.1:8137/api/board" "$log" "resolve must still read the board to learn the id is absent"
+  assert_no_grep "url=.*/api/items" "$log" "an absent id must not upsert anything"
+  assert_absent "$home/state/logbook-outbox" "an absent id must not record any body"
+  # Same clean no-op under dry-run.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_BODY="$RESOLVE_BOARD_BODY" \
+    "$ROOT/bin/fm-logbook-resolve.sh" 'not-on-the-board' 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "resolve unknown-id dry-run exit"
+  assert_absent "$home/state/logbook-outbox" "an absent id (dry-run) must not record any body"
+  pass "fm-logbook-resolve treats an id absent from the board as a clean no-op"
+}
+
+test_resolve_board_unreadable_fails() {
+  local home fakebin log out rc err
+  home="$TMP_ROOT/resolve-noread"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"; err="$home/err.txt"
+  # If the board read fails, resolve cannot compose a valid body: it must exit
+  # non-zero (so the answer-loop leaves the inbox file and retries) and never post a
+  # blind, possibly-invalid upsert.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=tok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_BOARD_CODE=500 \
+    "$ROOT/bin/fm-logbook-resolve.sh" 'aura-bench-e4:nm-review' 2>"$err"); rc=$?
+  [ "$rc" -ne 0 ] || fail "resolve must exit non-zero when the board read fails"
+  assert_grep "HTTP 500" "$err" "resolve must report the failing board read"
+  assert_no_grep "url=.*/api/items" "$log" "a failed board read must not post a blind upsert"
+  pass "fm-logbook-resolve fails (no blind upsert) when the board cannot be read"
 }
 
 test_resolve_rejects_bad_id() {
@@ -704,6 +803,9 @@ test_push_dry_run_from_json_file
 test_push_rejects_invalid_json
 test_sync_dry_run_records
 test_resolve_dry_run_records
+test_resolve_live_posts_full_item
+test_resolve_unknown_id_is_noop
+test_resolve_board_unreadable_fails
 test_resolve_rejects_bad_id
 test_resolve_rejects_bad_status
 test_push_live_posts_with_bearer_no_leak

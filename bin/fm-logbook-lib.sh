@@ -17,6 +17,11 @@
 #                                   (starts alphanumeric, then [A-Za-z0-9._:-],
 #                                   <=200 chars, no "..")
 #   logbook_auth_header_file      - write the bearer header to a 0600 temp file
+#   logbook_get_json <api-path> <out-file> - bounded curl GET of
+#                                   $LOGBOOK_URL<api-path> into <out-file> with the
+#                                   bearer token. A GET has no side effects, so
+#                                   there is NO dry-run branch: even a dry-run
+#                                   caller must read to compose its body
 #   logbook_post_json <api-path> <json-file|-> [outbox-name] - bounded curl POST
 #                                   to $LOGBOOK_URL<api-path>; under LOGBOOK_DRY it
 #                                   records the would-be body to
@@ -177,6 +182,37 @@ logbook_auth_header_file() {
   printf 'Authorization: Bearer %s\n' "$LOGBOOK_TOKEN" > "$file" || { rm -f "$file"; return 1; }
   printf '%s\n' "$file"
 }
+
+# logbook_get_json <api-path> <out-file>
+# GET $LOGBOOK_URL<api-path> into <out-file> with the bearer token (streamed via a
+# 0600 header file, never on argv, exactly like logbook_post_json). A GET has no
+# side effects, so there is deliberately NO dry-run branch: a resolve must read the
+# card's current fields to compose the full item it will upsert, even under
+# LOGBOOK_DRY (only the write is suppressed downstream, by logbook_post_json). On
+# success it prints the HTTP status code and returns 0 for a 2xx; otherwise it
+# writes a stderr diagnostic and returns non-zero. Runs in a subshell so its EXIT
+# trap and temp files never leak into the caller.
+logbook_get_json() (
+  local path=$1 out=$2 auth_header_file="" code rc
+  command -v curl >/dev/null 2>&1 || { echo "logbook: curl not found" >&2; return 1; }
+  [ -n "$LOGBOOK_TOKEN" ] || { echo "logbook: no LOGBOOK_TOKEN configured for a board read" >&2; return 1; }
+  auth_header_file=$(logbook_auth_header_file) || { echo "logbook: invalid LOGBOOK_TOKEN" >&2; return 3; }
+  trap 'rm -f "$auth_header_file" 2>/dev/null || true' EXIT
+
+  rc=0
+  code=$(curl -m 10 -s -o "$out" -w '%{http_code}' \
+    -H "@$auth_header_file" \
+    -H 'Accept: application/json' \
+    "$LOGBOOK_URL$path" 2>/dev/null) || rc=$?
+  if [ "$rc" != 0 ]; then
+    echo "logbook: request to the board failed" >&2
+    return 4
+  fi
+  case "$code" in
+    2[0-9][0-9]) printf '%s\n' "$code"; return 0 ;;
+    *) echo "logbook: board returned HTTP $code" >&2; return 1 ;;
+  esac
+)
 
 # logbook_post_json <api-path> <json-file|-> [outbox-name]
 # POST the JSON in <json-file> (or stdin when "-") to $LOGBOOK_URL<api-path> with

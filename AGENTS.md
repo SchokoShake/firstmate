@@ -855,7 +855,8 @@ Logbook is, like X mode, a reason to keep the watcher armed even with no fleet w
 
 **On each wake that changes the attention set.**
 Push the new or changed items with `bin/fm-logbook-push.sh` (`POST /api/items` upsert, keyed by `id`, safe to re-push every wake), and clear the items firstmate has acted on with `bin/fm-logbook-resolve.sh <id> [resolved|dismissed]`.
-The tool has no dedicated resolve endpoint, so `fm-logbook-resolve.sh` upserts the item with a terminal `status` (which drops it off the board) rather than calling a nonexistent `/api/items/resolve`.
+The tool has no dedicated resolve endpoint, so `fm-logbook-resolve.sh` clears a card by re-upserting it with a terminal `status` (which drops it off the board) rather than calling a nonexistent `/api/items/resolve`.
+Because the tool runs full item validation on every `POST /api/items`, a bare `{id, status}` body is rejected, so `fm-logbook-resolve.sh` first fetches the card's current fields with a read-only `GET /api/board` and re-posts the WHOLE item (project, kind, title, body, options, priority, source) with the terminal status; an `id` that is not on the board (already cleared or unknown) is a clean no-op, not an error.
 Both input paths converge on resolve: whether the captain answered on the board (drained by `logbook-respond`, above) or in chat, firstmate acts through the normal lifecycle and then resolves the card so the board mirrors live state.
 
 **Item-composition contract.**
@@ -874,7 +875,8 @@ The board binds `127.0.0.1` only and requires a bearer token on every `/api/*` c
 firstmate keeps the token in `config/logbook.env` and sends it via a `0600` auth-header temp file, never on a command line, so it never appears in a process listing.
 
 **Preview / dry-run.**
-Setting `LOGBOOK_DRY_RUN` (truthy, in the environment or `config/logbook.env`) makes `bin/fm-logbook-push.sh`, `bin/fm-logbook-sync.sh`, `bin/fm-logbook-resolve.sh`, and `bin/fm-logbook-ack.sh` compose their JSON body and record it to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting - no network and no token needed, mirroring `FMX_DRY_RUN`.
+Setting `LOGBOOK_DRY_RUN` (truthy, in the environment or `config/logbook.env`) makes `bin/fm-logbook-push.sh`, `bin/fm-logbook-sync.sh`, `bin/fm-logbook-resolve.sh`, and `bin/fm-logbook-ack.sh` compose their JSON body and record it to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting, mirroring `FMX_DRY_RUN`.
+`fm-logbook-push.sh`, `fm-logbook-sync.sh`, and `fm-logbook-ack.sh` compose their body from their arguments, so their dry-run needs no network and no token; `fm-logbook-resolve.sh` must read the card's current fields to compose the full item it would upsert, so its dry-run does perform the read-only `GET /api/board` (a GET has no side effects) but still writes nothing - it records the full would-be upsert and posts no change.
 The inbound `bin/fm-logbook-poll.sh` needs no dry-run switch: it is read-only against the board and inert unless opted in.
 Inspect `state/logbook-outbox/` to see exactly what would have gone out.
 

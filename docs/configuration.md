@@ -310,12 +310,13 @@ Set `LOGBOOK_TOKEN` to a private value when you opt in so firstmate's pushes can
 On the locked session-start bootstrap step, a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up through `bin/fm-logbook-up.sh` (detached and non-blocking), print `LOGBOOK: on - board at <url>`, and drop the inbound poll shim `state/logbook-watch.check.sh` plus the generated cadence `config/logbook-mode.env` (`FM_CHECK_INTERVAL=15`, a distinct file from the hand-authored `config/logbook.env`); arming the poll needs `curl`+`jq`. On opt-out it removes both artifacts (reverting to the default 300s no-poll cadence), and with no config and no leftover artifacts it is a complete no-op.
 `bin/fm-logbook-up.sh` health-checks `GET $LOGBOOK_URL/health`, and if the board is down launches `node $LOGBOOK_TOOL_DIR/server.mjs` detached with output to `state/logbook-server.log` and its runtime store under `state/logbook.data`, so nothing is ever written into `projects/`.
 At session start firstmate reconciles the whole board with `bin/fm-logbook-sync.sh` (`POST /api/sync {projects?, items?}`, a declarative truth-restore), then upserts changed items with `bin/fm-logbook-push.sh` (`POST /api/items`) and clears acted-on cards with `bin/fm-logbook-resolve.sh <id> [resolved|dismissed]`.
-The tool has no dedicated resolve endpoint, so `fm-logbook-resolve.sh` upserts a terminal `status` that drops the card off the board.
+The tool has no dedicated resolve endpoint and rejects a bare `{id, status}` upsert (it runs full item validation on every `POST /api/items`), so `fm-logbook-resolve.sh` fetches the card's current fields via a read-only `GET /api/board` and re-upserts the whole item with a terminal `status` that drops the card off the board; an id absent from the board is a clean no-op.
 The inbound answer-loop: `bin/fm-logbook-poll.sh` (the shim body) polls `GET /api/connector/poll`, stashes each pending answer to `state/logbook-inbox/<response_id>.json`, and prints `logbook-response <id>` for a `check:` wake; the `logbook-respond` skill then drains the inbox, applies each captain answer through the normal lifecycle, and acks it with `bin/fm-logbook-ack.sh` (`POST /api/connector/ack`) before resolving the card.
 Item bodies are composed from fleet internals and are always passed via `--json-file` or stdin, never inlined into a shell argument.
 The board binds `127.0.0.1` only and requires a bearer token on every `/api/*` call; the client keeps the token in `config/logbook.env` and sends it via a `0600` auth-header temp file, never on a command line.
 
-Set `LOGBOOK_DRY_RUN` (truthy) to make `fm-logbook-push.sh`, `fm-logbook-sync.sh`, and `fm-logbook-resolve.sh` record the would-be POST body to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, or `<id>.json`) instead of posting, needing neither the token nor the board.
+Set `LOGBOOK_DRY_RUN` (truthy) to make `fm-logbook-push.sh`, `fm-logbook-sync.sh`, `fm-logbook-resolve.sh`, and `fm-logbook-ack.sh` record the would-be POST body to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting.
+Push, sync, and ack compose their body from their arguments, so they need neither the token nor the board; resolve must read the card's current fields via the read-only `GET /api/board` to compose its full-item body (needing the token and a reachable board) but still writes nothing.
 
 ## Environment variables
 
@@ -369,7 +370,7 @@ LOGBOOK_PORT=          # logbook server port; derived from LOGBOOK_URL when unse
 LOGBOOK_TOKEN=         # bearer token for the board's /api/* calls; set a private value when opting in
 LOGBOOK_TOOL_DIR=      # logbook tool checkout; defaults to <this home>/projects/logbook
 LOGBOOK_ENV_FILE=      # optional alternate .env-style file for direct logbook client invocations
-LOGBOOK_DRY_RUN=       # truthy previews logbook push/sync/resolve bodies to state/logbook-outbox/ without posting or a token
+LOGBOOK_DRY_RUN=       # truthy previews logbook push/sync/resolve/ack bodies to state/logbook-outbox/ without posting (resolve still performs a read-only GET to compose its full item)
 FM_LOCK_STALE_AFTER=2   # seconds before dead-pid lock records can be reclaimed; mid-acquire locks keep at least 2s grace
 FM_GUARD_GRACE=300      # seconds before guard warnings, arm health checks, and the primary turn-end guard treat a watcher beacon as stale
 FM_ARM_CONFIRM_TIMEOUT=10   # seconds fm-watch-arm waits to confirm a fresh watcher before reporting FAILED
