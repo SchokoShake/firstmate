@@ -64,7 +64,7 @@ For each `state/logbook-inbox/*.json`:
 2. **Resolve the target task** from the `item_id` prefix and reconcile it against the task's live state (see "Resolving the target task").
 3. **Act on the answer through the normal lifecycle** (see "Applying the answer"). Treat it as a genuine captain decision; escalate only a genuinely destructive/irreversible/security-sensitive step. If a later drain re-offers an answer you already acted on (see step 6), **check whether the action is already done** (PR already merged, gate already answered, crewmate already spawned) and do **not** redo it - just re-run the ack/resolve/cleanup.
 4. **Ack the response so the connector stops offering it:** `bin/fm-logbook-ack.sh <response_id>`. Delivery is at-least-once, so this is your "handled" signal; it is idempotent.
-5. **Resolve the card so it leaves the board:** `bin/fm-logbook-resolve.sh <item-id>` (defaults to a `resolved` status; use `dismissed` when the answer was "no, drop it"). The board mirrors live state, so an answered card must not linger.
+5. **Resolve the card so it leaves the board:** `bin/fm-logbook-resolve.sh <item-id>` (defaults to a `resolved` status; use `dismissed` when the answer was "no, drop it"). It re-upserts the card's full record with the terminal status (fetched via `GET /api/board`, since the tool rejects a bare `{id, status}` upsert), and a card already gone from the board is a harmless no-op - which is what keeps the re-drain recovery in the note below safe. The board mirrors live state, so an answered card must not linger.
 6. **Remove the inbox file:** `rm -f state/logbook-inbox/<response_id>.json`.
 
 **Do steps 4 -> 5 -> 6 in that order.** The inbox file is the durable "not yet fully handled" marker: it persists until the very end, so if firstmate crashes mid-handle, the connector re-offers the response on the next poll, the poll re-stashes it, and this skill re-runs (with step 3's idempotency check protecting against duplicate work). Ack first (stop the re-offer), then clear the card, then drop the local marker.
@@ -74,8 +74,9 @@ If an ack or resolve fails twice, surface it to the captain as a blocker with th
 
 ## Dry-run / preview mode
 
-When `LOGBOOK_DRY_RUN` is set (truthy, in the environment or `config/logbook.env`), `bin/fm-logbook-ack.sh` and `bin/fm-logbook-resolve.sh` do **not** call the board: each records its would-be POST body to `state/logbook-outbox/` (`<response_id>.json` for the ack, `<item-id>.json` for the resolve) and exits 0.
-This lets you rehearse the full poll -> wake -> act -> ack -> resolve loop without touching the live board; inspect `state/logbook-outbox/` to see what would have gone out.
+When `LOGBOOK_DRY_RUN` is set (truthy, in the environment or `config/logbook.env`), `bin/fm-logbook-ack.sh` and `bin/fm-logbook-resolve.sh` record their would-be POST body to `state/logbook-outbox/` (`<response_id>.json` for the ack, `<item-id>.json` for the resolve) and exit 0 **without posting any change**.
+The ack composes its body from the `response_id` alone, so it makes no board call; the resolve must read the card's current fields to compose the full item it would upsert, so it does perform the read-only `GET /api/board` (a GET has no side effects) but writes nothing.
+This lets you rehearse the full poll -> wake -> act -> ack -> resolve loop without changing the live board; inspect `state/logbook-outbox/` to see what would have gone out.
 Your procedure does not change - the calls still succeed, so clear the inbox file as in step 6.
 
 ## Notes
