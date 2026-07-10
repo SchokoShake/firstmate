@@ -390,6 +390,20 @@ logbook_setup() {
   # not. The if-branch keeps a non-zero launcher exit from aborting bootstrap.
   if "$FM_ROOT/bin/fm-logbook-up.sh" >/dev/null; then
     echo "LOGBOOK: on - board at $LOGBOOK_URL"
+    # Captain-facing: surface the board link so firstmate can hand it to the captain
+    # once at session start / after a restart (AGENTS.md sections 3, 9, 15). The
+    # LOGBOOK: line above is the internal "server up" fact; this one is the link to
+    # relay, emitted only when the board is actually reachable.
+    echo "LOGBOOK: attention board: $LOGBOOK_URL"
+    # Auto-sync: truth-restore the board from current fleet state so the
+    # session-start reconcile is automatic, not a step firstmate has to remember.
+    # Best-effort and bounded (fm-logbook-sync.sh posts with a bounded curl, so it
+    # never hangs); a failure is one diagnostic and bootstrap continues. Only
+    # attempted here, on the reachable branch, since a sync to an unreachable board
+    # would just time out.
+    if ! "$FM_ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1; then
+      echo "LOGBOOK: board not auto-synced at session start (compose/sync failed); it may be stale until the next update"
+    fi
   else
     echo "LOGBOOK: on - board at $LOGBOOK_URL (server not reachable yet; see the diagnostic above)"
   fi
