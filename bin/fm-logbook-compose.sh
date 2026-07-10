@@ -90,7 +90,8 @@ backlog_oneliner() {
 # status_last <id>: the last non-empty line of the task's status log; empty when
 # there is no status file yet.
 status_last() {
-  local id=$1 f="$STATE/$id.status"
+  local id=$1
+  local f="$STATE/$id.status"
   [ -f "$f" ] || return 0
   awk 'NF { last = $0 } END { if (last != "") printf "%s", last }' "$f" 2>/dev/null || true
 }
