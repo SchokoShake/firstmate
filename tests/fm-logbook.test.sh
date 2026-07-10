@@ -793,6 +793,189 @@ test_ack_rejects_bad_id() {
   pass "fm-logbook-ack rejects an unsafe or missing response_id (safe-slug guard)"
 }
 
+# --- attention-set compose (fm-logbook-compose.sh) --------------------------
+
+# write_fleet_fixture <home>: a small but representative fleet - a project
+# registry, an in-flight backlog, and four task metas: a PR-ready ship (action),
+# a needs-decision ship (decision), an in-progress scout (fyi), and a persistent
+# secondmate (which must NEVER become a card).
+write_fleet_fixture() {
+  local home=$1
+  mkdir -p "$home/data" "$home/state"
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes] - First project (added 2026-07-01)
+- beta [direct-PR +yolo] - Second project (added 2026-07-02)
+- gamma [local-only] - Idle project with no work (added 2026-07-03)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] ship-pr-a1 - Ship the widget endpoint (repo: alpha) (kind: ship) (since 2026-07-10)
+- [ ] decide-b2 - Redesign the beta nav (repo: beta) (kind: ship) (since 2026-07-10)
+- [ ] scout-c3 - Investigate the slow query (repo: alpha) (kind: scout) (since 2026-07-10)
+## Queued
+- [ ] queued-z9 - Not dispatched yet (repo: gamma)
+## Done
+- [x] old-d0 - old thing - local main (merged 2026-07-01)
+EOF
+  fm_write_meta "$home/state/ship-pr-a1.meta" \
+    "window=firstmate:fm-ship-pr-a1" "project=$home/projects/alpha" \
+    "harness=claude" "kind=ship" "mode=direct-PR" "yolo=off" \
+    "pr=https://github.com/acme/alpha/pull/42"
+  fm_write_meta "$home/state/decide-b2.meta" \
+    "window=firstmate:fm-decide-b2" "project=$home/projects/beta" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off"
+  printf 'working: sketching options\nneeds-decision: nav on top or side? (options: top, side)\n' \
+    > "$home/state/decide-b2.status"
+  fm_write_meta "$home/state/scout-c3.meta" \
+    "window=firstmate:fm-scout-c3" "project=$home/projects/alpha" \
+    "harness=claude" "kind=scout" "mode=direct-PR" "yolo=off"
+  printf 'working: profiling the query\n' > "$home/state/scout-c3.status"
+  fm_write_secondmate_meta "$home/state/triage-sm.meta" "$home" "firstmate:fm-triage-sm" "beta"
+}
+
+test_compose_hard_noop_when_disabled() {
+  local home out rc
+  home="$TMP_ROOT/compose-off"; write_fleet_fixture "$home"
+  # Not opted in: a hard no-op - no output, and nothing on stdout to feed sync.
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE='' \
+    "$ROOT/bin/fm-logbook-compose.sh"); rc=$?
+  expect_code 0 "$rc" "compose disabled exit"
+  [ -z "$out" ] || fail "compose must emit nothing when not opted in (got: $out)"
+  pass "fm-logbook-compose is a hard no-op when not opted in (inert default)"
+}
+
+test_compose_baseline_from_fleet_state() {
+  local home out
+  home="$TMP_ROOT/compose-baseline"; write_fleet_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # Valid {projects, items} envelope.
+  printf '%s' "$out" | jq -e '(.projects|type=="array") and (.items|type=="array")' >/dev/null \
+    || fail "compose must emit a {projects, items} object"$'\n'"$out"
+  # One card per in-flight task; the persistent secondmate is NOT a card.
+  [ "$(printf '%s' "$out" | jq '.items | length')" = 3 ] \
+    || fail "compose must emit one card per in-flight task (3), not the secondmate"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="triage-sm")' >/dev/null \
+    && fail "compose must skip a kind=secondmate meta (it is not an attention item)"
+  # PR-ready ship -> action, with a Merge option and the PR carried in source.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="ship-pr-a1")
+      | (.kind=="action") and (.project=="alpha")
+      and ([.options[].value] | index("merge") != null)
+      and (.source.pr=="https://github.com/acme/alpha/pull/42")' >/dev/null \
+    || fail "a PR-ready task must be an action card carrying the PR"
+  # needs-decision -> decision, with the decision text in the body.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="decide-b2")
+      | (.kind=="decision") and (.body | test("top or side"))' >/dev/null \
+    || fail "a needs-decision task must be a decision card"
+  # In-progress scout -> fyi, with the status verb stripped from the body.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="scout-c3")
+      | (.kind=="fyi") and (.body=="profiling the query")' >/dev/null \
+    || fail "an in-progress task must be a plain fyi card"
+  # No item title is empty and every kind is valid (the tool would reject otherwise).
+  printf '%s' "$out" | jq -e 'all(.items[]; (.title|length>0) and (.kind|IN("decision","action","fyi")))' >/dev/null \
+    || fail "every composed item must have a non-empty title and a valid kind"
+  # Projects: the whole registry, active only where a card lives; idle gamma is off.
+  [ "$(printf '%s' "$out" | jq '.projects | length')" = 3 ] \
+    || fail "compose must carry every registry project"
+  printf '%s' "$out" | jq -e '.projects[] | select(.name=="alpha") | .active==true' >/dev/null \
+    || fail "a project with cards must be flagged active"
+  printf '%s' "$out" | jq -e '.projects[] | select(.name=="gamma") | .active==false' >/dev/null \
+    || fail "a project with no cards must be flagged inactive"
+  printf '%s' "$out" | jq -e '.projects[] | select(.name=="beta") | .mode=="direct-PR"' >/dev/null \
+    || fail "a project mode must drop the +yolo posture flag"
+  pass "fm-logbook-compose derives a truthful {projects, items} baseline from fleet state"
+}
+
+test_refresh_hard_noop_when_disabled() {
+  local home fakebin out rc log
+  home="$TMP_ROOT/refresh-off"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE='' FAKE_CURL_LOG="$log" \
+    "$ROOT/bin/fm-logbook-refresh.sh"); rc=$?
+  expect_code 0 "$rc" "refresh disabled exit"
+  [ -z "$out" ] || fail "refresh must be silent when not opted in (got: $out)"
+  [ ! -f "$log" ] || fail "refresh must not call the board when not opted in"
+  pass "fm-logbook-refresh is a hard no-op when not opted in (inert default)"
+}
+
+test_refresh_dry_run_records_sync() {
+  local home out rc
+  home="$TMP_ROOT/refresh-dry"; write_fleet_fixture "$home"
+  # Dry-run: compose + sync must record the reconcile body and never post.
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-refresh.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "refresh dry-run exit"
+  assert_present "$home/state/logbook-outbox/sync.json" "refresh dry-run must record the sync body"
+  jq -e '(.projects|type=="array") and (.items|length==3)' "$home/state/logbook-outbox/sync.json" >/dev/null \
+    || fail "the recorded sync body must carry the composed attention set"
+  pass "fm-logbook-refresh dry-run composes and records the sync body without posting"
+}
+
+test_refresh_live_posts_sync() {
+  local home fakebin out rc log
+  home="$TMP_ROOT/refresh-live"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=reftok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_POST_CODE=200 \
+    "$ROOT/bin/fm-logbook-refresh.sh"); rc=$?
+  expect_code 0 "$rc" "refresh live exit"
+  assert_grep "url=http://127.0.0.1:8137/api/sync" "$log" "refresh must POST the reconcile to /api/sync"
+  assert_grep "method=POST" "$log" "refresh must use POST"
+  grep '^argv=' "$log" | grep -F 'reftok' >/dev/null 2>&1 \
+    && fail "refresh must not expose the bearer token in curl argv"
+  pass "fm-logbook-refresh live composes and POSTs the reconcile to /api/sync"
+}
+
+test_bootstrap_opt_in_surfaces_link_and_autosyncs() {
+  local home fakebin out log
+  home="$TMP_ROOT/boot-link"; write_fleet_fixture "$home"; mkdir -p "$home/config"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  cat > "$home/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+EOF
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 FAKE_CURL_LOG="$log" \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  # The captain-facing board link is surfaced when the board is reachable.
+  assert_contains "$out" "LOGBOOK: attention board: http://127.0.0.1:8137" \
+    "bootstrap must surface the captain-facing board link on a reachable board"
+  # The board was auto-synced (a POST /api/sync landed) with no failure line.
+  assert_grep "url=http://127.0.0.1:8137/api/sync" "$log" \
+    "bootstrap must auto-sync the board at session start"
+  assert_not_contains "$out" "board not auto-synced" \
+    "a healthy auto-sync must not print the failure diagnostic"
+  pass "bootstrap opt-in surfaces the captain link and auto-syncs the board (reachable)"
+}
+
+test_bootstrap_unreachable_omits_link_and_autosync() {
+  local home fakebin out
+  home="$TMP_ROOT/boot-link-down"; mkdir -p "$home/config"
+  fakebin=$(make_fake_curl "$home")
+  cat > "$home/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+LOGBOOK_TOOL_DIR=/nonexistent/logbook
+EOF
+  # Board unreachable and unlaunchable: the degraded line prints, but no dead link
+  # is handed to the captain and no auto-sync is attempted.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=000 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "LOGBOOK: on - board at http://127.0.0.1:8137 (server not reachable yet" \
+    "an unreachable board must still report the degraded feed line"
+  assert_not_contains "$out" "LOGBOOK: attention board:" \
+    "an unreachable board must not surface a dead link to the captain"
+  pass "bootstrap omits the captain link and auto-sync when the board is unreachable"
+}
+
 test_config_defaults
 test_config_from_file
 test_config_env_wins_over_file
@@ -828,3 +1011,10 @@ test_ack_dry_run_records
 test_ack_live_posts_with_bearer_no_leak
 test_ack_live_non_2xx_fails
 test_ack_rejects_bad_id
+test_compose_hard_noop_when_disabled
+test_compose_baseline_from_fleet_state
+test_refresh_hard_noop_when_disabled
+test_refresh_dry_run_records_sync
+test_refresh_live_posts_sync
+test_bootstrap_opt_in_surfaces_link_and_autosyncs
+test_bootstrap_unreachable_omits_link_and_autosync
