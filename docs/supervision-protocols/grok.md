@@ -2,11 +2,12 @@ Mode: Grok background-notify supervision.
 
 When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
-2. Source `__FM_X_MODE_ENV__` first when X mode is active.
+2. Source `__FM_X_MODE_ENV__` first when X mode is active, then `__FM_LOGBOOK_MODE_ENV__` when logbook is active.
+   Both export `FM_CHECK_INTERVAL`, so source logbook last: its snappier 15s board-answer cadence must win over X mode's 30s.
 3. Arm with Grok's tracked background tool, as its own call:
 
    `run_terminal_command` with `background: true` on:
-   `[ -f __FM_X_MODE_ENV_SH__ ] && . __FM_X_MODE_ENV_SH__; exec bin/fm-watch-arm.sh`
+   `[ -f __FM_X_MODE_ENV_SH__ ] && . __FM_X_MODE_ENV_SH__; __FM_LOGBOOK_PRELUDE__exec bin/fm-watch-arm.sh`
 
 4. Trust only the arm's one-line status.
 5. `watcher: started ...` or `watcher: attached ...` means a live cycle exists.

@@ -96,11 +96,14 @@ Approved setup nodes are:
 
 - `cd <one path word>`.
 - `export NAME=<one shell word>` with no command substitution, process substitution, or redirection.
-- `source <x-mode path>` or `. <x-mode path>`.
-- `[ -f <x-mode path> ] && source <x-mode path>` and the equivalent dot form.
+- `source <cadence path>` or `. <cadence path>`.
+- `[ -f <cadence path> ] && source <cadence path>` and the equivalent dot form.
 
-The allowed x-mode paths are `config/x-mode.env`, `./config/x-mode.env`, and an absolute path that normalizes to `<active-firstmate-home>/config/x-mode.env`.
-An absolute x-mode path outside the active home is not an approved setup node.
+A cadence path is one of the two firstmate-GENERATED watcher-cadence configs: `config/x-mode.env` (X mode, `FM_CHECK_INTERVAL=30`) and `config/logbook-mode.env` (logbook, `FM_CHECK_INTERVAL=15`).
+For each, the allowed forms are the repo-relative path, its `./` form, and an absolute path that normalizes to `<active-firstmate-home>/<that path>`.
+An absolute cadence path outside the active home is not an approved setup node.
+The allowlist is exact, never a `config/` prefix or glob, because sourcing executes shell code: bootstrap writes both files and each contains only an `export FM_CHECK_INTERVAL=<n>` line, whereas a hand-authored config such as `config/logbook.env` is never sourceable into a watcher process.
+Both cadence configs may be sourced in the same setup chain, which is what `bin/fm-supervision-instructions.sh` emits when X mode and logbook are both on; it orders logbook last so its snappier 15s interval is the one the watcher inherits.
 
 Approved nodes may be separated by `;`, a real newline, or `&&`.
 `&&` is accepted after setup so a failed `cd`, `export`, or source prevents the protected call from running under the wrong setup.

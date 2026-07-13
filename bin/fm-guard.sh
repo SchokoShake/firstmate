@@ -81,10 +81,13 @@ if [ "$watcher_fresh" = false ]; then
   "$queue_pending" && queue_arg=1
   x_mode=0
   [ -f "$CONFIG/x-mode.env" ] && x_mode=1
+  logbook=0
+  [ -f "$CONFIG/logbook-mode.env" ] && logbook=1
   fix=$("$SCRIPT_DIR/fm-supervision-instructions.sh" \
     --read-only "$READ_ONLY" \
     --afk "$afk" \
     --x-mode "$x_mode" \
+    --logbook "$logbook" \
     --queue-pending "$queue_arg" \
     --repair-line 2>/dev/null || printf '%s\n' 'Resume supervision according to the session-start operating block.')
   rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'

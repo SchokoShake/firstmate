@@ -205,6 +205,8 @@ AFK_PRESENT=0
 [ -e "$STATE/.afk" ] && AFK_PRESENT=1
 X_MODE_PRESENT=0
 [ -f "$CONFIG/x-mode.env" ] && X_MODE_PRESENT=1
+LOGBOOK_PRESENT=0
+[ -f "$CONFIG/logbook-mode.env" ] && LOGBOOK_PRESENT=1
 
 if [ "$PRIMARY_HARNESS" = pi ]; then
   PI_EXT="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
@@ -223,7 +225,8 @@ fi
   --harness "$PRIMARY_HARNESS" \
   --read-only "$READ_ONLY" \
   --afk "$AFK_PRESENT" \
-  --x-mode "$X_MODE_PRESENT"
+  --x-mode "$X_MODE_PRESENT" \
+  --logbook "$LOGBOOK_PRESENT"
 
 # --- 4. context digest -----------------------------------------------------
 section "CONTEXT"
@@ -302,10 +305,25 @@ load /afk and ensure the daemon is running, because the daemon owns watcher
 supervision.
 
 EOF
-elif [ -f "$CONFIG/x-mode.env" ]; then
+elif [ "$X_MODE_PRESENT" -eq 1 ] && [ "$LOGBOOK_PRESENT" -eq 1 ]; then
+  cat <<EOF
+Follow the supervision operating instructions block above for harness '$PRIMARY_HARNESS'.
+X mode and logbook are both active, so the emitted block's cadence instruction
+applies: source both cadence configs, logbook last, so its 15s cadence wins.
+This script never starts supervision itself.
+
+EOF
+elif [ "$X_MODE_PRESENT" -eq 1 ]; then
   cat <<EOF
 Follow the supervision operating instructions block above for harness '$PRIMARY_HARNESS'.
 X mode is active, so the emitted block's cadence instruction applies.
+This script never starts supervision itself.
+
+EOF
+elif [ "$LOGBOOK_PRESENT" -eq 1 ]; then
+  cat <<EOF
+Follow the supervision operating instructions block above for harness '$PRIMARY_HARNESS'.
+Logbook is active, so the emitted block's cadence instruction applies.
 This script never starts supervision itself.
 
 EOF

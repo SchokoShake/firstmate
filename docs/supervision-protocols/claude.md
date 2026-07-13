@@ -2,7 +2,8 @@ Mode: Claude background-notify supervision.
 
 When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
-2. Source `__FM_X_MODE_ENV__` first when X mode is active.
+2. Source `__FM_X_MODE_ENV__` first when X mode is active, then `__FM_LOGBOOK_MODE_ENV__` when logbook is active.
+   Both export `FM_CHECK_INTERVAL`, so source logbook last: its snappier 15s board-answer cadence must win over X mode's 30s.
 3. Run `bin/fm-watch-arm.sh` as its own Claude Code background task.
 4. Never bundle the arm command with other commands.
 5. Never use shell `&` for watcher supervision.

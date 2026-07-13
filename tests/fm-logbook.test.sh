@@ -527,6 +527,90 @@ EOF
   pass "bootstrap opt-in drops the board-response poll shim + 15s cadence, idempotently"
 }
 
+test_xmode_and_logbook_cadences_coexist() {
+  local home fakebin out arm inherited verdict
+  home="$TMP_ROOT/coexist"; mkdir -p "$home/config" "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  # Opt into BOTH X mode and logbook in the same home.
+  printf 'FMX_PAIRING_TOKEN=xtok\n' > "$home/.env"
+  cat > "$home/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+EOF
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 \
+    "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+
+  # 1. Both cadence configs exist side by side; neither clobbers the other.
+  assert_present "$home/config/x-mode.env" "X mode cadence must survive alongside logbook"
+  assert_present "$home/config/logbook-mode.env" "logbook cadence must survive alongside X mode"
+  assert_grep "export FM_CHECK_INTERVAL=30" "$home/config/x-mode.env" "X mode cadence must stay 30s"
+  assert_grep "export FM_CHECK_INTERVAL=15" "$home/config/logbook-mode.env" "logbook cadence must stay 15s"
+  assert_present "$home/state/x-watch.check.sh" "X mode poll shim must survive alongside logbook"
+  assert_present "$home/state/logbook-watch.check.sh" "logbook poll shim must survive alongside X mode"
+
+  # 2. The emitted supervision block must source BOTH, with logbook LAST, because both
+  #    export FM_CHECK_INTERVAL and the snappier 15s board cadence has to win.
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-supervision-instructions.sh" --harness grok)
+  assert_contains "$out" "$home/config/x-mode.env" "emitted block lost the X-mode cadence"
+  assert_contains "$out" "$home/config/logbook-mode.env" "emitted block lost the logbook cadence"
+  assert_not_contains "$out" "__FM_" "emitted block leaked a template placeholder"
+  arm=$(printf '%s\n' "$out" | grep -o "\[ -f .*exec bin/fm-watch-arm.sh")
+  case "$arm" in
+    *x-mode.env*logbook-mode.env*) : ;;
+    *) fail "the emitted arm command must source logbook AFTER x-mode, got: $arm" ;;
+  esac
+
+  # 3. Running that exact prelude order must leave the watcher on 15s, not 30s.
+  # shellcheck source=/dev/null
+  inherited=$( . "$home/config/x-mode.env"; . "$home/config/logbook-mode.env"; \
+    bash -c 'echo "${FM_CHECK_INTERVAL:-300}"' )
+  [ "$inherited" = "15" ] \
+    || fail "sourcing x-mode then logbook must inherit the 15s cadence, got '$inherited'"
+
+  # 4. The arm-command PreToolUse policy must ALLOW that emitted command. If it denied it,
+  #    the arm would be blocked and supervision would silently lapse.
+  verdict=$(node "$ROOT/bin/fm-arm-command-policy.mjs" --root "$ROOT" --home "$home" \
+    --command "[ -f '$home/config/x-mode.env' ] && . '$home/config/x-mode.env'; [ -f '$home/config/logbook-mode.env' ] && . '$home/config/logbook-mode.env'; exec bin/fm-watch-arm.sh")
+  case "$verdict" in
+    allow*) : ;;
+    *) fail "the arm policy must allow the emitted both-cadences command, got: $verdict" ;;
+  esac
+  # The hand-authored opt-in file is NOT a generated cadence config and stays unsourceable.
+  verdict=$(node "$ROOT/bin/fm-arm-command-policy.mjs" --root "$ROOT" --home "$home" \
+    --command "source '$home/config/logbook.env'; exec bin/fm-watch-arm.sh")
+  case "$verdict" in
+    deny*) : ;;
+    *) fail "the arm policy must still deny sourcing config/logbook.env, got: $verdict" ;;
+  esac
+  pass "X-mode and logbook cadences coexist: both armed, logbook sourced last (15s wins), policy allows it"
+}
+
+test_logbook_off_leaves_supervision_block_inert() {
+  local home out
+  home="$TMP_ROOT/inert-sup"; mkdir -p "$home/config" "$home/state"
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-supervision-instructions.sh" --harness grok --x-mode 1)
+  # Inertness is about the EXECUTABLE contract, not the prose. The snippet's step-2 prose
+  # names both cadence paths with a "when ... is active" qualifier - exactly as upstream's
+  # X-mode prose already does for a home with no X mode - so the guarantee that matters is
+  # that a logbook-less home is never actually told to source a logbook cadence, and its
+  # arm command stays byte-identical to upstream's X-mode-only form.
+  assert_contains "$out" "- Logbook: inactive" "the block must state logbook is inactive"
+  assert_not_contains "$out" "__FM_" "emitted block leaked a template placeholder"
+  assert_contains "$out" "[ -f '$home/config/x-mode.env' ] && . '$home/config/x-mode.env'; exec bin/fm-watch-arm.sh" \
+    "with logbook off the arm command must stay byte-identical to the X-mode-only form"
+  assert_not_contains "$out" ". '$home/config/logbook-mode.env';" \
+    "a home without logbook must never be given a logbook source clause to run"
+  # The repair line guards and hooks emit must be untouched too.
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-supervision-instructions.sh" --harness claude --x-mode 1 --repair-line)
+  assert_contains "$out" "source '$home/config/x-mode.env' first, then " "repair line lost the X-mode-only prefix"
+  assert_not_contains "$out" "logbook-mode.env" "a logbook-less home's repair line must not mention the logbook cadence"
+  pass "logbook off keeps the emitted arm command and repair line identical to the X-mode-only form"
+}
+
 test_bootstrap_opt_in_unhealthy_reports_degraded() {
   local home fakebin out err
   home="$TMP_ROOT/boot-unhealthy"; mkdir -p "$home/config"
@@ -1018,3 +1102,5 @@ test_refresh_dry_run_records_sync
 test_refresh_live_posts_sync
 test_bootstrap_opt_in_surfaces_link_and_autosyncs
 test_bootstrap_unreachable_omits_link_and_autosync
+test_xmode_and_logbook_cadences_coexist
+test_logbook_off_leaves_supervision_block_inert

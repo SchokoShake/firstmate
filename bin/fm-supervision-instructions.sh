@@ -14,12 +14,13 @@ HARNESS=
 READ_ONLY=0
 AFK=0
 X_MODE=0
+LOGBOOK=0
 REPAIR_LINE=0
 QUEUE_PENDING=0
 
 usage() {
   cat <<'EOF'
-Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--x-mode 0|1] [--repair-line] [--queue-pending 0|1]
+Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--afk 0|1] [--x-mode 0|1] [--logbook 0|1] [--repair-line] [--queue-pending 0|1]
 
 Print the current primary harness's supervision operating instructions.
 With --repair-line, print one concise repair instruction for guard and hook messages.
@@ -53,6 +54,11 @@ while [ "$#" -gt 0 ]; do
     --x-mode)
       [ "$#" -gt 1 ] || { echo "error: --x-mode requires 0 or 1" >&2; exit 2; }
       X_MODE=$(bool_value "$2")
+      shift 2
+      ;;
+    --logbook)
+      [ "$#" -gt 1 ] || { echo "error: --logbook requires 0 or 1" >&2; exit 2; }
+      LOGBOOK=$(bool_value "$2")
       shift 2
       ;;
     --queue-pending)
@@ -90,6 +96,7 @@ checkpoint_seconds=${FM_CODEX_WATCH_CHECKPOINT:-180}
 pi_ext="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 pi_turnend_ext="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
 x_mode_env="$CONFIG/x-mode.env"
+logbook_mode_env="$CONFIG/logbook-mode.env"
 
 shell_quote() {
   printf "'"
@@ -98,18 +105,40 @@ shell_quote() {
 }
 
 x_mode_env_sh=$(shell_quote "$x_mode_env")
+logbook_mode_env_sh=$(shell_quote "$logbook_mode_env")
 
 if [ "$X_MODE" -eq 0 ] && [ -f "$x_mode_env" ]; then
   X_MODE=1
+fi
+if [ "$LOGBOOK" -eq 0 ] && [ -f "$logbook_mode_env" ]; then
+  LOGBOOK=1
+fi
+
+# Both cadence configs export FM_CHECK_INTERVAL, so the LAST one sourced wins.
+# Logbook (15s) is sourced after X mode (30s) so a home running both gets the
+# snappier board-answer cadence. Logbook's clause is emitted only when logbook is
+# actually on, so a home without it renders byte-identical to the X-mode-only
+# form and stays inert exactly as an un-opted-in home should.
+logbook_prelude=
+if [ "$LOGBOOK" -eq 1 ]; then
+  logbook_prelude="[ -f $logbook_mode_env_sh ] && . $logbook_mode_env_sh; "
 fi
 
 render_snippet() {
   local line
   while IFS= read -r line || [ -n "$line" ]; do
-    line=${line//__FM_PI_EXT__/$pi_ext}
-    line=${line//__FM_PI_TURNEND_EXT__/$pi_turnend_ext}
-    line=${line//__FM_X_MODE_ENV_SH__/$x_mode_env_sh}
-    line=${line//__FM_X_MODE_ENV__/$x_mode_env}
+    # Every replacement is double-quoted on purpose. Bash 5.2 enables
+    # patsub_replacement by default, which expands an UNQUOTED `&` in the
+    # replacement to the matched text - so the `&&` in the logbook prelude would
+    # come back out as the placeholder itself and emit a corrupt arm command.
+    # Quoting the replacement disables that, and is harmless on older bash.
+    line=${line//__FM_PI_EXT__/"$pi_ext"}
+    line=${line//__FM_PI_TURNEND_EXT__/"$pi_turnend_ext"}
+    line=${line//__FM_LOGBOOK_PRELUDE__/"$logbook_prelude"}
+    line=${line//__FM_LOGBOOK_MODE_ENV_SH__/"$logbook_mode_env_sh"}
+    line=${line//__FM_LOGBOOK_MODE_ENV__/"$logbook_mode_env"}
+    line=${line//__FM_X_MODE_ENV_SH__/"$x_mode_env_sh"}
+    line=${line//__FM_X_MODE_ENV__/"$x_mode_env"}
     printf '%s\n' "$line"
   done < "$SNIPPET"
 }
@@ -128,8 +157,12 @@ repair_line() {
   if [ "$QUEUE_PENDING" -eq 1 ]; then
     prefix='After draining queued wakes, '
   fi
-  if [ "$X_MODE" -eq 1 ]; then
+  if [ "$X_MODE" -eq 1 ] && [ "$LOGBOOK" -eq 1 ]; then
+    prefix="${prefix}source ${x_mode_env_sh} then ${logbook_mode_env_sh} first, then "
+  elif [ "$X_MODE" -eq 1 ]; then
     prefix="${prefix}source ${x_mode_env_sh} first, then "
+  elif [ "$LOGBOOK" -eq 1 ]; then
+    prefix="${prefix}source ${logbook_mode_env_sh} first, then "
   fi
 
   case "$HARNESS" in
@@ -178,6 +211,13 @@ if [ "$X_MODE" -eq 1 ]; then
   printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
 else
   printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
+fi
+if [ "$LOGBOOK" -eq 1 ] && [ "$X_MODE" -eq 1 ]; then
+  printf '%s%s%s\n' '- Logbook: active; source ' "$logbook_mode_env" ' AFTER the X-mode cadence so its snappier 15s board-answer cadence is the one inherited.'
+elif [ "$LOGBOOK" -eq 1 ]; then
+  printf '%s%s%s\n' '- Logbook: active; source ' "$logbook_mode_env" ' before launching any watcher process so the 15s cadence is inherited.'
+else
+  printf '%s\n' '- Logbook: inactive; use the default watcher cadence.'
 fi
 printf '%s\n' '- After every handled wake, resume this emitted harness protocol instead of following a hardcoded background-arm recipe.'
 printf '\n'

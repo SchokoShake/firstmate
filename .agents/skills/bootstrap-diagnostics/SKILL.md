@@ -2,7 +2,7 @@
 name: bootstrap-diagnostics
 description: >-
   Agent-only handling playbook for session-start bootstrap diagnostics.
-  Use whenever the session-start digest's bootstrap section prints any diagnostic or capability line - MISSING, NEEDS_GH_AUTH, TANGLE, CREW_HARNESS_OVERRIDE, CREW_DISPATCH, FLEET_SYNC, SECONDMATE_SYNC, SECONDMATE_LIVENESS, TASKS_AXI, NUDGE_SECONDMATES, or FMX - or when a standalone bin/fm-bootstrap.sh run prints one.
+  Use whenever the session-start digest's bootstrap section prints any diagnostic or capability line - MISSING, NEEDS_GH_AUTH, TANGLE, CREW_HARNESS_OVERRIDE, CREW_DISPATCH, FLEET_SYNC, SECONDMATE_SYNC, SECONDMATE_LIVENESS, TASKS_AXI, NUDGE_SECONDMATES, FMX, or LOGBOOK - or when a standalone bin/fm-bootstrap.sh run prints one.
   A silent bootstrap section means all good and needs no skill load.
 user-invocable: false
 metadata:
@@ -45,3 +45,8 @@ The inline rules in `AGENTS.md` section 3 still bind: detect, then consent, then
   A secondmate that was skipped, already current, or whose advance changed no instructions is not listed and must not be disturbed.
 - `FMX: X mode on ...` / `FMX: X mode off ...` - bootstrap confirmed or removed the local X-mode poll artifacts (`docs/configuration.md` "X mode (.env)").
   Only when a running watcher needs the cadence transition applied immediately, restart the home-scoped watcher through the emitted harness supervision protocol; bootstrap deliberately never restarts the watcher itself.
+- `LOGBOOK: on - board at <url>` - the opt-in attention board is enabled and bootstrap ensured its server is up (`docs/configuration.md` "Logbook (config/logbook.env)"); a capability fact, not a problem.
+  A trailing `(server not reachable yet; see the diagnostic above)` means the launch is still settling or a launcher diagnostic printed just above.
+  On a reachable board bootstrap also prints a captain-facing `LOGBOOK: attention board: <url>` line and auto-syncs the board from fleet state; relay that link to the captain once at session start and after a restart, and do not hand-run the session-start sync yourself.
+  A following `LOGBOOK: board-response poll armed ...` line means the inbound answer-loop is wired; apply its cadence transition to a running watcher exactly as for `FMX:` above.
+- `LOGBOOK: off - removed board-response poll shim ...` - bootstrap cleared the inbound artifacts after an opt-out, so the home reverts to the default watcher cadence; steady-state off prints nothing.

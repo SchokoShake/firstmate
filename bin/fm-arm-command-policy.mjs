@@ -854,10 +854,19 @@ function analyzeProgram(command, context, depth = 0) {
   return { error: "", protectedFound, directProtected, nestedProtected, broadKill: broadKillFound, pgrepWatcher, watcherPids: activeContext.watcherPids, program, nodeInfos };
 }
 
-function xModePathAllowed(value, home) {
-  if (value === "config/x-mode.env" || value === "./config/x-mode.env") return true;
-  if (!path.isAbsolute(value)) return false;
-  return path.normalize(value) === path.join(path.normalize(home), "config/x-mode.env");
+// The ONLY files an arm command may source. Both are firstmate-GENERATED, gitignored
+// cadence configs written by bootstrap into the home's config/ dir, and each contains
+// nothing but `export FM_CHECK_INTERVAL=<n>` (x-mode 30s, logbook 15s). Sourcing runs
+// shell code, so this stays an exact allowlist - never a prefix or glob - and admitting
+// logbook's cadence is exactly as safe as admitting X mode's, not a widening.
+const CADENCE_ENV_FILES = ["config/x-mode.env", "config/logbook-mode.env"];
+
+function cadenceEnvPathAllowed(value, home) {
+  return CADENCE_ENV_FILES.some((rel) => {
+    if (value === rel || value === `./${rel}`) return true;
+    if (!path.isAbsolute(value)) return false;
+    return path.normalize(value) === path.join(path.normalize(home), rel);
+  });
 }
 
 function ordinaryWordsOnly(tokens) {
@@ -870,8 +879,8 @@ function setupKind(info, context) {
   const values = position.words.map((word) => word.value);
   if (values[0] === "cd" && values.length === 2) return "cd";
   if (values[0] === "export" && values.length === 2 && isAssignment(values[1])) return "export";
-  if ((values[0] === "source" || values[0] === ".") && values.length === 2 && xModePathAllowed(values[1], context.home)) return "source";
-  if (values[0] === "[" && values[1] === "-f" && values[3] === "]" && values.length === 4 && xModePathAllowed(values[2], context.home)) return "test-source";
+  if ((values[0] === "source" || values[0] === ".") && values.length === 2 && cadenceEnvPathAllowed(values[1], context.home)) return "source";
+  if (values[0] === "[" && values[1] === "-f" && values[3] === "]" && values.length === 4 && cadenceEnvPathAllowed(values[2], context.home)) return "test-source";
   return "";
 }
 

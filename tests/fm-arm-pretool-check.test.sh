@@ -43,6 +43,16 @@ matrix_case A14 allow "[ -f 'config/x-mode.env' ] && source 'config/x-mode.env';
 matrix_case A15 allow "cd $ROOT && exec bin/fm-watch-arm.sh"
 matrix_case A16 allow "export FM_HOME=$ROOT && bin/fm-watch-checkpoint.sh --seconds 180"
 matrix_case A17 allow $'source "config/x-mode.env"\nbin/fm-watch-checkpoint.sh --seconds 180'
+# config/logbook-mode.env is the other GENERATED cadence config, so it is sourceable
+# exactly like config/x-mode.env - same forms, same allowlist (see setupKind).
+matrix_case A18 allow 'source config/logbook-mode.env; bin/fm-watch-checkpoint.sh --seconds 180'
+matrix_case A19 allow "source './config/logbook-mode.env'; bin/fm-watch-checkpoint.sh --seconds 180"
+matrix_case A20 allow "source '$ROOT/config/logbook-mode.env'; bin/fm-watch-checkpoint.sh --seconds 180"
+matrix_case A21 allow "[ -f 'config/logbook-mode.env' ] && source 'config/logbook-mode.env'; exec bin/fm-watch-arm.sh"
+# The both-cadences form fm-supervision-instructions.sh actually emits when X mode and
+# logbook are both on: logbook is sourced LAST so its 15s FM_CHECK_INTERVAL wins.
+matrix_case A22 allow "[ -f 'config/x-mode.env' ] && . 'config/x-mode.env'; [ -f 'config/logbook-mode.env' ] && . 'config/logbook-mode.env'; exec bin/fm-watch-arm.sh"
+matrix_case A23 allow "[ -f '$ROOT/config/x-mode.env' ] && . '$ROOT/config/x-mode.env'; [ -f '$ROOT/config/logbook-mode.env' ] && . '$ROOT/config/logbook-mode.env'; exec bin/fm-watch-arm.sh"
 
 matrix_case R01 allow "pgrep -fl '/bin/fm-watch.sh' || true"
 matrix_case R02 allow "ps aux | rg '/bin/fm-watch.sh'"
@@ -140,6 +150,11 @@ matrix_case E14 allow '$FM_HOME/bin/fm-teardown.sh &'
 matrix_case E15 allow '$FM_HOME/bin/fm-watch-arm.sh'
 matrix_case E16 allow '~/firstmate/bin/fm-watch-checkpoint.sh --seconds 180'
 matrix_case E17 allow 'for f in 1; do echo fm-watch; done'
+# The cadence allowlist is EXACT, not a config/ prefix: a logbook-mode.env outside this
+# home is still denied, and config/logbook.env - the captain's HAND-AUTHORED opt-in file,
+# not a generated cadence config - is never sourceable into a watcher process.
+matrix_case E18 deny "source '/tmp/not-firstmate/config/logbook-mode.env'; bin/fm-watch-checkpoint.sh --seconds 180"
+matrix_case E19 deny "source 'config/logbook.env'; bin/fm-watch-checkpoint.sh --seconds 180"
 
 MATRIX_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-arm-policy-matrix.XXXXXX")
 FM_TEST_CLEANUP_DIRS+=("$MATRIX_TMP")
