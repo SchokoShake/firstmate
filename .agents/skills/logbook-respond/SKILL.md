@@ -1,6 +1,6 @@
 ---
 name: logbook-respond
-description: Agent-only playbook for acting on a captain's answer given on the logbook attention board (Phase 2, the inbound answer-loop). Use on a "logbook-response <response_id>" check: wake - the board's connector poll stashed one or more answers to state/logbook-inbox/. Drain EVERY inbox file (the wake coalesces), resolve each answer's target task from its item_id (convention <task-id>[:<discriminator>], so the task-id is the prefix; the item's opaque source blob is the richer route), then act on the captain's decision through the normal firstmate lifecycle - merge a ready PR, feed a no-mistakes ask-user decision back with 'no-mistakes axi respond', dispatch requested work, or apply a free-text instruction. Destructive/irreversible/security-sensitive steps still escalate to the captain first, never auto-run from a board answer. After acting, ack the response (bin/fm-logbook-ack.sh), resolve the card (bin/fm-logbook-resolve.sh), and remove the inbox file - in that order, so a crash is recovered on the next poll. Loaded only when logbook is enabled.
+description: Agent-only playbook for acting on a captain's answer given on the logbook attention board (Phase 2, the inbound answer-loop). Use on a "logbook-response <response_id>" check: wake - the board's connector poll stashed one or more answers to state/logbook-inbox/. Drain EVERY inbox file (the wake coalesces), resolve each answer's target task from its item_id (convention <task-id>[:<discriminator>], so the task-id is the prefix; the item's opaque source blob is the richer route), then act on the captain's decision through the normal firstmate lifecycle - merge a ready PR, feed a no-mistakes ask-user decision back with 'no-mistakes axi respond', dispatch requested work, or apply a free-text instruction. Destructive/irreversible/security-sensitive steps still escalate to the captain first, never auto-run from a board answer. After acting, ack the response (bin/fm-logbook-ack.sh), resolve the card (bin/fm-logbook-resolve.sh), and remove the inbox file - in that order, so a crash is recovered on the next poll. Also use on a "logbook-error ..." check wake to report the logbook configuration blocker instead of acting on an answer. Loaded only when logbook is enabled.
 user-invocable: false
 metadata:
   internal: true
@@ -16,6 +16,8 @@ This skill turns that answer into real action through firstmate's normal lifecyc
 
 This runs only when logbook is on (the captain set a truthy `LOGBOOK_ENABLE` in `config/logbook.env`; see AGENTS.md section 15).
 If you ever see a `logbook-response` wake without logbook configured, do nothing.
+A `check:` wake can also carry `logbook-error ...` instead of `logbook-response <response_id>` - that is a poll or board configuration problem (a missing `curl`/`jq`, a bad token, an unreachable board), not an answer to act on.
+Report it directly to the captain as a logbook configuration blocker and do not treat it as a board answer; the poll rate-limits it via `state/logbook-poll.error`, so it will not spam you.
 
 ## The board is captain-private and local - act on the answer directly
 
