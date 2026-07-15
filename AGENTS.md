@@ -104,9 +104,12 @@ state/               volatile runtime signals; gitignored
   x-outbox/          generated X-mode dry-run reply and dismiss previews; inspect it when FMX_DRY_RUN is set (section 14)
   x-poll.error       generated X-mode relay diagnostic dedupe marker
   logbook-watch.check.sh  generated logbook board-response poll shim; present only when opted in (section 15)
+  logbook-reap.check.sh  generated logbook board-liveness reap shim; present only when opted in; keeps the detached board alive, silent unless it gives up relaunching (section 15)
   logbook-inbox/     generated logbook pending board-response payloads; logbook-respond drains it (section 15)
   logbook-outbox/    generated logbook dry-run push/sync/resolve/ack previews; inspect it when LOGBOOK_DRY_RUN is set (section 15)
   logbook-poll.error  generated logbook board-response diagnostic dedupe marker
+  logbook-reap.fails  generated logbook board-liveness failure streak; its mtime is the relaunch-retry schedule
+  logbook-reap.error  generated logbook board-liveness diagnostic dedupe marker
   logbook-server.log  detached logbook board server output; present only when firstmate launched the board (section 15)
   logbook.data/      logbook board server runtime store (SQLite + token); firstmate-owned, kept here so nothing is written into projects/ (section 15)
   .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
@@ -810,7 +813,9 @@ Set `LOGBOOK_TOKEN` to a private value when you opt in, so firstmate's pushes au
 Because the board is loopback-only and bearer-token-gated, an answer given on it is the captain's own decision on a private, trusted surface and carries in-session trust; a destructive, irreversible, or security-sensitive step still escalates first.
 
 **Mechanism and cadence.**
-Bootstrap ensures the board server is up, auto-syncs the board from fleet state, and wires the board-response poll automatically and purely additively from that config's presence; `docs/configuration.md` "Logbook (config/logbook.env)" owns the generated-artifact mechanism, the wire protocol, the poll cadence and its transition handling, and the watcher-backbone non-interference guarantee.
+Bootstrap ensures the board server is up, auto-syncs the board from fleet state, and wires both the board-response poll and the board-liveness reap automatically and purely additively from that config's presence; `docs/configuration.md` "Logbook (config/logbook.env)" owns the generated-artifact mechanism, the wire protocol, the poll cadence and its transition handling, the board-liveness contract, and the watcher-backbone non-interference guarantee.
+Nothing else supervises the board - it is a bare detached node process - so the reap health-checks it every watcher check cycle and relaunches a dead one, silently; only a board it has given up relaunching reaches the captain, once, as a `logbook-error` wake.
+Where systemd exists, the `systemd --user` unit in that doc is the recommended setup instead, because it also covers the case the reap cannot: no firstmate session running at all.
 Relay bootstrap's captain-facing `LOGBOOK: attention board: <url>` link to the captain once at session start and after a restart, and do not hand-run the session-start sync.
 Logbook is a reason to keep the watcher armed even with no fleet work, so an opted-in captain is served the board before any task is dispatched.
 

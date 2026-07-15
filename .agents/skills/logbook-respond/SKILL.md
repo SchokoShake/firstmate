@@ -16,8 +16,16 @@ This skill turns that answer into real action through firstmate's normal lifecyc
 
 This runs only when logbook is on (the captain set a truthy `LOGBOOK_ENABLE` in `config/logbook.env`; see AGENTS.md section 15).
 If you ever see a `logbook-response` wake without logbook configured, do nothing.
-A `check:` wake can also carry `logbook-error ...` instead of `logbook-response <response_id>` - that is a poll or board configuration problem (a missing `curl`/`jq`, a bad token, an unreachable board), not an answer to act on.
-Report it directly to the captain as a logbook configuration blocker and do not treat it as a board answer; the poll rate-limits it via `state/logbook-poll.error`, so it will not spam you.
+A `check:` wake can also carry `logbook-error ...` instead of `logbook-response <response_id>` - that is a poll or board problem, not an answer to act on.
+Report it directly to the captain as a logbook blocker and do not treat it as a board answer; each emitter rate-limits its own diagnostic via a dedupe marker under `state/`, so it will not spam you.
+Two emitters produce it, and the fix differs:
+
+- `bin/fm-logbook-poll.sh` (marker `state/logbook-poll.error`) reports a poll or configuration problem: a missing `curl`/`jq`, a bad token, a board answering with an HTTP error.
+- `bin/fm-logbook-reap.sh` (marker `state/logbook-reap.error`) reports `board down at <url>; relaunch failed after <n> tries: <reason>`: the board is dead and firstmate could not restart it, having already retried and given up, so the board is showing the captain nothing at all.
+  The `<reason>` is the launcher's own (`node not found`, `board server not found at ...`, `launched but not yet healthy ... see state/logbook-server.log`); relay it, and point the captain at the systemd `--user` unit in `docs/configuration.md` ("Board liveness"), which supervises the board properly where systemd exists.
+  Do not hand-restart the board in a loop or edit the reap to try harder: it keeps retrying on a slow cadence on its own, and clears this diagnostic the moment the board answers again.
+
+A board firstmate quietly revived never reaches you at all - that is housekeeping, by design.
 
 ## The board is captain-private and local - act on the answer directly
 

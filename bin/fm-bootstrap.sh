@@ -482,17 +482,23 @@ EOF
 # Two layers:
 #   Feed (Phase 0+1): firstmate PUSHES items and reconciles the board; the server
 #     launch and the "LOGBOOK: on - board at <url>" line.
-#   Answer loop (Phase 2): the captain answers a card on the board, and two
-#     idempotent, gitignored artifacts carry that answer back:
+#   Answer loop (Phase 2): the captain answers a card on the board, and three
+#     idempotent, gitignored artifacts carry that answer back and keep the board alive:
 #       state/logbook-watch.check.sh - check shim that execs bin/fm-logbook-poll.sh
+#       state/logbook-reap.check.sh  - check shim that execs bin/fm-logbook-reap.sh:
+#                                      the board's ONLY supervisor between session
+#                                      starts (it is a bare detached node process), so
+#                                      a board killed mid-session is health-checked and
+#                                      relaunched on the same beat instead of staying
+#                                      dead. Silent unless it gives up relaunching
 #       config/logbook-mode.env      - exports FM_CHECK_INTERVAL=15, sourced by the
 #                                      watcher arm so an opted-in home polls the
 #                                      board every 15s (its own generated file, so
 #                                      it never clobbers the captain's hand-authored
 #                                      config/logbook.env opt-in file)
-# The poll shim needs curl+jq; if either is missing, the feed still runs but the
-# poll is not armed (reported via MISSING). On opt-out (flag removed or falsy) it
-# removes both artifacts so the instance reverts to the default 300s no-poll
+# The shims need curl+jq; if either is missing, the feed still runs but they are
+# not armed (reported via MISSING). On opt-out (flag removed or falsy) it
+# removes all three artifacts so the instance reverts to the default 300s no-poll
 # behavior. Absent config AND with no leftover artifacts it is a complete no-op
 # (nothing written, nothing printed), so a non-adopter sees zero change. It never
 # blocks: fm-logbook-up.sh launches the server detached, and applying a cadence
@@ -500,24 +506,25 @@ EOF
 # 'bin/fm-watch-arm.sh --restart' (see AGENTS.md section 15). Like x_mode_setup,
 # this runs only on the caller's lock-holding (non-detect) path.
 logbook_setup() {
-  local shim cadence shim_body cadence_body tool missing
+  local shim reap_shim cadence shim_body reap_shim_body cadence_body tool missing
   logbook_load_config
   shim="$STATE/logbook-watch.check.sh"
+  reap_shim="$STATE/logbook-reap.check.sh"
   cadence="$CONFIG/logbook-mode.env"
 
   logbook_remove_inbound_artifacts() {
-    rm -f "$shim" "$cadence" 2>/dev/null || true
-    [ ! -e "$shim" ] && [ ! -e "$cadence" ]
+    rm -f "$shim" "$reap_shim" "$cadence" 2>/dev/null || true
+    [ ! -e "$shim" ] && [ ! -e "$reap_shim" ] && [ ! -e "$cadence" ]
   }
 
   if ! logbook_enabled; then
     # Opt-out (or never opted in): drop any inbound poll artifacts; stay silent
     # unless we actually removed something.
-    if [ -e "$shim" ] || [ -e "$cadence" ]; then
+    if [ -e "$shim" ] || [ -e "$reap_shim" ] || [ -e "$cadence" ]; then
       if logbook_remove_inbound_artifacts; then
-        echo "LOGBOOK: off - removed board-response poll shim and 15s cadence; restart the watcher (bin/fm-watch-arm.sh --restart) to drop back to the default cadence"
+        echo "LOGBOOK: off - removed board-response poll shim, board-liveness reap shim, and 15s cadence; restart the watcher (bin/fm-watch-arm.sh --restart) to drop back to the default cadence"
       else
-        echo "LOGBOOK: off - failed to remove board-response poll shim or 15s cadence"
+        echo "LOGBOOK: off - failed to remove board-response poll shim, board-liveness reap shim, or 15s cadence"
       fi
     fi
     return 0
@@ -569,9 +576,9 @@ logbook_setup() {
 
   logbook_arm_failed() {
     if logbook_remove_inbound_artifacts; then
-      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim or 15s cadence"
+      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim, reap shim, or 15s cadence"
     else
-      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim or 15s cadence; stale artifacts remain"
+      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim, reap shim, or 15s cadence; stale artifacts remain"
     fi
   }
 
@@ -588,6 +595,23 @@ EOF
   write_if_changed "$shim" "$shim_body" || { logbook_arm_failed; return 0; }
   chmod +x "$shim" 2>/dev/null || { logbook_arm_failed; return 0; }
 
+  # Board-liveness reap, on the SAME check rail. Nothing else owns the board's
+  # liveness: it is a bare detached node process, and before this only a session-start
+  # bootstrap ever started it, so a board killed mid-session stayed dead until the next
+  # session. The reap is deliberately quiet - it prints (and so wakes firstmate) only
+  # when it has given up relaunching; a board it brings back is housekeeping.
+  reap_shim_body=$(cat <<EOF
+#!/usr/bin/env bash
+# Auto-generated by fm-bootstrap.sh - logbook board-liveness reap shim.
+# The watcher runs this each check cycle; output becomes a check: wake, so the reap
+# stays silent unless the board is down AND cannot be relaunched.
+export FM_HOME=$(printf '%q' "$FM_HOME")
+exec $(printf '%q' "$FM_ROOT/bin/fm-logbook-reap.sh")
+EOF
+)
+  write_if_changed "$reap_shim" "$reap_shim_body" || { logbook_arm_failed; return 0; }
+  chmod +x "$reap_shim" 2>/dev/null || { logbook_arm_failed; return 0; }
+
   cadence_body=$(cat <<'EOF'
 # Auto-generated by fm-bootstrap.sh - logbook watcher cadence.
 # Source this before arming the watcher (see AGENTS.md section 15) so fm-watch.sh
@@ -598,7 +622,7 @@ EOF
 )
   write_if_changed "$cadence" "$cadence_body" || { logbook_arm_failed; return 0; }
 
-  echo "LOGBOOK: board-response poll armed via state/logbook-watch.check.sh; 15s watcher cadence in config/logbook-mode.env"
+  echo "LOGBOOK: board-response poll armed via state/logbook-watch.check.sh; board-liveness reap armed via state/logbook-reap.check.sh; 15s watcher cadence in config/logbook-mode.env"
 }
 
 crew_dispatch_validate() {

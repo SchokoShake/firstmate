@@ -303,15 +303,16 @@ It is off unless the firstmate home's gitignored `config/logbook.env` sets a tru
 An explicit environment variable always wins over the file, mirroring X mode's resolution.
 As of Phase 2 the loop is two-way: firstmate pushes items and reconciles the board, and the captain can answer a card on the board (or still in chat), with both paths converging on the same lifecycle action and the same card resolve.
 The inbound answer-loop rides the existing `state/*.check.sh` watcher rail exactly as X mode does, so opting in drops a poll shim (`state/logbook-watch.check.sh` -> `bin/fm-logbook-poll.sh`) and a generated cadence file (`config/logbook-mode.env`, `FM_CHECK_INTERVAL=15`), without editing the watcher backbone.
+Opting in drops a second shim on that same rail, `state/logbook-reap.check.sh` -> `bin/fm-logbook-reap.sh`, which keeps the board itself alive; see "Board liveness" below.
 
 `LOGBOOK_URL` defaults to `http://127.0.0.1:8137` (loopback only; a trailing slash is trimmed), `LOGBOOK_PORT` is derived from that URL when not set explicitly and otherwise falls back to `8137`, and `LOGBOOK_TOOL_DIR` defaults to this home's `projects/logbook` clone.
 Set `LOGBOOK_TOKEN` to a private value when you opt in so firstmate's pushes can authenticate and other local processes cannot drive the board; without it the client posters cannot authenticate a live post.
 `LOGBOOK_ENV_FILE` can point direct client invocations at another `.env`-style file.
 
-On the locked session-start bootstrap step, a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up through `bin/fm-logbook-up.sh` (detached and non-blocking), print `LOGBOOK: on - board at <url>`, and drop the inbound poll shim `state/logbook-watch.check.sh` plus the generated cadence `config/logbook-mode.env` (`FM_CHECK_INTERVAL=15`, a distinct file from the hand-authored `config/logbook.env`).
-Arming the poll needs `curl` and `jq`.
+On the locked session-start bootstrap step, a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up through `bin/fm-logbook-up.sh` (detached and non-blocking), print `LOGBOOK: on - board at <url>`, and drop the inbound poll shim `state/logbook-watch.check.sh` and the board-liveness reap shim `state/logbook-reap.check.sh`, plus the generated cadence `config/logbook-mode.env` (`FM_CHECK_INTERVAL=15`, a distinct file from the hand-authored `config/logbook.env`).
+Arming those shims needs `curl` and `jq`.
 When the board is reachable, bootstrap also prints a captain-facing `LOGBOOK: attention board: <url>` link for firstmate to relay to the captain, and auto-syncs the board from fleet state via `bin/fm-logbook-refresh.sh`, best-effort and non-blocking, so the session-start reconcile no longer depends on firstmate remembering to run it.
-On opt-out it removes both artifacts, reverting to the default 300s no-poll cadence.
+On opt-out it removes all three artifacts, reverting to the default 300s no-poll cadence.
 With no config and no leftover artifacts it is a complete no-op.
 `bin/fm-logbook-up.sh` health-checks `GET $LOGBOOK_URL/health`, and if the board is down launches `node $LOGBOOK_TOOL_DIR/server.mjs` detached with output to `state/logbook-server.log` and its runtime store under `state/logbook.data`, so nothing is ever written into `projects/`.
 
@@ -324,6 +325,7 @@ Because `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start, a cad
 Logbook is a reason to keep the watcher armed even with no fleet work, so an opted-in captain's board answers are always picked up.
 While away mode is active the daemon owns the watcher and its default cadence applies; away-mode logbook cadence is a deferred follow-up, as it is for X mode.
 Logbook is purely additive: no edit is made to `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`, `bin/fm-wake-lib.sh`, or the afk daemon.
+That holds for the board-liveness reap too, despite it being watcher-driven: it is a check shim like any other, so the watcher runs it without knowing what it is.
 It lives entirely in the `bin/fm-logbook-*.sh` scripts, bootstrap's `logbook_setup()` block, the `logbook-respond` skill, and the generated local artifacts above.
 The session-start reconcile is automatic: bootstrap runs `bin/fm-logbook-refresh.sh`, which composes the attention set with `bin/fm-logbook-compose.sh` (a mechanical baseline derived from `data/projects.md`, `data/backlog.md`, `state/*.meta`, and `state/*.status`) and hands it to `bin/fm-logbook-sync.sh` (`POST /api/sync {projects?, items?}`, a declarative truth-restore).
 Firstmate can re-run `bin/fm-logbook-refresh.sh` by hand to re-truth the board mid-session.
@@ -336,6 +338,81 @@ The board binds `127.0.0.1` only and requires a bearer token on every `/api/*` c
 
 Set `LOGBOOK_DRY_RUN` (truthy) to make `fm-logbook-push.sh`, `fm-logbook-sync.sh`, `fm-logbook-resolve.sh`, and `fm-logbook-ack.sh` record the would-be POST body to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting; `fm-logbook-refresh.sh` inherits it through its sync step, while the read-only `fm-logbook-compose.sh` needs no such switch (it only reads fleet state and prints the body).
 Push, sync, and ack compose their body from their arguments, so they need neither the token nor the board; resolve must read the card's current fields via the read-only `GET /api/board` to compose its full-item body (needing the token and a reachable board) but still writes nothing.
+
+### Board liveness
+
+This subsection is the single owner of the board-liveness contract.
+
+The board is a plain detached `node server.mjs`, not a service: nothing restarts it when it dies.
+It does die - an out-of-memory kill under crewmate memory pressure is the observed cause, and a busy session has killed it twice - and a dead board is silent, because the answer-loop poll simply finds nothing to drain.
+Two mechanisms cover that, and they compose: use the systemd unit where systemd exists, and rely on the watcher reap everywhere else.
+
+**Recommended where systemd exists: a `systemd --user` unit.**
+It is strictly better than the reap, because it also covers the case the reap cannot - no firstmate session is running at all - and it restarts the board in about two seconds without waiting for a watcher cycle.
+Substitute your own `FM_HOME`; the heredoc below expands the absolute paths the unit needs.
+
+```sh
+FM_HOME=/path/to/your/firstmate            # this firstmate home
+NODE=$(command -v node)                    # ExecStart needs an ABSOLUTE path (see the traps below)
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/logbook.service <<EOF
+[Unit]
+Description=logbook attention board (firstmate)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$FM_HOME/projects/logbook
+EnvironmentFile=$FM_HOME/config/logbook.env
+Environment=LOGBOOK_DATA=$FM_HOME/state/logbook.data
+ExecStart=$NODE $FM_HOME/projects/logbook/server.mjs
+Restart=always
+RestartSec=2
+StandardOutput=append:$FM_HOME/state/logbook-server.log
+StandardError=append:$FM_HOME/state/logbook-server.log
+
+[Install]
+WantedBy=default.target
+EOF
+
+loginctl enable-linger "$USER"             # keep the unit running with no login session
+systemctl --user daemon-reload
+systemctl --user enable --now logbook.service
+```
+
+Two traps, both learned the hard way:
+
+- `Environment=LOGBOOK_DATA=$FM_HOME/state/logbook.data` is load-bearing.
+  Omit it and the board comes up against a different, empty SQLite store, so the captain sees an empty board and concludes it lost their data.
+  It did not; it is just looking in the wrong place.
+- `ExecStart` needs an absolute `node` path.
+  A `systemd --user` unit does not inherit the interactive shell's `PATH`, so a bare `node` fails to start.
+
+Verified 2026-07-14 on WSL2 with `systemd=true` in `/etc/wsl.conf` (systemd as PID 1):
+
+```sh
+systemctl --user is-active logbook.service        # active
+systemctl --user kill -s KILL logbook.service     # simulate the OOM kill
+sleep 5 && curl -fsS http://127.0.0.1:8137/health # the board answers again
+```
+
+The board was back and healthy in under five seconds.
+
+**Portable fallback, always on when logbook is: the watcher reap.**
+`bin/fm-logbook-reap.sh` is the body of the `state/logbook-reap.check.sh` shim, so the watcher runs it every check cycle (15s once logbook is on) on the same beat the answer-loop already polls the board.
+It health-checks `GET $LOGBOOK_URL/health` and, when the board is down, brings it back by calling the idempotent `bin/fm-logbook-up.sh` rather than reimplementing the launch.
+On a machine where the systemd unit owns the board, the board practically always answers `/health`, so the reap is a no-op; it makes no attempt to detect or defer to systemd, and needs none.
+
+Reaping is housekeeping, so the reap is deliberately quiet: a healthy board and a board it successfully revives both print nothing, and printing nothing is exactly what the check rail defines as "no wake".
+A board firstmate cannot fix is different, and that alone reaches the captain - once.
+After `FM_LOGBOOK_REAP_MAX_TRIES` (5) consecutive failed relaunches it prints one `logbook-error board down at <url>; relaunch failed after <n> tries: <reason>` line, folding in the launcher's own reason (`node not found`, `board server not found at ...`, `launched but not yet healthy ... see state/logbook-server.log`) so the wake is actionable.
+That line is deduped by its own text in `state/logbook-reap.error`, the same contract `bin/fm-logbook-poll.sh` uses with `state/logbook-poll.error`, and it rides the existing `logbook-error` wake kind, so the `logbook-respond` skill reports it with no new wake classification.
+
+Relaunching a genuinely broken board every 15s forever is worse than leaving it down, so the streak in `state/logbook-reap.fails` also gates the retries: once it reaches `FM_LOGBOOK_REAP_MAX_TRIES` the reap keeps trying - a fixed cause self-heals without a session restart - but only every `FM_LOGBOOK_REAP_RETRY_INTERVAL` seconds (300 by default), that file's mtime being the schedule.
+The counter is bumped before the attempt, not after, because a check shim is killed at the watcher's `FM_CHECK_TIMEOUT` and the relaunch is the slow part; recording afterwards would let a reap killed mid-attempt retry flat out forever, which is the exact thrash the gate exists to prevent.
+A single relaunch is bounded by `FM_LOGBOOK_REAP_TIMEOUT` (20s), kept well inside that 30s check timeout, so the reap can never hang a watcher cycle.
+Both markers clear the moment the board answers again, which re-arms the report for a later death instead of silently deduping it against a stale diagnostic.
+The reap is inert when logbook is off, exactly like the rest of the client: bootstrap drops the shim only on opt-in, and the script itself is a hard no-op without a truthy `LOGBOOK_ENABLE`, so a non-adopter pays nothing.
 
 ## Environment variables
 
