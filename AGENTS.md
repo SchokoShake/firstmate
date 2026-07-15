@@ -108,7 +108,7 @@ state/               volatile runtime signals; gitignored
   logbook-inbox/     generated logbook pending board-response payloads; logbook-respond drains it (section 15)
   logbook-outbox/    generated logbook dry-run push/sync/resolve/ack previews; inspect it when LOGBOOK_DRY_RUN is set (section 15)
   logbook-poll.error  generated logbook board-response diagnostic dedupe marker
-  logbook-reap.fails  generated logbook board-liveness failure streak; its mtime is the relaunch-retry schedule
+  logbook-reap.state  generated logbook board-liveness streak state (phase plus the wont-start and crash-loop counts and a stability timestamp); absent while the board is healthy
   logbook-reap.error  generated logbook board-liveness diagnostic dedupe marker
   logbook-server.log  detached logbook board server output; present only when firstmate launched the board (section 15)
   logbook.data/      logbook board server runtime store (SQLite + token); firstmate-owned, kept here so nothing is written into projects/ (section 15)

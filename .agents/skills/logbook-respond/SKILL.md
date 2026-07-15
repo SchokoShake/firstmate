@@ -21,9 +21,9 @@ Report it directly to the captain as a logbook blocker and do not treat it as a 
 Two emitters produce it, and the fix differs:
 
 - `bin/fm-logbook-poll.sh` (marker `state/logbook-poll.error`) reports a poll or configuration problem: a missing `curl`/`jq`, a bad token, a board answering with an HTTP error.
-- `bin/fm-logbook-reap.sh` (marker `state/logbook-reap.error`) reports `board down at <url>; relaunch failed after <n> tries: <reason>`: the board is dead and firstmate could not restart it, having already retried and given up, so the board is showing the captain nothing at all.
-  The `<reason>` is the launcher's own (`node not found`, `board server not found at ...`, `launched but not yet healthy ... see state/logbook-server.log`); relay it, and point the captain at the systemd `--user` unit in `docs/configuration.md` ("Board liveness"), which supervises the board properly where systemd exists.
-  Do not hand-restart the board in a loop or edit the reap to try harder: it keeps retrying on a slow cadence on its own, and clears this diagnostic the moment the board answers again.
+- `bin/fm-logbook-reap.sh` (marker `state/logbook-reap.error`) reports one of two board-liveness give-ups: `logbook board won't start at <url>; <n> relaunch attempts failed: <reason>` (the board never came back up) or `logbook board is crash-looping at <url>; revived <n> times but it keeps dying` (it came up but kept dying before it could stabilise). Either way the board is dead, firstmate has already retried, given up, and stopped relaunching, so the board is showing the captain nothing at all.
+  For a won't-start report the `<reason>` is the launcher's own (`node not found`, `board server not found at ...`, `launched but not yet healthy ... see state/logbook-server.log`); relay it, and point the captain at the systemd `--user` unit in `docs/configuration.md` ("Board liveness"), which supervises the board properly where systemd exists.
+  Do not hand-restart the board in a loop or edit the reap to try harder: it has deliberately stopped relaunching to avoid thrash, heals when the board next comes up (a new session's bootstrap, the systemd unit, or a manual `bin/fm-logbook-up.sh`), and clears this diagnostic once the board has proved stable again.
 
 A board firstmate quietly revived never reaches you at all - that is housekeeping, by design.
 
