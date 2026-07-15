@@ -154,9 +154,11 @@ logbook_enabled() {
   esac
 }
 
-# Validate an item id as the tool's safe slug before it is used in a path or body:
-# it must start alphanumeric, contain only [A-Za-z0-9._:-] thereafter, be at most
-# 200 characters, and never contain "..". This is the exact rule the tool enforces.
+# Validate a value as the tool's safe slug before it is used in a path or body: it
+# must start alphanumeric, contain only [A-Za-z0-9._:-] thereafter, be at most 200
+# characters, and never contain "..". This is the exact rule the tool enforces, and
+# the single owner of the safe-slug rule for both item ids and sub-project keys
+# (fm-logbook-compose.sh validates each declared sub-project key with it).
 logbook_valid_id() {
   local id=${1-}
   [ -n "$id" ] || return 1

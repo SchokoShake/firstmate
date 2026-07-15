@@ -1315,6 +1315,162 @@ test_compose_baseline_from_fleet_state() {
   pass "fm-logbook-compose derives a truthful {projects, items} baseline from fleet state"
 }
 
+# write_subproject_fixture <home>: a project that DECLARES sub-projects (the
+# motivating zeigmal_mono monorepo with two integration-branch features), a plain
+# project with none, and in-flight items - one tagged onto each sub-project by its
+# base/integration branch, one ungrouped on the default branch, one in the plain
+# project.
+write_subproject_fixture() {
+  local home=$1
+  mkdir -p "$home/data" "$home/state"
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- zeigmal_mono [no-mistakes +yolo] - Monorepo of integration features (added 2026-07-01)
+  sub placement-tool | Placement Tool | feat/placement-tool
+  sub outdoor-tour-navigation | Outdoor Tour Navigation | feat-outdoor-tour-navigation
+- solo [direct-PR] - Plain project, no sub-projects (added 2026-07-02)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] place-x1 - Wire the placement endpoint (repo: zeigmal_mono) (since 2026-07-10)
+- [ ] tour-x3 - Add the tour route (repo: zeigmal_mono) (since 2026-07-10)
+- [ ] main-x2 - Fix the shared header (repo: zeigmal_mono) (since 2026-07-10)
+- [ ] solo-x4 - Tidy the solo app (repo: solo) (since 2026-07-10)
+EOF
+  # place-x1 targets a sub-project branch -> tagged placement-tool.
+  fm_write_meta "$home/state/place-x1.meta" \
+    "window=firstmate:fm-place-x1" "project=$home/projects/zeigmal_mono" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off" \
+    "base_branch=feat/placement-tool"
+  # tour-x3 targets the other sub-project branch -> tagged outdoor-tour-navigation.
+  fm_write_meta "$home/state/tour-x3.meta" \
+    "window=firstmate:fm-tour-x3" "project=$home/projects/zeigmal_mono" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off" \
+    "base_branch=feat-outdoor-tour-navigation"
+  # main-x2 targets the default branch (no base_branch) -> ungrouped.
+  fm_write_meta "$home/state/main-x2.meta" \
+    "window=firstmate:fm-main-x2" "project=$home/projects/zeigmal_mono" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off"
+  # solo-x4 lives in a project with no sub-projects -> ungrouped.
+  fm_write_meta "$home/state/solo-x4.meta" \
+    "window=firstmate:fm-solo-x4" "project=$home/projects/solo" \
+    "harness=claude" "kind=ship" "mode=direct-PR" "yolo=off"
+}
+
+test_compose_declares_ordered_subprojects() {
+  local home out
+  home="$TMP_ROOT/compose-sub-declare"; write_subproject_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The declaring project carries its sub-projects as an ORDERED {key,name,branch}
+  # array, in declaration order.
+  printf '%s' "$out" | jq -e '.projects[] | select(.name=="zeigmal_mono") | .subprojects
+      == [ {"key":"placement-tool","name":"Placement Tool","branch":"feat/placement-tool"},
+           {"key":"outdoor-tour-navigation","name":"Outdoor Tour Navigation","branch":"feat-outdoor-tour-navigation"} ]' >/dev/null \
+    || fail "a declaring project must emit its ordered {key,name,branch} sub-project array"$'\n'"$out"
+  # A project with no declarations emits an empty array, not a missing field.
+  printf '%s' "$out" | jq -e '.projects[] | select(.name=="solo") | .subprojects == []' >/dev/null \
+    || fail "a project with no sub-projects must emit an empty subprojects array"
+  # The delivery mode still resolves correctly through the sub lines (a +yolo project).
+  printf '%s' "$out" | jq -e '.projects[] | select(.name=="zeigmal_mono") | .mode=="no-mistakes"' >/dev/null \
+    || fail "sub-project lines must not corrupt the project mode parse"
+  pass "fm-logbook-compose declares a project's ordered sub-projects and leaves plain projects empty"
+}
+
+test_compose_tags_item_by_base_branch() {
+  local home out
+  home="$TMP_ROOT/compose-sub-tag"; write_subproject_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # An item whose base_branch matches a declared sub-project branch is tagged with
+  # that sub-project's key; each item maps to its own sub-project.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="place-x1") | .subproject=="placement-tool"' >/dev/null \
+    || fail "an item on a sub-project branch must be tagged with that sub-project key"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="tour-x3") | .subproject=="outdoor-tour-navigation"' >/dev/null \
+    || fail "each item maps to its own sub-project by branch"
+  # The emitted subproject MUST match one of the parent project's declared keys.
+  printf '%s' "$out" | jq -e '
+      (.projects[] | select(.name=="zeigmal_mono") | [.subprojects[].key]) as $keys
+      | .items[] | select(.id=="place-x1") | (.subproject | IN($keys[]))' >/dev/null \
+    || fail "a tagged item's subproject must be a declared key of its project"
+  # A default-branch item (no base_branch) is ungrouped: no subproject field at all.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="main-x2") | has("subproject") | not' >/dev/null \
+    || fail "a default-branch item must emit no subproject"
+  # An item in a project with no sub-projects is ungrouped too.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="solo-x4") | has("subproject") | not' >/dev/null \
+    || fail "an item in a project with no sub-projects must emit no subproject"
+  # The internal base-branch helper never leaks into the payload.
+  printf '%s' "$out" | jq -e 'all(.items[]; has("_base_branch") | not)' >/dev/null \
+    || fail "the internal _base_branch helper must be stripped from every item"
+  pass "fm-logbook-compose tags each item onto its sub-project by base branch and leaves the rest ungrouped"
+}
+
+test_compose_no_declaration_is_backward_compatible() {
+  local home out
+  home="$TMP_ROOT/compose-sub-none"; write_fleet_fixture "$home"
+  # The baseline fixture declares NO sub-projects: every project emits an empty
+  # subprojects array and no item carries a subproject, so an adopter with no
+  # declarations sees the exact prior payload plus empty grouping metadata.
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  printf '%s' "$out" | jq -e 'all(.projects[]; .subprojects == [])' >/dev/null \
+    || fail "with no declarations every project must emit an empty subprojects array"
+  printf '%s' "$out" | jq -e 'all(.items[]; has("subproject") | not)' >/dev/null \
+    || fail "with no declarations no item may carry a subproject"
+  # The rest of the payload is unchanged (same project and item counts as baseline).
+  [ "$(printf '%s' "$out" | jq '.projects | length')" = 3 ] \
+    || fail "no-declaration path must keep every registry project"
+  [ "$(printf '%s' "$out" | jq '.items | length')" = 3 ] \
+    || fail "no-declaration path must keep one card per in-flight task"
+  pass "fm-logbook-compose is backward-compatible when no sub-projects are declared"
+}
+
+test_compose_skips_malformed_subproject_lines() {
+  local home out err
+  home="$TMP_ROOT/compose-sub-malformed"; mkdir -p "$home/data" "$home/state"
+  cat > "$home/data/projects.md" <<'EOF'
+# Registry
+
+- mono [no-mistakes] - Monorepo (added 2026-07-02)
+  sub good-key | Good Name | feat/good
+  sub bad key | Bad Slug | feat/badslug
+  sub emptyname |  | feat/x
+  sub nodelims just words here
+  sub piped | Display | With | Pipes | feat/piped
+EOF
+  : > "$home/data/backlog.md"
+  err="$home/compose.err"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh" 2>"$err")
+  # Only the two well-formed declarations survive; the invalid-key, empty-name, and
+  # missing-delimiter lines are dropped (never emitted, so no item can map to them).
+  printf '%s' "$out" | jq -e '.projects[] | select(.name=="mono") | [.subprojects[].key] == ["good-key","piped"]' >/dev/null \
+    || fail "malformed and invalid-key sub-project lines must be skipped"$'\n'"$out"
+  # A name may itself contain the " | " delimiter; the branch is always the last field.
+  printf '%s' "$out" | jq -e '.projects[] | select(.name=="mono") | .subprojects[]
+      | select(.key=="piped") | .name=="Display | With | Pipes" and .branch=="feat/piped"' >/dev/null \
+    || fail "a sub-project name may contain the delimiter; the branch is the last field"
+  # Each skip is reported (graceful, visible, never fatal).
+  grep -q "skipping" "$err" || fail "a skipped sub-project line must warn on stderr"
+  pass "fm-logbook-compose skips malformed sub-project lines gracefully and keeps the valid ones"
+}
+
+test_project_mode_unaffected_by_subproject_lines() {
+  local home
+  home="$TMP_ROOT/project-mode-sub"; write_subproject_fixture "$home"
+  # The sub-project continuation lines must be invisible to fm-project-mode.sh: a
+  # declaring project still resolves its exact mode and yolo, and a plain project
+  # listed AFTER the sub lines resolves correctly too.
+  [ "$(PATH="$BASE_PATH" FM_HOME="$home" "$ROOT/bin/fm-project-mode.sh" zeigmal_mono)" = "no-mistakes on" ] \
+    || fail "fm-project-mode must still read a declaring project's mode and yolo through its sub lines"
+  [ "$(PATH="$BASE_PATH" FM_HOME="$home" "$ROOT/bin/fm-project-mode.sh" solo)" = "direct-PR off" ] \
+    || fail "fm-project-mode must read a plain project's mode after a declaring project's sub lines"
+  pass "sub-project declarations do not break fm-project-mode.sh registry parsing"
+}
+
 test_refresh_hard_noop_when_disabled() {
   local home fakebin out rc log
   home="$TMP_ROOT/refresh-off"; write_fleet_fixture "$home"
@@ -1447,6 +1603,11 @@ test_ack_live_non_2xx_fails
 test_ack_rejects_bad_id
 test_compose_hard_noop_when_disabled
 test_compose_baseline_from_fleet_state
+test_compose_declares_ordered_subprojects
+test_compose_tags_item_by_base_branch
+test_compose_no_declaration_is_backward_compatible
+test_compose_skips_malformed_subproject_lines
+test_project_mode_unaffected_by_subproject_lines
 test_refresh_hard_noop_when_disabled
 test_refresh_dry_run_records_sync
 test_refresh_live_posts_sync
