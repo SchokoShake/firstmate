@@ -364,10 +364,11 @@ Because `data/projects.md` is local and gitignored, its declarations live only i
 Each item is tagged with its sub-project by its base or integration branch, recorded per task in `state/<id>.meta` as an optional `base_branch=<branch>` field (the branch the task's PR targets).
 Firstmate records `base_branch=` at dispatch for a task that targets a declared integration branch, by appending the field to the task's meta; most tasks target the project's default branch, carry no `base_branch`, and stay ungrouped.
 
-`fm-logbook-compose.sh` then emits, into the `POST /api/sync` and `POST /api/items` payloads:
+`fm-logbook-compose.sh` then emits, into the `POST /api/sync` baseline body it produces (fed via `bin/fm-logbook-sync.sh`):
 - Per project, an ordered `subprojects` array of `{ key, name, branch }`, empty when none are declared and capped at the tool's 100-per-project limit.
 - Per item, an optional `subproject` (a safe-slug string) set to the parent project's sub-project whose `branch` equals the item's `base_branch`; a missing `base_branch`, or one that matches no declared sub-project, emits no `subproject` (the item is ungrouped).
 The board treats an item `subproject` that matches no declared key as ungrouped, so the feed stays backward-compatible while declarations are being filled in.
+The rich cards firstmate escalates via `bin/fm-logbook-push.sh` (`POST /api/items`, a whole-item replace) currently carry no `subproject`, so an enriched card is ungrouped until that push path is extended - a deferred follow-up, consistent with the deliberately-deferred `base_branch` dispatch recording.
 
 ### Board liveness
 
