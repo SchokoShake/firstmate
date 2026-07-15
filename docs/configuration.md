@@ -339,6 +339,36 @@ The board binds `127.0.0.1` only and requires a bearer token on every `/api/*` c
 Set `LOGBOOK_DRY_RUN` (truthy) to make `fm-logbook-push.sh`, `fm-logbook-sync.sh`, `fm-logbook-resolve.sh`, and `fm-logbook-ack.sh` record the would-be POST body to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting; `fm-logbook-refresh.sh` inherits it through its sync step, while the read-only `fm-logbook-compose.sh` needs no such switch (it only reads fleet state and prints the body).
 Push, sync, and ack compose their body from their arguments, so they need neither the token nor the board; resolve must read the card's current fields via the read-only `GET /api/board` to compose its full-item body (needing the token and a reachable board) but still writes nothing.
 
+### Sub-projects
+
+This subsection is the single owner of the sub-project feed contract; `bin/fm-logbook-compose.sh` is its only emitter.
+
+A sub-project is a display-only grouping level BELOW a project, motivated by a monorepo whose work splits across several integration branches (for example `zeigmal_mono` carrying a `placement-tool` feature off `feat/placement-tool` and an `outdoor-tour-navigation` feature off `feat-outdoor-tour-navigation`).
+Sub-projects are firstmate-declared per project, never inferred from naming convention or git.
+They carry no independent active or toggle state; only projects do.
+
+Declare a project's sub-projects in `data/projects.md` with one non-dash `sub` continuation line per sub-project, indented under the project's registry line:
+
+```markdown
+- zeigmal_mono [no-mistakes] - Monorepo of integration features (added 2026-07-01)
+  sub placement-tool | Placement Tool | feat/placement-tool
+  sub outdoor-tour-navigation | Outdoor Tour Navigation | feat-outdoor-tour-navigation
+```
+
+Each `sub` line declares one `{ key, name, branch }` triple, with the three fields separated by ` | ` (space-pipe-space).
+`key` is the first field and must be a safe slug (the same rule `bin/fm-logbook-lib.sh`'s `logbook_valid_id` enforces for item ids); `branch` is the last field (the integration branch its items target); `name` is the middle display label (at most 200 characters, and may itself contain the ` | ` delimiter).
+The leading token is `sub`, never `-`, so every existing `$1=="-"` registry parser (`bin/fm-project-mode.sh`, `bin/fm-home-seed.sh`) and `fm-logbook-compose.sh`'s own `- ` project-line case skip these lines unchanged; a project with no `sub` lines composes exactly as before, and the declaration order is preserved.
+A malformed line (not three ` | ` fields), an invalid-slug key, or an empty name or branch is dropped with a stderr warning and never emitted, so an item can only ever map to a valid, declared key.
+Because `data/projects.md` is local and gitignored, its declarations live only in each home; add them there per this format.
+
+Each item is tagged with its sub-project by its base or integration branch, recorded per task in `state/<id>.meta` as an optional `base_branch=<branch>` field (the branch the task's PR targets).
+Firstmate records `base_branch=` at dispatch for a task that targets a declared integration branch, by appending the field to the task's meta; most tasks target the project's default branch, carry no `base_branch`, and stay ungrouped.
+
+`fm-logbook-compose.sh` then emits, into the `POST /api/sync` and `POST /api/items` payloads:
+- Per project, an ordered `subprojects` array of `{ key, name, branch }`, empty when none are declared and capped at the tool's 100-per-project limit.
+- Per item, an optional `subproject` (a safe-slug string) set to the parent project's sub-project whose `branch` equals the item's `base_branch`; a missing `base_branch`, or one that matches no declared sub-project, emits no `subproject` (the item is ungrouped).
+The board treats an item `subproject` that matches no declared key as ungrouped, so the feed stays backward-compatible while declarations are being filled in.
+
 ### Board liveness
 
 This subsection is the single owner of the board-liveness contract.

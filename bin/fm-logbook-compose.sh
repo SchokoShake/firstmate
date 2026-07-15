@@ -15,6 +15,21 @@
 # titles/bodies/options remain firstmate's own composition on top, via
 # fm-logbook-push.sh (an upsert keyed by id replaces the baseline card).
 #
+# Sub-projects (a DISPLAY-only grouping level below a project) let a monorepo's
+# integration-branch features group on the board. They are firstmate-declared per
+# project in data/projects.md as ORDERED { key, name, branch } triples, one per
+# non-dash "sub" continuation line indented under the project's registry line:
+#     sub placement-tool | Placement Tool | feat/placement-tool
+# The leading token is "sub", never "-", so the "$1==\"-\"" registry parsers
+# (fm-project-mode.sh, fm-home-seed.sh) skip these lines and a project with none
+# composes exactly as before. This script reads them into each project's ordered
+# "subprojects" array, and tags each item with an optional "subproject" by mapping
+# the item's "base_branch=" meta field (the branch its PR targets, recorded by
+# firstmate at dispatch) to the parent project's matching sub-project key; an item
+# with no base_branch or no match stays ungrouped. docs/configuration.md ("Logbook"
+# -> "Sub-projects") owns the full declaration format, limits, validation, and the
+# base_branch recording path.
+#
 # Inert by default: a hard no-op (exit 0, no output) unless logbook is opted in via
 # a truthy LOGBOOK_ENABLE (config/logbook.env), mirroring the other client scripts.
 # Read-only: it only READS fleet state and never posts, so LOGBOOK_DRY_RUN needs no
@@ -107,9 +122,20 @@ clip() {
   fi
 }
 
+# trim <string>: strip leading and trailing ASCII whitespace. Used to normalize the
+# " | "-split sub-project fields so stray spacing in a declaration never leaks into a
+# key, display name, or branch.
+trim() {
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  printf '%s' "$s"
+}
+
 ITEMS_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-items.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
 REG_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-reg.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
-trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL"' EXIT
+SUB_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-sub.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
+trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"' EXIT
 
 # --- items: one card per in-flight task (persistent secondmates are not cards) --
 for meta in "$STATE"/*.meta; do
@@ -130,6 +156,10 @@ for meta in "$STATE"/*.meta; do
   fi
 
   pr=$(meta_get "$meta" pr)
+  # The item's sub-project is resolved from its base/integration branch (the branch
+  # its PR targets) against the parent project's declarations, in the combine step
+  # below; carried as the internal _base_branch helper and stripped before output.
+  base_branch=$(meta_get "$meta" base_branch)
   last=$(status_last "$id")
   oneliner=$(backlog_oneliner "$id")
 
@@ -191,6 +221,7 @@ PR: $pr"
     --arg body "$body" \
     --argjson options "$options" \
     --arg pr "$pr" \
+    --arg base_branch "$base_branch" \
     '{
        id: $id,
        project: $project,
@@ -198,33 +229,78 @@ PR: $pr"
        title: $title,
        body: $body,
        options: $options,
-       source: ({ task: $id } + (if $pr == "" then {} else { pr: $pr } end))
+       source: ({ task: $id } + (if $pr == "" then {} else { pr: $pr } end)),
+       _base_branch: $base_branch
      }' >> "$ITEMS_JSONL" || { echo "fm-logbook-compose: failed to compose item $id" >&2; exit 1; }
 done
 
 # --- projects: the registry, each flagged active when it carries a card ---------
+# Each project line composes a { name, repo, mode } row; the non-dash "sub"
+# continuation lines beneath it compose that project's ordered sub-project records
+# (attached to the row in the combine step). cur_project tracks which project the
+# sub lines belong to, and resets to "" under an unusable project so orphan sub
+# lines are dropped rather than misattributed.
 if [ -f "$PROJECTS_MD" ]; then
+  cur_project=""
   while IFS= read -r line; do
     case "$line" in
-      '- '*) ;;
-      *) continue ;;   # the header and blank lines are not registry entries
-    esac
-    entry=${line#- }
-    name=${entry%% *}
-    valid_project_name "$name" || continue
-    rest=${entry#"$name"}
-    rest=${rest# }
-    mode=""
-    case "$rest" in
-      '['*)
-        mode=${rest#\[}
-        mode=${mode%%\]*}
-        mode=${mode%% *}   # drop a trailing "+yolo" posture flag
+      '- '*)
+        entry=${line#- }
+        name=${entry%% *}
+        if ! valid_project_name "$name"; then
+          cur_project=""
+          continue
+        fi
+        cur_project="$name"
+        rest=${entry#"$name"}
+        rest=${rest# }
+        mode=""
+        case "$rest" in
+          '['*)
+            mode=${rest#\[}
+            mode=${mode%%\]*}
+            mode=${mode%% *}   # drop a trailing "+yolo" posture flag
+            ;;
+        esac
+        jq -nc --arg name "$name" --arg mode "$mode" \
+          '{ name: $name, repo: $name, mode: $mode }' >> "$REG_JSONL" \
+          || { echo "fm-logbook-compose: failed to compose project $name" >&2; exit 1; }
+        ;;
+      *)
+        # A non-dash "sub <key> | <name> | <branch>" continuation line declares a
+        # sub-project of the current project (leading indentation is cosmetic). The
+        # leading token is never "-", so the "$1==\"-\"" registry parsers skip it.
+        trimmed=$(trim "$line")
+        case "$trimmed" in
+          'sub '*) ;;
+          *) continue ;;   # not a sub declaration (header, blank, or free-form note)
+        esac
+        [ -n "$cur_project" ] || continue
+        content=$(trim "${trimmed#sub }")
+        # Require the three " | "-separated fields; drop a malformed line loudly.
+        case "$content" in
+          *' | '*' | '*) ;;
+          *) echo "fm-logbook-compose: skipping malformed sub-project line under $cur_project: $trimmed" >&2; continue ;;
+        esac
+        sp_key=$(trim "${content%% | *}")     # first field
+        sp_branch=$(trim "${content##* | }")  # last field
+        sp_name=${content#*" | "}; sp_name=$(trim "${sp_name%" | "*}")   # middle field(s)
+        # Only a valid, declared key can ever be emitted, so an item can never map to
+        # a bad key: the key must be the tool's safe slug and name/branch non-empty.
+        if ! logbook_valid_id "$sp_key"; then
+          echo "fm-logbook-compose: skipping sub-project with invalid key \"$sp_key\" under $cur_project" >&2
+          continue
+        fi
+        if [ -z "$sp_name" ] || [ -z "$sp_branch" ]; then
+          echo "fm-logbook-compose: skipping sub-project \"$sp_key\" under $cur_project (empty name or branch)" >&2
+          continue
+        fi
+        sp_name=$(clip "$sp_name" 200)
+        jq -nc --arg project "$cur_project" --arg key "$sp_key" --arg name "$sp_name" --arg branch "$sp_branch" \
+          '{ project: $project, key: $key, name: $name, branch: $branch }' >> "$SUB_JSONL" \
+          || { echo "fm-logbook-compose: failed to compose sub-project $sp_key under $cur_project" >&2; exit 1; }
         ;;
     esac
-    jq -nc --arg name "$name" --arg mode "$mode" \
-      '{ name: $name, repo: $name, mode: $mode }' >> "$REG_JSONL" \
-      || { echo "fm-logbook-compose: failed to compose project $name" >&2; exit 1; }
   done < "$PROJECTS_MD"
 fi
 
@@ -236,13 +312,34 @@ fi
 jq -n \
   --slurpfile items "$ITEMS_JSONL" \
   --slurpfile reg "$REG_JSONL" \
+  --slurpfile subs "$SUB_JSONL" \
   '
-  ($items // []) as $its
+  ($items // []) as $its0
   | ($reg // []) as $regs
+  | ($subs // []) as $sps
+  # Tag each item by base/integration branch: map its _base_branch to the parent
+  # project s matching sub-project key, then strip the helper. No base_branch, or no
+  # match, leaves the item ungrouped (no subproject key at all).
+  | ($its0 | map(
+      ._base_branch as $bb
+      | del(._base_branch)
+      | . as $it
+      | if ($bb // "") == "" then $it
+        else
+          ( $sps | map(select(.project == $it.project and .branch == $bb)) ) as $m
+          | if ($m | length) > 0 then $it + { subproject: $m[0].key } else $it end
+        end
+    )) as $its
   | ([ $its[].project | select(. != "") ] | unique) as $active
   | ($active | map({ key: ., value: true }) | from_entries) as $activeSet
-  | ([ $regs[] | { name, repo, mode, active: ($activeSet[.name] // false) } ]) as $regProjects
+  # Attach each project s ordered (declaration-order) sub-project array, capped at the
+  # tool s 100-per-project limit; a project with none emits an empty array.
+  | ([ $regs[] | . as $p
+       | { name: $p.name, repo: $p.repo, mode: $p.mode,
+           active: ($activeSet[$p.name] // false),
+           subprojects: ([ $sps[] | select(.project == $p.name) | { key, name, branch } ] | .[0:100]) } ]) as $regProjects
   | ($regProjects | map(.name)) as $regNames
-  | ([ $active[] | select([ $regNames[] == . ] | any | not) | { name: ., repo: ., mode: "", active: true } ]) as $extra
+  | ([ $active[] | select([ $regNames[] == . ] | any | not)
+       | { name: ., repo: ., mode: "", active: true, subprojects: [] } ]) as $extra
   | { projects: ($regProjects + $extra), items: $its }
   '
