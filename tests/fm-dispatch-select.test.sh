@@ -9,6 +9,17 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 TMP_ROOT=$(fm_test_tmproot fm-dispatch-select-tests)
 mkdir -p "$TMP_ROOT"
 
+# fm-dispatch-select.sh hard-requires jq. Restricting PATH to BASE_PATH to hide
+# (or fake) quota-axi must not also strip jq, whose install location is not
+# guaranteed to be a BASE_PATH dir, so seed the sandboxed fakebin with a link to
+# the real jq before shadowing quota-axi.
+fakebin_with_jq() {
+  local fakebin
+  fakebin=$(fm_fakebin "$1")
+  ln -sf "$(command -v jq)" "$fakebin/jq"
+  printf '%s\n' "$fakebin"
+}
+
 write_quota() {
   local file=$1 claude_status=$2 claude_five=$3 claude_week=$4 codex_status=$5 codex_five=$6 codex_week=$7
   mkdir -p "$(dirname "$file")"
@@ -62,7 +73,7 @@ test_exact_tie_uses_first_profile() {
 
 test_quota_missing_falls_back_to_first() {
   local fakebin out err status
-  fakebin=$(fm_fakebin "$TMP_ROOT/missing")
+  fakebin=$(fakebin_with_jq "$TMP_ROOT/missing")
   out=$(PATH="$fakebin:$BASE_PATH" "$ROOT/bin/fm-dispatch-select.sh" --select quota-balanced "$profiles" 2>"$TMP_ROOT/missing.err")
   status=$?
   err=$(cat "$TMP_ROOT/missing.err")
@@ -75,7 +86,7 @@ test_quota_missing_falls_back_to_first() {
 
 test_quota_error_falls_back_to_first() {
   local fakebin out err status
-  fakebin=$(fm_fakebin "$TMP_ROOT/error")
+  fakebin=$(fakebin_with_jq "$TMP_ROOT/error")
   cat > "$fakebin/quota-axi" <<'SH'
 #!/usr/bin/env bash
 exit 42
@@ -152,7 +163,7 @@ JSON
 
 test_backward_compatible_first_selection() {
   local fakebin marker out single array_rule
-  fakebin=$(fm_fakebin "$TMP_ROOT/no-call")
+  fakebin=$(fakebin_with_jq "$TMP_ROOT/no-call")
   marker="$TMP_ROOT/quota-called"
   cat > "$fakebin/quota-axi" <<SH
 #!/usr/bin/env bash

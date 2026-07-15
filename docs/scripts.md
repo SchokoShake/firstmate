@@ -81,4 +81,5 @@ The shared no-mistakes gate refusal used by `fm-spawn.sh`, `fm-send.sh`, and `fm
 | `fm-logbook-sync.sh`     | Declaratively reconcile the whole board via `POST /api/sync`                         |
 | `fm-logbook-resolve.sh`  | Clear a card by re-upserting its whole item with a terminal status; an unknown id is a no-op |
 | `fm-logbook-poll.sh`     | One bounded board poll: stash pending answers, print `logbook-response <response_id>` |
+| `fm-logbook-reap.sh`     | Board-liveness reap: health-check the board each check cycle and relaunch it when it has died; silent unless it gives up |
 | `fm-logbook-ack.sh`      | Acknowledge a delivered board response so the connector stops re-offering it         |

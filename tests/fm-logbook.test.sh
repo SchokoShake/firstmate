@@ -25,11 +25,13 @@ JQ_DIR=$(command -v jq 2>/dev/null) && JQ_DIR=$(dirname "$JQ_DIR") || JQ_DIR=
 TMP_ROOT=$(fm_test_tmproot fm-logbook-tests)
 
 # A fakebin `curl` that mimics the board: /health returns FAKE_HEALTH_CODE (default
-# 200); GET /api/board writes FAKE_BOARD_BODY to the -o file and returns
-# FAKE_BOARD_CODE (default 200); any other POST to /api/* returns FAKE_POST_CODE
-# (default 200). Each call is recorded to FAKE_CURL_LOG (url, auth header, streamed
-# body, full argv) so a test can assert the request shape and prove no token leaks
-# into argv.
+# 200) - or, when FAKE_HEALTH_FILE is set, whatever code that file currently holds, so
+# a test can flip the board from dead to alive mid-run (that is how the reap tests let
+# a fake `node` "bind" the port); GET /api/board writes FAKE_BOARD_BODY to the -o file
+# and returns FAKE_BOARD_CODE (default 200); any other POST to /api/* returns
+# FAKE_POST_CODE (default 200). Each call is recorded to FAKE_CURL_LOG (url, auth
+# header, streamed body, full argv) so a test can assert the request shape and prove no
+# token leaks into argv.
 make_fake_curl() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -66,7 +68,14 @@ if [ -n "${FAKE_CURL_LOG:-}" ]; then
   { echo "argv=$argv"; echo "method=$method"; echo "url=$url"; echo "auth=$auth"; echo "data=$data"; } >> "$FAKE_CURL_LOG"
 fi
 case "$url" in
-  */health) [ -n "$ofile" ] && : > "$ofile"; printf '%s' "${FAKE_HEALTH_CODE:-200}" ;;
+  */health)
+    [ -n "$ofile" ] && : > "$ofile"
+    if [ -n "${FAKE_HEALTH_FILE:-}" ]; then
+      printf '%s' "$(cat "$FAKE_HEALTH_FILE" 2>/dev/null || printf '000')"
+    else
+      printf '%s' "${FAKE_HEALTH_CODE:-200}"
+    fi
+    ;;
   */api/board) [ -n "$ofile" ] && printf '%s' "${FAKE_BOARD_BODY:-}" > "$ofile"; printf '%s' "${FAKE_BOARD_CODE:-200}" ;;
   */api/*) [ -n "$ofile" ] && : > "$ofile"; printf '%s' "${FAKE_POST_CODE:-200}" ;;
   *) printf '000' ;;
@@ -75,6 +84,33 @@ exit 0
 SH
   chmod +x "$fakebin/curl"
   printf '%s\n' "$fakebin"
+}
+
+# Give <fakebin> a fake `node` that stands in for the board server: it "binds" by
+# writing 200 into FAKE_HEALTH_FILE, which the fake curl above then serves from
+# /health. That is what lets a reap test drive a real fm-logbook-up.sh relaunch to
+# success without a port, a server, or the projects/logbook clone. Also drops the
+# server.mjs the launcher insists on finding before it will start anything.
+make_fake_node() {
+  local fakebin=$1 tool_dir=$2
+  cat > "$fakebin/node" <<'SH'
+#!/usr/bin/env bash
+# The board "comes up": flip /health to 200 for the fake curl. The real server would
+# stay resident; exiting is fine, since fm-logbook-up.sh detaches it and only ever
+# polls /health for readiness.
+[ -n "${FAKE_HEALTH_FILE:-}" ] && printf '200' > "$FAKE_HEALTH_FILE"
+exit 0
+SH
+  chmod +x "$fakebin/node"
+  mkdir -p "$tool_dir"
+  : > "$tool_dir/server.mjs"
+}
+
+# How many times the board's /health was probed, per FAKE_CURL_LOG. The reap's own
+# probe is one call; a relaunch attempt adds fm-logbook-up.sh's own probes on top, so
+# a flat count is how a test proves an attempt was (or was not) made.
+count_health_calls() {
+  grep -c 'url=.*/health' "$1" 2>/dev/null || printf '0'
 }
 
 # A fakebin `curl` for the Phase 2 inbound connector: GET /api/connector/poll
@@ -507,6 +543,10 @@ EOF
   assert_present "$home/state/logbook-watch.check.sh" "opt-in must drop the board-response poll shim"
   [ -x "$home/state/logbook-watch.check.sh" ] || fail "the poll shim must be executable"
   assert_grep "fm-logbook-poll.sh" "$home/state/logbook-watch.check.sh" "the shim must exec the poll script"
+  # Board liveness rides the same rail: nothing else supervises the detached board.
+  assert_present "$home/state/logbook-reap.check.sh" "opt-in must drop the board-liveness reap shim"
+  [ -x "$home/state/logbook-reap.check.sh" ] || fail "the reap shim must be executable"
+  assert_grep "fm-logbook-reap.sh" "$home/state/logbook-reap.check.sh" "the reap shim must exec the reap script"
   assert_present "$home/config/logbook-mode.env" "opt-in must drop the cadence config"
   assert_grep "export FM_CHECK_INTERVAL=15" "$home/config/logbook-mode.env" "cadence must be 15s"
   # The generated cadence file must NOT clobber the captain's hand-authored opt-in.
@@ -517,14 +557,14 @@ EOF
   # shellcheck source=/dev/null
   inherited=$( . "$home/config/logbook-mode.env" && bash -c 'echo "${FM_CHECK_INTERVAL:-300}"' )
   [ "$inherited" = "15" ] || fail "sourcing the cadence config must export FM_CHECK_INTERVAL=15 to a child"
-  # Idempotent: re-running changes nothing and does not duplicate the shim.
-  sum1=$(cat "$home/state/logbook-watch.check.sh" "$home/config/logbook-mode.env" | shasum)
+  # Idempotent: re-running changes nothing and does not duplicate the shims.
+  sum1=$(cat "$home/state/logbook-watch.check.sh" "$home/state/logbook-reap.check.sh" "$home/config/logbook-mode.env" | shasum)
   PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
-  sum2=$(cat "$home/state/logbook-watch.check.sh" "$home/config/logbook-mode.env" | shasum)
+  sum2=$(cat "$home/state/logbook-watch.check.sh" "$home/state/logbook-reap.check.sh" "$home/config/logbook-mode.env" | shasum)
   [ "$sum1" = "$sum2" ] || fail "bootstrap logbook Phase 2 setup must be idempotent"
-  n=$(find "$home/state" -maxdepth 1 -name 'logbook-watch*' | wc -l | tr -d ' ')
-  [ "$n" = "1" ] || fail "bootstrap must not duplicate the shim (found $n)"
-  pass "bootstrap opt-in drops the board-response poll shim + 15s cadence, idempotently"
+  n=$(find "$home/state" -maxdepth 1 -name 'logbook-*.check.sh' | wc -l | tr -d ' ')
+  [ "$n" = "2" ] || fail "bootstrap must drop exactly the poll + reap shims, unduplicated (found $n)"
+  pass "bootstrap opt-in drops the board-response poll shim, board-liveness reap shim, and 15s cadence, idempotently"
 }
 
 test_xmode_and_logbook_cadences_coexist() {
@@ -670,13 +710,15 @@ LOGBOOK_TOKEN=boottok
 EOF
   PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
   assert_present "$home/state/logbook-watch.check.sh" "opt-in must create the poll shim before opt-out"
+  assert_present "$home/state/logbook-reap.check.sh" "opt-in must create the reap shim before opt-out"
   assert_present "$home/config/logbook-mode.env" "opt-in must create the cadence config before opt-out"
-  # Opt out: falsy flag -> both artifacts removed + one off line.
+  # Opt out: falsy flag -> every artifact removed + one off line.
   printf 'LOGBOOK_ENABLE=0\n' > "$home/config/logbook.env"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
-  assert_contains "$out" "LOGBOOK: off - removed board-response poll shim and 15s cadence" \
+  assert_contains "$out" "LOGBOOK: off - removed board-response poll shim, board-liveness reap shim, and 15s cadence" \
     "opt-out must announce logbook off when it removed artifacts"
   assert_absent "$home/state/logbook-watch.check.sh" "opt-out must remove the poll shim"
+  assert_absent "$home/state/logbook-reap.check.sh" "opt-out must remove the reap shim"
   assert_absent "$home/config/logbook-mode.env" "opt-out must remove the cadence config"
   # Steady-state off: another run with nothing to remove is silent.
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
@@ -809,6 +851,305 @@ test_poll_missing_jq_reports_error() {
   fi
   assert_absent "$home/state/logbook-inbox" "missing jq must not stash an inbox file"
   pass "fm-logbook-poll surfaces a missing jq dependency instead of a silent failure"
+}
+
+# --- board-liveness reap (fm-logbook-reap.sh) --------------------------------
+#
+# The board is a bare detached node process that nothing supervised: before the reap,
+# only a session-start bootstrap ever started it, so a board killed mid-session stayed
+# dead. The reap rides the SAME check rail as the poll, and its defining property is
+# that it is QUIET - a board it brings back must not wake firstmate, because reaping is
+# housekeeping. Only a board it has given up on may speak, and then only once.
+
+test_reap_hard_noop_when_disabled() {
+  local home fakebin out rc log
+  home="$TMP_ROOT/reap-off"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  # Not opted in: a hard no-op that never even health-checks the board. This is what a
+  # non-adopter pays for the reap - nothing.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE='' FAKE_CURL_LOG="$log" \
+    "$ROOT/bin/fm-logbook-reap.sh"); rc=$?
+  expect_code 0 "$rc" "reap disabled exit"
+  [ -z "$out" ] || fail "reap must be silent when not opted in (got: $out)"
+  [ ! -f "$log" ] || fail "reap must not even health-check the board when not opted in"
+  assert_absent "$home/state/logbook-reap.state" "reap must write no state when not opted in"
+  pass "fm-logbook-reap is a hard no-op when not opted in (inert default)"
+}
+
+test_reap_healthy_board_is_silent() {
+  local home fakebin out rc log
+  home="$TMP_ROOT/reap-healthy"; mkdir -p "$home"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  # The common path: the board answers, so the reap probes once and says nothing. An
+  # absent server log proves it never launched anything.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_CODE=200 FAKE_CURL_LOG="$log" \
+    "$ROOT/bin/fm-logbook-reap.sh"); rc=$?
+  expect_code 0 "$rc" "reap healthy exit"
+  [ -z "$out" ] || fail "a healthy board must produce NO output, hence no wake (got: $out)"
+  [ "$(count_health_calls "$log")" = "1" ] \
+    || fail "a healthy board must cost exactly one /health probe (got: $(count_health_calls "$log"))"
+  assert_absent "$home/state/logbook-server.log" "a healthy board must not spawn a server"
+  assert_absent "$home/state/logbook-reap.state" "a healthy board with no incident writes no state"
+  pass "fm-logbook-reap stays silent and cheap while the board is healthy"
+}
+
+test_reap_relaunches_dead_board_without_waking() {
+  local home fakebin out rc health
+  home="$TMP_ROOT/reap-revive"; mkdir -p "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  make_fake_node "$fakebin" "$home/projects/logbook"
+  health="$home/health.code"
+  printf '000' > "$health"   # the board is dead: /health refuses the connection
+  # The whole point of the task: a board killed mid-session comes back on the next
+  # check cycle, and the captain is NOT woken for it.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    "$ROOT/bin/fm-logbook-reap.sh"); rc=$?
+  expect_code 0 "$rc" "reap relaunch exit"
+  [ -z "$out" ] || fail "a RELAUNCHED board must not manufacture a wake (got: $out)"
+  [ "$(cat "$health")" = "200" ] || fail "the reap must actually have relaunched the board"
+  # A clean revival records phase=up with both streaks at zero: the board is being
+  # watched for stability (it clears once healthy for STABLE_SECS), but it never gave up.
+  assert_grep 'up 0 0 ' "$home/state/logbook-reap.state" \
+    "a clean revival records phase up with both streaks at zero"
+  assert_absent "$home/state/logbook-reap.error" "a successful relaunch must leave no diagnostic"
+  pass "fm-logbook-reap revives a dead board silently (housekeeping, never a wake)"
+}
+
+test_reap_wont_start_gives_up_once_then_stops() {
+  local home fakebin out rc health log i
+  home="$TMP_ROOT/reap-wontstart"; mkdir -p "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  health="$home/health.code"; log="$home/curl.log"
+  printf '000' > "$health"   # board dead and, with no `node`, it can never be started
+  # The board never answers, so the WONT-START streak climbs one per cycle. The cycles
+  # before the threshold stay QUIET - a board merely slow to bind lands here and recovers
+  # on the next cycle, and waking for that is noise.
+  i=1
+  while [ "$i" -lt 3 ]; do
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+      LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+      FM_LOGBOOK_REAP_MAX_STRIKES=3 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+    expect_code 0 "$rc" "reap wont-start cycle $i exit"
+    [ -z "$out" ] || fail "wont-start cycle $i must stay quiet (got: $out)"
+    assert_grep "launching $i 0 " "$home/state/logbook-reap.state" \
+      "wont-start cycle $i must advance the streak to $i and keep trying"
+    i=$((i + 1))
+  done
+
+  # The MAX_STRIKES-th failed relaunch exhausts the tries: ONE diagnostic that says the
+  # board WON'T START and carries the launcher's own reason so the captain can act.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=3 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "reap wont-start give-up exit"
+  assert_contains "$out" "logbook-error logbook board won't start at http://127.0.0.1:8137" \
+    "exhausting the relaunch tries must surface exactly one won't-start diagnostic"
+  assert_contains "$out" "node not found" \
+    "the diagnostic must carry the launcher's own reason, not just 'it failed'"
+  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = "1" ] \
+    || fail "the give-up must be ONE line (one wake), not a stream (got: $out)"
+  assert_grep "wontstart 3 0 " "$home/state/logbook-reap.state" "give-up must record the wontstart phase"
+  assert_present "$home/state/logbook-reap.error" "the give-up must write a dedupe marker"
+
+  # After giving up, the reap STOPS relaunching until reset - this is what kills the old
+  # decay-into-thrash bug, where the in-window count decayed and the gate reopened. A
+  # given-up cycle costs ONE /health probe and issues NO relaunch (a relaunch would add
+  # fm-logbook-up.sh's own probes on top of that one).
+  rm -f "$log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" FAKE_CURL_LOG="$log" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=3 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "reap wont-start backed-off exit"
+  [ -z "$out" ] || fail "a given-up board must stay quiet after its one report (got: $out)"
+  [ "$(count_health_calls "$log")" = "1" ] \
+    || fail "a given-up cycle must cost ONE probe and attempt no relaunch (probes: $(count_health_calls "$log"))"
+  pass "fm-logbook-reap surfaces a won't-start board once, then stops relaunching (no thrash)"
+}
+
+test_reap_crash_loop_gives_up_once_then_stops() {
+  local home fakebin out rc health log n
+  home="$TMP_ROOT/reap-crashloop"; mkdir -p "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  make_fake_node "$fakebin" "$home/projects/logbook"   # every relaunch revives the board
+  health="$home/health.code"; log="$home/curl.log"
+  printf '000' > "$health"
+
+  # Cycle 1: first death -> the reap revives it (the fake node binds). Silent.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=3 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "reap crash-loop revive exit"
+  [ -z "$out" ] || fail "the first revival must be silent (got: $out)"
+  [ "$(cat "$health")" = "200" ] || fail "the reap must have revived the board"
+  assert_grep "up 0 0 " "$home/state/logbook-reap.state" "the first revival records phase up, no strikes"
+
+  # ...but the board keeps DYING before it proves stable. Each crash (flip back to 000)
+  # then relaunch is a non-sticking revival, so the CRASH-LOOP streak climbs one per
+  # crash, and the reap silently revives it again while the streak is short.
+  n=1
+  while [ "$n" -lt 3 ]; do
+    printf '000' > "$health"   # the revived board dies again before STABLE_SECS
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+      LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+      FM_LOGBOOK_REAP_MAX_STRIKES=3 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+    expect_code 0 "$rc" "reap crash-loop cycle $n exit"
+    [ -z "$out" ] || fail "crash-loop cycle $n must stay quiet while the streak is short (got: $out)"
+    [ "$(cat "$health")" = "200" ] || fail "crash-loop cycle $n must re-revive the board"
+    assert_grep "up 0 $n " "$home/state/logbook-reap.state" \
+      "crash-loop cycle $n must advance the crash streak to $n and re-revive"
+    n=$((n + 1))
+  done
+
+  # The MAX_STRIKES-th non-sticking revival gives up: ONE diagnostic that says the board
+  # is CRASH-LOOPING, and this time the reap does NOT relaunch - the board stays down.
+  printf '000' > "$health"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=3 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "reap crash-loop give-up exit"
+  assert_contains "$out" "logbook-error logbook board is crash-looping at http://127.0.0.1:8137" \
+    "exhausting the crash-loop streak must surface exactly one crash-looping diagnostic"
+  assert_contains "$out" "revived 3 times" "the diagnostic must report how many revivals did not stick"
+  [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = "1" ] \
+    || fail "the give-up must be ONE line (one wake), not a stream (got: $out)"
+  [ "$(cat "$health")" = "000" ] || fail "the give-up cycle must NOT relaunch (board stays down)"
+  assert_grep "crashloop 0 3 " "$home/state/logbook-reap.state" "give-up must record the crashloop phase"
+  assert_present "$home/state/logbook-reap.error" "the give-up must write a dedupe marker"
+
+  # Given up: a further cycle stays quiet, issues NO relaunch, and revives nothing.
+  rm -f "$log"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" FAKE_CURL_LOG="$log" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=3 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "reap crash-loop backed-off exit"
+  [ -z "$out" ] || fail "a crash-looping board given up on must stay quiet (got: $out)"
+  [ "$(count_health_calls "$log")" = "1" ] \
+    || fail "a given-up crash-loop cycle must cost ONE probe and no relaunch"
+  [ "$(cat "$health")" = "000" ] || fail "a given-up cycle must not revive the board"
+  pass "fm-logbook-reap surfaces a crash-looping board once, then stops relaunching"
+}
+
+test_reap_single_death_is_not_a_crash_loop() {
+  local home fakebin out rc health
+  home="$TMP_ROOT/reap-single"; mkdir -p "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  make_fake_node "$fakebin" "$home/projects/logbook"
+  health="$home/health.code"; printf '000' > "$health"
+  # Cycle 1: first death -> revive.
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=3 "$ROOT/bin/fm-logbook-reap.sh" >/dev/null 2>&1
+  # ONE crash: the board dies once and is revived. A single non-sticking revival must
+  # NEVER wake the captain; only MAX_STRIKES consecutive ones do. This is the false
+  # crash-loop-from-one-unanswered-probe bug the streak model kills by construction.
+  printf '000' > "$health"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=3 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "reap single-death exit"
+  [ -z "$out" ] || fail "ONE non-sticking revival must not wake anyone (got: $out)"
+  assert_absent "$home/state/logbook-reap.error" "one crash must not write a diagnostic marker"
+  assert_grep "up 0 1 " "$home/state/logbook-reap.state" \
+    "one crash records a crash streak of 1, well short of give-up"
+  [ "$(cat "$health")" = "200" ] || fail "the reap must re-revive after a single crash"
+  pass "fm-logbook-reap treats one non-sticking revival as harmless, not a crash-loop wake"
+}
+
+test_reap_stability_reset_clears_both_streaks() {
+  local home fakebin out rc health now
+  home="$TMP_ROOT/reap-stable"; mkdir -p "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  health="$home/health.code"; printf '200' > "$health"   # board healthy
+  now=$(date +%s)
+  # A revived board carrying live streaks, healthy since LONGER than STABLE_SECS: it has
+  # proved stable, so BOTH streaks and the diagnostic clear. This monotone wall-clock
+  # reset replaces the old decaying window.
+  printf 'up 3 2 %s\n' "$((now - 200))" > "$home/state/logbook-reap.state"
+  printf 'stale diagnostic\n' > "$home/state/logbook-reap.error"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_STABLE_SECS=100 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "reap stability-reset exit"
+  [ -z "$out" ] || fail "a stabilised board must be silent (got: $out)"
+  assert_absent "$home/state/logbook-reap.state" "STABLE_SECS of continuous health resets both streaks"
+  assert_absent "$home/state/logbook-reap.error" "a stable board clears the diagnostic too"
+
+  # But a board healthy for LESS than STABLE_SECS is still proving: nothing resets yet.
+  printf 'up 3 2 %s\n' "$now" > "$home/state/logbook-reap.state"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_STABLE_SECS=100 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "reap not-yet-stable exit"
+  [ -z "$out" ] || fail "a still-proving board must be silent (got: $out)"
+  assert_grep "up 3 2 " "$home/state/logbook-reap.state" \
+    "a board healthy for less than STABLE_SECS must keep its streaks (no premature reset)"
+  pass "fm-logbook-reap resets both streaks only after STABLE_SECS of continuous health"
+}
+
+test_reap_give_up_is_by_cycle_not_wall_clock() {
+  local home fakebin out rc health
+  home="$TMP_ROOT/reap-cadence"; mkdir -p "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  health="$home/health.code"; printf '000' > "$health"
+  # The give-up is driven by the CONSECUTIVE-cycle streak, never by a time window, so it
+  # fires the same whether cycles are 15s apart (default) or 300s apart (away mode). Seed
+  # a launching streak whose last relaunch is stamped an ANCIENT epoch: an events-per-
+  # time-window model would have decayed it to nothing, leaving a broken board relaunched
+  # forever with no diagnostic (the away-mode bug). The streak model just advances it.
+  printf 'launching 1 0 1\n' > "$home/state/logbook-reap.state"   # since=1 (1970), aeons ago
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=2 "$ROOT/bin/fm-logbook-reap.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "reap cadence-independent give-up exit"
+  assert_contains "$out" "logbook board won't start" \
+    "the second consecutive failure must give up regardless of the wall-clock gap since the last try"
+  assert_grep "wontstart 2 0 " "$home/state/logbook-reap.state" \
+    "the streak advanced by one cycle to the give-up threshold, with no time-window decay"
+  pass "fm-logbook-reap gives up by consecutive-cycle count, not wall clock (same at 15s and 300s)"
+}
+
+test_reap_recovery_rearms_the_report() {
+  local home fakebin out rc health now
+  home="$TMP_ROOT/reap-recover"; mkdir -p "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  health="$home/health.code"
+  printf '000' > "$health"
+  # Drive it to give-up (MAX_STRIKES=1: the first failed relaunch gives up at once).
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=1 "$ROOT/bin/fm-logbook-reap.sh" >/dev/null 2>&1
+  assert_present "$home/state/logbook-reap.error" "setup: the reap must have given up"
+  assert_grep "wontstart " "$home/state/logbook-reap.state" "setup: the reap must have recorded the give-up"
+
+  # The board recovers externally (the captain fixes the cause, or the systemd unit
+  # restarts it). The first healthy cycle re-arms the stability clock but does NOT clear
+  # yet - a board must PROVE it is stable before the diagnostic is dropped.
+  printf '200' > "$health"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_MAX_STRIKES=1 "$ROOT/bin/fm-logbook-reap.sh"); rc=$?
+  expect_code 0 "$rc" "reap recovery first-healthy exit"
+  [ -z "$out" ] || fail "a recovering board must not wake anyone (got: $out)"
+  assert_grep "up " "$home/state/logbook-reap.state" "recovery moves the board into the proving (up) phase"
+  assert_present "$home/state/logbook-reap.error" "the diagnostic is held until the board proves stable"
+
+  # Once it has been healthy for STABLE_SECS, both the streak state and the diagnostic
+  # clear, re-arming the report so a LATER death is reaped and reported afresh instead of
+  # being silently deduped against a stale diagnostic.
+  now=$(date +%s)
+  printf 'up 1 0 %s\n' "$((now - 200))" > "$home/state/logbook-reap.state"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_HEALTH_FILE="$health" \
+    FM_LOGBOOK_REAP_STABLE_SECS=100 "$ROOT/bin/fm-logbook-reap.sh"); rc=$?
+  expect_code 0 "$rc" "reap recovery stable exit"
+  [ -z "$out" ] || fail "a fully recovered board must not wake anyone (got: $out)"
+  assert_absent "$home/state/logbook-reap.error" "recovery must clear the diagnostic marker once stable"
+  assert_absent "$home/state/logbook-reap.state" "recovery must clear the streak state once stable"
+  pass "fm-logbook-reap clears its markers once a recovered board proves stable, re-arming the report"
 }
 
 # --- inbound connector ack (fm-logbook-ack.sh) ------------------------------
@@ -1091,6 +1432,15 @@ test_poll_empty_responses_is_silent
 test_poll_error_reports_once
 test_poll_rejects_unsafe_response_id
 test_poll_missing_jq_reports_error
+test_reap_hard_noop_when_disabled
+test_reap_healthy_board_is_silent
+test_reap_relaunches_dead_board_without_waking
+test_reap_wont_start_gives_up_once_then_stops
+test_reap_crash_loop_gives_up_once_then_stops
+test_reap_single_death_is_not_a_crash_loop
+test_reap_stability_reset_clears_both_streaks
+test_reap_give_up_is_by_cycle_not_wall_clock
+test_reap_recovery_rearms_the_report
 test_ack_dry_run_records
 test_ack_live_posts_with_bearer_no_leak
 test_ack_live_non_2xx_fails
