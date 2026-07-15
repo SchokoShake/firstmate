@@ -21,6 +21,10 @@ function runProcess(command, args, input = "") {
     });
     child.on("error", () => resolve({ code: 0, stdout: "", stderr: "" }));
     child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
+    // The guard may exit before draining stdin (e.g. an early no-op return),
+    // closing the pipe's read end; swallow the resulting EPIPE so writing the
+    // payload never raises an unhandled 'error' that crashes the host process.
+    child.stdin.on("error", () => {});
     child.stdin.end(input);
   });
 }
