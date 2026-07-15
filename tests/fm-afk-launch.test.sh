@@ -238,24 +238,54 @@ unit_lock_initialization_grace() {
 }
 
 unit_signal_exits_with_lock_cleanup() {
-  local st marker child
+  local st marker ready go child
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-signal.XXXXXX")
   marker="$st/resumed"
-  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" bash -c '
+  ready="$st/acquiring"
+  go="$st/release-signalled"
+  # Deterministically deliver the signal while the launcher is INSIDE
+  # fm_afk_launch_lock_acquire, with the lock already held (directory made, pid
+  # stamped) but before acquire returns. Overriding fm_pid_identity - which
+  # acquire calls right after stamping the pid - pauses execution in exactly that
+  # window: it announces readiness, waits for the test's go-ahead, then returns a
+  # valid identity. This replaces the old "poll for the lock dir, then kill"
+  # approach, whose signal landed in the vulnerable window only on some machines,
+  # so it caught the leak inconsistently.
+  #
+  # With the cleanup traps armed BEFORE acquisition, the caught TERM (deferred by
+  # bash until the command substitution returns) releases the held lock the
+  # instant fm_pid_identity returns. With the buggy arm-after-acquire ordering no
+  # trap is installed yet, so the default TERM disposition kills the launcher
+  # mid-acquire and leaks the lock. The two orderings therefore give opposite,
+  # deterministic outcomes here.
+  FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" \
+    FM_AFK_TEST_READY="$ready" FM_AFK_TEST_GO="$go" FM_AFK_TEST_MARKER="$marker" bash -c '
     . "$1"
-    fm_afk_launch_start() { sleep 30; }
+    fm_pid_identity() {
+      local n
+      touch "$FM_AFK_TEST_READY"
+      for n in $(seq 1 500); do [ -e "$FM_AFK_TEST_GO" ] && break; sleep 0.02; done
+      printf "test-identity"
+    }
+    fm_afk_launch_start() { local i; for i in $(seq 1 600); do sleep 0.05; done; }
     fm_afk_launch_main start
-    : > "$2"
-  ' _ "$LAUNCH" "$marker" &
+    : > "$FM_AFK_TEST_MARKER"
+  ' _ "$LAUNCH" &
   child=$!
-  for _ in $(seq 1 40); do
-    [ -d "$st/state/.afk-launch.lock" ] && break
-    sleep 0.05
+  # Wait until the launcher is provably inside acquire holding the lock.
+  for _ in $(seq 1 250); do
+    [ -e "$ready" ] && [ -s "$st/state/.afk-launch.lock/pid" ] && break
+    sleep 0.02
   done
   kill -TERM "$child" 2>/dev/null || true
+  # Give the (buggy) launcher a moment to die from the untrapped TERM before the
+  # go-ahead lands, then release a correctly-armed launcher from acquire so its
+  # deferred TERM trap runs.
+  sleep 0.05
+  : > "$go"
   wait "$child" 2>/dev/null || true
   if [ ! -e "$marker" ] && [ ! -e "$st/state/.afk-launch.lock" ]; then
-    pass "launcher signal: TERM exits and releases the lifecycle lock"
+    pass "launcher signal: TERM during lock acquisition releases the held lock"
   else
     fail "launcher signal: interrupted lifecycle resumed or retained its lock"
   fi
