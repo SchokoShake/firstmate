@@ -67,12 +67,17 @@ set +e
 
 fm_afk_launch_log() { printf 'fm-afk-launch: %s\n' "$*" >&2; }
 
-# Set to 1 the instant this process's own mkdir creates the lock directory, and
-# back to 0 once that lock is released or its creation is rolled back. It lets
-# fm_afk_launch_lock_release clean up a lock this process created but had not yet
-# stamped with its pid, closing the mkdir-then-publish gap when a signal fires
-# mid-acquire (the EXIT/INT/TERM traps are armed before acquisition; see
-# fm_afk_launch_main).
+# Set to 1 the instant after this process's own mkdir creates the lock
+# directory, and back to 0 once that lock is released or its creation is rolled
+# back. It lets fm_afk_launch_lock_release clean up a lock this process created
+# but had not yet stamped with its pid, covering the window between a successful
+# mkdir and stamping the pid (the EXIT/INT/TERM traps are armed before
+# acquisition; see fm_afk_launch_main). It does not cover the mkdir call itself:
+# a signal caught while mkdir is the foreground command is deferred by bash until
+# mkdir returns and runs the release trap before this marker is set, so an empty
+# un-stamped lock directory can remain. That is not a durable leak -
+# fm_afk_launch_lock_acquire's initialization-grace path reaps such an incomplete
+# lock on the next start.
 FM_AFK_LAUNCH_LOCK_MINE=0
 
 fm_afk_launch_lock_owned() {
@@ -132,9 +137,12 @@ fm_afk_launch_lock_release() {
   local pid
   pid=$(cat "$FM_AFK_LAUNCH_LOCK/pid" 2>/dev/null || true)
   # Release the lock when this process owns it (pid stamped), or when this
-  # process created the directory but a signal fired before it stamped its pid
-  # (FM_AFK_LAUNCH_LOCK_MINE set, pid still absent). Never touch a directory a
-  # different live launcher owns.
+  # process created the directory but a signal fired after mkdir returned and
+  # before it stamped its pid (FM_AFK_LAUNCH_LOCK_MINE set, pid still absent).
+  # Never touch a directory a different live launcher owns. A signal caught
+  # during the mkdir call itself is not covered here, because the marker is not
+  # yet set; acquire's initialization-grace path reaps that un-stamped directory
+  # on the next start.
   if [ "$pid" = "$$" ] || { [ "$FM_AFK_LAUNCH_LOCK_MINE" = 1 ] && [ -z "$pid" ]; }; then
     rm -rf "$FM_AFK_LAUNCH_LOCK"
     FM_AFK_LAUNCH_LOCK_MINE=0
@@ -616,10 +624,15 @@ fm_afk_launch_main() {
   local result
   # Arm the cleanup traps BEFORE acquiring the lock. fm_afk_launch_lock_release
   # only removes a lock this process owns or created (never another launcher's),
-  # so arming it early is safe and guarantees the lock is released even if INT or
-  # TERM lands mid-acquire. Arming after acquisition left a window where a signal
-  # killed the process with the lock held but no cleanup trap installed, leaking
-  # the lock (the default INT/TERM disposition skips the not-yet-armed EXIT trap).
+  # so arming it early is safe: it guarantees release of any lock this process has
+  # already stamped with its pid, and FM_AFK_LAUNCH_LOCK_MINE additionally covers
+  # the window between a successful mkdir and that stamp. A signal caught during
+  # the mkdir call itself can still leave an empty un-stamped directory (bash
+  # defers the trap until mkdir returns, before the marker is set); acquire's
+  # initialization-grace path reaps it on the next start, so it is not a durable
+  # leak. Arming after acquisition left a much wider window where a signal killed
+  # the process with the lock fully held but no cleanup trap installed, leaking
+  # it (the default INT/TERM disposition skips the not-yet-armed EXIT trap).
   trap fm_afk_launch_lock_release EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
