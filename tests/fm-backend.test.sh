@@ -795,18 +795,29 @@ run_spawn_case() {  # <bin-root> <fakebin> <log> <state> <data> <config> <proj> 
 # run_spawn_case are retained: test_spawn_default_backend_writes_no_meta_field
 # uses make_spawn_fakebin, and #294's run_spawn_symlink_case uses run_spawn_case.)
 
-# --- symlinked project prefix must not false-refuse the isolation guard -----
+# --- symlinked project prefix: the PROJ_ABS_REAL canonicalization -----------
 #
 # docs/herdr-backend.md "Known gaps": when the PROJECT lives under a symlinked
 # prefix (e.g. macOS's /tmp -> /private/tmp), fm-spawn.sh's PROJ_ABS - a logical
 # `cd && pwd` - differs string-for-string from an OS-level physical path.
-# validate_spawn_worktree compares the leased worktree's PHYSICAL path against
-# the project, so fm-spawn canonicalizes PROJ_ABS to PROJ_ABS_REAL (pwd -P)
-# before that compare. This test drives a spawn whose project is reached through
-# a symlink and asserts no false isolation refusal, so it fails loudly if the
-# PROJ_ABS_REAL canonicalization in bin/fm-spawn.sh ever regresses. (The old
-# pane-current-path poll this test used to exercise is gone: worktree capture is
-# now the authoritative `treehouse get --lease` path - fm-spawn-wt-batch-x5.)
+# validate_spawn_worktree compares the leased worktree's PHYSICAL path (always
+# pwd -P) against the project, so fm-spawn canonicalizes PROJ_ABS to
+# PROJ_ABS_REAL (pwd -P) before that compare. Two cases pin that canonicalization
+# from both sides so it fails loudly if PROJ_ABS_REAL ever regresses to a logical
+# PROJ_ABS:
+#   isolated - project reached through a symlinked prefix, leased worktree a
+#     genuinely distinct isolated worktree: the spawn must SUCCEED and record it,
+#     i.e. no false isolation refusal.
+#   tangle - project reached through a symlinked prefix, leased worktree the
+#     PROJECT ITSELF reached back through that same prefix (physical path equal to
+#     the project): the spawn must be REFUSED. This refusal holds ONLY because
+#     validate_spawn_worktree resolves both sides with pwd -P: canonicalized,
+#     wt_real (real_root/proj) == proj_real (real_root/proj) so the tangle is
+#     caught; were PROJ_ABS_REAL the logical PROJ_ABS (link_root/proj) the
+#     physical worktree path would compare unequal and the tangle would be wrongly
+#     allowed, so a regression fails this case loudly.
+# (The old pane-current-path poll this test used to exercise is gone: worktree
+# capture is now the authoritative `treehouse get --lease` path - fm-spawn-wt-batch-x5.)
 make_spawn_symlink_fakebin() {  # <dir> <worktree-path> -> echoes fakebin dir
   local dir=$1 wt=$2 fb="$1/fakebin"
   mkdir -p "$fb"
@@ -834,15 +845,23 @@ SH
   printf '%s\n' "$fb"
 }
 
-run_spawn_symlink_case() {  # <label>
-  local label=$1 real_root link_root proj wt id fb data state config log out rc
+run_spawn_symlink_case() {  # <label> <mode: isolated|tangle>
+  local label=$1 mode=$2 real_root link_root proj wt id fb data state config log out rc
   real_root="$TMP_ROOT/symlink-real-$label"; link_root="$TMP_ROOT/symlink-link-$label"
   mkdir -p "$real_root"
   ln -s "$real_root" "$link_root"
   proj="$link_root/proj"
-  wt="$TMP_ROOT/symlink-wt-$label"
   id="spawnsymlink$label"
-  fm_git_worktree "$real_root/proj" "$wt" "fm/$id"
+  if [ "$mode" = tangle ]; then
+    # Leased worktree IS the project, reached back through the symlinked prefix:
+    # its physical path (real_root/proj) equals the project's, so the tangle is
+    # caught only by the pwd -P canonicalization of PROJ_ABS.
+    fm_git_init_commit "$real_root/proj"
+    wt="$proj"
+  else
+    wt="$TMP_ROOT/symlink-wt-$label"
+    fm_git_worktree "$real_root/proj" "$wt" "fm/$id"
+  fi
   fb=$(make_spawn_symlink_fakebin "$TMP_ROOT/symlink-fake-$label" "$wt")
   data="$TMP_ROOT/symlink-data-$label"
   mkdir -p "$data/$id"
@@ -853,16 +872,28 @@ run_spawn_symlink_case() {  # <label>
 
   out=$(run_spawn_case "$ROOT" "$fb" "$log" "$state" "$data" "$config" "$proj" -- "$id" "$proj" claude 2>&1)
   rc=$?
-  expect_code 0 "$rc" "fm-spawn.sh should succeed for a project reached through a symlinked prefix"$'\n'"$out"
-  assert_contains "$out" "worktree=$wt" \
-    "fm-spawn.sh did not record the leased worktree for a symlinked-prefix project"
+  if [ "$mode" = tangle ]; then
+    expect_code 1 "$rc" "fm-spawn.sh must refuse when the leased worktree is the project itself reached through a symlinked prefix"$'\n'"$out"
+    assert_contains "$out" "did not yield an isolated worktree" \
+      "fm-spawn.sh did not refuse a leased-worktree-equals-project tangle reached through a symlink (PROJ_ABS_REAL canonicalization regressed?)"
+    assert_absent "$state/$id.meta" "a refused symlink-tangle spawn must not record meta"
+  else
+    expect_code 0 "$rc" "fm-spawn.sh should succeed for a project reached through a symlinked prefix"$'\n'"$out"
+    assert_contains "$out" "worktree=$wt" \
+      "fm-spawn.sh did not record the leased worktree for a symlinked-prefix project"
+  fi
 
   rm -rf "/tmp/fm-$id"
 }
 
 test_spawn_symlinked_project_prefix_avoids_false_refusal() {
-  run_spawn_symlink_case only
+  run_spawn_symlink_case iso isolated
   pass "fm-spawn.sh: a project reached through a symlinked prefix (e.g. macOS /tmp -> /private/tmp) does not trip the isolation guard's false refusal"
+}
+
+test_spawn_symlinked_project_prefix_catches_tangle() {
+  run_spawn_symlink_case tangle tangle
+  pass "fm-spawn.sh: the PROJ_ABS_REAL canonicalization catches a leased-worktree-equals-project tangle reached through a symlinked prefix"
 }
 
 # --- old vs new: fm-teardown.sh ----------------------------------------------
@@ -1076,6 +1107,7 @@ test_backend_of_selector_matches_explicit_target_meta
 test_send_conformance_old_vs_new
 test_peek_conformance_old_vs_new
 test_spawn_symlinked_project_prefix_avoids_false_refusal
+test_spawn_symlinked_project_prefix_catches_tangle
 test_teardown_conformance_old_vs_new
 test_spawn_refuses_unknown_backend_flag
 test_spawn_refuses_codex_app_backend_flag
