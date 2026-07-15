@@ -149,9 +149,10 @@ test_brief_assertion_precedes_branch() {
 
 # --- GUARD 1b: fm-spawn isolation abort -------------------------------------
 
-# A fake tmux that reports FM_FAKE_PANE_PATH as the post-`treehouse get` pane cwd
-# (so the spawn's worktree-resolution loop resolves to a path we control), names
-# the session on '#S', and swallows window ops. Echoes the fakebin dir.
+# A fake tmux that swallows window ops and names the session on '#S', paired with
+# a treehouse stub whose `get --lease` prints FM_FAKE_PANE_PATH as the leased
+# worktree - so the spawn's authoritative worktree capture resolves to a path we
+# control (fm-spawn-wt-batch-x5). Echoes the fakebin dir.
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -169,7 +170,15 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  get) printf '%s\n' "${FM_FAKE_PANE_PATH:-}" ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
   printf '%s\n' "$fakebin"
 }
 
@@ -214,21 +223,51 @@ test_spawn_isolation_abort() {
   pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
 }
 
+# --- GUARD 1d: fm-spawn $FM_HOME backstop (fm-spawn-wt-batch-x5) -------------
+
+# The historical mis-capture recorded worktree=$FM_HOME (the primary firstmate
+# checkout) on projects/* spawns. Because firstmate is a git repo of itself,
+# $FM_HOME is a VALID git toplevel distinct from a projects/* project, so it
+# cleared every clause of the isolation guard above and was recorded silently.
+# validate_spawn_worktree now asserts the resolved worktree is NOT the primary
+# checkout, so a regression ABORTS loudly instead of corrupting meta and tangling
+# the turn-end hook into the primary. This pins that backstop.
+test_spawn_fm_home_worktree_backstop() {
+  local home proj fakebin out status
+  # $FM_HOME is itself a git repo (the firstmate-is-a-git-repo-of-itself shape).
+  home=$(make_repo "$TMP_ROOT/fmhome-home")
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/fmhome-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/fmhome-fake")
+
+  # The lease resolves to $FM_HOME itself - the exact mis-capture value. It is a
+  # valid git toplevel distinct from the project, so it clears the isolation
+  # clauses and only the $FM_HOME backstop can catch it.
+  out=$(run_spawn "$home" abort-fmhome-hh8 "$proj" "$home" "$fakebin"); status=$?
+  expect_code 1 "$status" "a worktree resolving to \$FM_HOME must abort"
+  assert_contains "$out" "primary firstmate checkout" "the \$FM_HOME backstop error was not printed"
+  assert_not_contains "$out" "did not yield an isolated worktree" "the \$FM_HOME case must hit the dedicated backstop, not the generic isolation clause"
+  assert_not_contains "$out" "spawned abort-fmhome-hh8" "the guarded spawn must not report success"
+  assert_absent "$home/state/abort-fmhome-hh8.meta" "a \$FM_HOME-mis-captured spawn must not record meta"
+  pass "fm-spawn: aborts loudly when the resolved worktree is the primary firstmate checkout (\$FM_HOME)"
+}
+
 # --- GUARD 1c: fm-spawn tmux window construction ----------------------------
 
 # The prevention guard also depends on fm-spawn building robust tmux commands
 # under a non-default tmux config (base-index 1, automatic-rename on). A RECORDING
-# fake tmux logs every invocation and returns a sentinel window id, so these
-# assertions pin the command construction deterministically, with no live tmux:
+# fake tmux+treehouse logs every invocation and returns a sentinel window id, so
+# these assertions pin the command construction deterministically, with no live
+# tmux:
 #   - window creation targets the session with a trailing colon (append form), so
 #     tmux appends at the next free index instead of the active window index, which
 #     collides under base-index 1;
 #   - the window id is captured (-P -F #{window_id}) and automatic-rename/allow-rename
-#     are disabled so the fm-<id> name survives treehouse cd'ing into the worktree;
-#   - the treehouse-get send-keys and the worktree wait loop target that stable
-#     window id, never the (possibly-renamed) name - a lost name would let
-#     display-message fall back to the active client's window and misread firstmate's
-#     OWN pane as the worktree, tangling a hook into the primary checkout.
+#     are disabled so the fm-<id> name survives the pane cd'ing into the worktree;
+#   - the worktree is captured authoritatively from `treehouse get --lease` (not a
+#     pane-current-path poll, which could latch $FM_HOME), and the cd-into-worktree
+#     send targets that stable window id, never the (possibly-renamed) name
+#     (fm-spawn-wt-batch-x5).
 make_spawn_record_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -248,7 +287,18 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  # Recording treehouse stub: logs every call to FM_TMUX_REC and emits
+  # FM_FAKE_PANE_PATH as the leased worktree on `get --lease` (fm-spawn-wt-batch-x5).
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ -n "${FM_TMUX_REC:-}" ] && printf 'treehouse %s\n' "$*" >> "$FM_TMUX_REC"
+case "${1:-}" in
+  get) printf '%s\n' "${FM_FAKE_PANE_PATH:-}" ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
   printf '%s\n' "$fakebin"
 }
 
@@ -292,13 +342,26 @@ test_spawn_tmux_window_construction() {
   assert_grep "set-window-option -t @spawnwid allow-rename off" "$rec" \
     "must disable allow-rename on the spawned window"
 
-  # Bug 2 fix (b): treehouse-get and the worktree wait loop target the stable id.
-  assert_grep "send-keys -t @spawnwid treehouse get Enter" "$rec" \
-    "treehouse get must be sent to the stable window id"
-  assert_grep "display-message -p -t @spawnwid #{pane_current_path}" "$rec" \
-    "the worktree wait loop must query the stable window id, not the name"
+  # Authoritative capture (fm-spawn-wt-batch-x5): the worktree is leased via
+  # `treehouse get --lease`, the pane is moved into it with a cd sent to the stable
+  # window id, and there is no pane_current_path poll (that poll latched $FM_HOME).
+  assert_grep "treehouse get --lease" "$rec" \
+    "the worktree must be captured authoritatively via treehouse get --lease"
+  assert_grep "send-keys -t @spawnwid cd " "$rec" \
+    "the cd-into-worktree send must target the stable window id"
+  assert_no_grep "send-keys -t @spawnwid treehouse get Enter" "$rec" \
+    "the pane must not run a bare 'treehouse get' (capture is now the fm-spawn-side lease)"
+  assert_no_grep "#{pane_current_path}" "$rec" \
+    "worktree capture must not poll pane_current_path (that poll latched \$FM_HOME)"
 
-  pass "fm-spawn: appends windows by session-colon, pins the name, and targets the window id"
+  # The recorded worktree= is the real leased path, NOT $FM_HOME (the exact
+  # projects/*-only mis-capture this task fixes). Here FM_HOME=$home != $wt.
+  assert_grep "worktree=$wt" "$home/state/rec-win-gg7.meta" \
+    "meta must record the real leased worktree"
+  assert_no_grep "worktree=$home" "$home/state/rec-win-gg7.meta" \
+    "meta must never record worktree=\$FM_HOME (the historical mis-capture)"
+
+  pass "fm-spawn: appends windows by session-colon, pins the name, leases the worktree, records it in meta, and targets the window id"
 }
 
 test_lib_classification
@@ -306,4 +369,5 @@ test_guard_banner
 test_bootstrap_line
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
+test_spawn_fm_home_worktree_backstop
 test_spawn_tmux_window_construction

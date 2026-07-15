@@ -17,8 +17,8 @@
 #   then tmux.
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
-#   session provider only, exactly like herdr/zellij, so it does. An
+#   terminal, so ship/scout Orca spawns do not lease a treehouse worktree; cmux
+#   is a session provider only, exactly like herdr/zellij, so it does. An
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
@@ -646,24 +646,12 @@ fi
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
-# Every backend's own current-path read (tmux's pane_current_path, herdr's
-# foreground_cwd, zellij/cmux's active pwd probe against the live shell) can
-# report the OS-level, physically-resolved cwd, so comparing it against a
-# still-symlinked PROJ_ABS can misfire both ways: false-negative (the poll
-# below never notices the pane left the project) or false-positive (the
-# isolation guard refuses a spawn that never actually tangled). Canonicalize
-# once here so every downstream comparison uses the same physical form
-# (docs/herdr-backend.md "Known gaps").
+# The isolation guard (validate_spawn_worktree) compares the leased worktree's
+# PHYSICAL path against this project path, so canonicalize the project once here
+# to the same physical form; otherwise a still-symlinked PROJ_ABS could differ
+# string-for-string from the worktree's OS-level path and trip a false isolation
+# refusal (docs/herdr-backend.md "Known gaps").
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
-
-real_path_or_raw() {  # <path>
-  local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P); then
-    printf '%s\n' "$real"
-  else
-    printf '%s\n' "$path"
-  fi
-}
 
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
@@ -674,7 +662,7 @@ real_path_or_raw() {  # <path>
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>
-  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
+  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real fm_home_real fm_root_real
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -689,6 +677,22 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
+  # Loud backstop against the historical mis-capture (fm-spawn-wt-batch-x5): a
+  # worktree resolving to this firstmate's own primary checkout ($FM_HOME, or
+  # $FM_ROOT where bin/ lives) passed EVERY clause above, because firstmate is a
+  # git repo of itself - so $FM_HOME is a valid git toplevel distinct from a
+  # projects/* PROJ_ABS. Assert the resolved worktree is NOT the primary checkout,
+  # so any future capture regression ABORTS loudly here instead of silently
+  # recording worktree=$FM_HOME and installing the turn-end hook into it. A
+  # legitimate firstmate-self spawn leases a ~/.treehouse/... worktree, never the
+  # checkout itself, so this never false-refuses a real spawn.
+  fm_home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P || true)
+  fm_root_real=$(cd "$FM_ROOT" 2>/dev/null && pwd -P || true)
+  if { [ -n "$fm_home_real" ] && [ "$wt_real" = "$fm_home_real" ]; } \
+    || { [ -n "$fm_root_real" ] && [ "$wt_real" = "$fm_root_real" ]; }; then
+    echo "error: $source resolved the worktree to the primary firstmate checkout ('$wt_real'); refusing to launch to avoid recording worktree=\$FM_HOME and tangling the primary checkout. Inspect target $inspect_target" >&2
+    exit 1
+  fi
 }
 
 W="fm-$ID"
@@ -698,9 +702,9 @@ case "$BACKEND" in
     T="$SES:$W"
     # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
     # id and pins the window name (automatic-rename/allow-rename off) so a captain's
-    # non-default tmux config cannot rename the window away from fm-<id> once
-    # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
-    # rename-critical worktree-detection steps below; the persisted window= handle
+    # non-default tmux config cannot rename the window away from fm-<id> once the
+    # pane cd's into the worktree. WT_TARGET carries that stable id for the
+    # rename-safe cd-into-worktree send below; the persisted window= handle
     # stays $T (the name form), which is safe now that rename is disabled.
     WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
     WT_TARGET="$WID"
@@ -792,11 +796,11 @@ EOF
     T="$ORCA_TERMINAL"
     ;;
 esac
-# #134 robustness: only tmux needs a worktree-detection target distinct from $T -
+# #134 robustness: only tmux needs a cd-into-worktree target distinct from $T -
 # its rename-safe stable window id, set as WT_TARGET=$WID in the tmux branch above.
 # Every other backend addresses its pane/surface by the id already in $T, so default
-# WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
-# worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
+# WT_TARGET to $T for them (and for any future backend) - the shared cd-into-worktree
+# send below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
 spawn_send_text_line() {  # <target> <text>
   case "$BACKEND" in
@@ -805,14 +809,6 @@ spawn_send_text_line() {  # <target> <text>
     zellij) fm_backend_zellij_send_text_line "$1" "$2" "$W" ;;
     orca) fm_backend_orca_send_text_line "$1" "$2" ;;
     cmux) fm_backend_cmux_send_text_line "$1" "$2" "$W" ;;
-  esac
-}
-spawn_current_path() {  # <target>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_current_path "$1" ;;
-    herdr) fm_backend_herdr_current_path "$1" ;;
-    zellij) fm_backend_zellij_current_path "$1" "$W" ;;
-    cmux) fm_backend_cmux_current_path "$1" "$W" ;;
   esac
 }
 spawn_send_literal() {  # <target> <text>
@@ -834,30 +830,42 @@ spawn_send_key() {  # <target> <key>
   esac
 }
 if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
-
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
-  # Target the stable window id, not the name: if the name is ever lost (e.g. an
-  # automatic-rename slips through), display-message -t <bad-name> falls back to the
-  # active client's window, which would misread firstmate's OWN pane path as the
-  # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
-  # prefix would otherwise make the pane's OS-level cwd read differ from
-  # PROJ_ABS on the very first poll, before the pane has actually moved.
-  for _ in $(seq 1 60); do
-    p=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$p" ] && [ "$(real_path_or_raw "$p")" != "$PROJ_ABS_REAL" ]; then
-      WT="$p"
-      break
-    fi
-    sleep 1
-  done
-  if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+  # Authoritative worktree capture (fm-spawn-wt-batch-x5). Lease the worktree
+  # from fm-spawn ITSELF: `treehouse get --lease` durably reserves a pool
+  # worktree and prints ONLY its ~/.treehouse/... path to stdout (all banners go
+  # to stderr). That leased path is the source of truth for worktree= and for the
+  # turn-end hook install below, replacing the old pane_current_path poll.
+  #
+  # Why the poll mis-captured $FM_HOME on projects/* spawns: right after the
+  # backend creates the window, the pane's process is still the forked
+  # session-server child (the shell has not yet exec'd and chdir'd), so a
+  # pane-cwd read transiently reports the SERVER's own start dir - the primary
+  # firstmate checkout, $FM_HOME - before settling on the -c project dir a moment
+  # later. The poll's exit condition was "any path != project dir", so on a
+  # projects/* spawn ($FM_HOME != $FM_HOME/projects/<repo>) it latched that
+  # transient $FM_HOME on the very first iteration, BEFORE `treehouse get` had
+  # run. A firstmate-self spawn ($FM_HOME == the project dir) did not satisfy the
+  # condition and kept polling until the real worktree appeared - the exact
+  # projects/*-only signature seen in the field. #134's stable-window-id
+  # targeting could not fix it because targeting was never wrong: the RIGHT
+  # pane transiently reports the server cwd. Leasing here removes pane timing
+  # from capture entirely. The lease is durable and released by fm-teardown's
+  # `treehouse return --force <worktree=>`, exactly like every crew worktree
+  # before (treehouse return handles leased and subshell-held worktrees alike).
+  WT=$( cd "$PROJ_ABS" && treehouse get --lease --lease-holder "fm-$ID" ) || {
+    echo "error: treehouse get --lease failed to lease a worktree for $ID in $PROJ_ABS; inspect window $T" >&2
     exit 1
-  fi
+  }
+  [ -n "$WT" ] || { echo "error: treehouse get --lease reported no worktree for $ID; inspect window $T" >&2; exit 1; }
 
-  validate_spawn_worktree "treehouse get" "$T"
+  validate_spawn_worktree "treehouse get --lease" "$T"
+
+  # Move the crewmate's pane into the leased worktree with an absolute cd, so the
+  # pane and the recorded worktree are the same path by construction - no polling,
+  # no startup-transient race. Sent to the stable window id (WT_TARGET) for the
+  # same rename-safety reason bin/backends/tmux.sh pins it, and buffered by the
+  # pane exactly like the GOTMPDIR export and launch command sent below.
+  spawn_send_text_line "$WT_TARGET" "cd $(shell_quote "$WT")"
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't

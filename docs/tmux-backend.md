@@ -111,6 +111,37 @@ The classifier deliberately reports `unknown` for `node`/`python`/`python3` rath
 Practical effect: a dead `pi` secondmate is not auto-healed by the liveness sweep today; it is reported as `skipped: liveness probe inconclusive` instead, which still surfaces it for a human to act on.
 Resolving this would need either a `pi`-specific env marker inspectable from outside the process (mirroring `PI_CODING_AGENT=true`, which `bin/fm-harness.sh` already uses for self-detection but which is not readable from a different process without deeper introspection) or accepting the argument-inspection fragility - not attempted here.
 
+## Worktree capture (why `treehouse get --lease`, not a pane poll)
+
+`fm-spawn.sh` records the crew's isolated worktree in `state/<id>.meta` and installs the turn-end hook into it, so that recorded path must be exact.
+It is captured authoritatively: `fm-spawn.sh` runs `treehouse get --lease` from the project directory, whose stdout is only the leased `~/.treehouse/...` path, and then sends the pane a `cd` into that path (`bin/fm-spawn.sh`, backlog `fm-spawn-wt-batch-x5`).
+
+This replaced an earlier design that sent `treehouse get` into the pane and polled `#{pane_current_path}` until it differed from the project directory, taking that first differing path as the worktree.
+That poll mis-recorded `worktree=$FM_HOME` (the primary firstmate checkout) on every `projects/*` spawn, forcing a manual repair each time, while firstmate-self spawns were immune.
+
+Root cause, verified 2026-07-15 with tmux 3.6 on this reference host (tmux server started from `$FM_HOME=/home/metoo/firstmate`):
+immediately after `tmux new-window -c <project>`, the pane's process is still the forked tmux-server child (the login shell has not yet `exec`'d and `chdir`'d), so `#{pane_current_path}` transiently reports the **tmux server's own cwd**, which is `$FM_HOME`, before settling on the `-c` project directory a fraction of a second later.
+
+Reproduce it directly (a detached window whose `-c` start dir is a fresh temp project):
+
+```
+$ tmux new-window -dP -F '#{window_id}' -t "$S:" -c /tmp/proj      # -> @51
+$ tmux display-message -p -t @51 'start=#{pane_start_path} cur=#{pane_current_path} cmd=#{pane_current_command}'
+start=/tmp/proj cur=/home/metoo/firstmate cmd=tmux                 # cur = the SERVER cwd, cmd still "tmux"
+# ~0.5-1s later the shell execs and chdir's:
+$ tmux display-message -p -t @51 '#{pane_current_path}'
+/tmp/proj
+```
+
+The poll's exit condition was "any path != project dir", so on a `projects/*` spawn (`$FM_HOME` != `$FM_HOME/projects/<repo>`) it latched that transient `$FM_HOME` on its very first iteration, before `treehouse get` had even run.
+A firstmate-self spawn (`$FM_HOME` == the project dir) never satisfied the condition and kept polling until the real worktree appeared - the exact projects/*-only signature.
+The stable-`#{window_id}` targeting from #134 could not fix this: targeting was never wrong, but the correctly targeted pane transiently reports the server cwd.
+Leasing from `fm-spawn.sh` itself removes pane timing from capture entirely.
+
+The lease is durable (`treehouse get --lease` reserves the worktree in treehouse's persistent state) and released by `fm-teardown.sh`'s `treehouse return --force <worktree=>`, exactly like every crew worktree before - `treehouse return` handles leased and subshell-held worktrees alike.
+`validate_spawn_worktree` also asserts the resolved worktree is not the primary checkout (`$FM_HOME`/`$FM_ROOT`), so any future capture regression aborts the spawn loudly instead of silently recording `worktree=$FM_HOME` again.
+Verified by `tests/fm-tangle-guard.test.sh` (leased-worktree capture, meta records the real path, and the `$FM_HOME` backstop abort).
+
 ## Limitations
 
 None specific to tmux for the reference path itself - it is the fully verified reference backend, while Orca and cmux are the backends without secondmate support.
