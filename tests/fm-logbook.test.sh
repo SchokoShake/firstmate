@@ -1471,6 +1471,230 @@ test_project_mode_unaffected_by_subproject_lines() {
   pass "sub-project declarations do not break fm-project-mode.sh registry parsing"
 }
 
+# --- the item set comes from the durable backlog, not from live crew state ----
+
+# write_hold_fixture <home>: the shape the board exists for. A crew's state/<id>.meta
+# lives only while that crew runs, but the documented end-state for review-ready work
+# is teardown + a captain hold (AGENTS.md section 7) - so here only ONE task still has
+# a crew, and every task actually waiting on the captain has none. A meta-keyed board
+# shows the one and hides the rest, which is exactly backwards.
+write_hold_fixture() {
+  local home=$1
+  mkdir -p "$home/data" "$home/state"
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes] - First project (added 2026-07-01)
+- beta [direct-PR] - Second project (added 2026-07-02)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] held-pr-h1 - Trim the AR forms (repo: alpha) (kind: ship) (since 2026-07-10) (hold: draft PR https://github.com/acme/alpha/pull/699 review-ready - CI green, review passed - captain reviews then merges) (hold-kind: captain)
+- [ ] held-ask-h2 - Multi-line text answers (repo: beta) (kind: ship) (since 2026-07-10) (hold: designed with the captain, awaiting their go-ahead to dispatch) (hold-kind: captain)
+- [ ] parked-h3 - Fix the batch spawn (repo: alpha) (kind: ship) (since 2026-07-05) blocked-by: held-ask-h2
+- [ ] live-h4 - Wire the widget endpoint (repo: alpha) (kind: ship) (since 2026-07-10)
+## Queued
+- [ ] q-held-h5 - Reword the section 15 rule (repo: alpha) (kind: ship) (since 2026-07-16) (hold: awaiting the captain's word on reword vs delete) (hold-kind: captain)
+- [ ] q-plain-h6 - Not dispatched yet (repo: beta) (kind: ship)
+## Done
+- [x] done-h7 - Landed already - <https://github.com/acme/alpha/pull/600> (merged 2026-07-09)
+EOF
+  # ONLY live-h4 still has a crew. fm-teardown removes the meta AND the status
+  # together, so every other task here has neither - the real post-teardown shape.
+  fm_write_meta "$home/state/live-h4.meta" \
+    "window=firstmate:fm-live-h4" "project=$home/projects/alpha" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off"
+  printf 'working: wiring the endpoint\n' > "$home/state/live-h4.status"
+}
+
+test_compose_captain_hold_survives_teardown() {
+  local home out
+  home="$TMP_ROOT/compose-hold-teardown"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # THE regression: a captain-held task whose crew is torn down has no meta at all,
+  # and used to vanish from the board at the exact moment it started needing the
+  # captain. It must compose a card carrying its own hold reason.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")' >/dev/null \
+    || fail "a captain-held task with a torn-down crew must still compose a card"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")
+      | (.project=="alpha") and (.title=="Trim the AR forms")
+      and (.body | test("captain reviews then merges"))' >/dev/null \
+    || fail "a captain-held card must carry its hold reason as the body"
+  # It has a ready PR, so it is a concrete action, not a question: merge it.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)
+      and (.source.pr=="https://github.com/acme/alpha/pull/699")' >/dev/null \
+    || fail "a captain-held task with a PR must be an action card carrying the PR"
+  # And the PR must be CLICKABLE: the board's renderer linkifies "[text](http...)"
+  # only - it never renders source.pr and never autolinks a bare url - so a markdown
+  # link in the body is the only thing the captain can actually click.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")
+      | .body | test("\\[alpha #699\\]\\(https://github\\.com/acme/alpha/pull/699\\)")' >/dev/null \
+    || fail "a captain-held card's PR must appear as a markdown link in the body"$'\n'"$out"
+  pass "fm-logbook-compose keeps a captain-held task on the board after its crew is torn down"
+}
+
+test_compose_captain_hold_without_pr_is_a_decision() {
+  local home out
+  home="$TMP_ROOT/compose-hold-ask"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # No PR to merge: the captain owes an answer, not an action.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-ask-h2")
+      | (.kind=="decision") and (.project=="beta")
+      and (.body | test("awaiting their go-ahead"))
+      and (.options == []) and (.source | has("pr") | not)' >/dev/null \
+    || fail "a captain-held task with no PR must be a decision card carrying its hold reason"$'\n'"$out"
+  pass "fm-logbook-compose makes a captain hold with no PR a decision, with its reason as the body"
+}
+
+test_compose_queued_captain_hold_is_carded() {
+  local home out
+  home="$TMP_ROOT/compose-hold-queued"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A captain hold is waiting on the captain whatever the task's state, so a QUEUED
+  # one earns a card too - it is the captain's word that would start it.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="q-held-h5")
+      | (.kind=="decision") and (.body | test("reword vs delete"))' >/dev/null \
+    || fail "a captain-held QUEUED task must compose a decision card"$'\n'"$out"
+  pass "fm-logbook-compose cards a captain-held task even from Queued"
+}
+
+test_compose_board_is_not_a_backlog_mirror() {
+  local home out
+  home="$TMP_ROOT/compose-not-mirror"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The board is "what needs the captain", not every row of the backlog: queued work
+  # behind no captain gate is firstmate's to run, and Done work has landed.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="q-plain-h6")' >/dev/null \
+    && fail "ungated queued work must NOT be on the board"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="done-h7")' >/dev/null \
+    && fail "Done work must NOT be on the board"
+  # In flight (with or without a crew) and captain-held: 5 cards, no more.
+  [ "$(printf '%s' "$out" | jq '.items | length')" = 5 ] \
+    || fail "the board must carry exactly the in-flight and captain-held tasks"$'\n'"$out"
+  pass "fm-logbook-compose keeps ungated queued work and Done off the board"
+}
+
+test_compose_in_flight_without_crew_is_carded() {
+  local home out
+  home="$TMP_ROOT/compose-parked"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # In-flight work whose crew is gone (parked, blocked) is still live work: it stays
+  # visible as a plain fyi, and the "blocked-by:" bookkeeping never reaches the title.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="parked-h3")
+      | (.kind=="fyi") and (.title=="Fix the batch spawn")' >/dev/null \
+    || fail "in-flight work with no crew must still compose an fyi card, with a clean title"$'\n'"$out"
+  pass "fm-logbook-compose keeps crewless in-flight work on the board as an fyi"
+}
+
+test_compose_live_crew_enriches_the_backlog_item() {
+  local home out
+  home="$TMP_ROOT/compose-enrich"; write_hold_fixture "$home"
+  # A live crew's meta is the authority on the RUNNING crew: its recorded pr= wins
+  # over the backlog, and its status drives the card's kind.
+  fm_write_meta "$home/state/held-ask-h2.meta" \
+    "window=firstmate:fm-held-ask-h2" "project=$home/projects/beta" \
+    "harness=claude" "kind=ship" "mode=direct-PR" "yolo=off" \
+    "pr=https://github.com/acme/beta/pull/7"
+  printf 'working: drafting\nneeds-decision: newline key - shift+enter or enter?\n' \
+    > "$home/state/held-ask-h2.status"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A live crew's open question outranks the captain hold (decision > action), and its
+  # meta-recorded PR still rides along as a clickable link.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-ask-h2")
+      | (.kind=="decision") and (.body | test("shift\\+enter or enter"))
+      and (.source.pr=="https://github.com/acme/beta/pull/7")
+      and (.body | test("\\[beta #7\\]\\(https://github\\.com/acme/beta/pull/7\\)"))' >/dev/null \
+    || fail "a live crew's meta and status must enrich the backlog-derived item"$'\n'"$out"
+  pass "fm-logbook-compose enriches a backlog item from its live crew's meta and status"
+}
+
+test_compose_live_crew_missing_from_backlog_is_carded() {
+  local home out
+  home="$TMP_ROOT/compose-orphan"; write_hold_fixture "$home"
+  # The window between fm-spawn and the backlog write: a running crew whose task is
+  # not in the backlog at all must never be hidden by a bookkeeping gap.
+  fm_write_meta "$home/state/unlogged-h8.meta" \
+    "window=firstmate:fm-unlogged-h8" "project=$home/projects/alpha" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off"
+  printf 'working: just started\n' > "$home/state/unlogged-h8.status"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="unlogged-h8")
+      | (.kind=="fyi") and (.project=="alpha") and (.body=="just started")' >/dev/null \
+    || fail "a live crew missing from the backlog must still compose a card"$'\n'"$out"
+  pass "fm-logbook-compose still cards a live crew the backlog has not recorded yet"
+}
+
+test_compose_done_drops_even_with_a_lingering_meta() {
+  local home out
+  home="$TMP_ROOT/compose-done-meta"; write_hold_fixture "$home"
+  # Between the merge and the teardown a Done task still has its meta. The backlog
+  # decides: the work landed, so nothing is owed and the stale "ready to merge" card
+  # must not linger.
+  fm_write_meta "$home/state/done-h7.meta" \
+    "window=firstmate:fm-done-h7" "project=$home/projects/alpha" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off" \
+    "pr=https://github.com/acme/alpha/pull/600"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="done-h7")' >/dev/null \
+    && fail "a Done task must drop off the board even while its meta lingers"$'\n'"$out"
+  pass "fm-logbook-compose drops a Done task even before its crew is torn down"
+}
+
+test_compose_expired_hold_gate_is_not_a_hold() {
+  local home out
+  home="$TMP_ROOT/compose-hold-until"; mkdir -p "$home/data" "$home/state"
+  printf '# Registry\n\n- alpha [no-mistakes] - First project (added 2026-07-01)\n' > "$home/data/projects.md"
+  # A "(hold-until: <date>)" gate is inactive ON and after that date - which is what
+  # tasks-axi itself reports as "held: no" - so an arrived gate must not pin a card.
+  # The past gate expires (in-flight -> plain fyi); the future one still holds.
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] gate-past-h9 - Past gate (repo: alpha) (kind: ship) (hold: waited long enough) (hold-kind: captain) (hold-until: 2020-01-01)
+- [ ] gate-future-i1 - Future gate (repo: alpha) (kind: ship) (hold: not yet) (hold-kind: captain) (hold-until: 2099-01-01)
+## Queued
+## Done
+EOF
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The lapsed gate drops the hold AND its now-stale prose, so nothing reads as a
+  # live reason on the card; the future gate keeps both.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="gate-past-h9")
+      | (.kind=="fyi") and (.body=="Work is underway.")' >/dev/null \
+    || fail "an ARRIVED hold-until gate must stop being a captain hold, reason and all"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="gate-future-i1")
+      | (.kind=="decision") and (.body=="not yet")' >/dev/null \
+    || fail "a future hold-until gate must still be an active captain hold"$'\n'"$out"
+  pass "fm-logbook-compose expires a hold-until gate exactly as tasks-axi reports it"
+}
+
+test_compose_action_body_carries_a_clickable_pr_link() {
+  local home out
+  home="$TMP_ROOT/compose-pr-link"; write_fleet_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A standing captain rule: a card referencing a PR carries the full url as a
+  # markdown link in the BODY. The board renders "[text](http...)" and nothing else -
+  # not source.pr, not a bare url - so a plain "PR: <url>" line was dead text.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="ship-pr-a1")
+      | (.body | test("\\[alpha #42\\]\\(https://github\\.com/acme/alpha/pull/42\\)"))
+      and (.body | test("Ready for your review"))' >/dev/null \
+    || fail "a ready-PR card must carry the PR as a markdown link in the body"$'\n'"$out"
+  pass "fm-logbook-compose renders a ready PR as a clickable markdown link in the card body"
+}
+
 test_refresh_hard_noop_when_disabled() {
   local home fakebin out rc log
   home="$TMP_ROOT/refresh-off"; write_fleet_fixture "$home"
@@ -1608,6 +1832,16 @@ test_compose_tags_item_by_base_branch
 test_compose_no_declaration_is_backward_compatible
 test_compose_skips_malformed_subproject_lines
 test_project_mode_unaffected_by_subproject_lines
+test_compose_captain_hold_survives_teardown
+test_compose_captain_hold_without_pr_is_a_decision
+test_compose_queued_captain_hold_is_carded
+test_compose_board_is_not_a_backlog_mirror
+test_compose_in_flight_without_crew_is_carded
+test_compose_live_crew_enriches_the_backlog_item
+test_compose_live_crew_missing_from_backlog_is_carded
+test_compose_done_drops_even_with_a_lingering_meta
+test_compose_expired_hold_gate_is_not_a_hold
+test_compose_action_body_carries_a_clickable_pr_link
 test_refresh_hard_noop_when_disabled
 test_refresh_dry_run_records_sync
 test_refresh_live_posts_sync

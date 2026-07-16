@@ -5,15 +5,38 @@
 #        fm-logbook-compose.sh | fm-logbook-sync.sh -
 #
 # Derives the board's declarative-reconcile body from firstmate's OWN state -
-# data/projects.md (the project registry), data/backlog.md (task one-liners),
-# state/*.meta (the in-flight task set + any recorded PR), and state/*.status (the
-# latest phase) - and prints one {projects, items} JSON object on stdout, ready to
-# pipe into fm-logbook-sync.sh. This mechanizes the tedious hand-composition that
-# made the session-start sync easy to skip. It is a truthful mechanical BASELINE:
-# one card per in-flight task, classed decision > action > fyi, and every project
-# from the registry flagged active when it carries a card. Rich, captain-facing
-# titles/bodies/options remain firstmate's own composition on top, via
+# data/projects.md (the project registry), data/backlog.md (the DURABLE task record:
+# the item set, titles, and holds), state/*.meta (the live crew, its recorded PR and
+# base branch), and state/*.status (a live crew's latest phase) - and prints one
+# {projects, items} JSON object on stdout, ready to pipe into fm-logbook-sync.sh.
+# This mechanizes the tedious hand-composition that made the session-start sync easy
+# to skip. It is a truthful mechanical BASELINE, classed decision > action > fyi,
+# with every project from the registry flagged active when it carries a card. Rich,
+# captain-facing titles/bodies/options remain firstmate's own composition on top, via
 # fm-logbook-push.sh (an upsert keyed by id replaces the baseline card).
+#
+# The item SET comes from the BACKLOG, never from live crew runtime state. A crew's
+# state/<id>.meta exists only while that crew runs, but the documented end-state for
+# review-ready work is the opposite: the crew finishes, fm-teardown.sh removes its
+# meta AND its status, and the task sits on a captain hold awaiting review (AGENTS.md
+# section 7). Keying the board on meta therefore dropped a task at the exact moment it
+# started needing the captain - and because POST /api/sync is a declarative full-ITEM
+# replace, the next session-start sync then also DELETED any rich fm-logbook-push.sh
+# card for it. The backlog is firstmate's durable record (AGENTS.md section 10) and
+# survives restarts and teardowns, so it is the item source; meta stays the authority
+# on the LIVE crew and only ENRICHES a backlog-derived item.
+#
+# What earns a card - the board is "what needs the captain", not a backlog mirror:
+#   - In flight     live work; an fyi at least, so the captain can see it move.
+#   - captain-held  a "(hold-kind: captain)" task is BY DEFINITION waiting on the
+#                   captain, in any state, so it earns a card even from Queued; its
+#                   "(hold: ...)" prose is already written for a human and is the
+#                   card body.
+#   - a live crew   never hide running work, even when the backlog has not caught up
+#                   yet (the window between fm-spawn and the backlog write) - unless
+#                   the backlog says the work is Done.
+# Queued work behind no captain gate earns nothing (it is firstmate's to run, not the
+# captain's to watch), and neither does Done (it has landed; nothing is owed).
 #
 # Sub-projects (a DISPLAY-only grouping level below a project) let a monorepo's
 # integration-branch features group on the board. They are firstmate-declared per
@@ -26,14 +49,17 @@
 # "subprojects" array, and tags each item with an optional "subproject" by mapping
 # the item's "base_branch=" meta field (the branch its PR targets, recorded by
 # firstmate at dispatch) to the parent project's matching sub-project key; an item
-# with no base_branch or no match stays ungrouped. docs/configuration.md ("Logbook"
-# -> "Sub-projects") owns the full declaration format, limits, validation, and the
-# base_branch recording path.
+# with no base_branch or no match stays ungrouped. base_branch lives only in meta, so
+# a torn-down task composes ungrouped until that branch is recorded durably.
+# docs/configuration.md ("Logbook" -> "Sub-projects") owns the full declaration
+# format, limits, validation, and the base_branch recording path.
 #
 # Inert by default: a hard no-op (exit 0, no output) unless logbook is opted in via
 # a truthy LOGBOOK_ENABLE (config/logbook.env), mirroring the other client scripts.
 # Read-only: it only READS fleet state and never posts, so LOGBOOK_DRY_RUN needs no
-# branch here - the would-be write lives in fm-logbook-sync.sh, which honors it.
+# branch here - the would-be write lives in fm-logbook-sync.sh, which honors it. It
+# shells out to no backlog tool either, so it composes the same board whether or not
+# tasks-axi is on PATH and under config/backlog-backend=manual (AGENTS.md section 10).
 # Every dynamic string (id, project, title, body, PR url) is injected into the JSON
 # via jq --arg/--argjson, never interpolated into the jq program or a shell word, so
 # fleet text can never break out of a shell word or the JSON structure.
@@ -62,8 +88,10 @@ BACKLOG_MD="$DATA/backlog.md"
 
 # --- helpers ---------------------------------------------------------------
 
-# meta_get <meta-file> <key>: last KEY=value wins; prints nothing when absent. A
-# tiny dependency-free reader so compose need not source the backend library.
+# meta_get <file> <key>: last KEY=value wins; prints nothing when absent. A tiny
+# dependency-free reader so compose need not source the backend library. It reads
+# both state/<id>.meta and the backlog records below, which are written in the same
+# "key=value" shape on purpose.
 meta_get() {
   local file=$1 key=$2 line
   [ -f "$file" ] || return 0
@@ -82,24 +110,68 @@ valid_project_name() {
   return 0
 }
 
-# backlog_oneliner <id>: the plain human one-liner for an in-flight task, with the
-# trailing " (repo: ...)" bookkeeping stripped; empty when not found. Both the
-# tasks-axi bold form and the checkbox form are matched by literal prefix (task ids
-# are safe slugs, so no glob metacharacters leak into the pattern).
-backlog_oneliner() {
-  local id=$1 line rest
-  [ -f "$BACKLOG_MD" ] || return 0
-  while IFS= read -r line; do
-    case "$line" in
-      "- [ ] $id - "*) rest=${line#"- [ ] $id - "} ;;
-      "- **$id** - "*) rest=${line#"- **$id** - "} ;;
-      *) continue ;;
-    esac
-    rest=${rest%% (repo:*}
-    printf '%s' "$rest"
-    return 0
-  done < <(sed -n '/^## In flight/,/^## /p' "$BACKLOG_MD" 2>/dev/null)
+# pr_url_ok <url>: succeed when the url is one the board will actually turn into a
+# link. The board's renderInline does exactly one link substitution -
+# /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g - and nothing else: it does NOT autolink a
+# bare url and does NOT render the item's source.pr. So the url must be http(s) and
+# free of whitespace and ")", or the markdown would render as dead text. Bounded so
+# the link can never crowd out the body inside the tool's 20000-byte field limit.
+pr_url_ok() {
+  local u=${1-}
+  [ -n "$u" ] || return 1
+  [ "${#u}" -le 400 ] || return 1
+  case "$u" in
+    http://*|https://*) ;;
+    *) return 1 ;;
+  esac
+  case "$u" in
+    *[[:space:]]*|*')'*) return 1 ;;
+  esac
   return 0
+}
+
+# pr_link <url>: the url as a markdown link - "[<repo> #<n>](<url>)" when it parses
+# as .../<owner>/<repo>/pull/<n>, else a plain "[PR](<url>)". The label is derived
+# from the URL itself rather than the registry's project name so it can never
+# disagree with where the link actually goes. A standing captain rule: a board card
+# referencing a PR (draft included) must carry the full url as a markdown link in the
+# card BODY, because a bare "#N" is dead text to the board's renderer.
+pr_link() {
+  local url=$1 rest repo num
+  case "$url" in
+    *'/pull/'*)
+      num=${url##*'/pull/'}
+      rest=${url%'/pull/'*}
+      repo=${rest##*/}
+      case "$num" in
+        ''|*[!0-9]*) ;;                       # not a plain PR number
+        *)
+          # The label sits inside "[...]", which the board's link regex reads as
+          # [^\]]+, so a "]" in it would break the link.
+          case "$repo" in
+            ''|*']'*|*'['*) ;;
+            *) printf '[%s #%s](%s)' "$repo" "$num" "$url"; return 0 ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+  printf '[PR](%s)' "$url"
+}
+
+# append_pr <body> <url>: <body> with the PR's markdown link as its own trailing
+# paragraph; the body unchanged when there is no usable url.
+append_pr() {
+  local body=$1 url=${2-}
+  if ! pr_url_ok "$url"; then
+    printf '%s' "$body"
+    return 0
+  fi
+  if [ -n "$body" ]; then
+    printf '%s\n\n%s' "$body" "$(pr_link "$url")"
+  else
+    pr_link "$url"
+  fi
 }
 
 # status_last <id>: the last non-empty line of the task's status log; empty when
@@ -135,37 +207,188 @@ trim() {
 ITEMS_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-items.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
 REG_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-reg.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
 SUB_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-sub.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
-trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"' EXIT
+BL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-logbook-compose-backlog.XXXXXX") || { echo "fm-logbook-compose: cannot create temp dir" >&2; exit 1; }
+trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 
-# --- items: one card per in-flight task (persistent secondmates are not cards) --
-for meta in "$STATE"/*.meta; do
-  [ -f "$meta" ] || continue
-  id=$(basename "$meta" .meta)
-  logbook_valid_id "$id" || continue
+# --- the durable backlog: the item set --------------------------------------
 
-  mkind=$(meta_get "$meta" kind)
-  if [ "$mkind" = secondmate ]; then
-    continue   # a persistent supervisor is infrastructure, not an attention item
+# backlog_parse: read data/backlog.md ONCE into one record per task under $BL_DIR,
+# named by task id and written in the same "key=value" shape meta_get already reads:
+#   state=in_flight|queued|done  title=  repo=  held=yes|no  hold_kind=  hold_reason=
+#   pr=
+# The "## In flight / ## Queued / ## Done" layout and the trailing "(repo: ...)",
+# "(hold: ...)", "(hold-kind: ...)", "(hold-until: ...)" markers are AGENTS.md
+# section 10's stated contract - written byte-exact by the tasks-axi backend and by
+# hand under config/backlog-backend=manual - so reading the file directly serves both
+# backends and needs no tasks-axi on PATH.
+#
+# A hold carrying a "(hold-until: <date>)" gate that has ARRIVED is not an active
+# hold - the gate is "inactive on and after that date", which is exactly what
+# tasks-axi itself reports as "held: no" - so an expired gate can never pin a card on
+# the board forever, and compose can never disagree with the store it reads. ISO-8601
+# dates compare correctly with the separators stripped, so no date parsing is needed.
+#
+# Only an item's own line is scanned. Free-form note lines under a task are prose and
+# routinely reference OTHER tasks' PRs, so harvesting a url from them would mislabel
+# the card; a task's own PR url reaches its line via "tasks-axi update <id> --pr
+# <url>" (or a Done entry's link), which is what survives teardown.
+backlog_parse() {
+  local line section="" rest id title repo held hold_kind hold_reason hold_until pr today
+  [ -f "$BACKLOG_MD" ] || return 0
+  today=$(date +%Y-%m-%d 2>/dev/null) || today=""
+  while IFS= read -r line; do
+    case "$line" in
+      '## In flight'*) section=in_flight; continue ;;
+      '## Queued'*)    section=queued;    continue ;;
+      '## Done'*)      section='done';    continue ;;
+      '## '*)          section="";        continue ;;   # some other H2: not a task section
+    esac
+    [ -n "$section" ] || continue
+
+    # The item forms AGENTS.md section 10 keeps: the checkbox forms and the bold
+    # in-flight form. Anything else (an indented note, a blank line) is not an item.
+    id=""
+    case "$line" in
+      '- [ ] '*) rest=${line#'- [ ] '} ;;
+      '- [x] '*) rest=${line#'- [x] '} ;;
+      '- [X] '*) rest=${line#'- [X] '} ;;
+      '- **'*)
+        rest=${line#'- **'}
+        case "$rest" in
+          *'** - '*) id=${rest%%'** - '*}; rest=${rest#*'** - '} ;;
+          *) continue ;;
+        esac
+        ;;
+      *) continue ;;
+    esac
+    if [ -z "$id" ]; then
+      case "$rest" in
+        *' - '*) id=${rest%%' - '*}; rest=${rest#*' - '} ;;
+        *) continue ;;
+      esac
+    fi
+    logbook_valid_id "$id" || continue
+
+    # The human one-liner: the title with the trailing bookkeeping dropped. Both
+    # "(repo: ..." and the "blocked-by:" dependency marker are firstmate's own
+    # records, not something to read to the captain.
+    title=${rest%%' (repo:'*}
+    title=${title%%' blocked-by:'*}
+
+    repo=""
+    case "$line" in
+      *' (repo: '*) repo=${line#*' (repo: '}; repo=${repo%%')'*} ;;
+    esac
+
+    held=no; hold_kind=""; hold_reason=""; hold_until=""
+    case "$line" in
+      *' (hold: '*)
+        hold_reason=${line#*' (hold: '}; hold_reason=${hold_reason%%')'*}
+        held=yes
+        ;;
+    esac
+    case "$line" in
+      *' (hold-kind: '*) hold_kind=${line#*' (hold-kind: '}; hold_kind=${hold_kind%%')'*} ;;
+    esac
+    case "$line" in
+      *' (hold-until: '*) hold_until=${line#*' (hold-until: '}; hold_until=${hold_until%%')'*} ;;
+    esac
+    case "$hold_until" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+      *) hold_until="" ;;   # absent, or the "-" placeholder: no gate
+    esac
+    if [ "$held" = yes ] && [ -n "$hold_until" ] && [ -n "$today" ]; then
+      if [ "${today//-/}" -ge "${hold_until//-/}" ]; then
+        # The gate arrived: this is not a hold any more, so drop its prose with it
+        # rather than let a lapsed reason read as live context on a card.
+        held=no; hold_kind=""; hold_reason=""
+      fi
+    fi
+
+    pr=$(printf '%s' "$line" | grep -oE 'https?://[^[:space:]<>()]+/pull/[0-9]+' | head -n1)
+
+    {
+      printf 'state=%s\n' "$section"
+      printf 'title=%s\n' "$title"
+      printf 'repo=%s\n' "$repo"
+      printf 'held=%s\n' "$held"
+      printf 'hold_kind=%s\n' "$hold_kind"
+      printf 'hold_reason=%s\n' "$hold_reason"
+      printf 'pr=%s\n' "$pr"
+    } > "$BL_DIR/$id" || { echo "fm-logbook-compose: cannot record backlog task $id" >&2; return 1; }
+  done < "$BACKLOG_MD"
+  return 0
+}
+
+# compose_item <id>: emit this task's card to $ITEMS_JSONL, or nothing when it does
+# not earn one. The backlog record decides whether there is a card at all; the live
+# crew's meta only enriches it.
+compose_item() {
+  local id=$1
+  local rec="$BL_DIR/$id" meta="$STATE/$id.meta"
+  local bstate title repo held hold_kind hold_reason bl_pr captain_held live
+  local proj_path project pr base_branch last kind detail body options note
+
+  bstate=$(meta_get "$rec" state)
+  title=$(meta_get "$rec" title)
+  repo=$(meta_get "$rec" repo)
+  held=$(meta_get "$rec" held)
+  hold_kind=$(meta_get "$rec" hold_kind)
+  hold_reason=$(meta_get "$rec" hold_reason)
+  bl_pr=$(meta_get "$rec" pr)
+
+  live=""
+  if [ -f "$meta" ]; then
+    # A persistent supervisor is infrastructure, not an attention item.
+    if [ "$(meta_get "$meta" kind)" = secondmate ]; then return 0; fi
+    live=yes
   fi
 
-  proj_path=$(meta_get "$meta" project)
+  captain_held=no
+  if [ "$held" = yes ] && [ "$hold_kind" = captain ]; then captain_held=yes; fi
+
+  # What earns a card (see the header): In flight, captain-held in any state, or a
+  # live crew the backlog has not recorded yet. Done never does, even while a
+  # not-yet-torn-down meta lingers - the work landed, so nothing is owed.
+  case "$bstate" in
+    done) return 0 ;;
+    in_flight) ;;
+    *)
+      if [ "$captain_held" != yes ] && [ -z "$live" ]; then return 0; fi
+      ;;
+  esac
+
+  # The live crew's recorded project wins (it is the path it actually works in);
+  # otherwise the backlog's own "(repo: ...)", which is what outlives the crew.
   project=""
-  if [ -n "$proj_path" ]; then
-    project=$(basename "$proj_path")
-    valid_project_name "$project" || project=""
+  if [ -n "$live" ]; then
+    proj_path=$(meta_get "$meta" project)
+    if [ -n "$proj_path" ]; then project=$(basename "$proj_path"); fi
+  fi
+  if [ -z "$project" ]; then project=$repo; fi
+  valid_project_name "$project" || project=""
+
+  # The PR: fm-pr-check records it into the live crew's meta, so that wins while the
+  # crew exists; the backlog line's own url is what remains after teardown.
+  pr=""
+  if [ -n "$live" ]; then pr=$(meta_get "$meta" pr); fi
+  if [ -z "$pr" ]; then pr=$bl_pr; fi
+
+  # Both of these describe a RUNNING crew, so they are only read when one exists.
+  # fm-teardown removes the status log with the meta, and a status line is a wake
+  # EVENT rather than current-state truth, so it must never outlive its crew here.
+  base_branch=""
+  last=""
+  if [ -n "$live" ]; then
+    base_branch=$(meta_get "$meta" base_branch)
+    last=$(status_last "$id")
   fi
 
-  pr=$(meta_get "$meta" pr)
-  # The item's sub-project is resolved from its base/integration branch (the branch
-  # its PR targets) against the parent project's declarations, in the combine step
-  # below; carried as the internal _base_branch helper and stripped before output.
-  base_branch=$(meta_get "$meta" base_branch)
-  last=$(status_last "$id")
-  oneliner=$(backlog_oneliner "$id")
-
-  # Classify by urgency: an open decision outranks a ready PR outranks plain
-  # in-progress. This yields one card per in-flight task, with the PR-ready and
-  # needs-decision ones raised to their proper kind.
+  # Classify by urgency, preserving decision > action > fyi: a live crew's open
+  # question outranks a captain hold, which outranks a plain ready PR, which outranks
+  # in-progress work. A captain hold WITH a PR is an action - there is a concrete
+  # thing to do, review and merge it - while one without a PR is a question to
+  # answer, which is how firstmate actually writes hold reasons.
   kind=fyi
   detail=""
   case "$last" in
@@ -175,42 +398,53 @@ for meta in "$STATE"/*.meta; do
       detail=${detail# }
       ;;
     *)
-      if [ -n "$pr" ]; then kind=action; fi
+      if [ "$captain_held" = yes ]; then
+        if [ -n "$pr" ]; then kind=action; else kind=decision; fi
+      elif [ -n "$pr" ]; then
+        kind=action
+      fi
       ;;
   esac
 
   # Plain, non-jargony baseline text (firstmate rewrites these richly on push); the
-  # human title comes from the backlog one-liner, never the internal task id.
+  # human title comes from the backlog one-liner, never the internal task id. A
+  # captain hold's "(hold: ...)" prose is already written for a human, and is exactly
+  # the "why this is waiting on you" the card needs, so it IS the body.
   case "$kind" in
     decision)
-      title=${oneliner:-A decision is waiting}
-      body=${detail:-This needs your decision.}
+      title=${title:-A decision is waiting}
+      if [ -n "$detail" ]; then
+        body=$detail
+      else
+        body=${hold_reason:-This needs your decision.}
+      fi
       options='[]'
       ;;
     action)
-      title=${oneliner:-Work is ready for your review}
-      if [ -n "$pr" ]; then
-        body="Ready for your review.
-
-PR: $pr"
-      else
-        body="Ready for your review."
-      fi
+      title=${title:-Work is ready for your review}
+      body=${hold_reason:-Ready for your review.}
       options='[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}]'
       ;;
     *)
-      title=${oneliner:-Work in progress}
+      title=${title:-Work in progress}
       if [ -n "$last" ]; then
         note=${last#*: }          # drop a leading "<verb>: " status prefix
         body=${note:-Work is underway.}
       else
-        body="Work is underway."
+        # No running crew to report a phase. A non-captain hold (external, parked,
+        # future) still explains why this is sitting still, which beats saying
+        # nothing; an unheld task with no crew has only the plain fallback.
+        body=${hold_reason:-Work is underway.}
       fi
       options='[]'
       ;;
   esac
 
   title=$(clip "$title" 500)
+  # Clipped with room to spare for the link paragraph, so a runaway body can never
+  # push the PR link past the tool's 20000-byte limit and lose it.
+  body=$(clip "$body" 18400)
+  body=$(append_pr "$body" "$pr")
   body=$(clip "$body" 19000)
 
   jq -nc \
@@ -231,7 +465,27 @@ PR: $pr"
        options: $options,
        source: ({ task: $id } + (if $pr == "" then {} else { pr: $pr } end)),
        _base_branch: $base_branch
-     }' >> "$ITEMS_JSONL" || { echo "fm-logbook-compose: failed to compose item $id" >&2; exit 1; }
+     }' >> "$ITEMS_JSONL" || { echo "fm-logbook-compose: failed to compose item $id" >&2; return 1; }
+  return 0
+}
+
+# --- items: one card per task the captain could need to act on ---------------
+backlog_parse || exit 1
+
+for rec in "$BL_DIR"/*; do
+  [ -f "$rec" ] || continue
+  compose_item "$(basename "$rec")" || exit 1
+done
+
+# A live crew whose task is not in the backlog at all still gets a card, so a
+# bookkeeping gap can never hide running work. This is the ONLY case where runtime
+# state adds an item rather than enriching one.
+for meta in "$STATE"/*.meta; do
+  [ -f "$meta" ] || continue
+  id=$(basename "$meta" .meta)
+  logbook_valid_id "$id" || continue
+  [ -f "$BL_DIR/$id" ] && continue
+  compose_item "$id" || exit 1
 done
 
 # --- projects: the registry, each flagged active when it carries a card ---------
