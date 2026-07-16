@@ -1958,6 +1958,106 @@ EOF
   pass "fm-logbook-compose expires a hold-until gate exactly as tasks-axi reports it"
 }
 
+test_compose_hold_reason_survives_the_captains_own_parentheses() {
+  local home out
+  home="$TMP_ROOT/compose-hold-parens"; mkdir -p "$home/data" "$home/state"
+  printf '# Registry\n\n- alpha [no-mistakes] - First project (added 2026-07-01)\n' > "$home/data/projects.md"
+  # A hold reason is free-form human prose and becomes the card body VERBATIM, so it is
+  # the one marker value that can itself contain ")". The tasks-axi backend rejects a
+  # "--reason" with parentheses ("Parentheses are reserved for markdown hold tags"), but
+  # a backlog hand-maintained under config/backlog-backend=manual has no such gate - and
+  # this composer explicitly serves both backends. Ending the reason at the FIRST ")"
+  # dropped everything after the captain's own parenthetical: the actionable half.
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] paren-mid-j1 - Roll out v2 (repo: alpha) (kind: ship) (hold: waiting on the API (v2) rollout - your call) (hold-kind: captain)
+- [ ] paren-eol-j2 - Nothing after it (repo: alpha) (kind: ship) (hold: waiting on the API (v2) rollout - your call)
+- [ ] paren-gate-j3 - Gated too (repo: alpha) (kind: ship) (hold: blocked by the (legacy) importer - say the word) (hold-kind: captain) (hold-until: 2099-01-01)
+- [ ] paren-none-j4 - Plain prose (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+## Queued
+## Done
+EOF
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The reason ends where the marker tail resumes, not at the first ")".
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="paren-mid-j1")
+      | .body=="waiting on the API (v2) rollout - your call"' >/dev/null \
+    || fail "a parenthetical in a hold reason must not truncate the card body"$'\n'"$out"
+  # ... or at end-of-line, when no marker follows to end it.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="paren-eol-j2")
+      | .body=="waiting on the API (v2) rollout - your call"' >/dev/null \
+    || fail "a trailing hold reason must keep its parenthetical too"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="paren-gate-j3")
+      | .body=="blocked by the (legacy) importer - say the word"' >/dev/null \
+    || fail "a hold-until gate after the reason must not truncate its parenthetical"$'\n'"$out"
+  # The ordinary no-parenthesis reason the tasks-axi backend emits is unchanged.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="paren-none-j4")
+      | .body=="review-ready - captain reviews then merges"' >/dev/null \
+    || fail "a plain hold reason must still read exactly as written"$'\n'"$out"
+  pass "fm-logbook-compose keeps a hold reason's own parentheses out of the truncation"
+}
+
+test_compose_memoizes_each_projects_remote_once() {
+  local home out log shim
+  home="$TMP_ROOT/compose-remote-memo"; mkdir -p "$home/data" "$home/state" "$home/projects"
+  # Two projects whose names are SUFFIX-related ("app" is the tail of "myapp"), each
+  # carrying two cards, plus a remote-less project cached as an EMPTY answer. The remote
+  # lookup is the composer's only git call, so it is memoized per PROJECT - in a plain
+  # string, not an associative array, so this composes on bash 3.2 as well as 4+
+  # (bin/fm-classify-lib.sh's stance; a "declare -A" aborts the whole script there under
+  # "set -e" and takes the board down with it). A string cache has two ways to go wrong
+  # an associative array does not: matching a name that merely ENDS another, and missing
+  # a legitimately EMPTY entry so its git call re-runs forever.
+  printf '# Registry\n\n- app [no-mistakes] - One (added 2026-07-01)\n- myapp [no-mistakes] - Two (added 2026-07-01)\n- solo [local-only] - No remote (added 2026-07-01)\n' > "$home/data/projects.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] app-one-k1 - First in app https://github.com/acme/app/pull/1 (repo: app) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] app-two-k2 - Second in app https://github.com/acme/app/pull/2 (repo: app) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] myapp-one-k3 - First in myapp https://github.com/acme/myapp/pull/3 (repo: myapp) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] myapp-two-k4 - Second in myapp https://github.com/acme/myapp/pull/4 (repo: myapp) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] crossed-k5 - A myapp PR filed under app https://github.com/acme/myapp/pull/5 (repo: app) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] solo-one-k6 - First in solo https://github.com/acme/solo/pull/6 (repo: solo) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] solo-two-k7 - Second in solo https://github.com/acme/solo/pull/7 (repo: solo) (kind: ship) (hold: review-ready) (hold-kind: captain)
+## Queued
+## Done
+EOF
+  git init -q "$home/projects/app"
+  git -C "$home/projects/app" remote add origin https://github.com/acme/app.git
+  git init -q "$home/projects/myapp"
+  git -C "$home/projects/myapp" remote add origin https://github.com/acme/myapp.git
+  git init -q "$home/projects/solo"
+  # Count the composer's real git calls by shimming git ahead of it on PATH.
+  log="$home/git-calls.log"; shim="$home/shim"; mkdir -p "$shim"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "$*" >> %s\n' "$(printf '%q' "$log")"
+    printf 'exec %s "$@"\n' "$(printf '%q' "$(command -v git)")"
+  } > "$shim/git"
+  chmod +x "$shim/git"
+  : > "$log"
+  out=$(PATH="$shim:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # Seven cards, three projects: one lookup each, including solo's empty answer.
+  [ "$(wc -l < "$log")" -eq 3 ] \
+    || fail "each project's remote must be looked up exactly once, got:"$'\n'"$(cat "$log")"
+  # The suffix-related names must not read each other's cache record.
+  printf '%s' "$out" | jq -e '[ .items[] | select(.id=="app-one-k1" or .id=="app-two-k2"
+        or .id=="myapp-one-k3" or .id=="myapp-two-k4")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null) ] | all' >/dev/null \
+    || fail "a cached remote must still verify its own project's PRs"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="crossed-k5")
+      | (.kind=="decision") and ([.options[].value] | index("merge") == null)' >/dev/null \
+    || fail "a resolved remote that disagrees is a proven mismatch: no Merge"$'\n'"$out"
+  # The empty (no-origin) entry memoizes as a HIT, and still falls back to the marker.
+  printf '%s' "$out" | jq -e '[ .items[] | select(.id=="solo-one-k6" or .id=="solo-two-k7")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null) ] | all' >/dev/null \
+    || fail "a project with no remote must fall back to the marker on every card"$'\n'"$out"
+  pass "fm-logbook-compose memoizes each project's remote once, portably"
+}
+
 test_compose_action_body_carries_a_clickable_pr_link() {
   local home out
   home="$TMP_ROOT/compose-pr-link"; write_fleet_fixture "$home"
@@ -2158,6 +2258,8 @@ test_compose_live_crew_enriches_the_backlog_item
 test_compose_live_crew_missing_from_backlog_is_carded
 test_compose_done_drops_even_with_a_lingering_meta
 test_compose_expired_hold_gate_is_not_a_hold
+test_compose_hold_reason_survives_the_captains_own_parentheses
+test_compose_memoizes_each_projects_remote_once
 test_compose_action_body_carries_a_clickable_pr_link
 test_compose_runaway_body_never_truncates_the_pr_link
 test_refresh_hard_noop_when_disabled

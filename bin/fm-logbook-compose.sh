@@ -128,16 +128,30 @@ valid_project_name() {
 # cache away with it, silently re-running git once per card. Strictly READ-ONLY inside
 # projects/ (prime directive 1): "remote get-url" reads config and touches no ref,
 # index, or worktree.
-declare -A REMOTE_REPO_CACHE=()
+#
+# The cache is a newline-terminated "<project>\t<repo>" string rather than an
+# associative array, so this composes on bash 3.2 as well as 4+ (the stance
+# bin/fm-classify-lib.sh states and the rest of bin/ keeps); a "declare -A" here would
+# abort the whole script under "set -e" on a host whose bash is 3.2, taking the board
+# down with it. Neither field can hold whitespace - valid_project_name rejects it in the
+# key and the parse below blanks a repo containing any - so the record shape is
+# unambiguous, and anchoring the lookup on the leading separator keeps a project name
+# that is merely the SUFFIX of another (app vs. myapp) from matching its record.
+REMOTE_REPO_SEP=$'\t'
+REMOTE_REPO_EOR=$'\n'
+REMOTE_REPO_CACHE=$REMOTE_REPO_EOR
 REMOTE_REPO_OUT=""
 project_remote_repo() {
   local project=${1-} url rest repo
   REMOTE_REPO_OUT=""
   valid_project_name "$project" || return 0
-  if [ -n "${REMOTE_REPO_CACHE[$project]+set}" ]; then
-    REMOTE_REPO_OUT=${REMOTE_REPO_CACHE[$project]}
-    return 0
-  fi
+  case "$REMOTE_REPO_CACHE" in
+    *"$REMOTE_REPO_EOR$project$REMOTE_REPO_SEP"*)
+      rest=${REMOTE_REPO_CACHE#*"$REMOTE_REPO_EOR$project$REMOTE_REPO_SEP"}
+      REMOTE_REPO_OUT=${rest%%"$REMOTE_REPO_EOR"*}
+      return 0
+      ;;
+  esac
   repo=""
   url=$(git -C "$PROJECTS_DIR/$project" remote get-url origin 2>/dev/null) || url=""
   if [ -n "$url" ]; then
@@ -152,7 +166,7 @@ project_remote_repo() {
       *[[:space:]]*) repo="" ;;
     esac
   fi
-  REMOTE_REPO_CACHE[$project]=$repo
+  REMOTE_REPO_CACHE=$REMOTE_REPO_CACHE$project$REMOTE_REPO_SEP$repo$REMOTE_REPO_EOR
   REMOTE_REPO_OUT=$repo
   return 0
 }
@@ -291,12 +305,15 @@ trim() {
   printf '%s' "$s"
 }
 
-# title_segment <rest>: the item's title text - everything before the marker tail.
+# before_marker_tail <text>: <text> up to the marker tail - everything before the first
+# marker the backend appends to an item line. The single owner of where that tail
+# BEGINS: both readers of it below (the title, and the hold reason inside the tail) must
+# agree on that boundary, or one silently mis-parses the other's field.
 # Stripping at "(repo: " alone would leak the whole tail into a captain-facing title
 # whenever an item carries no repo, which is the normal shape of the captain-gated
 # thread AGENTS.md section 10 recommends ("tasks-axi hold <id> --reason ... --kind
 # captain"), so every marker the backend emits ends the title.
-title_segment() {
+before_marker_tail() {
   local seg=${1-} m
   for m in ' (repo: ' ' (kind: ' ' (priority: ' ' (since ' ' (merged ' ' (reported ' \
            ' (hold: ' ' (hold-kind: ' ' (hold-until: '; do
@@ -392,7 +409,7 @@ backlog_parse() {
     # The human one-liner: the title text with the trailing bookkeeping dropped. The
     # marker tail, the "blocked-by:" dependency record, and the appended link run are
     # all firstmate's own records, not something to read to the captain.
-    title=$(title_segment "$rest")
+    title=$(before_marker_tail "$rest")
     title=${title%%' blocked-by:'*}
 
     # The PR, harvested from that structured link run ONLY (see the header): peel the
@@ -432,7 +449,18 @@ backlog_parse() {
     held=no; hold_kind=""; hold_reason=""; hold_until=""
     case "$line" in
       *' (hold: '*)
-        hold_reason=${line#*' (hold: '}; hold_reason=${hold_reason%%')'*}
+        # The one marker value that can itself contain ")": the reason is free-form
+        # human prose, and compose_item makes it a captain-facing card body verbatim.
+        # The tasks-axi backend rejects a "--reason" containing parentheses for exactly
+        # this reason ("Parentheses are reserved for markdown hold tags"), but a backlog
+        # hand-maintained under config/backlog-backend=manual has no such gate, and
+        # ending the reason at the FIRST ")" would silently drop everything the captain
+        # wrote after their own parenthetical - the actionable half of the note. So end
+        # it where the marker tail resumes (or at end-of-line), then drop the marker's
+        # own closing ")" - the LAST one, never the first. The other marker values need
+        # none of this: repo, hold-kind, and hold-until cannot contain ")".
+        hold_reason=$(before_marker_tail "${line#*' (hold: '}")
+        hold_reason=${hold_reason%')'*}
         held=yes
         ;;
     esac
