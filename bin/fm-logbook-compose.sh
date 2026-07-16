@@ -7,8 +7,9 @@
 # Derives the board's declarative-reconcile body from firstmate's OWN state -
 # data/projects.md (the project registry), data/backlog.md (the DURABLE task record:
 # the item set, titles, and holds), state/*.meta (the live crew, its recorded PR and
-# base branch), and state/*.status (a live crew's latest phase) - and prints one
-# {projects, items} JSON object on stdout, ready to pipe into fm-logbook-sync.sh.
+# base branch), state/*.status (a live crew's latest phase), and each project clone's
+# "origin" remote (the repo its PRs land in) - and prints one {projects, items} JSON
+# object on stdout, ready to pipe into fm-logbook-sync.sh.
 # This mechanizes the tedious hand-composition that made the session-start sync easy
 # to skip. It is a truthful mechanical BASELINE, classed decision > action > fyi,
 # with every project from the registry flagged active when it carries a card. Rich,
@@ -57,9 +58,11 @@
 # Inert by default: a hard no-op (exit 0, no output) unless logbook is opted in via
 # a truthy LOGBOOK_ENABLE (config/logbook.env), mirroring the other client scripts.
 # Read-only: it only READS fleet state and never posts, so LOGBOOK_DRY_RUN needs no
-# branch here - the would-be write lives in fm-logbook-sync.sh, which honors it. It
-# shells out to no backlog tool either, so it composes the same board whether or not
-# tasks-axi is on PATH and under config/backlog-backend=manual (AGENTS.md section 10).
+# branch here - the would-be write lives in fm-logbook-sync.sh, which honors it. Its
+# one reach into projects/ (project_remote_repo) is a "git remote get-url" and nothing
+# else, so prime directive 1 holds: firstmate never writes to a project. It shells out
+# to no backlog tool either, so it composes the same board whether or not tasks-axi is
+# on PATH and under config/backlog-backend=manual (AGENTS.md section 10).
 # Every dynamic string (id, project, title, body, PR url) is injected into the JSON
 # via jq --arg/--argjson, never interpolated into the jq program or a shell word, so
 # fleet text can never break out of a shell word or the JSON structure.
@@ -70,6 +73,7 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+PROJECTS_DIR="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-logbook-lib.sh
 . "$SCRIPT_DIR/fm-logbook-lib.sh"
 
@@ -110,6 +114,49 @@ valid_project_name() {
   return 0
 }
 
+# project_remote_repo <project>: sets REMOTE_REPO_OUT to the "<repo>" component of the
+# clone's "origin" remote, so the Merge gate can check a PR against the project's REAL
+# GitHub repo rather than the local directory name (which AGENTS.md section 6 lets the
+# captain choose freely: "git clone <url> projects/<name>"). Empty when the clone is
+# absent, is not a git repo, or has no "origin" - a local-only project legitimately has
+# none.
+#
+# The ONLY filesystem/git access in this otherwise pure text composer, deliberately
+# confined to this one call site and memoized per PROJECT (not per item) so composing a
+# board stays cheap. It answers through REMOTE_REPO_OUT rather than stdout precisely so
+# it CAN memoize: a "$(...)" reader would run every call in a subshell and throw the
+# cache away with it, silently re-running git once per card. Strictly READ-ONLY inside
+# projects/ (prime directive 1): "remote get-url" reads config and touches no ref,
+# index, or worktree.
+declare -A REMOTE_REPO_CACHE=()
+REMOTE_REPO_OUT=""
+project_remote_repo() {
+  local project=${1-} url rest repo
+  REMOTE_REPO_OUT=""
+  valid_project_name "$project" || return 0
+  if [ -n "${REMOTE_REPO_CACHE[$project]+set}" ]; then
+    REMOTE_REPO_OUT=${REMOTE_REPO_CACHE[$project]}
+    return 0
+  fi
+  repo=""
+  url=$(git -C "$PROJECTS_DIR/$project" remote get-url origin 2>/dev/null) || url=""
+  if [ -n "$url" ]; then
+    # Both remote forms end in the repo: "https://host/owner/repo[.git]" and
+    # "git@host:owner/repo[.git]" (whose owner-less shape leaves the "host:" prefix
+    # on the last path component).
+    rest=${url%.git}
+    rest=${rest%/}
+    repo=${rest##*/}
+    repo=${repo##*:}
+    case "$repo" in
+      *[[:space:]]*) repo="" ;;
+    esac
+  fi
+  REMOTE_REPO_CACHE[$project]=$repo
+  REMOTE_REPO_OUT=$repo
+  return 0
+}
+
 # pr_url_ok <url>: succeed when the url is one the board will actually turn into a
 # link. The board's renderInline does exactly one link substitution -
 # /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g - and nothing else: it does NOT autolink a
@@ -130,37 +177,10 @@ pr_url_ok() {
   return 0
 }
 
-# pr_link <url>: the url as a markdown link - "[<repo> #<n>](<url>)" when it parses
-# as .../<owner>/<repo>/pull/<n>, else a plain "[PR](<url>)". The label is derived
-# from the URL itself rather than the registry's project name so it can never
-# disagree with where the link actually goes. A standing captain rule: a board card
-# referencing a PR (draft included) must carry the full url as a markdown link in the
-# card BODY, because a bare "#N" is dead text to the board's renderer.
-pr_link() {
-  local url=$1 rest repo num
-  case "$url" in
-    *'/pull/'*)
-      num=${url##*'/pull/'}
-      rest=${url%'/pull/'*}
-      repo=${rest##*/}
-      case "$num" in
-        ''|*[!0-9]*) ;;                       # not a plain PR number
-        *)
-          # The label sits inside "[...]", which the board's link regex reads as
-          # [^\]]+, so a "]" in it would break the link.
-          case "$repo" in
-            ''|*']'*|*'['*) ;;
-            *) printf '[%s #%s](%s)' "$repo" "$num" "$url"; return 0 ;;
-          esac
-          ;;
-      esac
-      ;;
-  esac
-  printf '[PR](%s)' "$url"
-}
-
 # pr_repo <url>: the "<repo>" path component of a .../<owner>/<repo>/pull/<n> url;
-# empty when the url does not parse that way.
+# empty when the url does not parse that way. The single owner of this parse: both
+# the label the captain reads and the repo the Merge gate checks are the same two
+# halves of one safety story, so they must never drift apart.
 pr_repo() {
   local url=${1-} rest num
   case "$url" in
@@ -173,6 +193,23 @@ pr_repo() {
   esac
   rest=${url%'/pull/'*}
   printf '%s' "${rest##*/}"
+}
+
+# pr_link <url>: the url as a markdown link - "[<repo> #<n>](<url>)" when it parses
+# as .../<owner>/<repo>/pull/<n>, else a plain "[PR](<url>)". The label is derived
+# from the URL itself rather than the registry's project name so it can never
+# disagree with where the link actually goes. A standing captain rule: a board card
+# referencing a PR (draft included) must carry the full url as a markdown link in the
+# card BODY, because a bare "#N" is dead text to the board's renderer.
+pr_link() {
+  local url=$1 repo
+  repo=$(pr_repo "$url")
+  # The label sits inside "[...]", which the board's link regex reads as [^\]]+, so a
+  # "]" in it would break the link; an unparseable url has no label to use at all.
+  case "$repo" in
+    ''|*']'*|*'['*) printf '[PR](%s)' "$url"; return 0 ;;
+  esac
+  printf '[%s #%s](%s)' "$repo" "${url##*'/pull/'}" "$url"
 }
 
 # pr_token <token> / report_token <token>: succeed when the token is one tasks-axi
@@ -312,8 +349,9 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 # By that same logic the position alone is not proof: a captain who ends their own
 # one-liner with another repo's PR-shaped url hands the structured position a url that
 # is not this task's PR either. So the Merge option needs a VERIFIED PR - harvested
-# here AND matching the item's own "(repo: ...)" marker (compose_item). Only the
-# one-click merge is withheld when it does not; the url still renders as a link.
+# here AND naming the repo this task's project actually pushes to, read from the
+# clone's own "origin" remote (compose_item, project_remote_repo). Only the one-click
+# merge is withheld when it is not; the url still renders as a link.
 backlog_parse() {
   local line section="" rest id title repo held hold_kind hold_reason hold_until pr today word
   [ -f "$BACKLOG_MD" ] || return 0
@@ -376,9 +414,19 @@ backlog_parse() {
     done
     title=$(trim "$title")
 
+    # The BARE project name. The marker carries trailing content in the form
+    # AGENTS.md section 10 documents for a hand-maintained backlog - one combined
+    # "(repo: <name>, since <date>)" rather than the tasks-axi backend's separate
+    # "(repo: <name>) (since <date>)" - and the whole value would then be neither a
+    # usable project name nor a repo any url could match.
     repo=""
     case "$line" in
-      *' (repo: '*) repo=${line#*' (repo: '}; repo=${repo%%')'*} ;;
+      *' (repo: '*)
+        repo=${line#*' (repo: '}
+        repo=${repo%%')'*}
+        repo=${repo%%,*}
+        repo=$(trim "$repo")
+        ;;
     esac
 
     held=no; hold_kind=""; hold_reason=""; hold_until=""
@@ -426,7 +474,8 @@ compose_item() {
   local id=$1
   local rec="$BL_DIR/$id" meta="$STATE/$id.meta"
   local bstate title repo held hold_kind hold_reason bl_pr captain_held live
-  local proj_path project pr pr_ok base_branch last kind detail body options note
+  local proj_path project pr pr_ok pr_name remote_name base_branch last kind detail
+  local body options note
 
   bstate=$(meta_get "$rec" state)
   title=$(meta_get "$rec" title)
@@ -473,15 +522,33 @@ compose_item() {
   if [ -n "$live" ]; then pr=$(meta_get "$meta" pr); fi
   if [ -z "$pr" ]; then pr=$bl_pr; fi
 
-  # A VERIFIED PR is one that is demonstrably THIS task's: its url's repo component
-  # matches the item's own "(repo: ...)" marker (see the header). Only a verified PR
-  # earns the Merge option a "merge" answer would irreversibly authorize. The match is
-  # on the repo alone, never owner/repo: the marker records the project name with no
-  # owner, so requiring one would withhold every merge there is. No marker means no
-  # verification, hence no Merge - the card still carries the link, so the captain
-  # loses only the one click.
+  # A VERIFIED PR is one that is demonstrably THIS task's: its url names the repo this
+  # task's project actually pushes to (see the header). Only a verified PR earns the
+  # Merge option a "merge" answer would irreversibly authorize. The match is on the
+  # repo alone, never owner/repo: the fallback marker records the project name with no
+  # owner, so requiring one would withhold every merge there is.
+  #
+  # The clone's own "origin" is the authority, because the local directory name is the
+  # captain's free choice (AGENTS.md section 6) and only incidentally equals the repo.
+  # When no remote resolves - no clone, not a repo, or a local-only project with no
+  # remote at all - fall back to the marker rather than withhold: silently hiding the
+  # Merge because infrastructure is ABSENT would be the very regression this composer
+  # exists to fix, whereas a resolved remote that disagrees is a PROVEN mismatch and is
+  # correctly withheld. Unverifiable either way (no remote AND no marker) means no
+  # Merge; the card still carries the link, so the captain loses only the one click.
   pr_ok=""
-  if [ -n "$pr" ] && [ -n "$repo" ] && [ "$(pr_repo "$pr")" = "$repo" ]; then pr_ok=$pr; fi
+  if [ -n "$pr" ]; then
+    pr_name=$(pr_repo "$pr")
+    if [ -n "$pr_name" ]; then
+      project_remote_repo "$project"      # answers in REMOTE_REPO_OUT; see its header
+      remote_name=$REMOTE_REPO_OUT
+      if [ -n "$remote_name" ]; then
+        if [ "$pr_name" = "$remote_name" ]; then pr_ok=$pr; fi
+      elif [ -n "$repo" ] && [ "$pr_name" = "$repo" ]; then
+        pr_ok=$pr
+      fi
+    fi
+  fi
 
   # Both of these describe a RUNNING crew, so they are only read when one exists.
   # fm-teardown removes the status log with the meta, and a status line is a wake

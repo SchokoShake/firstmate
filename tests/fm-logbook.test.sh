@@ -22,6 +22,11 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 # fake curl still wins.
 JQ_DIR=$(command -v jq 2>/dev/null) && JQ_DIR=$(dirname "$JQ_DIR") || JQ_DIR=
 [ -n "$JQ_DIR" ] && BASE_PATH="$JQ_DIR:$BASE_PATH"
+# Same for git: compose reads each project clone's "origin" to verify a PR is really
+# that project's, and an unresolvable git would silently degrade the Merge gate to its
+# marker fallback - which is exactly what these tests must be able to tell apart.
+GIT_BIN_DIR=$(command -v git 2>/dev/null) && GIT_BIN_DIR=$(dirname "$GIT_BIN_DIR") || GIT_BIN_DIR=
+[ -n "$GIT_BIN_DIR" ] && BASE_PATH="$GIT_BIN_DIR:$BASE_PATH"
 TMP_ROOT=$(fm_test_tmproot fm-logbook-tests)
 
 # A fakebin `curl` that mimics the board: /health returns FAKE_HEALTH_CODE (default
@@ -1669,6 +1674,116 @@ test_compose_merge_needs_a_repo_marker_to_verify_against() {
   pass "fm-logbook-compose withholds Merge when there is no repo marker to verify against"
 }
 
+# write_remote_fixture <home>: the Merge gate's repo verification. Every task here
+# carries a PR-shaped url in the structured title position, so the only thing that can
+# separate a Merge card from a plain one is whether that url names the repo the task's
+# project actually pushes to. The clones are fixtures under THIS home's own projects/
+# dir (FM_HOME scopes it), never the machine's real ones, and compose only ever reads
+# their "origin" - which is why a bare "git init" with a remote and no commit is a
+# complete fixture.
+write_remote_fixture() {
+  local home=$1
+  mkdir -p "$home/data" "$home/state" "$home/projects"
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes] - First project (added 2026-07-01)
+- movebank-explorer [no-mistakes] - Cloned under a name of its own (added 2026-07-02)
+- gone [no-mistakes] - Registered but not cloned here (added 2026-07-03)
+- solo [local-only] - No remote at all (added 2026-07-04)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] combined-a1 - Ship the widget endpoint https://github.com/acme/alpha/pull/42 (repo: alpha, since 2026-07-10)
+- [ ] renamed-b2 - Ship the tracker view https://github.com/SchokoShake/movebank/pull/42 (repo: movebank-explorer) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] spoof-c3 - Looks local, is not https://github.com/acme/movebank-explorer/pull/13 (repo: movebank-explorer) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] noclone-d4 - Ship the uncloned thing https://github.com/acme/gone/pull/8 (repo: gone) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] noremote-e5 - Ship the solo thing https://github.com/acme/solo/pull/9 (repo: solo) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+EOF
+  git init -q "$home/projects/alpha"
+  git -C "$home/projects/alpha" remote add origin https://github.com/acme/alpha.git
+  # The clone-rename case, in the SSH remote form: the directory the captain chose and
+  # the repo GitHub knows are simply different names.
+  git init -q "$home/projects/movebank-explorer"
+  git -C "$home/projects/movebank-explorer" remote add origin git@github.com:SchokoShake/movebank.git
+  # A local-only project (AGENTS.md section 6): a real clone with no remote at all.
+  git init -q "$home/projects/solo"
+}
+
+test_compose_merge_survives_the_documented_combined_repo_marker() {
+  local home out
+  home="$TMP_ROOT/compose-remote-combined"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # AGENTS.md section 10 documents the hand-maintained in-flight form as ONE combined
+  # "(repo: <name>, since <date>)" marker. Reading the whole value as the project would
+  # yield "alpha, since 2026-07-10": not a usable project name, not a repo any url can
+  # match, and so - once the marker became load-bearing for the gate - no Merge for any
+  # card under the manual backend this composer explicitly serves.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="combined-a1")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)
+      and (.project=="alpha") and (.title=="Ship the widget endpoint")' >/dev/null \
+    || fail "the documented combined repo marker must still compose a Merge"$'\n'"$out"
+  pass "fm-logbook-compose reads the bare project name out of a combined repo marker"
+}
+
+test_compose_merge_follows_the_clone_to_its_real_repo() {
+  local home out
+  home="$TMP_ROOT/compose-remote-rename"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The local directory name is the captain's free choice ("git clone <url>
+  # projects/<name>", AGENTS.md section 6), so it is only incidentally the repo name.
+  # Verifying against the clone's real origin is what lets a renamed clone earn a
+  # Merge; verifying against the marker text would withhold it forever.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="renamed-b2")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)
+      and (.source.pr=="https://github.com/SchokoShake/movebank/pull/42")' >/dev/null \
+    || fail "a PR matching the clone's real origin must earn Merge even when the directory name differs"$'\n'"$out"
+  # And the origin is the AUTHORITY, not merely a second chance: a url that matches the
+  # marker text but NOT the repo the project really pushes to is a proven mismatch.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="spoof-c3")
+      | (.kind=="decision") and (.options == [])
+      and (.body | test("\\[movebank-explorer #13\\]\\(https://github\\.com/acme/movebank-explorer/pull/13\\)"))' >/dev/null \
+    || fail "a resolved origin must overrule a matching marker, while keeping the link"$'\n'"$out"
+  pass "fm-logbook-compose verifies a PR against the clone's real origin, not the directory name"
+}
+
+test_compose_merge_falls_back_when_no_remote_resolves() {
+  local home out
+  home="$TMP_ROOT/compose-remote-absent"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # No clone here at all: the infrastructure is absent, which proves nothing about the
+  # PR. Withholding Merge on that would be the very regression this composer exists to
+  # fix, so the marker still stands in.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="noclone-d4")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a missing clone must fall back to the marker, not withhold Merge"$'\n'"$out"
+  # Same for a local-only project, which legitimately has no remote to resolve.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="noremote-e5")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a clone with no origin must fall back to the marker, not withhold Merge"$'\n'"$out"
+  pass "fm-logbook-compose falls back to the repo marker when no remote resolves"
+}
+
+test_compose_never_writes_to_a_project_clone() {
+  local home out before after
+  home="$TMP_ROOT/compose-remote-readonly"; write_remote_fixture "$home"
+  # Prime directive 1: firstmate must NEVER write to a project. Compose now reaches
+  # into projects/ to read an origin, so pin that the reach stays read-only.
+  before=$(cd "$home/projects" && find . -newer "$home/data/backlog.md" | sort; git -C "$home/projects/alpha" status --porcelain)
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  [ -n "$out" ] || fail "compose must still emit a board"
+  after=$(cd "$home/projects" && find . -newer "$home/data/backlog.md" | sort; git -C "$home/projects/alpha" status --porcelain)
+  [ "$before" = "$after" ] \
+    || fail "compose must not write anything inside projects/"$'\n'"before: $before"$'\n'"after: $after"
+  pass "fm-logbook-compose reads a project clone's origin without writing to it"
+}
+
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge() {
   local home out
   home="$TMP_ROOT/compose-ext-hold"; write_link_fixture "$home"
@@ -2029,6 +2144,10 @@ test_compose_link_run_holds_reports_as_well_as_prs
 test_compose_keeps_a_url_the_captain_wrote_in_the_title
 test_compose_merge_needs_a_repo_matched_pr
 test_compose_merge_needs_a_repo_marker_to_verify_against
+test_compose_merge_survives_the_documented_combined_repo_marker
+test_compose_merge_follows_the_clone_to_its_real_repo
+test_compose_merge_falls_back_when_no_remote_resolves
+test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge
 test_compose_title_drops_the_marker_tail_without_a_repo
 test_compose_captain_hold_without_pr_is_a_decision
