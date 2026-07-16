@@ -159,18 +159,30 @@ pr_link() {
   printf '[PR](%s)' "$url"
 }
 
-# append_pr <body> <url>: <body> with the PR's markdown link as its own trailing
-# paragraph; the body unchanged when there is no usable url.
+# append_pr <body> <url> <max>: <body> with the PR's markdown link as its own trailing
+# paragraph, the whole within <max> bytes; the body alone (still within <max>) when
+# there is no usable url. The BODY yields the room, never the link: clipping a link
+# mid-way strands a "[alpha #42](https://..." that the board renders as dead text,
+# which is the very failure rendering it as a link exists to avoid. So the room is
+# measured from the rendered link rather than guessed at with a fixed margin, which a
+# runaway body could out-grow.
 append_pr() {
-  local body=$1 url=${2-}
+  local body=$1 url=${2-} max=$3 link room
   if ! pr_url_ok "$url"; then
-    printf '%s' "$body"
+    clip "$body" "$max"
     return 0
   fi
+  link=$(pr_link "$url")
+  room=$(( max - ${#link} - 2 ))    # the 2 is the blank line between them
+  if [ "$room" -lt 1 ]; then
+    clip "$link" "$max"
+    return 0
+  fi
+  body=$(clip "$body" "$room")
   if [ -n "$body" ]; then
-    printf '%s\n\n%s' "$body" "$(pr_link "$url")"
+    printf '%s\n\n%s' "$body" "$link"
   else
-    pr_link "$url"
+    printf '%s' "$link"
   fi
 }
 
@@ -204,6 +216,22 @@ trim() {
   printf '%s' "$s"
 }
 
+# title_segment <rest>: the item's title text - everything before the marker tail.
+# Stripping at "(repo: " alone would leak the whole tail into a captain-facing title
+# whenever an item carries no repo, which is the normal shape of the captain-gated
+# thread AGENTS.md section 10 recommends ("tasks-axi hold <id> --reason ... --kind
+# captain"), so every marker the backend emits ends the title.
+title_segment() {
+  local seg=${1-} m
+  for m in ' (repo: ' ' (kind: ' ' (priority: ' ' (since ' ' (merged ' ' (reported ' \
+           ' (hold: ' ' (hold-kind: ' ' (hold-until: '; do
+    case "$seg" in
+      *"$m"*) seg=${seg%%"$m"*} ;;
+    esac
+  done
+  printf '%s' "$seg"
+}
+
 ITEMS_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-items.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
 REG_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-reg.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
 SUB_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-sub.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
@@ -216,11 +244,14 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 # named by task id and written in the same "key=value" shape meta_get already reads:
 #   state=in_flight|queued|done  title=  repo=  held=yes|no  hold_kind=  hold_reason=
 #   pr=
-# The "## In flight / ## Queued / ## Done" layout and the trailing "(repo: ...)",
-# "(hold: ...)", "(hold-kind: ...)", "(hold-until: ...)" markers are AGENTS.md
-# section 10's stated contract - written byte-exact by the tasks-axi backend and by
-# hand under config/backlog-backend=manual - so reading the file directly serves both
-# backends and needs no tasks-axi on PATH.
+# The "## In flight / ## Queued / ## Done" layout, the item forms, and "blocked-by:"
+# are AGENTS.md section 10's stated contract, kept byte-exact by both backends. The
+# trailing "(repo: ...)", "(kind: ...)", "(priority: ...)", "(since ...)",
+# "(hold: ...)", "(hold-kind: ...)", "(hold-until: ...)" markers are NOT documented
+# there: they are the form the tasks-axi backend actually emits, which this parses.
+# So reading the file directly needs no tasks-axi on PATH and serves both backends -
+# a backlog hand-maintained under config/backlog-backend=manual composes its layout
+# and titles, and contributes captain-held cards wherever it carries those markers.
 #
 # A hold carrying a "(hold-until: <date>)" gate that has ARRIVED is not an active
 # hold - the gate is "inactive on and after that date", which is exactly what
@@ -228,12 +259,17 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 # the board forever, and compose can never disagree with the store it reads. ISO-8601
 # dates compare correctly with the separators stripped, so no date parsing is needed.
 #
-# Only an item's own line is scanned. Free-form note lines under a task are prose and
-# routinely reference OTHER tasks' PRs, so harvesting a url from them would mislabel
-# the card; a task's own PR url reaches its line via "tasks-axi update <id> --pr
-# <url>" (or a Done entry's link), which is what survives teardown.
+# The PR url is read ONLY from the structured position "tasks-axi update <id> --pr
+# <url>" appends it to - the trailing run of url tokens at the end of an item's OWN
+# title text, before "blocked-by:" and the marker tail - which is what survives
+# teardown. Everything else on the line is free-form prose: a "(hold: ...)" reason
+# routinely cites ANOTHER task's PR ("blocked until <url> lands"), as do note lines
+# under a task. A card's PR drives a Merge option, and per the logbook-respond skill a
+# "merge" answer on the board is genuine captain authorization, so harvesting a url
+# out of prose would offer to merge an unrelated repo's PR - irreversibly. A url
+# outside the structured position is therefore not this task's PR, full stop.
 backlog_parse() {
-  local line section="" rest id title repo held hold_kind hold_reason hold_until pr today
+  local line section="" rest id title repo held hold_kind hold_reason hold_until pr today word cand
   [ -f "$BACKLOG_MD" ] || return 0
   today=$(date +%Y-%m-%d 2>/dev/null) || today=""
   while IFS= read -r line; do
@@ -269,11 +305,30 @@ backlog_parse() {
     fi
     logbook_valid_id "$id" || continue
 
-    # The human one-liner: the title with the trailing bookkeeping dropped. Both
-    # "(repo: ..." and the "blocked-by:" dependency marker are firstmate's own
-    # records, not something to read to the captain.
-    title=${rest%%' (repo:'*}
+    # The human one-liner: the title text with the trailing bookkeeping dropped. The
+    # marker tail, the "blocked-by:" dependency record, and the appended link run are
+    # all firstmate's own records, not something to read to the captain.
+    title=$(title_segment "$rest")
     title=${title%%' blocked-by:'*}
+
+    # The PR, harvested from that structured link run ONLY (see the header): peel the
+    # trailing url tokens off the title, keeping the FIRST PR-shaped url among them.
+    # Peeling right-to-left means the last assignment is the leftmost url.
+    pr=""
+    while :; do
+      word=${title##* }
+      case "$word" in
+        http://*|https://*) ;;
+        *) break ;;
+      esac
+      cand=$(printf '%s' "$word" | grep -oE 'https?://[^[:space:]<>()]+/pull/[0-9]+' | head -n1)
+      if [ -n "$cand" ]; then pr=$cand; fi
+      case "$title" in
+        *' '*) title=${title% *} ;;
+        *) title=""; break ;;
+      esac
+    done
+    title=$(trim "$title")
 
     repo=""
     case "$line" in
@@ -304,8 +359,6 @@ backlog_parse() {
         held=no; hold_kind=""; hold_reason=""
       fi
     fi
-
-    pr=$(printf '%s' "$line" | grep -oE 'https?://[^[:space:]<>()]+/pull/[0-9]+' | head -n1)
 
     {
       printf 'state=%s\n' "$section"
@@ -441,11 +494,7 @@ compose_item() {
   esac
 
   title=$(clip "$title" 500)
-  # Clipped with room to spare for the link paragraph, so a runaway body can never
-  # push the PR link past the tool's 20000-byte limit and lose it.
-  body=$(clip "$body" 18400)
-  body=$(append_pr "$body" "$pr")
-  body=$(clip "$body" 19000)
+  body=$(append_pr "$body" "$pr" 19000)
 
   jq -nc \
     --arg id "$id" \

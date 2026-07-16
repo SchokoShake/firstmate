@@ -1491,13 +1491,15 @@ EOF
 # Backlog
 
 ## In flight
-- [ ] held-pr-h1 - Trim the AR forms (repo: alpha) (kind: ship) (since 2026-07-10) (hold: draft PR https://github.com/acme/alpha/pull/699 review-ready - CI green, review passed - captain reviews then merges) (hold-kind: captain)
+- [ ] held-pr-h1 - Trim the AR forms https://github.com/acme/alpha/pull/699 (repo: alpha) (kind: ship) (since 2026-07-10) (hold: review-ready - CI green, review passed - captain reviews then merges) (hold-kind: captain)
 - [ ] held-ask-h2 - Multi-line text answers (repo: beta) (kind: ship) (since 2026-07-10) (hold: designed with the captain, awaiting their go-ahead to dispatch) (hold-kind: captain)
 - [ ] parked-h3 - Fix the batch spawn (repo: alpha) (kind: ship) (since 2026-07-05) blocked-by: held-ask-h2
 - [ ] live-h4 - Wire the widget endpoint (repo: alpha) (kind: ship) (since 2026-07-10)
+- [ ] holdprose-i2 - Chase the upstream fix (repo: alpha) (kind: ship) (since 2026-07-11) (hold: nothing to do until https://github.com/acme/other/pull/5 lands - say the word to close it out) (hold-kind: captain)
 ## Queued
 - [ ] q-held-h5 - Reword the section 15 rule (repo: alpha) (kind: ship) (since 2026-07-16) (hold: awaiting the captain's word on reword vs delete) (hold-kind: captain)
 - [ ] q-plain-h6 - Not dispatched yet (repo: beta) (kind: ship)
+- [ ] norepo-i3 - Relay the captain's answer on the nav copy (since 2026-07-12) (hold: awaiting their word on reword vs delete) (hold-kind: captain)
 ## Done
 - [x] done-h7 - Landed already - <https://github.com/acme/alpha/pull/600> (merged 2026-07-09)
 EOF
@@ -1535,6 +1537,46 @@ test_compose_captain_hold_survives_teardown() {
       | .body | test("\\[alpha #699\\]\\(https://github\\.com/acme/alpha/pull/699\\)")' >/dev/null \
     || fail "a captain-held card's PR must appear as a markdown link in the body"$'\n'"$out"
   pass "fm-logbook-compose keeps a captain-held task on the board after its crew is torn down"
+}
+
+test_compose_pr_is_read_only_from_the_structured_position() {
+  local home out
+  home="$TMP_ROOT/compose-pr-position"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A hold reason is free-form prose, and firstmate routinely writes one citing
+  # ANOTHER task's PR. Harvesting that url would offer to merge an unrelated repo's
+  # PR, and a "merge" answer on the board is genuine captain authorization - so a url
+  # only in prose is not this task's PR, and the card stays a question to answer.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="holdprose-i2")
+      | (.source | has("pr") | not) and (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "a url only in hold prose must NOT be harvested as the task's PR"$'\n'"$out"
+  # The prose itself is still the captain's context, url text and all.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="holdprose-i2")
+      | .body | test("nothing to do until https://github\\.com/acme/other/pull/5 lands")' >/dev/null \
+    || fail "a hold reason citing another PR must still read as the card body"$'\n'"$out"
+  # The other side of the boundary: the structured position IS harvested, and the url
+  # is then stripped from the title rather than read to the captain twice.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")
+      | (.source.pr=="https://github.com/acme/alpha/pull/699")
+      and (.title=="Trim the AR forms")' >/dev/null \
+    || fail "a url in the structured title position must be harvested and left out of the title"$'\n'"$out"
+  pass "fm-logbook-compose harvests a PR only from the structured position, never from prose"
+}
+
+test_compose_title_drops_the_marker_tail_without_a_repo() {
+  local home out
+  home="$TMP_ROOT/compose-norepo"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # "--repo" is optional, and the captain-gated thread AGENTS.md section 10 recommends
+  # normally has none. Every marker ends the title, not "(repo: " alone, or the whole
+  # tail would be read to the captain as their one-liner.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="norepo-i3")
+      | (.title=="Relay the captain'"'"'s answer on the nav copy") and (.kind=="decision")
+      and (.project=="") and (.body | test("reword vs delete"))' >/dev/null \
+    || fail "an item with no repo marker must still get a clean title"$'\n'"$out"
+  pass "fm-logbook-compose keeps the marker tail out of a title when the item has no repo"
 }
 
 test_compose_captain_hold_without_pr_is_a_decision() {
@@ -1575,8 +1617,8 @@ test_compose_board_is_not_a_backlog_mirror() {
     && fail "ungated queued work must NOT be on the board"
   printf '%s' "$out" | jq -e '.items[] | select(.id=="done-h7")' >/dev/null \
     && fail "Done work must NOT be on the board"
-  # In flight (with or without a crew) and captain-held: 5 cards, no more.
-  [ "$(printf '%s' "$out" | jq '.items | length')" = 5 ] \
+  # In flight (with or without a crew) and captain-held: 7 cards, no more.
+  [ "$(printf '%s' "$out" | jq '.items | length')" = 7 ] \
     || fail "the board must carry exactly the in-flight and captain-held tasks"$'\n'"$out"
   pass "fm-logbook-compose keeps ungated queued work and Done off the board"
 }
@@ -1693,6 +1735,34 @@ test_compose_action_body_carries_a_clickable_pr_link() {
       and (.body | test("Ready for your review"))' >/dev/null \
     || fail "a ready-PR card must carry the PR as a markdown link in the body"$'\n'"$out"
   pass "fm-logbook-compose renders a ready PR as a clickable markdown link in the card body"
+}
+
+test_compose_runaway_body_never_truncates_the_pr_link() {
+  local home out reason repo url link
+  home="$TMP_ROOT/compose-body-clip"; mkdir -p "$home/data" "$home/state"
+  printf '# Registry\n\n- alpha [no-mistakes] - First project (added 2026-07-01)\n' > "$home/data/projects.md"
+  # Both halves at their worst: a runaway hold reason, and the longest link the url
+  # bound (400 bytes) still admits - the link's label is drawn from the url, so it
+  # roughly doubles it. A fixed body margin cannot cover this; the room has to be
+  # measured from the rendered link.
+  repo=$(awk 'BEGIN { while (i++ < 340) printf "r" }')
+  url="https://github.com/acme/$repo/pull/42"
+  link="[$repo #42]($url)"
+  reason=$(awk 'BEGIN { while (i++ < 3000) printf "reason words here " }')
+  { printf '# Backlog\n\n## In flight\n'
+    printf -- '- [ ] huge-j1 - Big one %s (repo: alpha) (kind: ship) (hold: %s) (hold-kind: captain)\n' "$url" "$reason"
+    printf '## Queued\n## Done\n'
+  } > "$home/data/backlog.md"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The link is the higher-value half: a link clipped mid-way strands "[...](https://"
+  # as dead text, the exact failure rendering it as a link exists to avoid. So the BODY
+  # yields the room, and the link always survives whole.
+  printf '%s' "$out" | jq -e --arg link "$link" '.items[] | select(.id=="huge-j1")
+      | (.body | endswith($link)) and (.body | length <= 19000)
+      and (.body | startswith("reason words here"))' >/dev/null \
+    || fail "a runaway body must be clipped to fit the PR link whole, not truncate it"$'\n'"tail: $(printf '%s' "$out" | jq -r '.items[] | select(.id=="huge-j1") | .body[-60:]')"
+  pass "fm-logbook-compose clips a runaway body to keep the PR link intact"
 }
 
 test_refresh_hard_noop_when_disabled() {
@@ -1833,6 +1903,8 @@ test_compose_no_declaration_is_backward_compatible
 test_compose_skips_malformed_subproject_lines
 test_project_mode_unaffected_by_subproject_lines
 test_compose_captain_hold_survives_teardown
+test_compose_pr_is_read_only_from_the_structured_position
+test_compose_title_drops_the_marker_tail_without_a_repo
 test_compose_captain_hold_without_pr_is_a_decision
 test_compose_queued_captain_hold_is_carded
 test_compose_board_is_not_a_backlog_mirror
@@ -1842,6 +1914,7 @@ test_compose_live_crew_missing_from_backlog_is_carded
 test_compose_done_drops_even_with_a_lingering_meta
 test_compose_expired_hold_gate_is_not_a_hold
 test_compose_action_body_carries_a_clickable_pr_link
+test_compose_runaway_body_never_truncates_the_pr_link
 test_refresh_hard_noop_when_disabled
 test_refresh_dry_run_records_sync
 test_refresh_live_posts_sync
