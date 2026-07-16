@@ -505,7 +505,7 @@ During the `ci` monitor phase, `bin/fm-crew-state.sh` also reads the ci step log
 ### PR ready
 
 For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
-Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and GitHub's `pr_head=` when available in the task's meta and arms the watcher's merge poll.
+Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and GitHub's `pr_head=` when available in the task's meta, records the PR on the backlog item too so it survives teardown, and arms the watcher's merge poll.
 Tell the captain: the PR's full URL (always the complete `https://...` link, never a bare `#number` - the captain's terminal makes a full URL clickable), a one-paragraph summary, and, for `no-mistakes`, the risk level it emitted.
 (The check contract, for any custom `state/<id>.check.sh` you write yourself: print one line only when firstmate should wake, print nothing otherwise, and finish before `FM_CHECK_TIMEOUT`.)
 
@@ -719,6 +719,9 @@ Map firstmate's real backlog operations to the approved commands:
 - File an item: `tasks-axi add <id> "<one line>" --kind <ship|scout> --repo <name>`, plus `--start` for immediate dispatch (In flight) or the default queue placement, and `--blocked-by <id>` (repeatable) when it waits on another task.
 - Start an existing queued item: `tasks-axi start <id>` before dispatching work from Queued, after checking that blockers are gone and any time/date gate has arrived.
 - Move a finished task to Done: `tasks-axi done <id> --pr <url>` for a PR-based ship, `--report <path>` for a scout, or `--note "local main"` for a local-only merge.
+- Record a task's PR while it is still open: `tasks-axi update <id> --pr <url>`.
+  `bin/fm-pr-check.sh` already does this for you at the PR-ready stage (section 7), so this is the by-hand form for a backlog item whose PR was never armed there.
+  The durable record matters because `state/<id>.meta` dies with the crew while the task lives on waiting for review.
 - Update task notes: inspect first with `tasks-axi show <id> --full`, then replace the considered body with `tasks-axi update <id> --body-file <path>`.
   Add `--archive-body` to that update command when superseding prior state should remain recoverable.
 - Manage dependencies: `tasks-axi block <id> --by <other>` and `tasks-axi unblock <id> --by <other>`, then `tasks-axi ready` to list queued work with no unresolved blockers.

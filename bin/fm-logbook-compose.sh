@@ -129,6 +129,18 @@ valid_project_name() {
 # projects/ (prime directive 1): "remote get-url" reads config and touches no ref,
 # index, or worktree.
 #
+# Discovery is BOUNDED at projects/, because git otherwise walks UP from its "-C"
+# directory until it finds a repo: a projects/<name> that is not a clone would answer
+# with the ENCLOSING repo's origin, and in the shipped layout that enclosure is
+# firstmate's own checkout (FM_HOME is a git repo; gitignoring projects/ does not stop
+# discovery). Every card would then read "firstmate" as the repo its project pushes to
+# and withhold the Merge as a PROVEN mismatch - silently inverting the absent-clone
+# fallback below into the exact regression this composer exists to fix. Bounded, a
+# non-clone resolves nothing, which is what that fallback reads. The ceiling must be the
+# PHYSICAL path (git compares it against its own getcwd, which resolves symlinks) and
+# must be absolute (git ignores a relative entry); an unresolvable projects/ leaves it
+# empty and skips the lookup, since no clone can live under a dir that will not open.
+#
 # The cache is a newline-terminated "<project>\t<repo>" string rather than an
 # associative array, so this composes on bash 3.2 as well as 4+ (the stance
 # bin/fm-classify-lib.sh states and the rest of bin/ keeps); a "declare -A" here would
@@ -141,6 +153,7 @@ REMOTE_REPO_SEP=$'\t'
 REMOTE_REPO_EOR=$'\n'
 REMOTE_REPO_CACHE=$REMOTE_REPO_EOR
 REMOTE_REPO_OUT=""
+PROJECTS_CEILING=$(cd "$PROJECTS_DIR" 2>/dev/null && pwd -P) || PROJECTS_CEILING=""
 project_remote_repo() {
   local project=${1-} url rest repo
   REMOTE_REPO_OUT=""
@@ -153,7 +166,11 @@ project_remote_repo() {
       ;;
   esac
   repo=""
-  url=$(git -C "$PROJECTS_DIR/$project" remote get-url origin 2>/dev/null) || url=""
+  url=""
+  if [ -n "$PROJECTS_CEILING" ]; then
+    url=$(GIT_CEILING_DIRECTORIES="$PROJECTS_CEILING" \
+      git -C "$PROJECTS_DIR/$project" remote get-url origin 2>/dev/null) || url=""
+  fi
   if [ -n "$url" ]; then
     # Both remote forms end in the repo: "https://host/owner/repo[.git]" and
     # "git@host:owner/repo[.git]" (whose owner-less shape leaves the "host:" prefix
@@ -335,7 +352,7 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 # backlog_parse: read data/backlog.md ONCE into one record per task under $BL_DIR,
 # named by task id and written in the same "key=value" shape meta_get already reads:
 #   state=in_flight|queued|done  title=  repo=  held=yes|no  hold_kind=  hold_reason=
-#   pr=
+#   blocked_by=  pr=
 # The "## In flight / ## Queued / ## Done" layout, the item forms, and "blocked-by:"
 # are AGENTS.md section 10's stated contract, kept byte-exact by both backends. The
 # trailing "(repo: ...)", "(kind: ...)", "(priority: ...)", "(since ...)",
@@ -353,9 +370,12 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 #
 # The PR url is read ONLY from the structured position "tasks-axi update <id> --pr
 # <url>" appends it to - the trailing link run at the end of an item's OWN title text,
-# before "blocked-by:" and the marker tail - which is what survives teardown. That run
-# holds link tokens of both kinds the backend appends, in either order, so a promoted
-# scout's "--report" path never hides the PR behind it (see pr_token/report_token).
+# before "blocked-by:" and the marker tail - which is what survives teardown.
+# bin/fm-pr-check.sh is what writes it, at the same PR-ready moment it arms the merge
+# poll, so the durable record is there before the crew that produced it is torn down.
+# That run holds link tokens of both kinds the backend appends, in either order, so a
+# promoted scout's "--report" path never hides the PR behind it (see
+# pr_token/report_token).
 # Everything else on the line is free-form prose: a "(hold: ...)" reason routinely
 # cites ANOTHER task's PR ("blocked until <url> lands"), as do note lines under a
 # task. A card's PR drives a Merge option, and per the logbook-respond skill a "merge"
@@ -370,7 +390,8 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 # clone's own "origin" remote (compose_item, project_remote_repo). Only the one-click
 # merge is withheld when it is not; the url still renders as a link.
 backlog_parse() {
-  local line section="" rest id title repo held hold_kind hold_reason hold_until pr today word
+  local line section="" rest own id title repo held hold_kind hold_reason hold_until pr today word
+  local blocked_by
   [ -f "$BACKLOG_MD" ] || return 0
   today=$(date +%Y-%m-%d 2>/dev/null) || today=""
   while IFS= read -r line; do
@@ -409,8 +430,26 @@ backlog_parse() {
     # The human one-liner: the title text with the trailing bookkeeping dropped. The
     # marker tail, the "blocked-by:" dependency record, and the appended link run are
     # all firstmate's own records, not something to read to the captain.
-    title=$(before_marker_tail "$rest")
-    title=${title%%' blocked-by:'*}
+    #
+    # "blocked-by:" is dropped from the title but RECORDED, not discarded: like a hold,
+    # it is firstmate's own record that the work is not ready, and compose_item's Merge
+    # gate has to see it. Both documented placements have to count - AGENTS.md section
+    # 10 writes it AFTER the "(repo: ...)" marker, while the tasks-axi backend emits it
+    # BEFORE the marker tail - so the record is read from the WHOLE item line while the
+    # title is cut from the pre-marker text. Reading it from the title alone would gate
+    # the tasks-axi backend and silently never gate the hand-maintained one this
+    # composer explicitly serves. The value is only ever used as a yes/no, so the
+    # documented form's trailing " - <reason>" needs no further parsing.
+    #
+    # Erring eager here is the safe direction: the worst a false positive (a hold reason
+    # quoting the literal string) can do is withhold one Merge click, while a miss offers
+    # the captain an irreversible merge on work the fleet recorded as not-ready.
+    own=$(before_marker_tail "$rest")
+    blocked_by=""
+    case "$rest" in
+      *' blocked-by:'*) blocked_by=$(trim "$(before_marker_tail "${rest#*' blocked-by:'}")") ;;
+    esac
+    title=${own%%' blocked-by:'*}
 
     # The PR, harvested from that structured link run ONLY (see the header): peel the
     # trailing link tokens off the title, stopping at the first token that is not one
@@ -489,6 +528,7 @@ backlog_parse() {
       printf 'held=%s\n' "$held"
       printf 'hold_kind=%s\n' "$hold_kind"
       printf 'hold_reason=%s\n' "$hold_reason"
+      printf 'blocked_by=%s\n' "$blocked_by"
       printf 'pr=%s\n' "$pr"
     } > "$BL_DIR/$id" || { echo "fm-logbook-compose: cannot record backlog task $id" >&2; return 1; }
   done < "$BACKLOG_MD"
@@ -501,8 +541,8 @@ backlog_parse() {
 compose_item() {
   local id=$1
   local rec="$BL_DIR/$id" meta="$STATE/$id.meta"
-  local bstate title repo held hold_kind hold_reason bl_pr captain_held live
-  local proj_path project pr pr_ok pr_name remote_name base_branch last kind detail
+  local bstate title repo held hold_kind hold_reason blocked_by bl_pr captain_held live
+  local not_ready proj_path project pr pr_ok pr_name remote_name base_branch last kind detail
   local body options note
 
   bstate=$(meta_get "$rec" state)
@@ -511,6 +551,7 @@ compose_item() {
   held=$(meta_get "$rec" held)
   hold_kind=$(meta_get "$rec" hold_kind)
   hold_reason=$(meta_get "$rec" hold_reason)
+  blocked_by=$(meta_get "$rec" blocked_by)
   bl_pr=$(meta_get "$rec" pr)
 
   live=""
@@ -522,6 +563,16 @@ compose_item() {
 
   captain_held=no
   if [ "$held" = yes ] && [ "$hold_kind" = captain ]; then captain_held=yes; fi
+
+  # NOT-READY: firstmate's own durable record that this work cannot land yet, in either
+  # form AGENTS.md section 10 gives it - an ACTIVE hold that is not a captain hold
+  # (external, parked, future), or an uncleared "blocked-by: <id>" dependency. One
+  # concept, read once, so the Merge gate below can never guard one form and miss the
+  # other. A captain hold is deliberately NOT not-ready: it is the captain themself the
+  # work waits on, which is the whole point of the card.
+  not_ready=no
+  if [ -n "$blocked_by" ]; then not_ready=yes; fi
+  if [ "$held" = yes ] && [ "$captain_held" != yes ]; then not_ready=yes; fi
 
   # What earns a card (see the header): In flight, captain-held in any state, or a
   # live crew the backlog has not recorded yet. Done never does, even while a
@@ -594,12 +645,14 @@ compose_item() {
   # concrete thing to do, review and merge it - while one without is a question to
   # answer, which is how firstmate actually writes hold reasons.
   #
-  # An ACTIVE hold that is NOT a captain hold (external, parked, future) is the fleet's
-  # own record that the work is not ready, so its PR is not offered for merge however
-  # ready the url looks: a Merge button captioned by the very reason the work is
-  # blocked is a contradiction, and the board must never invite the captain to merge
-  # work firstmate has recorded as not-ready. Such a task falls through to the fyi
-  # branch, which already reports that hold reason as its body.
+  # NOT-READY work is never offered for merge, however ready the url looks - whether the
+  # record is an active non-captain hold or a "blocked-by: <id>" dependency. A Merge
+  # button captioned by the very reason the work is blocked is a contradiction, and the
+  # board must never invite the captain to merge work firstmate has recorded as
+  # not-ready: acting on it would land a change over the fleet's own objection, and
+  # merging is irreversible. Such a task falls through to the fyi branch (or, when the
+  # captain is also holding it, stays the question that hold already poses), which
+  # reports why it is sitting still rather than offering a button.
   kind=fyi
   detail=""
   case "$last" in
@@ -610,8 +663,8 @@ compose_item() {
       ;;
     *)
       if [ "$captain_held" = yes ]; then
-        if [ -n "$pr_ok" ]; then kind=action; else kind=decision; fi
-      elif [ -n "$pr_ok" ] && [ "$held" != yes ]; then
+        if [ -n "$pr_ok" ] && [ "$not_ready" != yes ]; then kind=action; else kind=decision; fi
+      elif [ -n "$pr_ok" ] && [ "$not_ready" != yes ]; then
         kind=action
       fi
       ;;

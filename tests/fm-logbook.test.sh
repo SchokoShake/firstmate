@@ -1594,6 +1594,9 @@ EOF
 - [ ] xrepo-d5 - Port the same change https://github.com/acme/other/pull/5 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 - [ ] extheld-e6 - Externally held https://github.com/acme/alpha/pull/12 (repo: alpha) (kind: ship) (hold: waiting on upstream CI) (hold-kind: external)
 - [ ] nomarker-f7 - Relay the answer https://github.com/acme/alpha/pull/11 (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] blocked-g8 - Held and blocked https://github.com/acme/alpha/pull/50 blocked-by: extheld-e6 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] blockplain-h9 - Blocked, no hold https://github.com/acme/alpha/pull/51 blocked-by: extheld-e6 (repo: alpha) (kind: ship)
+- [ ] blockdoc-i1 - Blocked the documented way https://github.com/acme/alpha/pull/52 (repo: alpha) blocked-by: extheld-e6 - waiting on the schema
 EOF
 }
 
@@ -1798,6 +1801,85 @@ test_compose_non_captain_hold_with_a_pr_is_not_a_merge() {
       and (.body | test("\\[alpha #12\\]\\(https://github\\.com/acme/alpha/pull/12\\)"))' >/dev/null \
     || fail "an externally-held task's PR must not be offered for merge"$'\n'"$out"
   pass "fm-logbook-compose never offers Merge on work the fleet has recorded as not-ready"
+}
+
+test_compose_blocked_by_is_not_a_merge() {
+  local home out
+  home="$TMP_ROOT/compose-blocked"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # "blocked-by: <id>" is the OTHER form of firstmate's not-ready record (AGENTS.md
+  # section 10), so it gates the Merge exactly as an active hold does: merging is
+  # irreversible, and landing a change over the fleet's own record that it waits on an
+  # unfinished dependency is the same contradiction either way.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="blocked-g8")
+      | (.options == [])' >/dev/null \
+    || fail "a task blocked by an unfinished dependency must NOT offer Merge"$'\n'"$out"
+  # The captain is still holding it, so it stays the question that hold poses - and the
+  # url still reaches them as a link. Only the one click is withheld.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="blocked-g8")
+      | (.kind=="decision")
+      and (.body | test("\\[alpha #50\\]\\(https://github\\.com/acme/alpha/pull/50\\)"))' >/dev/null \
+    || fail "a blocked captain-held task must stay a decision carrying its link"$'\n'"$out"
+  # With no captain hold, it falls through to fyi, exactly like an active hold does.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="blockplain-h9")
+      | (.kind=="fyi") and (.options == [])
+      and (.body | test("\\[alpha #51\\]\\(https://github\\.com/acme/alpha/pull/51\\)"))' >/dev/null \
+    || fail "an unheld blocked task must fall through to fyi with no Merge"$'\n'"$out"
+  # BOTH documented placements gate. AGENTS.md section 10 writes "blocked-by:" AFTER the
+  # "(repo: ...)" marker, where the tasks-axi backend puts it BEFORE the marker tail -
+  # so reading the record off the title alone would gate one backend and silently never
+  # gate the hand-maintained one this composer explicitly serves.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="blockdoc-i1")
+      | (.kind=="fyi") and (.options == [])' >/dev/null \
+    || fail "the documented blocked-by placement must gate the Merge too"$'\n'"$out"
+  # And the gate is the dependency record, not the mere presence of a PR: an identical
+  # captain-held task with nothing blocking it still merges in one click.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="promo-b2")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "an unblocked captain-held task must still offer Merge"$'\n'"$out"
+  pass "fm-logbook-compose withholds Merge from a task blocked by an unfinished dependency"
+}
+
+# write_nested_home_fixture <home>: a firstmate home that is itself inside a git repo -
+# the SHIPPED layout, where FM_HOME is firstmate's own checkout - with a projects/<name>
+# that exists but is not a clone. git's repo discovery walks UP from its -C directory,
+# so an unbounded lookup answers with the enclosing repo's origin here.
+write_nested_home_fixture() {
+  local home=$1 outer
+  outer="$home/outer"
+  mkdir -p "$outer"
+  git init -q "$outer"
+  git -C "$outer" remote add origin https://github.com/SchokoShake/firstmate.git
+  mkdir -p "$outer/home/data" "$outer/home/state" "$outer/home/projects/alpha"
+  cat > "$outer/home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes] - First project (added 2026-07-01)
+EOF
+  cat > "$outer/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] nested-a1 - Ship the widget https://github.com/acme/alpha/pull/11 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+EOF
+}
+
+test_compose_remote_lookup_cannot_escape_a_non_repo_project_dir() {
+  local home out
+  home="$TMP_ROOT/compose-nested-home"; write_nested_home_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home/outer/home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # projects/alpha is a directory but not a clone, which proves NOTHING about the PR -
+  # so the repo marker stands in and the Merge holds (the absent-clone fallback). Let
+  # discovery escape and it resolves the ENCLOSING repo's origin instead: every card
+  # would read "firstmate" as the repo its project pushes to, call the match a proven
+  # mismatch, and silently withhold every Merge on the board - inverting the fallback
+  # into the exact regression this composer exists to fix.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="nested-a1")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a non-repo projects/<name> must fall back to the marker, not resolve the enclosing repo"$'\n'"$out"
+  pass "fm-logbook-compose bounds its remote lookup at projects/ and cannot escape upward"
 }
 
 test_compose_title_drops_the_marker_tail_without_a_repo() {
@@ -2249,6 +2331,8 @@ test_compose_merge_follows_the_clone_to_its_real_repo
 test_compose_merge_falls_back_when_no_remote_resolves
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge
+test_compose_blocked_by_is_not_a_merge
+test_compose_remote_lookup_cannot_escape_a_non_repo_project_dir
 test_compose_title_drops_the_marker_tail_without_a_repo
 test_compose_captain_hold_without_pr_is_a_decision
 test_compose_queued_captain_hold_is_carded
