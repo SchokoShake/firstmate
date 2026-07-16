@@ -1564,6 +1564,127 @@ test_compose_pr_is_read_only_from_the_structured_position() {
   pass "fm-logbook-compose harvests a PR only from the structured position, never from prose"
 }
 
+# write_link_fixture <home>: the link run and the Merge gate. Nearly every task here
+# carries a PR-shaped url in the structured title position, so what separates a Merge
+# card from a plain one is only ever whether that url is really this task's and whether
+# the work is ready - never the url's mere position. Each line is written the way
+# tasks-axi itself emits it (verified against 0.2.2, which validates "--pr" as an
+# http(s) url ending in "/pull/<number>" and "--report" as a "data/<id>/report.md"
+# path, and appends both into the title in the order they were recorded).
+write_link_fixture() {
+  local home=$1
+  mkdir -p "$home/data" "$home/state"
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes] - First project (added 2026-07-01)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] promo-b2 - Other way round https://github.com/acme/alpha/pull/89 data/promo-b2/report.md (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] promo-a1 - Report first data/promo-a1/report.md https://github.com/acme/alpha/pull/90 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] issueurl-c4 - Mirror the upstream fix https://github.com/acme/other/issues/9 (repo: alpha) (kind: ship)
+- [ ] xrepo-d5 - Port the same change https://github.com/acme/other/pull/5 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] extheld-e6 - Externally held https://github.com/acme/alpha/pull/12 (repo: alpha) (kind: ship) (hold: waiting on upstream CI) (hold-kind: external)
+- [ ] nomarker-f7 - Relay the answer https://github.com/acme/alpha/pull/11 (kind: ship) (hold: review-ready) (hold-kind: captain)
+EOF
+}
+
+test_compose_link_run_holds_reports_as_well_as_prs() {
+  local home out
+  home="$TMP_ROOT/compose-link-run"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # tasks-axi appends BOTH "--pr" and "--report" links into the title, in whatever
+  # order they were recorded - a promoted scout (AGENTS.md section 7) keeps its report
+  # and gains a PR. Modelling the run as urls only stopped the peel dead at the report
+  # path, losing the Merge option AND the clickable link of a review-ready PR: the very
+  # regression this composer exists to fix. Both orders must peel clean and harvest.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="promo-b2")
+      | (.title=="Other way round") and (.kind=="action")
+      and (.source.pr=="https://github.com/acme/alpha/pull/89")
+      and (.body | test("\\[alpha #89\\]\\(https://github\\.com/acme/alpha/pull/89\\)"))' >/dev/null \
+    || fail "a report path AFTER the PR must not hide the PR behind it"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="promo-a1")
+      | (.title=="Report first") and (.kind=="action")
+      and (.source.pr=="https://github.com/acme/alpha/pull/90")' >/dev/null \
+    || fail "a report path BEFORE the PR must peel out of the title too"$'\n'"$out"
+  pass "fm-logbook-compose peels report paths and PRs from the link run in either order"
+}
+
+test_compose_keeps_a_url_the_captain_wrote_in_the_title() {
+  local home out
+  home="$TMP_ROOT/compose-title-url"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A trailing url that is NOT link-run bookkeeping - here an issue link a human wrote
+  # into their own one-liner - is the captain's own words. Peeling every trailing url
+  # deleted it with nothing rendered in its place; only the two shapes tasks-axi
+  # appends are bookkeeping, so this one stays where the captain put it.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="issueurl-c4")
+      | (.title=="Mirror the upstream fix https://github.com/acme/other/issues/9")
+      and (.source | has("pr") | not)' >/dev/null \
+    || fail "a non-link-run url must stay in the title, not vanish"$'\n'"$out"
+  pass "fm-logbook-compose leaves a url the captain wrote into their one-liner in the title"
+}
+
+test_compose_merge_needs_a_repo_matched_pr() {
+  local home out
+  home="$TMP_ROOT/compose-pr-repo"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The structured position is necessary but not sufficient: a captain who ends their
+  # own one-liner with ANOTHER repo's PR hands it that position. A "merge" answer on
+  # the board is genuine captain authorization and merging is irreversible, so the
+  # Merge option needs the url's repo to match the item's own "(repo: ...)" marker.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="xrepo-d5")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "a PR naming another repo must NOT earn a Merge option"$'\n'"$out"
+  # Only the one click is withheld: the url still reaches the captain as a link.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="xrepo-d5")
+      | (.source.pr=="https://github.com/acme/other/pull/5")
+      and (.body | test("\\[other #5\\]\\(https://github\\.com/acme/other/pull/5\\)"))' >/dev/null \
+    || fail "an unverified PR must still render as a link in the body"$'\n'"$out"
+  # And the matching case still merges, or the feature would be silently broken.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="promo-b2")
+      | [.options[].value] | index("merge") != null' >/dev/null \
+    || fail "a PR whose repo matches the item's marker must still offer Merge"$'\n'"$out"
+  pass "fm-logbook-compose offers Merge only for a PR matching the item's own repo marker"
+}
+
+test_compose_merge_needs_a_repo_marker_to_verify_against() {
+  local home out
+  home="$TMP_ROOT/compose-pr-nomarker"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # No "(repo: ...)" marker at all - the normal shape of the captain-gated thread
+  # AGENTS.md section 10 recommends. The PR cannot be verified as this task's, so the
+  # conservative reading of "only when it matches" withholds the Merge.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="nomarker-f7")
+      | (.kind=="decision") and (.options == [])
+      and (.body | test("\\[alpha #11\\]\\(https://github\\.com/acme/alpha/pull/11\\)"))' >/dev/null \
+    || fail "an item with no repo marker must not offer Merge, but must keep the link"$'\n'"$out"
+  pass "fm-logbook-compose withholds Merge when there is no repo marker to verify against"
+}
+
+test_compose_non_captain_hold_with_a_pr_is_not_a_merge() {
+  local home out
+  home="$TMP_ROOT/compose-ext-hold"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # An ACTIVE non-captain hold is the fleet's own record that the work is not ready.
+  # Offering Merge there would caption the button with the very reason the work is
+  # blocked, so it drops to an fyi that simply says why it is sitting still.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="extheld-e6")
+      | (.kind=="fyi") and (.options == [])
+      and (.body | test("waiting on upstream CI"))
+      and (.body | test("\\[alpha #12\\]\\(https://github\\.com/acme/alpha/pull/12\\)"))' >/dev/null \
+    || fail "an externally-held task's PR must not be offered for merge"$'\n'"$out"
+  pass "fm-logbook-compose never offers Merge on work the fleet has recorded as not-ready"
+}
+
 test_compose_title_drops_the_marker_tail_without_a_repo() {
   local home out
   home="$TMP_ROOT/compose-norepo"; write_hold_fixture "$home"
@@ -1904,6 +2025,11 @@ test_compose_skips_malformed_subproject_lines
 test_project_mode_unaffected_by_subproject_lines
 test_compose_captain_hold_survives_teardown
 test_compose_pr_is_read_only_from_the_structured_position
+test_compose_link_run_holds_reports_as_well_as_prs
+test_compose_keeps_a_url_the_captain_wrote_in_the_title
+test_compose_merge_needs_a_repo_matched_pr
+test_compose_merge_needs_a_repo_marker_to_verify_against
+test_compose_non_captain_hold_with_a_pr_is_not_a_merge
 test_compose_title_drops_the_marker_tail_without_a_repo
 test_compose_captain_hold_without_pr_is_a_decision
 test_compose_queued_captain_hold_is_carded

@@ -159,6 +159,44 @@ pr_link() {
   printf '[PR](%s)' "$url"
 }
 
+# pr_repo <url>: the "<repo>" path component of a .../<owner>/<repo>/pull/<n> url;
+# empty when the url does not parse that way.
+pr_repo() {
+  local url=${1-} rest num
+  case "$url" in
+    *'/pull/'*) ;;
+    *) return 0 ;;
+  esac
+  num=${url##*'/pull/'}
+  case "$num" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  rest=${url%'/pull/'*}
+  printf '%s' "${rest##*/}"
+}
+
+# pr_token <token> / report_token <token>: succeed when the token is one tasks-axi
+# APPENDS to an item's title text as a link, which is the only thing the peel below
+# may eat. There are exactly two, and the backend validates both shapes itself:
+# "--pr <url>" ("an http(s) pull request URL ending in /pull/<number>") and
+# "--report <path>" ("a data/<id>/report.md path"). Anything else trailing the title
+# is the captain's own words - an issue link, a doc reference - so it stays in the
+# title, where the board still shows it, rather than vanishing with nothing rendered
+# in its place.
+pr_token() {
+  printf '%s' "${1-}" | grep -qE '^https?://[^[:space:]<>()]+/pull/[0-9]+$'
+}
+report_token() {
+  local t=${1-} inner
+  case "$t" in
+    data/*/report.md) ;;
+    *) return 1 ;;
+  esac
+  inner=${t#data/}
+  inner=${inner%/report.md}
+  logbook_valid_id "$inner"
+}
+
 # append_pr <body> <url> <max>: <body> with the PR's markdown link as its own trailing
 # paragraph, the whole within <max> bytes; the body alone (still within <max>) when
 # there is no usable url. The BODY yields the room, never the link: clipping a link
@@ -260,16 +298,24 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 # dates compare correctly with the separators stripped, so no date parsing is needed.
 #
 # The PR url is read ONLY from the structured position "tasks-axi update <id> --pr
-# <url>" appends it to - the trailing run of url tokens at the end of an item's OWN
-# title text, before "blocked-by:" and the marker tail - which is what survives
-# teardown. Everything else on the line is free-form prose: a "(hold: ...)" reason
-# routinely cites ANOTHER task's PR ("blocked until <url> lands"), as do note lines
-# under a task. A card's PR drives a Merge option, and per the logbook-respond skill a
-# "merge" answer on the board is genuine captain authorization, so harvesting a url
-# out of prose would offer to merge an unrelated repo's PR - irreversibly. A url
-# outside the structured position is therefore not this task's PR, full stop.
+# <url>" appends it to - the trailing link run at the end of an item's OWN title text,
+# before "blocked-by:" and the marker tail - which is what survives teardown. That run
+# holds link tokens of both kinds the backend appends, in either order, so a promoted
+# scout's "--report" path never hides the PR behind it (see pr_token/report_token).
+# Everything else on the line is free-form prose: a "(hold: ...)" reason routinely
+# cites ANOTHER task's PR ("blocked until <url> lands"), as do note lines under a
+# task. A card's PR drives a Merge option, and per the logbook-respond skill a "merge"
+# answer on the board is genuine captain authorization, so harvesting a url out of
+# prose would offer to merge an unrelated repo's PR - irreversibly. A url outside the
+# structured position is therefore not this task's PR, full stop.
+#
+# By that same logic the position alone is not proof: a captain who ends their own
+# one-liner with another repo's PR-shaped url hands the structured position a url that
+# is not this task's PR either. So the Merge option needs a VERIFIED PR - harvested
+# here AND matching the item's own "(repo: ...)" marker (compose_item). Only the
+# one-click merge is withheld when it does not; the url still renders as a link.
 backlog_parse() {
-  local line section="" rest id title repo held hold_kind hold_reason hold_until pr today word cand
+  local line section="" rest id title repo held hold_kind hold_reason hold_until pr today word
   [ -f "$BACKLOG_MD" ] || return 0
   today=$(date +%Y-%m-%d 2>/dev/null) || today=""
   while IFS= read -r line; do
@@ -312,17 +358,17 @@ backlog_parse() {
     title=${title%%' blocked-by:'*}
 
     # The PR, harvested from that structured link run ONLY (see the header): peel the
-    # trailing url tokens off the title, keeping the FIRST PR-shaped url among them.
-    # Peeling right-to-left means the last assignment is the leftmost url.
+    # trailing link tokens off the title, stopping at the first token that is not one
+    # the backend appends, and keep the FIRST PR-shaped url among them. Peeling
+    # right-to-left means the last assignment is the leftmost url.
     pr=""
     while :; do
       word=${title##* }
-      case "$word" in
-        http://*|https://*) ;;
-        *) break ;;
-      esac
-      cand=$(printf '%s' "$word" | grep -oE 'https?://[^[:space:]<>()]+/pull/[0-9]+' | head -n1)
-      if [ -n "$cand" ]; then pr=$cand; fi
+      if pr_token "$word"; then
+        pr=$word
+      elif ! report_token "$word"; then
+        break
+      fi
       case "$title" in
         *' '*) title=${title% *} ;;
         *) title=""; break ;;
@@ -380,7 +426,7 @@ compose_item() {
   local id=$1
   local rec="$BL_DIR/$id" meta="$STATE/$id.meta"
   local bstate title repo held hold_kind hold_reason bl_pr captain_held live
-  local proj_path project pr base_branch last kind detail body options note
+  local proj_path project pr pr_ok base_branch last kind detail body options note
 
   bstate=$(meta_get "$rec" state)
   title=$(meta_get "$rec" title)
@@ -427,6 +473,16 @@ compose_item() {
   if [ -n "$live" ]; then pr=$(meta_get "$meta" pr); fi
   if [ -z "$pr" ]; then pr=$bl_pr; fi
 
+  # A VERIFIED PR is one that is demonstrably THIS task's: its url's repo component
+  # matches the item's own "(repo: ...)" marker (see the header). Only a verified PR
+  # earns the Merge option a "merge" answer would irreversibly authorize. The match is
+  # on the repo alone, never owner/repo: the marker records the project name with no
+  # owner, so requiring one would withhold every merge there is. No marker means no
+  # verification, hence no Merge - the card still carries the link, so the captain
+  # loses only the one click.
+  pr_ok=""
+  if [ -n "$pr" ] && [ -n "$repo" ] && [ "$(pr_repo "$pr")" = "$repo" ]; then pr_ok=$pr; fi
+
   # Both of these describe a RUNNING crew, so they are only read when one exists.
   # fm-teardown removes the status log with the meta, and a status line is a wake
   # EVENT rather than current-state truth, so it must never outlive its crew here.
@@ -439,9 +495,16 @@ compose_item() {
 
   # Classify by urgency, preserving decision > action > fyi: a live crew's open
   # question outranks a captain hold, which outranks a plain ready PR, which outranks
-  # in-progress work. A captain hold WITH a PR is an action - there is a concrete
-  # thing to do, review and merge it - while one without a PR is a question to
+  # in-progress work. A captain hold WITH a verified PR is an action - there is a
+  # concrete thing to do, review and merge it - while one without is a question to
   # answer, which is how firstmate actually writes hold reasons.
+  #
+  # An ACTIVE hold that is NOT a captain hold (external, parked, future) is the fleet's
+  # own record that the work is not ready, so its PR is not offered for merge however
+  # ready the url looks: a Merge button captioned by the very reason the work is
+  # blocked is a contradiction, and the board must never invite the captain to merge
+  # work firstmate has recorded as not-ready. Such a task falls through to the fyi
+  # branch, which already reports that hold reason as its body.
   kind=fyi
   detail=""
   case "$last" in
@@ -452,8 +515,8 @@ compose_item() {
       ;;
     *)
       if [ "$captain_held" = yes ]; then
-        if [ -n "$pr" ]; then kind=action; else kind=decision; fi
-      elif [ -n "$pr" ]; then
+        if [ -n "$pr_ok" ]; then kind=action; else kind=decision; fi
+      elif [ -n "$pr_ok" ] && [ "$held" != yes ]; then
         kind=action
       fi
       ;;
@@ -462,7 +525,9 @@ compose_item() {
   # Plain, non-jargony baseline text (firstmate rewrites these richly on push); the
   # human title comes from the backlog one-liner, never the internal task id. A
   # captain hold's "(hold: ...)" prose is already written for a human, and is exactly
-  # the "why this is waiting on you" the card needs, so it IS the body.
+  # the "why this is waiting on you" the card needs, so it IS the body. Only a captain
+  # hold can reach the action branch still holding, so the reason it captions a Merge
+  # with is always the captain's own "review and merge this", never a blocker.
   case "$kind" in
     decision)
       title=${title:-A decision is waiting}
