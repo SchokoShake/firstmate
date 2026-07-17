@@ -60,9 +60,10 @@
 #      that tracks this; zellij's CLI exposes no live-process cwd field and
 #      no per-pane pid to read it from `/proc`/`lsof` either). This directly
 #      contradicts the design report's assumption ("acceptable for tmux and
-#      zellij") and required a different implementation strategy - see
-#      fm_backend_zellij_current_path below and docs/zellij-backend.md
-#      "Worktree-path discovery: pane_cwd does not track a subshell".
+#      zellij"). No longer load-bearing: fm-spawn.sh leases the worktree itself
+#      and cd's the pane into it, so nothing reads a pane's cwd back (see
+#      docs/tmux-backend.md "Worktree capture"). Recorded because the frozen
+#      field is still a trap for any future caller tempted to read it.
 #   5. `new-tab` DOES steal focus from an attached client with NO flag to
 #      suppress it (unlike herdr's --no-focus and tmux's new-window -d).
 #      Mitigated (fm_backend_zellij_create_task): capture the previously
@@ -378,49 +379,6 @@ fm_backend_zellij_target_ready() {  # <target> [expected-label]
     return $?
   fi
   fm_backend_zellij_pane_exists "$FM_BACKEND_ZELLIJ_SESSION" "$FM_BACKEND_ZELLIJ_PANE"
-}
-
-# fm_backend_zellij_current_path: the live pane's cwd, or empty on any error.
-# Mirrors tmux's pane_current_path poll used for worktree-path discovery after
-# `treehouse get`.
-#
-# Verified pitfall (docs/zellij-backend.md "Worktree-path discovery: pane_cwd
-# does not track a subshell"): `list-panes --json`'s `pane_cwd` DOES reflect a
-# `cd` run directly in the pane's own top-level shell, but stays FROZEN at
-# whatever directory the pane's shell was in when it launched `treehouse get`
-# as a foreground command - it never follows that command's own internal `cd`
-# into the acquired worktree, even after the subshell is fully interactive and
-# a `pwd` typed into it prints the correct live path on screen. Zellij's CLI
-# exposes no per-pane pid and no live-process cwd field to read instead
-# (unlike herdr's `foreground_cwd`), so passive JSON polling cannot solve
-# this. Active probe instead: print the pane's `$PWD` with a unique marker
-# (atomically submitted, mirroring send_text_line), briefly settle, then capture
-# and read only that marker line. Scoped to fm-spawn.sh's own worktree-discovery
-# poll loop (the only caller of this op), where injecting a harmless extra
-# command before the harness ever launches is an acceptable trade for a reliable
-# answer.
-fm_backend_zellij_current_path() {  # <target> [expected-label]
-  local target=$1 expected_label=${2:-} out line marker_begin="__FM_ZELLIJ_CWD_BEGIN__" marker_end="__FM_ZELLIJ_CWD_END__" in_block=0 chunk="" last=""
-  fm_backend_zellij_target_ready "$target" "$expected_label" || return 0
-  fm_backend_zellij_send_text_line "$target" "printf '%s\n' '$marker_begin'; pwd; printf '%s\n' '$marker_end'" "$expected_label" || return 0
-  sleep 0.3
-  out=$(fm_backend_zellij_capture "$target" 200 "$expected_label") || return 0
-  while IFS= read -r line; do
-    if [ "$line" = "$marker_begin" ]; then
-      in_block=1
-      chunk=""
-      continue
-    fi
-    if [ "$line" = "$marker_end" ]; then
-      case "$chunk" in /*) last=$chunk ;; esac
-      in_block=0
-      continue
-    fi
-    [ "$in_block" -eq 1 ] && chunk="$chunk$line"
-  done <<EOF
-$out
-EOF
-  printf '%s' "$last"
 }
 
 # fm_backend_zellij_send_literal: send TEXT as literal, UNSUBMITTED input via

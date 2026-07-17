@@ -520,7 +520,7 @@ test_create_task_no_restore_when_new_tab_was_already_active() {
   pass "fm_backend_zellij_create_task: skips the restore call when there was no previously-active tab"
 }
 
-# --- capture / send_key / send_literal / current_path / kill -----------------
+# --- capture / send_key / send_literal / kill --------------------------------
 
 test_capture_small_reads_use_viewport_and_trim() {
   local dir fb out
@@ -649,60 +649,6 @@ test_expected_label_rejects_reused_pane_id() {
   assert_not_contains "$(cat "$dir/log")" $'\x1f''send-keys' \
     "send_key should not run after expected-label readiness fails"
   pass "fm_backend_zellij_target_ready: expected labels reject stale pane ids reused by another tab"
-}
-
-test_current_path_probes_with_marker_and_ignores_prompt_paths() {
-  local dir fb out
-  # Verified real-zellij pitfall (docs/zellij-backend.md "Worktree-path
-  # discovery: pane_cwd does not track a subshell"): pane_cwd never updates
-  # once a subshell (e.g. treehouse get) takes over, so current_path actively
-  # prints a marked cwd line and reads only that marker from the capture,
-  # rather than reading a JSON field.
-  dir="$TMP_ROOT/cwd"; mkdir -p "$dir/responses"
-  zellij_pane_response "$dir" 1 7 3
-  zellij_pane_response "$dir" 2 7 3
-  zellij_pane_response "$dir" 4 7 3
-  zellij_pane_response "$dir" 6 7 3
-  printf '%s\n' 'scratch-e2e-project HEAD' \
-    '/Users/kunchen/src/project ❯ printf marker' \
-    '__FM_ZELLIJ_CWD_BEGIN__' \
-    '/Users/kunchen/.treehouse/fake-' \
-    'worktree' \
-    '__FM_ZELLIJ_CWD_END__' \
-    '/Users/kunchen/.treehouse/fake-worktree ❯' \
-    > "$dir/responses/7.out"
-  fb=$(make_zellij_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
-    FM_ZELLIJ_SESSION_LIST="firstmate" \
-    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_current_path firstmate:7' "$ROOT" )
-  [ "$out" = "/Users/kunchen/.treehouse/fake-worktree" ] || fail "current_path should read only the marked cwd line, got '$out'"
-  zellij_assert_call_order "$dir/log" $'\x1f''list-panes'$'\x1f''--json' $'\x1f''paste' \
-    "current_path did not verify the pane before the cwd probe paste"
-  zellij_assert_call_order "$dir/log" $'\x1f''list-panes'$'\x1f''--json' $'\x1f''dump-screen' \
-    "current_path did not verify the pane before capture"
-  assert_contains "$(cat "$dir/log")" "__FM_ZELLIJ_CWD_BEGIN__" "current_path did not send the cwd begin marker via paste"
-  assert_contains "$(cat "$dir/log")" "pwd;" "current_path did not send the pwd probe via paste"
-  assert_contains "$(cat "$dir/log")" $'\x1f''send-keys'$'\x1f''--pane-id'$'\x1f''7'$'\x1f''Enter' "current_path did not submit the cwd probe with Enter"
-  assert_contains "$(cat "$dir/log")" $'\x1f''dump-screen'$'\x1f''--pane-id'$'\x1f''7'$'\x1f''--full' "current_path did not capture the pane after probing"
-  pass "fm_backend_zellij_current_path: actively probes with marked begin/end lines and reconstructs wrapped cwd output"
-}
-
-test_current_path_ignores_tilde_prefixed_banner_lines() {
-  local dir fb out
-  dir="$TMP_ROOT/cwd-tilde"; mkdir -p "$dir/responses"
-  zellij_pane_response "$dir" 1 7 3
-  zellij_pane_response "$dir" 2 7 3
-  zellij_pane_response "$dir" 4 7 3
-  zellij_pane_response "$dir" 6 7 3
-  printf '%s\n' "🌳 Entered worktree at ~/.treehouse/scratch-e2e-project/1. Type 'exit' to return." \
-    'scratch-e2e-project HEAD' '__FM_ZELLIJ_CWD_BEGIN__' '/Users/kunchen/.treehouse/real-worktree' '__FM_ZELLIJ_CWD_END__' '❯' \
-    > "$dir/responses/7.out"
-  fb=$(make_zellij_fakebin "$dir")
-  out=$( PATH="$fb:$PATH" FM_ZELLIJ_LOG="$dir/log" FM_ZELLIJ_RESPONSES="$dir/responses" \
-    FM_ZELLIJ_SESSION_LIST="firstmate" \
-    bash -c '. "$0/bin/backends/zellij.sh"; fm_backend_zellij_current_path firstmate:7' "$ROOT" )
-  [ "$out" = "/Users/kunchen/.treehouse/real-worktree" ] || fail "current_path should skip the ~-prefixed banner line and read the marked cwd output, got '$out'"
-  pass "fm_backend_zellij_current_path: never picks up a ~-prefixed banner line as the answer"
 }
 
 test_kill_resolves_tab_and_closes_by_id() {
@@ -1046,8 +992,6 @@ test_send_key_normalizes_and_targets_pane
 test_send_literal_uses_paste_separator_for_option_shaped_text
 test_expected_label_allows_matching_task_tab
 test_expected_label_rejects_reused_pane_id
-test_current_path_probes_with_marker_and_ignores_prompt_paths
-test_current_path_ignores_tilde_prefixed_banner_lines
 test_kill_resolves_tab_and_closes_by_id
 test_kill_falls_back_to_close_pane_when_tab_lookup_empty
 test_kill_closes_recorded_tab_when_pane_already_gone

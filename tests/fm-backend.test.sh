@@ -756,15 +756,7 @@ SH
   chmod +x "$fb/tmux"
   # `treehouse get --lease` is the authoritative worktree source (fm-spawn-wt-batch-x5):
   # it prints the leased worktree path to stdout. Emit the same $wt the fake pane reports.
-  cat > "$fb/treehouse" <<SH
-#!/usr/bin/env bash
-set -u
-case "\${1:-}" in
-  get) printf '%s\\n' "$wt" ;;
-esac
-exit 0
-SH
-  chmod +x "$fb/treehouse"
+  fm_fake_treehouse_lease "$fb" "$wt"
   printf '%s\n' "$fb"
 }
 
@@ -833,15 +825,7 @@ exit 0
 SH
   chmod +x "$fb/tmux"
   # Authoritative capture: `treehouse get --lease` prints the leased worktree path.
-  cat > "$fb/treehouse" <<SH
-#!/usr/bin/env bash
-set -u
-case "\${1:-}" in
-  get) printf '%s\\n' "$wt" ;;
-esac
-exit 0
-SH
-  chmod +x "$fb/treehouse"
+  fm_fake_treehouse_lease "$fb" "$wt"
   printf '%s\n' "$fb"
 }
 

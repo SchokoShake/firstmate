@@ -155,15 +155,7 @@ SH
   # `treehouse get --lease` is the authoritative worktree source (fm-spawn-wt-batch-x5):
   # it prints the leased worktree path to stdout. Reuse FM_FAKE_PANE_PATH as that
   # path so the existing run_spawn wiring is unchanged.
-  cat > "$fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "${1:-}" in
-  get) printf '%s\n' "${FM_FAKE_PANE_PATH:-}" ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/treehouse"
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 

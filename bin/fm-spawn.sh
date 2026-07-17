@@ -190,6 +190,8 @@ fi
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
+LEASE_ABORT_CLEANUP=0
+LEASED_WT=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -208,8 +210,8 @@ parse_orca_worktree_result() {
   fi
 }
 
-orca_spawn_abort_cleanup() {
-  local status=$?
+orca_spawn_abort_cleanup() {  # <status>
+  local status=$1
   [ "$ORCA_ABORT_CLEANUP" = 1 ] || return "$status"
   ORCA_ABORT_CLEANUP=0
   if [ -n "${ORCA_TERMINAL:-}" ]; then
@@ -239,7 +241,32 @@ orca_spawn_abort_cleanup() {
   fi
   return "$status"
 }
-trap orca_spawn_abort_cleanup EXIT
+
+# `treehouse get --lease` reserves the worktree DURABLY: treehouse never hands it
+# out again and never prunes it, with or without a process inside, until a
+# `treehouse return` releases it. fm-teardown releases it from the recorded
+# worktree=, so a spawn that leases and then aborts BEFORE writing
+# state/<id>.meta would strand the pool slot forever with nothing left to name
+# it. Release it here on any such abort, mirroring ORCA_ABORT_CLEANUP above; the
+# flag is cleared once meta is written and teardown owns the lease instead.
+lease_spawn_abort_cleanup() {
+  [ "$LEASE_ABORT_CLEANUP" = 1 ] || return 0
+  LEASE_ABORT_CLEANUP=0
+  [ -n "$LEASED_WT" ] || return 0
+  ( cd "$PROJ_ABS" && treehouse return --force "$LEASED_WT" ) >/dev/null 2>&1 \
+    || echo "warning: could not release the treehouse lease on '$LEASED_WT' after a failed spawn of $ID; release it with 'cd $PROJ_ABS && treehouse return --force $LEASED_WT'" >&2
+}
+
+# Both handlers are `|| true`-guarded: each returns non-zero on its own
+# not-my-spawn path, and `set -e` is still in force inside an EXIT trap, so an
+# unguarded call would abort the trap and silently skip every handler after it.
+spawn_abort_cleanup() {
+  local status=$?
+  orca_spawn_abort_cleanup "$status" || true
+  lease_spawn_abort_cleanup || true
+  return "$status"
+}
+trap spawn_abort_cleanup EXIT
 
 # Batch dispatch (see header): when the first positional is an `id=repo` pair, treat every
 # positional as one and spawn each by re-execing this script in single-task mode. We use
@@ -661,6 +688,14 @@ PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_AB
 # herdr-sm-spaces-k4). Both branches converge on the same $T ("target") string
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
+
+# LOAD-BEARING, not a belt-and-braces assertion: this is the upstream half of
+# the worktree-tangle guard (AGENTS.md section 8) and the only automated check
+# standing between a bad worktree capture and a hook installed into - plus
+# worktree= recorded as - the primary checkout. It is what turns the historical
+# mis-capture into a loud abort, so never relax it to a warning or skip it for a
+# "trusted" capture source; fm-guard.sh's tangle banner and the brief's own
+# isolation check are downstream backstops that fire only after the damage.
 validate_spawn_worktree() {  # <source> <inspect-target>
   local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real fm_home_real fm_root_real
   wt_real=
@@ -857,6 +892,10 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     exit 1
   }
   [ -n "$WT" ] || { echo "error: treehouse get --lease reported no worktree for $ID; inspect window $T" >&2; exit 1; }
+  # The lease is now durably held and only state/<id>.meta will hand it to
+  # teardown; arm the abort release for every failure path until that write.
+  LEASED_WT="$WT"
+  LEASE_ABORT_CLEANUP=1
 
   validate_spawn_worktree "treehouse get --lease" "$T"
 
@@ -1037,6 +1076,8 @@ META_WINDOW=$T
   fi
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+# worktree= is recorded, so fm-teardown now owns the lease release.
+LEASE_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")

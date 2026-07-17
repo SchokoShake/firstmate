@@ -170,15 +170,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  cat > "$fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "${1:-}" in
-  get) printf '%s\n' "${FM_FAKE_PANE_PATH:-}" ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/treehouse"
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
@@ -252,6 +244,51 @@ test_spawn_fm_home_worktree_backstop() {
   pass "fm-spawn: aborts loudly when the resolved worktree is the primary firstmate checkout (\$FM_HOME)"
 }
 
+# --- GUARD 1e: fm-spawn lease release on abort -------------------------------
+
+# `treehouse get --lease` reserves the worktree DURABLY - treehouse never hands
+# it out again and never prunes it until a `treehouse return` releases it. Only
+# state/<id>.meta's worktree= tells fm-teardown which worktree to release, so an
+# abort BETWEEN the lease and that write would strand the pool slot forever with
+# nothing left naming it. Every guard above is exactly such an abort. This pins
+# that fm-spawn releases the lease itself on those paths.
+test_spawn_releases_lease_on_abort() {
+  local home proj fakebin rec out status
+  home=$(make_repo "$TMP_ROOT/lease-home")
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/lease-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/lease-fake")
+  rec="$TMP_ROOT/lease-rec.log"
+  mkdir -p "$TMP_ROOT/lease-notgit"
+
+  # The $FM_HOME backstop abort: the leased worktree must still be returned.
+  : > "$rec"
+  out=$(FM_TMUX_REC="$rec" run_spawn "$home" lease-fmhome-jj9 "$proj" "$home" "$fakebin"); status=$?
+  expect_code 1 "$status" "the \$FM_HOME backstop must still abort"
+  assert_grep "treehouse get --lease" "$rec" "the spawn did not lease a worktree at all"
+  assert_grep "treehouse return --force $home" "$rec" \
+    "an aborted spawn must release its durable lease (else the pool slot leaks with no meta to name it)"
+
+  # The generic isolation abort releases its lease too.
+  : > "$rec"
+  out=$(FM_TMUX_REC="$rec" run_spawn "$home" lease-notgit-kk1 "$proj" "$TMP_ROOT/lease-notgit" "$fakebin"); status=$?
+  expect_code 1 "$status" "the non-worktree isolation guard must still abort"
+  assert_grep "treehouse return --force $TMP_ROOT/lease-notgit" "$rec" \
+    "an isolation-aborted spawn must release its durable lease"
+
+  # A SUCCESSFUL spawn must NOT return the lease: meta now records worktree= and
+  # fm-teardown owns the release. Returning here would hand the live crewmate's
+  # worktree back to the pool underneath it.
+  : > "$rec"
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/lease-wt" >/dev/null 2>&1
+  out=$(FM_TMUX_REC="$rec" run_spawn "$home" lease-ok-ll2 "$proj" "$TMP_ROOT/lease-wt" "$fakebin"); status=$?
+  expect_code 0 "$status" "a genuine isolated worktree should spawn"
+  assert_present "$home/state/lease-ok-ll2.meta" "a successful spawn must record meta"
+  assert_no_grep "treehouse return" "$rec" \
+    "a successful spawn must NOT release the lease; meta records worktree= and fm-teardown owns the release"
+  pass "fm-spawn: releases the durable treehouse lease on abort, and never on success"
+}
+
 # --- GUARD 1c: fm-spawn tmux window construction ----------------------------
 
 # The prevention guard also depends on fm-spawn building robust tmux commands
@@ -289,16 +326,7 @@ SH
   chmod +x "$fakebin/tmux"
   # Recording treehouse stub: logs every call to FM_TMUX_REC and emits
   # FM_FAKE_PANE_PATH as the leased worktree on `get --lease` (fm-spawn-wt-batch-x5).
-  cat > "$fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-set -u
-[ -n "${FM_TMUX_REC:-}" ] && printf 'treehouse %s\n' "$*" >> "$FM_TMUX_REC"
-case "${1:-}" in
-  get) printf '%s\n' "${FM_FAKE_PANE_PATH:-}" ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/treehouse"
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
@@ -370,4 +398,5 @@ test_bootstrap_line
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
 test_spawn_fm_home_worktree_backstop
+test_spawn_releases_lease_on_abort
 test_spawn_tmux_window_construction

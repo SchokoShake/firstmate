@@ -445,15 +445,7 @@ SH
   chmod +x "$fakebin/tmux"
   # A crew/scout spawn captures its worktree from `treehouse get --lease` stdout;
   # emit FM_FAKE_PANE_PATH as the leased path (fm-spawn-wt-batch-x5).
-  cat > "$fakebin/treehouse" <<'SH'
-#!/usr/bin/env bash
-set -u
-case "${1:-}" in
-  get) printf '%s\n' "${FM_FAKE_PANE_PATH:-}" ;;
-esac
-exit 0
-SH
-  chmod +x "$fakebin/treehouse"
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 

@@ -100,6 +100,36 @@ SH
   done
 }
 
+# fm_fake_treehouse_lease: install the `treehouse` stub every fm-spawn.sh test
+# needs. fm-spawn captures the crew worktree authoritatively from `treehouse get
+# --lease` stdout (fm-spawn-wt-batch-x5), so the stub prints <worktree-path> for
+# any `get`. Omit <worktree-path> and the stub reads $FM_FAKE_PANE_PATH at call
+# time instead, letting a test vary the leased path per spawn without
+# reinstalling the stub. Every other verb - including the `treehouse return
+# --force` fm-spawn's lease-abort path and fm-teardown use to release the lease -
+# is a silent success. When $FM_TMUX_REC is set, every call is recorded there so
+# a test can assert on the capture calls themselves.
+fm_fake_treehouse_lease() {  # <fakebin> [worktree-path]
+  local fakebin=$1 wt=${2:-} emit
+  # Resolved HERE, not nested inside the heredoc: a `${wt:-\${...}}` there would
+  # close on the escaped inner brace and leak a literal '}' into the stub's path.
+  if [ -n "$wt" ]; then
+    emit=$wt
+  else
+    emit='${FM_FAKE_PANE_PATH:-}'
+  fi
+  cat > "$fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+set -u
+[ -n "\${FM_TMUX_REC:-}" ] && printf 'treehouse %s\n' "\$*" >> "\$FM_TMUX_REC"
+case "\${1:-}" in
+  get) printf '%s\n' "$emit" ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+}
+
 # --- deterministic git identity and fixtures --------------------------------
 
 # fm_git_identity [name] [email]: export a fixed author/committer identity so

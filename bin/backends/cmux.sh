@@ -38,9 +38,11 @@
 #      frozen at wherever that shell was when it launched a foreground
 #      subshell (exactly what `treehouse get` does) - verified live: a nested
 #      `bash -c 'cd /Users && exec bash'` left `current_directory` reporting
-#      the PARENT shell's last cwd, never following into the subshell. Fixed
-#      with zellij's own pwd-marker-probe workaround, reused verbatim in
-#      spirit (fm_backend_cmux_current_path below).
+#      the PARENT shell's last cwd, never following into the subshell. No
+#      longer load-bearing: fm-spawn.sh leases the worktree itself and cd's the
+#      surface into it, so nothing reads a surface's cwd back (see
+#      docs/tmux-backend.md "Worktree capture"). Recorded because the frozen
+#      field is still a trap for any future caller tempted to read it.
 #   3. `read-screen --lines N` has NO herdr-style small-N empty-result bug -
 #      verified N=1..10 all return correctly-clamped, non-empty content. The
 #      "fetch generous, trim locally" pattern is still used for consistency
@@ -428,44 +430,6 @@ fm_backend_cmux_target_ready() {  # <target> [expected-label]
     return 0
   fi
   fm_backend_cmux_surface_exists "$FM_BACKEND_CMUX_WORKSPACE" "$FM_BACKEND_CMUX_SURFACE"
-}
-
-# fm_backend_cmux_current_path: the live foreground process's cwd, or empty on
-# any error. Mirrors fm_backend_zellij_current_path's active pwd-marker-probe
-# workaround (bin/backends/zellij.sh:306-347) verbatim in spirit.
-#
-# Verified pitfall (finding #2 above): cmux's `current_directory` field DOES
-# reflect a `cd` run directly in the surface's own top-level shell, but stays
-# FROZEN at whatever directory that shell was in when it launched `treehouse
-# get` as a foreground command - it never follows that command's own internal
-# `cd` into the acquired worktree. cmux's control socket exposes no
-# live-process cwd field either (unlike herdr's `foreground_cwd`), so passive
-# polling cannot solve this here any more than it could for zellij. Active
-# probe instead: print the surface's `$PWD` with a unique marker (atomically
-# submitted via send_text_line), briefly settle, then capture and read only
-# that marker line. Scoped to fm-spawn.sh's own worktree-discovery poll loop.
-fm_backend_cmux_current_path() {  # <target> [expected-label]
-  local target=$1 expected_label=${2:-} out line marker_begin="__FM_CMUX_CWD_BEGIN__" marker_end="__FM_CMUX_CWD_END__" in_block=0 chunk="" last=""
-  fm_backend_cmux_target_ready "$target" "$expected_label" || return 0
-  fm_backend_cmux_send_text_line "$target" "printf '%s\n' '$marker_begin'; pwd; printf '%s\n' '$marker_end'" "$expected_label" || return 0
-  sleep 0.3
-  out=$(fm_backend_cmux_capture "$target" 200 "$expected_label") || return 0
-  while IFS= read -r line; do
-    if [ "$line" = "$marker_begin" ]; then
-      in_block=1
-      chunk=""
-      continue
-    fi
-    if [ "$line" = "$marker_end" ]; then
-      case "$chunk" in /*) last=$chunk ;; esac
-      in_block=0
-      continue
-    fi
-    [ "$in_block" -eq 1 ] && chunk="$chunk$line"
-  done <<EOF
-$out
-EOF
-  printf '%s' "$last"
 }
 
 # fm_backend_cmux_send_literal: send TEXT as literal, UNSUBMITTED input - the
