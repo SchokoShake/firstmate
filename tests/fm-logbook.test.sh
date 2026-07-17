@@ -22,6 +22,11 @@ BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
 # fake curl still wins.
 JQ_DIR=$(command -v jq 2>/dev/null) && JQ_DIR=$(dirname "$JQ_DIR") || JQ_DIR=
 [ -n "$JQ_DIR" ] && BASE_PATH="$JQ_DIR:$BASE_PATH"
+# Same for git: compose reads each project clone's "origin" to verify a PR is really
+# that project's, and an unresolvable git would silently degrade the Merge gate to its
+# marker fallback - which is exactly what these tests must be able to tell apart.
+GIT_BIN_DIR=$(command -v git 2>/dev/null) && GIT_BIN_DIR=$(dirname "$GIT_BIN_DIR") || GIT_BIN_DIR=
+[ -n "$GIT_BIN_DIR" ] && BASE_PATH="$GIT_BIN_DIR:$BASE_PATH"
 TMP_ROOT=$(fm_test_tmproot fm-logbook-tests)
 
 # A fakebin `curl` that mimics the board: /health returns FAKE_HEALTH_CODE (default
@@ -1471,6 +1476,853 @@ test_project_mode_unaffected_by_subproject_lines() {
   pass "sub-project declarations do not break fm-project-mode.sh registry parsing"
 }
 
+# --- the item set comes from the durable backlog, not from live crew state ----
+
+# write_hold_fixture <home>: the shape the board exists for. A crew's state/<id>.meta
+# lives only while that crew runs, but the documented end-state for review-ready work
+# is teardown + a captain hold (AGENTS.md section 7) - so here only ONE task still has
+# a crew, and every task actually waiting on the captain has none. A meta-keyed board
+# shows the one and hides the rest, which is exactly backwards.
+write_hold_fixture() {
+  local home=$1
+  mkdir -p "$home/data" "$home/state"
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes] - First project (added 2026-07-01)
+- beta [direct-PR] - Second project (added 2026-07-02)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] held-pr-h1 - Trim the AR forms https://github.com/acme/alpha/pull/699 (repo: alpha) (kind: ship) (since 2026-07-10) (hold: review-ready - CI green, review passed - captain reviews then merges) (hold-kind: captain)
+- [ ] held-ask-h2 - Multi-line text answers (repo: beta) (kind: ship) (since 2026-07-10) (hold: designed with the captain, awaiting their go-ahead to dispatch) (hold-kind: captain)
+- [ ] parked-h3 - Fix the batch spawn (repo: alpha) (kind: ship) (since 2026-07-05) blocked-by: held-ask-h2
+- [ ] live-h4 - Wire the widget endpoint (repo: alpha) (kind: ship) (since 2026-07-10)
+- [ ] holdprose-i2 - Chase the upstream fix (repo: alpha) (kind: ship) (since 2026-07-11) (hold: nothing to do until https://github.com/acme/other/pull/5 lands - say the word to close it out) (hold-kind: captain)
+## Queued
+- [ ] q-held-h5 - Reword the section 15 rule (repo: alpha) (kind: ship) (since 2026-07-16) (hold: awaiting the captain's word on reword vs delete) (hold-kind: captain)
+- [ ] q-plain-h6 - Not dispatched yet (repo: beta) (kind: ship)
+- [ ] norepo-i3 - Relay the captain's answer on the nav copy (since 2026-07-12) (hold: awaiting their word on reword vs delete) (hold-kind: captain)
+## Done
+- [x] done-h7 - Landed already - <https://github.com/acme/alpha/pull/600> (merged 2026-07-09)
+EOF
+  # ONLY live-h4 still has a crew. fm-teardown removes the meta AND the status
+  # together, so every other task here has neither - the real post-teardown shape.
+  fm_write_meta "$home/state/live-h4.meta" \
+    "window=firstmate:fm-live-h4" "project=$home/projects/alpha" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off"
+  printf 'working: wiring the endpoint\n' > "$home/state/live-h4.status"
+}
+
+test_compose_captain_hold_survives_teardown() {
+  local home out
+  home="$TMP_ROOT/compose-hold-teardown"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # THE regression: a captain-held task whose crew is torn down has no meta at all,
+  # and used to vanish from the board at the exact moment it started needing the
+  # captain. It must compose a card carrying its own hold reason.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")' >/dev/null \
+    || fail "a captain-held task with a torn-down crew must still compose a card"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")
+      | (.project=="alpha") and (.title=="Trim the AR forms")
+      and (.body | test("captain reviews then merges"))' >/dev/null \
+    || fail "a captain-held card must carry its hold reason as the body"
+  # It has a ready PR, so it is a concrete action, not a question: merge it.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)
+      and (.source.pr=="https://github.com/acme/alpha/pull/699")' >/dev/null \
+    || fail "a captain-held task with a PR must be an action card carrying the PR"
+  # And the PR must be CLICKABLE: the board's renderer linkifies "[text](http...)"
+  # only - it never renders source.pr and never autolinks a bare url - so a markdown
+  # link in the body is the only thing the captain can actually click.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")
+      | .body | test("\\[alpha #699\\]\\(https://github\\.com/acme/alpha/pull/699\\)")' >/dev/null \
+    || fail "a captain-held card's PR must appear as a markdown link in the body"$'\n'"$out"
+  pass "fm-logbook-compose keeps a captain-held task on the board after its crew is torn down"
+}
+
+test_compose_pr_is_read_only_from_the_structured_position() {
+  local home out
+  home="$TMP_ROOT/compose-pr-position"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A hold reason is free-form prose, and firstmate routinely writes one citing
+  # ANOTHER task's PR. Harvesting that url would offer to merge an unrelated repo's
+  # PR, and a "merge" answer on the board is genuine captain authorization - so a url
+  # only in prose is not this task's PR, and the card stays a question to answer.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="holdprose-i2")
+      | (.source | has("pr") | not) and (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "a url only in hold prose must NOT be harvested as the task's PR"$'\n'"$out"
+  # The prose itself is still the captain's context, url text and all.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="holdprose-i2")
+      | .body | test("nothing to do until https://github\\.com/acme/other/pull/5 lands")' >/dev/null \
+    || fail "a hold reason citing another PR must still read as the card body"$'\n'"$out"
+  # The other side of the boundary: the structured position IS harvested, and the url
+  # is then stripped from the title rather than read to the captain twice.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-pr-h1")
+      | (.source.pr=="https://github.com/acme/alpha/pull/699")
+      and (.title=="Trim the AR forms")' >/dev/null \
+    || fail "a url in the structured title position must be harvested and left out of the title"$'\n'"$out"
+  pass "fm-logbook-compose harvests a PR only from the structured position, never from prose"
+}
+
+# write_link_fixture <home>: the link run and the Merge gate. Nearly every task here
+# carries a PR-shaped url in the structured title position, so what separates a Merge
+# card from a plain one is only ever whether that url is really this task's and whether
+# the work is ready - never the url's mere position. Each line is written the way
+# tasks-axi itself emits it (verified against 0.2.2, which validates "--pr" as an
+# http(s) url ending in "/pull/<number>" and "--report" as a "data/<id>/report.md"
+# path, and appends both into the title in the order they were recorded).
+#
+# The blockers are deliberately of every STATE, not just unfinished ones: "blocked-by:"
+# is never rewritten when a blocker lands, so a fixture whose blockers are all in flight
+# cannot tell a gate that reads the dependency from one that reads the marker - they
+# agree on every such line. cleared-j2/prunedblk-k3/multiblk-l4 are what separates them.
+# badblk-n6 separates the two ways a gate can find no blocker id: pruned away (landed)
+# and written unreadably (unknowable), which mean opposite things.
+write_link_fixture() {
+  local home=$1
+  mkdir -p "$home/data" "$home/state"
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes] - First project (added 2026-07-01)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] promo-b2 - Other way round https://github.com/acme/alpha/pull/89 data/promo-b2/report.md (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] promo-a1 - Report first data/promo-a1/report.md https://github.com/acme/alpha/pull/90 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] issueurl-c4 - Mirror the upstream fix https://github.com/acme/other/issues/9 (repo: alpha) (kind: ship)
+- [ ] xrepo-d5 - Port the same change https://github.com/acme/other/pull/5 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] extheld-e6 - Externally held https://github.com/acme/alpha/pull/12 (repo: alpha) (kind: ship) (hold: waiting on upstream CI) (hold-kind: external)
+- [ ] nomarker-f7 - Relay the answer https://github.com/acme/alpha/pull/11 (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] blocked-g8 - Held and blocked https://github.com/acme/alpha/pull/50 blocked-by: extheld-e6 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] blockplain-h9 - Blocked, no hold https://github.com/acme/alpha/pull/51 blocked-by: extheld-e6 (repo: alpha) (kind: ship)
+- [ ] blockdoc-i1 - Blocked the documented way https://github.com/acme/alpha/pull/52 (repo: alpha) blocked-by: extheld-e6 - waiting on the schema
+- [ ] cleared-j2 - Blocker landed, now review-ready https://github.com/acme/alpha/pull/53 blocked-by: landed-w0 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] prunedblk-k3 - Blocker pruned out of Done https://github.com/acme/alpha/pull/54 blocked-by: ghost-z9 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] multiblk-l4 - One landed, one still running https://github.com/acme/alpha/pull/55 blocked-by: landed-w0 blocked-by: extheld-e6 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] badblk-n6 - Blocker written as an issue number https://github.com/acme/alpha/pull/56 (repo: alpha) blocked-by: #42 - waiting on the upstream PR (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] superseded-m5 - First PR closed, work moved https://github.com/acme/alpha/pull/682 https://github.com/acme/alpha/pull/687 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+## Done
+- [x] landed-w0 - The blocker that landed https://github.com/acme/alpha/pull/49 (repo: alpha) (kind: ship) (merged 2026-07-13)
+EOF
+}
+
+test_compose_link_run_holds_reports_as_well_as_prs() {
+  local home out
+  home="$TMP_ROOT/compose-link-run"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # tasks-axi appends BOTH "--pr" and "--report" links into the title, in whatever
+  # order they were recorded - a promoted scout (AGENTS.md section 7) keeps its report
+  # and gains a PR. Modelling the run as urls only stopped the peel dead at the report
+  # path, losing the Merge option AND the clickable link of a review-ready PR: the very
+  # regression this composer exists to fix. Both orders must peel clean and harvest.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="promo-b2")
+      | (.title=="Other way round") and (.kind=="action")
+      and (.source.pr=="https://github.com/acme/alpha/pull/89")
+      and (.body | test("\\[alpha #89\\]\\(https://github\\.com/acme/alpha/pull/89\\)"))' >/dev/null \
+    || fail "a report path AFTER the PR must not hide the PR behind it"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="promo-a1")
+      | (.title=="Report first") and (.kind=="action")
+      and (.source.pr=="https://github.com/acme/alpha/pull/90")' >/dev/null \
+    || fail "a report path BEFORE the PR must peel out of the title too"$'\n'"$out"
+  pass "fm-logbook-compose peels report paths and PRs from the link run in either order"
+}
+
+test_compose_keeps_a_url_the_captain_wrote_in_the_title() {
+  local home out
+  home="$TMP_ROOT/compose-title-url"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A trailing url that is NOT link-run bookkeeping - here an issue link a human wrote
+  # into their own one-liner - is the captain's own words. Peeling every trailing url
+  # deleted it with nothing rendered in its place; only the two shapes tasks-axi
+  # appends are bookkeeping, so this one stays where the captain put it.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="issueurl-c4")
+      | (.title=="Mirror the upstream fix https://github.com/acme/other/issues/9")
+      and (.source | has("pr") | not)' >/dev/null \
+    || fail "a non-link-run url must stay in the title, not vanish"$'\n'"$out"
+  pass "fm-logbook-compose leaves a url the captain wrote into their one-liner in the title"
+}
+
+test_compose_merge_needs_a_repo_matched_pr() {
+  local home out
+  home="$TMP_ROOT/compose-pr-repo"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The structured position is necessary but not sufficient: a captain who ends their
+  # own one-liner with ANOTHER repo's PR hands it that position. A "merge" answer on
+  # the board is genuine captain authorization and merging is irreversible, so the
+  # Merge option needs the url's repo to match the item's own "(repo: ...)" marker.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="xrepo-d5")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "a PR naming another repo must NOT earn a Merge option"$'\n'"$out"
+  # Only the one click is withheld: the url still reaches the captain as a link.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="xrepo-d5")
+      | (.source.pr=="https://github.com/acme/other/pull/5")
+      and (.body | test("\\[other #5\\]\\(https://github\\.com/acme/other/pull/5\\)"))' >/dev/null \
+    || fail "an unverified PR must still render as a link in the body"$'\n'"$out"
+  # And the matching case still merges, or the feature would be silently broken.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="promo-b2")
+      | [.options[].value] | index("merge") != null' >/dev/null \
+    || fail "a PR whose repo matches the item's marker must still offer Merge"$'\n'"$out"
+  pass "fm-logbook-compose offers Merge only for a PR matching the item's own repo marker"
+}
+
+test_compose_merge_needs_a_repo_marker_to_verify_against() {
+  local home out
+  home="$TMP_ROOT/compose-pr-nomarker"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # No "(repo: ...)" marker at all - the normal shape of the captain-gated thread
+  # AGENTS.md section 10 recommends. The PR cannot be verified as this task's, so the
+  # conservative reading of "only when it matches" withholds the Merge.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="nomarker-f7")
+      | (.kind=="decision") and (.options == [])
+      and (.body | test("\\[alpha #11\\]\\(https://github\\.com/acme/alpha/pull/11\\)"))' >/dev/null \
+    || fail "an item with no repo marker must not offer Merge, but must keep the link"$'\n'"$out"
+  pass "fm-logbook-compose withholds Merge when there is no repo marker to verify against"
+}
+
+# write_remote_fixture <home>: the Merge gate's repo verification. Every task here
+# carries a PR-shaped url in the structured title position, so the only thing that can
+# separate a Merge card from a plain one is whether that url names the repo the task's
+# project actually pushes to. The clones are fixtures under THIS home's own projects/
+# dir (FM_HOME scopes it), never the machine's real ones, and compose only ever reads
+# their "origin" - which is why a bare "git init" with a remote and no commit is a
+# complete fixture.
+write_remote_fixture() {
+  local home=$1
+  mkdir -p "$home/data" "$home/state" "$home/projects"
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes] - First project (added 2026-07-01)
+- movebank-explorer [no-mistakes] - Cloned under a name of its own (added 2026-07-02)
+- gone [no-mistakes] - Registered but not cloned here (added 2026-07-03)
+- solo [local-only] - No remote at all (added 2026-07-04)
+- casefold [no-mistakes] - Cloned with owner and repo typed in another case (added 2026-07-05)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] combined-a1 - Ship the widget endpoint https://github.com/acme/alpha/pull/42 (repo: alpha, since 2026-07-10)
+- [ ] renamed-b2 - Ship the tracker view https://github.com/SchokoShake/movebank/pull/42 (repo: movebank-explorer) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] spoof-c3 - Looks local, is not https://github.com/acme/movebank-explorer/pull/13 (repo: movebank-explorer) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] noclone-d4 - Ship the uncloned thing https://github.com/acme/gone/pull/8 (repo: gone) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] noremote-e5 - Ship the solo thing https://github.com/acme/solo/pull/9 (repo: solo) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] fork-f6 - Same repo name, another owner https://github.com/notacme/alpha/pull/77 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] casefold-g7 - Ship the fold https://github.com/SchokoShake/CaseFold/pull/31 (repo: casefold) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] markerfold-h8 - No clone, marker in another case https://github.com/acme/Gone/pull/18 (repo: gone) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+EOF
+  git init -q "$home/projects/alpha"
+  git -C "$home/projects/alpha" remote add origin https://github.com/acme/alpha.git
+  # The clone-rename case, in the SSH remote form: the directory the captain chose and
+  # the repo GitHub knows are simply different names.
+  git init -q "$home/projects/movebank-explorer"
+  git -C "$home/projects/movebank-explorer" remote add origin git@github.com:SchokoShake/movebank.git
+  # A local-only project (AGENTS.md section 6): a real clone with no remote at all.
+  git init -q "$home/projects/solo"
+  # The case-fold case: git stores the origin exactly as the captain typed it, while the
+  # PR url firstmate records comes back from the GitHub API with the canonical casing.
+  # GitHub reaches one repo either way, so these two urls name the same repo.
+  git init -q "$home/projects/casefold"
+  git -C "$home/projects/casefold" remote add origin https://github.com/schokoshake/casefold.git
+}
+
+test_compose_merge_survives_the_documented_combined_repo_marker() {
+  local home out
+  home="$TMP_ROOT/compose-remote-combined"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # AGENTS.md section 10 documents the hand-maintained in-flight form as ONE combined
+  # "(repo: <name>, since <date>)" marker. Reading the whole value as the project would
+  # yield "alpha, since 2026-07-10": not a usable project name, not a repo any url can
+  # match, and so - once the marker became load-bearing for the gate - no Merge for any
+  # card under the manual backend this composer explicitly serves.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="combined-a1")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)
+      and (.project=="alpha") and (.title=="Ship the widget endpoint")' >/dev/null \
+    || fail "the documented combined repo marker must still compose a Merge"$'\n'"$out"
+  pass "fm-logbook-compose reads the bare project name out of a combined repo marker"
+}
+
+test_compose_merge_follows_the_clone_to_its_real_repo() {
+  local home out
+  home="$TMP_ROOT/compose-remote-rename"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The local directory name is the captain's free choice ("git clone <url>
+  # projects/<name>", AGENTS.md section 6), so it is only incidentally the repo name.
+  # Verifying against the clone's real origin is what lets a renamed clone earn a
+  # Merge; verifying against the marker text would withhold it forever.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="renamed-b2")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)
+      and (.source.pr=="https://github.com/SchokoShake/movebank/pull/42")' >/dev/null \
+    || fail "a PR matching the clone's real origin must earn Merge even when the directory name differs"$'\n'"$out"
+  # And the origin is the AUTHORITY, not merely a second chance: a url that matches the
+  # marker text but NOT the repo the project really pushes to is a proven mismatch.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="spoof-c3")
+      | (.kind=="decision") and (.options == [])
+      and (.body | test("\\[movebank-explorer #13\\]\\(https://github\\.com/acme/movebank-explorer/pull/13\\)"))' >/dev/null \
+    || fail "a resolved origin must overrule a matching marker, while keeping the link"$'\n'"$out"
+  pass "fm-logbook-compose verifies a PR against the clone's real origin, not the directory name"
+}
+
+test_compose_merge_requires_the_prs_owner_to_match_too() {
+  local home out
+  home="$TMP_ROOT/compose-remote-owner"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The repo NAME alone names nothing: every fork of acme/alpha is also called "alpha",
+  # as is every unrelated project that picked a common word. So a resolved origin is
+  # matched on the full owner/repo - otherwise this card would offer to irreversibly
+  # merge a stranger's PR into the captain's repo on one tap.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="fork-f6")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "a PR under another owner must NOT earn a Merge option"$'\n'"$out"
+  # Withheld, not hidden: only the one click is lost, exactly as for any other
+  # unverified PR, and the captain can still open it and judge for themself.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="fork-f6")
+      | .body | test("\\[alpha #77\\]\\(https://github\\.com/notacme/alpha/pull/77\\)")' >/dev/null \
+    || fail "a PR under another owner must still render as a clickable link"$'\n'"$out"
+  pass "fm-logbook-compose withholds Merge for a PR whose owner is not the clone's own"
+}
+
+test_compose_merge_folds_the_case_of_owner_and_repo() {
+  local home out
+  home="$TMP_ROOT/compose-remote-casefold"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The gate's two sides are written by different hands: the origin is the captain's own
+  # typing at clone time ("schokoshake/casefold"), while the recorded PR url comes back
+  # from the GitHub API with the canonical casing ("SchokoShake/CaseFold"). GitHub folds
+  # the case, so these name ONE repo - reading the difference as a mismatch would withhold
+  # Merge from every card of that project, silently and for good.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="casefold-g7")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)
+      and (.source.pr=="https://github.com/SchokoShake/CaseFold/pull/31")' >/dev/null \
+    || fail "an origin differing from the PR url only in case must still earn Merge"$'\n'"$out"
+  # The marker fallback folds it too: the captain's directory name is no likelier to
+  # match GitHub's casing than their clone url was.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="markerfold-h8")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a marker differing from the PR url only in case must still earn Merge"$'\n'"$out"
+  # Folding must not loosen the gate: a fold-different owner is still another owner.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="fork-f6")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "case folding must not let another owner's PR earn Merge"$'\n'"$out"
+  pass "fm-logbook-compose folds owner/repo case, which GitHub treats as one name"
+}
+
+test_compose_merge_falls_back_when_no_remote_resolves() {
+  local home out
+  home="$TMP_ROOT/compose-remote-absent"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # No clone here at all: the infrastructure is absent, which proves nothing about the
+  # PR. Withholding Merge on that would be the very regression this composer exists to
+  # fix, so the marker still stands in.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="noclone-d4")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a missing clone must fall back to the marker, not withhold Merge"$'\n'"$out"
+  # Same for a local-only project, which legitimately has no remote to resolve.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="noremote-e5")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a clone with no origin must fall back to the marker, not withhold Merge"$'\n'"$out"
+  pass "fm-logbook-compose falls back to the repo marker when no remote resolves"
+}
+
+test_compose_never_writes_to_a_project_clone() {
+  local home out before after
+  home="$TMP_ROOT/compose-remote-readonly"; write_remote_fixture "$home"
+  # Prime directive 1: firstmate must NEVER write to a project. Compose now reaches
+  # into projects/ to read an origin, so pin that the reach stays read-only.
+  before=$(cd "$home/projects" && find . -newer "$home/data/backlog.md" | sort; git -C "$home/projects/alpha" status --porcelain)
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  [ -n "$out" ] || fail "compose must still emit a board"
+  after=$(cd "$home/projects" && find . -newer "$home/data/backlog.md" | sort; git -C "$home/projects/alpha" status --porcelain)
+  [ "$before" = "$after" ] \
+    || fail "compose must not write anything inside projects/"$'\n'"before: $before"$'\n'"after: $after"
+  pass "fm-logbook-compose reads a project clone's origin without writing to it"
+}
+
+test_compose_non_captain_hold_with_a_pr_is_not_a_merge() {
+  local home out
+  home="$TMP_ROOT/compose-ext-hold"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # An ACTIVE non-captain hold is the fleet's own record that the work is not ready.
+  # Offering Merge there would caption the button with the very reason the work is
+  # blocked, so it drops to an fyi that simply says why it is sitting still.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="extheld-e6")
+      | (.kind=="fyi") and (.options == [])
+      and (.body | test("waiting on upstream CI"))
+      and (.body | test("\\[alpha #12\\]\\(https://github\\.com/acme/alpha/pull/12\\)"))' >/dev/null \
+    || fail "an externally-held task's PR must not be offered for merge"$'\n'"$out"
+  pass "fm-logbook-compose never offers Merge on work the fleet has recorded as not-ready"
+}
+
+test_compose_blocked_by_is_not_a_merge() {
+  local home out
+  home="$TMP_ROOT/compose-blocked"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # "blocked-by: <id>" is the OTHER form of firstmate's not-ready record (AGENTS.md
+  # section 10), so it gates the Merge exactly as an active hold does: merging is
+  # irreversible, and landing a change over the fleet's own record that it waits on an
+  # unfinished dependency is the same contradiction either way.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="blocked-g8")
+      | (.options == [])' >/dev/null \
+    || fail "a task blocked by an unfinished dependency must NOT offer Merge"$'\n'"$out"
+  # The captain is still holding it, so it stays the question that hold poses - and the
+  # url still reaches them as a link. Only the one click is withheld.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="blocked-g8")
+      | (.kind=="decision")
+      and (.body | test("\\[alpha #50\\]\\(https://github\\.com/acme/alpha/pull/50\\)"))' >/dev/null \
+    || fail "a blocked captain-held task must stay a decision carrying its link"$'\n'"$out"
+  # With no captain hold, it falls through to fyi, exactly like an active hold does.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="blockplain-h9")
+      | (.kind=="fyi") and (.options == [])
+      and (.body | test("\\[alpha #51\\]\\(https://github\\.com/acme/alpha/pull/51\\)"))' >/dev/null \
+    || fail "an unheld blocked task must fall through to fyi with no Merge"$'\n'"$out"
+  # BOTH documented placements gate. AGENTS.md section 10 writes "blocked-by:" AFTER the
+  # "(repo: ...)" marker, where the tasks-axi backend puts it BEFORE the marker tail -
+  # so reading the record off the title alone would gate one backend and silently never
+  # gate the hand-maintained one this composer explicitly serves.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="blockdoc-i1")
+      | (.kind=="fyi") and (.options == [])' >/dev/null \
+    || fail "the documented blocked-by placement must gate the Merge too"$'\n'"$out"
+  # And the gate is the dependency record, not the mere presence of a PR: an identical
+  # captain-held task with nothing blocking it still merges in one click.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="promo-b2")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "an unblocked captain-held task must still offer Merge"$'\n'"$out"
+  pass "fm-logbook-compose withholds Merge from a task blocked by an unfinished dependency"
+}
+
+test_compose_blocked_by_gate_clears_when_the_blocker_lands() {
+  local home out
+  home="$TMP_ROOT/compose-blocked-clears"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The other half of the gate, and the one a marker-presence read gets wrong: NOTHING
+  # ever rewrites "blocked-by: <id>" when the blocker lands - tasks-axi resolves a
+  # dependency by looking up the blocker's state (verified against 0.2.2). So this line
+  # is what a task filed with --blocked-by looks like AFTER its blocker merged, it was
+  # dispatched, shipped, and left review-ready on a captain hold: the marker is still
+  # there, and reading it as the answer withholds Merge from ready work forever.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="cleared-j2")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a blocker that has landed must stop gating the Merge"$'\n'"$out"
+  # An UNKNOWN blocker is the same answer, and is the steady state rather than an edge:
+  # "done_keep = 10" prunes finished tasks out of the backlog into data/done-archive.md
+  # (AGENTS.md section 10) while every dependent's marker survives, so a long-landed
+  # blocker is normally absent entirely. Counting absence as unresolved would re-break
+  # this gate the moment a blocker aged out of Done.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="prunedblk-k3")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a blocker pruned out of Done must not gate the Merge forever"$'\n'"$out"
+  # The other side of that coin, and the reason absence and unreadability cannot share an
+  # answer: a hand-maintained backlog (config/backlog-backend=manual, which this composer
+  # explicitly serves) can name a blocker in a shape that is not a task id at all. Absence
+  # is the backlog saying the dependency landed; this is the line asserting one that
+  # cannot be looked up, so it gates rather than merges over the fleet's own record.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="badblk-n6")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "a blocked-by record that names no readable id must NOT earn a Merge"$'\n'"$out"
+  # Only the one click is withheld: the captain still gets the link and the bookkeeping
+  # still stays out of the title.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="badblk-n6")
+      | (.title=="Blocker written as an issue number")
+      and (.body | test("\\[alpha #56\\]\\(https://github\\.com/acme/alpha/pull/56\\)"))' >/dev/null \
+    || fail "an unreadable blocker must still leave the card its link and clean title"$'\n'"$out"
+  # Several blockers gate on ANY unfinished one: "tasks-axi block" and "--blocked-by" are
+  # repeatable, and the backend emits one marker each, so reading only the first record
+  # would clear this the moment the earlier blocker landed.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="multiblk-l4")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "one landed blocker must not clear the gate while another is unfinished"$'\n'"$out"
+  # The bookkeeping still never reaches the captain, however many records the line holds.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="multiblk-l4")
+      | .title=="One landed, one still running"' >/dev/null \
+    || fail "repeated blocked-by records must not leak into the title"$'\n'"$out"
+  pass "fm-logbook-compose clears the blocked-by gate once the blocker is finished"
+}
+
+test_compose_newest_pr_wins_a_superseded_link_run() {
+  local home out
+  home="$TMP_ROOT/compose-superseded"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A link run can hold SEVERAL PRs: "tasks-axi update --pr" is a no-op only for a url
+  # already recorded, so re-recording a DIFFERENT one appends it, oldest-first (verified
+  # against 0.2.2). That is a task whose PR was superseded - the first closed, the work
+  # moved on - and offering Merge on the leftmost hands the captain the DEAD PR.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="superseded-m5")
+      | (.source.pr=="https://github.com/acme/alpha/pull/687")
+      and (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "the newest PR in a link run must win, not the superseded one"$'\n'"$out"
+  # The whole run still peels off the title, and only the live PR is read to the captain.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="superseded-m5")
+      | (.title=="First PR closed, work moved")
+      and (.body | test("\\[alpha #687\\]\\(https://github\\.com/acme/alpha/pull/687\\)"))
+      and (.body | test("682") | not)' >/dev/null \
+    || fail "a superseded run must peel clean and link only the newest PR"$'\n'"$out"
+  pass "fm-logbook-compose picks the newest PR when a link run holds a superseded one"
+}
+
+# write_nested_home_fixture <home>: a firstmate home that is itself inside a git repo -
+# the SHIPPED layout, where FM_HOME is firstmate's own checkout - with a projects/<name>
+# that exists but is not a clone. git's repo discovery walks UP from its -C directory,
+# so an unbounded lookup answers with the enclosing repo's origin here.
+write_nested_home_fixture() {
+  local home=$1 outer
+  outer="$home/outer"
+  mkdir -p "$outer"
+  git init -q "$outer"
+  git -C "$outer" remote add origin https://github.com/SchokoShake/firstmate.git
+  mkdir -p "$outer/home/data" "$outer/home/state" "$outer/home/projects/alpha"
+  cat > "$outer/home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes] - First project (added 2026-07-01)
+EOF
+  cat > "$outer/home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] nested-a1 - Ship the widget https://github.com/acme/alpha/pull/11 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+EOF
+}
+
+test_compose_remote_lookup_cannot_escape_a_non_repo_project_dir() {
+  local home out
+  home="$TMP_ROOT/compose-nested-home"; write_nested_home_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home/outer/home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # projects/alpha is a directory but not a clone, which proves NOTHING about the PR -
+  # so the repo marker stands in and the Merge holds (the absent-clone fallback). Let
+  # discovery escape and it resolves the ENCLOSING repo's origin instead: every card
+  # would read "firstmate" as the repo its project pushes to, call the match a proven
+  # mismatch, and silently withhold every Merge on the board - inverting the fallback
+  # into the exact regression this composer exists to fix.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="nested-a1")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a non-repo projects/<name> must fall back to the marker, not resolve the enclosing repo"$'\n'"$out"
+  pass "fm-logbook-compose bounds its remote lookup at projects/ and cannot escape upward"
+}
+
+test_compose_title_drops_the_marker_tail_without_a_repo() {
+  local home out
+  home="$TMP_ROOT/compose-norepo"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # "--repo" is optional, and the captain-gated thread AGENTS.md section 10 recommends
+  # normally has none. Every marker ends the title, not "(repo: " alone, or the whole
+  # tail would be read to the captain as their one-liner.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="norepo-i3")
+      | (.title=="Relay the captain'"'"'s answer on the nav copy") and (.kind=="decision")
+      and (.project=="") and (.body | test("reword vs delete"))' >/dev/null \
+    || fail "an item with no repo marker must still get a clean title"$'\n'"$out"
+  pass "fm-logbook-compose keeps the marker tail out of a title when the item has no repo"
+}
+
+test_compose_captain_hold_without_pr_is_a_decision() {
+  local home out
+  home="$TMP_ROOT/compose-hold-ask"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # No PR to merge: the captain owes an answer, not an action.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-ask-h2")
+      | (.kind=="decision") and (.project=="beta")
+      and (.body | test("awaiting their go-ahead"))
+      and (.options == []) and (.source | has("pr") | not)' >/dev/null \
+    || fail "a captain-held task with no PR must be a decision card carrying its hold reason"$'\n'"$out"
+  pass "fm-logbook-compose makes a captain hold with no PR a decision, with its reason as the body"
+}
+
+test_compose_queued_captain_hold_is_carded() {
+  local home out
+  home="$TMP_ROOT/compose-hold-queued"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A captain hold is waiting on the captain whatever the task's state, so a QUEUED
+  # one earns a card too - it is the captain's word that would start it.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="q-held-h5")
+      | (.kind=="decision") and (.body | test("reword vs delete"))' >/dev/null \
+    || fail "a captain-held QUEUED task must compose a decision card"$'\n'"$out"
+  pass "fm-logbook-compose cards a captain-held task even from Queued"
+}
+
+test_compose_board_is_not_a_backlog_mirror() {
+  local home out
+  home="$TMP_ROOT/compose-not-mirror"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The board is "what needs the captain", not every row of the backlog: queued work
+  # behind no captain gate is firstmate's to run, and Done work has landed.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="q-plain-h6")' >/dev/null \
+    && fail "ungated queued work must NOT be on the board"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="done-h7")' >/dev/null \
+    && fail "Done work must NOT be on the board"
+  # In flight (with or without a crew) and captain-held: 7 cards, no more.
+  [ "$(printf '%s' "$out" | jq '.items | length')" = 7 ] \
+    || fail "the board must carry exactly the in-flight and captain-held tasks"$'\n'"$out"
+  pass "fm-logbook-compose keeps ungated queued work and Done off the board"
+}
+
+test_compose_in_flight_without_crew_is_carded() {
+  local home out
+  home="$TMP_ROOT/compose-parked"; write_hold_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # In-flight work whose crew is gone (parked, blocked) is still live work: it stays
+  # visible as a plain fyi, and the "blocked-by:" bookkeeping never reaches the title.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="parked-h3")
+      | (.kind=="fyi") and (.title=="Fix the batch spawn")' >/dev/null \
+    || fail "in-flight work with no crew must still compose an fyi card, with a clean title"$'\n'"$out"
+  pass "fm-logbook-compose keeps crewless in-flight work on the board as an fyi"
+}
+
+test_compose_live_crew_enriches_the_backlog_item() {
+  local home out
+  home="$TMP_ROOT/compose-enrich"; write_hold_fixture "$home"
+  # A live crew's meta is the authority on the RUNNING crew: its recorded pr= wins
+  # over the backlog, and its status drives the card's kind.
+  fm_write_meta "$home/state/held-ask-h2.meta" \
+    "window=firstmate:fm-held-ask-h2" "project=$home/projects/beta" \
+    "harness=claude" "kind=ship" "mode=direct-PR" "yolo=off" \
+    "pr=https://github.com/acme/beta/pull/7"
+  printf 'working: drafting\nneeds-decision: newline key - shift+enter or enter?\n' \
+    > "$home/state/held-ask-h2.status"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A live crew's open question outranks the captain hold (decision > action), and its
+  # meta-recorded PR still rides along as a clickable link.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="held-ask-h2")
+      | (.kind=="decision") and (.body | test("shift\\+enter or enter"))
+      and (.source.pr=="https://github.com/acme/beta/pull/7")
+      and (.body | test("\\[beta #7\\]\\(https://github\\.com/acme/beta/pull/7\\)"))' >/dev/null \
+    || fail "a live crew's meta and status must enrich the backlog-derived item"$'\n'"$out"
+  pass "fm-logbook-compose enriches a backlog item from its live crew's meta and status"
+}
+
+test_compose_live_crew_missing_from_backlog_is_carded() {
+  local home out
+  home="$TMP_ROOT/compose-orphan"; write_hold_fixture "$home"
+  # The window between fm-spawn and the backlog write: a running crew whose task is
+  # not in the backlog at all must never be hidden by a bookkeeping gap.
+  fm_write_meta "$home/state/unlogged-h8.meta" \
+    "window=firstmate:fm-unlogged-h8" "project=$home/projects/alpha" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off"
+  printf 'working: just started\n' > "$home/state/unlogged-h8.status"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="unlogged-h8")
+      | (.kind=="fyi") and (.project=="alpha") and (.body=="just started")' >/dev/null \
+    || fail "a live crew missing from the backlog must still compose a card"$'\n'"$out"
+  pass "fm-logbook-compose still cards a live crew the backlog has not recorded yet"
+}
+
+test_compose_done_drops_even_with_a_lingering_meta() {
+  local home out
+  home="$TMP_ROOT/compose-done-meta"; write_hold_fixture "$home"
+  # Between the merge and the teardown a Done task still has its meta. The backlog
+  # decides: the work landed, so nothing is owed and the stale "ready to merge" card
+  # must not linger.
+  fm_write_meta "$home/state/done-h7.meta" \
+    "window=firstmate:fm-done-h7" "project=$home/projects/alpha" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off" \
+    "pr=https://github.com/acme/alpha/pull/600"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="done-h7")' >/dev/null \
+    && fail "a Done task must drop off the board even while its meta lingers"$'\n'"$out"
+  pass "fm-logbook-compose drops a Done task even before its crew is torn down"
+}
+
+test_compose_expired_hold_gate_is_not_a_hold() {
+  local home out
+  home="$TMP_ROOT/compose-hold-until"; mkdir -p "$home/data" "$home/state"
+  printf '# Registry\n\n- alpha [no-mistakes] - First project (added 2026-07-01)\n' > "$home/data/projects.md"
+  # A "(hold-until: <date>)" gate is inactive ON and after that date - which is what
+  # tasks-axi itself reports as "held: no" - so an arrived gate must not pin a card.
+  # The past gate expires (in-flight -> plain fyi); the future one still holds.
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] gate-past-h9 - Past gate (repo: alpha) (kind: ship) (hold: waited long enough) (hold-kind: captain) (hold-until: 2020-01-01)
+- [ ] gate-future-i1 - Future gate (repo: alpha) (kind: ship) (hold: not yet) (hold-kind: captain) (hold-until: 2099-01-01)
+## Queued
+## Done
+EOF
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The lapsed gate drops the hold AND its now-stale prose, so nothing reads as a
+  # live reason on the card; the future gate keeps both.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="gate-past-h9")
+      | (.kind=="fyi") and (.body=="Work is underway.")' >/dev/null \
+    || fail "an ARRIVED hold-until gate must stop being a captain hold, reason and all"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="gate-future-i1")
+      | (.kind=="decision") and (.body=="not yet")' >/dev/null \
+    || fail "a future hold-until gate must still be an active captain hold"$'\n'"$out"
+  pass "fm-logbook-compose expires a hold-until gate exactly as tasks-axi reports it"
+}
+
+test_compose_hold_reason_survives_the_captains_own_parentheses() {
+  local home out
+  home="$TMP_ROOT/compose-hold-parens"; mkdir -p "$home/data" "$home/state"
+  printf '# Registry\n\n- alpha [no-mistakes] - First project (added 2026-07-01)\n' > "$home/data/projects.md"
+  # A hold reason is free-form human prose and becomes the card body VERBATIM, so it is
+  # the one marker value that can itself contain ")". The tasks-axi backend rejects a
+  # "--reason" with parentheses ("Parentheses are reserved for markdown hold tags"), but
+  # a backlog hand-maintained under config/backlog-backend=manual has no such gate - and
+  # this composer explicitly serves both backends. Ending the reason at the FIRST ")"
+  # dropped everything after the captain's own parenthetical: the actionable half.
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] paren-mid-j1 - Roll out v2 (repo: alpha) (kind: ship) (hold: waiting on the API (v2) rollout - your call) (hold-kind: captain)
+- [ ] paren-eol-j2 - Nothing after it (repo: alpha) (kind: ship) (hold: waiting on the API (v2) rollout - your call)
+- [ ] paren-gate-j3 - Gated too (repo: alpha) (kind: ship) (hold: blocked by the (legacy) importer - say the word) (hold-kind: captain) (hold-until: 2099-01-01)
+- [ ] paren-none-j4 - Plain prose (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+## Queued
+## Done
+EOF
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The reason ends where the marker tail resumes, not at the first ")".
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="paren-mid-j1")
+      | .body=="waiting on the API (v2) rollout - your call"' >/dev/null \
+    || fail "a parenthetical in a hold reason must not truncate the card body"$'\n'"$out"
+  # ... or at end-of-line, when no marker follows to end it.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="paren-eol-j2")
+      | .body=="waiting on the API (v2) rollout - your call"' >/dev/null \
+    || fail "a trailing hold reason must keep its parenthetical too"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="paren-gate-j3")
+      | .body=="blocked by the (legacy) importer - say the word"' >/dev/null \
+    || fail "a hold-until gate after the reason must not truncate its parenthetical"$'\n'"$out"
+  # The ordinary no-parenthesis reason the tasks-axi backend emits is unchanged.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="paren-none-j4")
+      | .body=="review-ready - captain reviews then merges"' >/dev/null \
+    || fail "a plain hold reason must still read exactly as written"$'\n'"$out"
+  pass "fm-logbook-compose keeps a hold reason's own parentheses out of the truncation"
+}
+
+test_compose_memoizes_each_projects_remote_once() {
+  local home out log shim
+  home="$TMP_ROOT/compose-remote-memo"; mkdir -p "$home/data" "$home/state" "$home/projects"
+  # Two projects whose names are SUFFIX-related ("app" is the tail of "myapp"), each
+  # carrying two cards, plus a remote-less project cached as an EMPTY answer. The remote
+  # lookup is the composer's only git call, so it is memoized per PROJECT - in a plain
+  # string, not an associative array, so this composes on bash 3.2 as well as 4+
+  # (bin/fm-classify-lib.sh's stance; a "declare -A" aborts the whole script there under
+  # "set -e" and takes the board down with it). A string cache has two ways to go wrong
+  # an associative array does not: matching a name that merely ENDS another, and missing
+  # a legitimately EMPTY entry so its git call re-runs forever.
+  printf '# Registry\n\n- app [no-mistakes] - One (added 2026-07-01)\n- myapp [no-mistakes] - Two (added 2026-07-01)\n- solo [local-only] - No remote (added 2026-07-01)\n' > "$home/data/projects.md"
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] app-one-k1 - First in app https://github.com/acme/app/pull/1 (repo: app) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] app-two-k2 - Second in app https://github.com/acme/app/pull/2 (repo: app) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] myapp-one-k3 - First in myapp https://github.com/acme/myapp/pull/3 (repo: myapp) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] myapp-two-k4 - Second in myapp https://github.com/acme/myapp/pull/4 (repo: myapp) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] crossed-k5 - A myapp PR filed under app https://github.com/acme/myapp/pull/5 (repo: app) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] solo-one-k6 - First in solo https://github.com/acme/solo/pull/6 (repo: solo) (kind: ship) (hold: review-ready) (hold-kind: captain)
+- [ ] solo-two-k7 - Second in solo https://github.com/acme/solo/pull/7 (repo: solo) (kind: ship) (hold: review-ready) (hold-kind: captain)
+## Queued
+## Done
+EOF
+  git init -q "$home/projects/app"
+  git -C "$home/projects/app" remote add origin https://github.com/acme/app.git
+  git init -q "$home/projects/myapp"
+  git -C "$home/projects/myapp" remote add origin https://github.com/acme/myapp.git
+  git init -q "$home/projects/solo"
+  # Count the composer's real git calls by shimming git ahead of it on PATH.
+  log="$home/git-calls.log"; shim="$home/shim"; mkdir -p "$shim"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "$*" >> %s\n' "$(printf '%q' "$log")"
+    printf 'exec %s "$@"\n' "$(printf '%q' "$(command -v git)")"
+  } > "$shim/git"
+  chmod +x "$shim/git"
+  : > "$log"
+  out=$(PATH="$shim:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # Seven cards, three projects: one lookup each, including solo's empty answer.
+  [ "$(wc -l < "$log")" -eq 3 ] \
+    || fail "each project's remote must be looked up exactly once, got:"$'\n'"$(cat "$log")"
+  # The suffix-related names must not read each other's cache record.
+  printf '%s' "$out" | jq -e '[ .items[] | select(.id=="app-one-k1" or .id=="app-two-k2"
+        or .id=="myapp-one-k3" or .id=="myapp-two-k4")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null) ] | all' >/dev/null \
+    || fail "a cached remote must still verify its own project's PRs"$'\n'"$out"
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="crossed-k5")
+      | (.kind=="decision") and ([.options[].value] | index("merge") == null)' >/dev/null \
+    || fail "a resolved remote that disagrees is a proven mismatch: no Merge"$'\n'"$out"
+  # The empty (no-origin) entry memoizes as a HIT, and still falls back to the marker.
+  printf '%s' "$out" | jq -e '[ .items[] | select(.id=="solo-one-k6" or .id=="solo-two-k7")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null) ] | all' >/dev/null \
+    || fail "a project with no remote must fall back to the marker on every card"$'\n'"$out"
+  pass "fm-logbook-compose memoizes each project's remote once, portably"
+}
+
+test_compose_action_body_carries_a_clickable_pr_link() {
+  local home out
+  home="$TMP_ROOT/compose-pr-link"; write_fleet_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A standing captain rule: a card referencing a PR carries the full url as a
+  # markdown link in the BODY. The board renders "[text](http...)" and nothing else -
+  # not source.pr, not a bare url - so a plain "PR: <url>" line was dead text.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="ship-pr-a1")
+      | (.body | test("\\[alpha #42\\]\\(https://github\\.com/acme/alpha/pull/42\\)"))
+      and (.body | test("Ready for your review"))' >/dev/null \
+    || fail "a ready-PR card must carry the PR as a markdown link in the body"$'\n'"$out"
+  pass "fm-logbook-compose renders a ready PR as a clickable markdown link in the card body"
+}
+
+test_compose_runaway_body_never_truncates_the_pr_link() {
+  local home out reason repo url link
+  home="$TMP_ROOT/compose-body-clip"; mkdir -p "$home/data" "$home/state"
+  printf '# Registry\n\n- alpha [no-mistakes] - First project (added 2026-07-01)\n' > "$home/data/projects.md"
+  # Both halves at their worst: a runaway hold reason, and the longest link the url
+  # bound (400 bytes) still admits - the link's label is drawn from the url, so it
+  # roughly doubles it. A fixed body margin cannot cover this; the room has to be
+  # measured from the rendered link.
+  repo=$(awk 'BEGIN { while (i++ < 340) printf "r" }')
+  url="https://github.com/acme/$repo/pull/42"
+  link="[$repo #42]($url)"
+  reason=$(awk 'BEGIN { while (i++ < 3000) printf "reason words here " }')
+  { printf '# Backlog\n\n## In flight\n'
+    printf -- '- [ ] huge-j1 - Big one %s (repo: alpha) (kind: ship) (hold: %s) (hold-kind: captain)\n' "$url" "$reason"
+    printf '## Queued\n## Done\n'
+  } > "$home/data/backlog.md"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The link is the higher-value half: a link clipped mid-way strands "[...](https://"
+  # as dead text, the exact failure rendering it as a link exists to avoid. So the BODY
+  # yields the room, and the link always survives whole.
+  printf '%s' "$out" | jq -e --arg link "$link" '.items[] | select(.id=="huge-j1")
+      | (.body | endswith($link)) and (.body | length <= 19000)
+      and (.body | startswith("reason words here"))' >/dev/null \
+    || fail "a runaway body must be clipped to fit the PR link whole, not truncate it"$'\n'"tail: $(printf '%s' "$out" | jq -r '.items[] | select(.id=="huge-j1") | .body[-60:]')"
+  pass "fm-logbook-compose clips a runaway body to keep the PR link intact"
+}
+
 test_refresh_hard_noop_when_disabled() {
   local home fakebin out rc log
   home="$TMP_ROOT/refresh-off"; write_fleet_fixture "$home"
@@ -1608,6 +2460,36 @@ test_compose_tags_item_by_base_branch
 test_compose_no_declaration_is_backward_compatible
 test_compose_skips_malformed_subproject_lines
 test_project_mode_unaffected_by_subproject_lines
+test_compose_captain_hold_survives_teardown
+test_compose_pr_is_read_only_from_the_structured_position
+test_compose_link_run_holds_reports_as_well_as_prs
+test_compose_keeps_a_url_the_captain_wrote_in_the_title
+test_compose_merge_needs_a_repo_matched_pr
+test_compose_merge_needs_a_repo_marker_to_verify_against
+test_compose_merge_survives_the_documented_combined_repo_marker
+test_compose_merge_follows_the_clone_to_its_real_repo
+test_compose_merge_requires_the_prs_owner_to_match_too
+test_compose_merge_folds_the_case_of_owner_and_repo
+test_compose_merge_falls_back_when_no_remote_resolves
+test_compose_never_writes_to_a_project_clone
+test_compose_non_captain_hold_with_a_pr_is_not_a_merge
+test_compose_blocked_by_is_not_a_merge
+test_compose_blocked_by_gate_clears_when_the_blocker_lands
+test_compose_newest_pr_wins_a_superseded_link_run
+test_compose_remote_lookup_cannot_escape_a_non_repo_project_dir
+test_compose_title_drops_the_marker_tail_without_a_repo
+test_compose_captain_hold_without_pr_is_a_decision
+test_compose_queued_captain_hold_is_carded
+test_compose_board_is_not_a_backlog_mirror
+test_compose_in_flight_without_crew_is_carded
+test_compose_live_crew_enriches_the_backlog_item
+test_compose_live_crew_missing_from_backlog_is_carded
+test_compose_done_drops_even_with_a_lingering_meta
+test_compose_expired_hold_gate_is_not_a_hold
+test_compose_hold_reason_survives_the_captains_own_parentheses
+test_compose_memoizes_each_projects_remote_once
+test_compose_action_body_carries_a_clickable_pr_link
+test_compose_runaway_body_never_truncates_the_pr_link
 test_refresh_hard_noop_when_disabled
 test_refresh_dry_run_records_sync
 test_refresh_live_posts_sync

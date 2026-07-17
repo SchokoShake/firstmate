@@ -20,6 +20,9 @@ Bootstrap requires compatible `tasks-axi` on every profile; see "Toolchain" belo
 Set the local, gitignored `config/backlog-backend` file to `manual` to force manual backlog editing and suppress `TASKS_AXI: available`, not missing-tool reporting.
 Absent or `tasks-axi` selects the default tasks-axi backend.
 The file format is unchanged in both modes; tasks-axi and manual edits produce the same `## In flight`, `## Queued`, and `## Done` sections.
+Two lifecycle scripts mutate the backlog on firstmate's behalf and are gated by the same knob and probe: `bin/fm-pr-check.sh` records a PR-ready task's PR onto its item, and `bin/fm-pr-merge.sh` closes the item of a task it merged after teardown had already swept the meta.
+Both are best-effort - neither fails its real job on the backlog - but neither is silent: an item left open without its record or its close is reported on stderr, including under `manual` where they must not write it, for firstmate to finish by hand.
+Reading the file is not gated at all: `bin/fm-logbook-compose.sh` parses `data/backlog.md` directly rather than shelling out to a backlog tool, so the attention board composes identically in both modes and with no `tasks-axi` on `PATH`, and `bin/fm-backlog-lib.sh` is the shared single-item read behind the two scripts above.
 
 ## Runtime backend (config/backend / FM_BACKEND)
 
@@ -327,7 +330,9 @@ While away mode is active the daemon owns the watcher and its default cadence ap
 Logbook is purely additive: no edit is made to `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`, `bin/fm-wake-lib.sh`, or the afk daemon.
 That holds for the board-liveness reap too, despite it being watcher-driven: it is a check shim like any other, so the watcher runs it without knowing what it is.
 It lives entirely in the `bin/fm-logbook-*.sh` scripts, bootstrap's `logbook_setup()` block, the `logbook-respond` skill, and the generated local artifacts above.
-The session-start reconcile is automatic: bootstrap runs `bin/fm-logbook-refresh.sh`, which composes the attention set with `bin/fm-logbook-compose.sh` (a mechanical baseline derived from `data/projects.md`, `data/backlog.md`, `state/*.meta`, and `state/*.status`) and hands it to `bin/fm-logbook-sync.sh` (`POST /api/sync {projects?, items?}`, a declarative truth-restore).
+The session-start reconcile is automatic: bootstrap runs `bin/fm-logbook-refresh.sh`, which composes the attention set with `bin/fm-logbook-compose.sh` (a mechanical baseline derived from `data/projects.md`, `data/backlog.md`, `state/*.meta`, `state/*.status`, and each project clone's `origin` remote) and hands it to `bin/fm-logbook-sync.sh` (`POST /api/sync {projects?, items?}`, a declarative truth-restore).
+That last source is compose's only reach into `projects/`, and it is a single `git remote get-url origin` per project: it reads the repo a project's PRs actually land in, so a card's Merge option can be gated on the PR naming that repo rather than the local directory name the captain chose at clone time.
+It touches no ref, index, or worktree, so prime directive 1 holds - firstmate still never writes to a project.
 Firstmate can re-run `bin/fm-logbook-refresh.sh` by hand to re-truth the board mid-session.
 It then upserts richer changed items with `bin/fm-logbook-push.sh` (`POST /api/items`) and clears acted-on cards with `bin/fm-logbook-resolve.sh <id> [resolved|dismissed]`.
 The tool has no dedicated resolve endpoint and rejects a bare `{id, status}` upsert (it runs full item validation on every `POST /api/items`), so `fm-logbook-resolve.sh` fetches the card's current fields via a read-only `GET /api/board` and re-upserts the whole item with a terminal `status` that drops the card off the board; an id absent from the board is a clean no-op.
@@ -363,6 +368,7 @@ Because `data/projects.md` is local and gitignored, its declarations live only i
 
 Each item is tagged with its sub-project by its base or integration branch, recorded per task in `state/<id>.meta` as an optional `base_branch=<branch>` field (the branch the task's PR targets).
 Firstmate records `base_branch=` at dispatch for a task that targets a declared integration branch, by appending the field to the task's meta; most tasks target the project's default branch, carry no `base_branch`, and stay ungrouped.
+That field lives only in the live crew's meta, which `bin/fm-teardown.sh` removes with the crew, while the item set itself is composed from the durable backlog and outlives it, so a torn-down task composes ungrouped until its branch is recorded somewhere durable - a deferred follow-up alongside the dispatch recording itself.
 
 `fm-logbook-compose.sh` then emits, into the `POST /api/sync` baseline body it produces (fed via `bin/fm-logbook-sync.sh`):
 - Per project, an ordered `subprojects` array of `{ key, name, branch }`, empty when none are declared and capped at the tool's 100-per-project limit.

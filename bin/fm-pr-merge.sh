@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Merge a task's PR, always recording pr= and any available pr_head= into
+# Merge a task's PR, recording pr= and any available pr_head= into
 # state/<id>.meta first via bin/fm-pr-check.sh, so bin/fm-teardown.sh's
 # landed-check has a PR reference to verify a squash merge against.
 #
@@ -13,6 +13,45 @@
 # This script makes recording part of the merge itself, so it cannot be skipped
 # by omission. Use it for every PR merge (captain-requested or yolo-authorized),
 # in place of calling `gh-axi pr merge` directly.
+#
+# NO META: merge from the PR URL alone. Recording exists to serve a LATER
+# teardown, so it is owed only while there is still a crew to tear down - and
+# both halves of that debt are settled here. This script used to refuse outright,
+# for two reasons that only hold while the meta does: to stop merging a PR the
+# fleet never recorded, and to leave teardown a reference to verify a squash
+# merge against. No meta means teardown has already run: the task is gone, so
+# there is no landed-check left to serve and nothing left to record it into. The
+# durable backlog is the record now (AGENTS.md section 10), which is where the
+# board reads the url the captain merges from (bin/fm-logbook-compose.sh) - so
+# by the time that url reaches this script the PR is recorded, not unknown.
+#
+# fm-pr-check.sh is not the way to record it: it tolerates a missing meta, but it
+# also arms state/<id>.check.sh, and only fm-teardown.sh removes that. Arming a
+# merge poll for a task teardown has already swept would strand a check no teardown
+# will ever clear again, reporting "merged" - of this very merge - on every watcher
+# cycle, forever, to no one.
+#
+# What IS owed on this path is the bookkeeping fm-teardown.sh does after a PR-based
+# teardown, because nothing else will: it refuses outright without a meta, so on this
+# path it has already run and will never run again. Both halves are done here.
+#
+# Closing the backlog item is the first. fm-teardown.sh is what normally prompts the
+# "tasks-axi done" that moves a task to Done. Left open, the item keeps its captain hold
+# and its PR in the structured link position, which is precisely what the board composes
+# a Merge card from (bin/fm-logbook-compose.sh): resolving the card only clears the board
+# until the next sync recomposes the identical card from the still-open backlog, and
+# offers to re-merge work that already landed. Recording Done is what makes the
+# captain's merge stick. Where the close cannot be performed - it failed, or the backlog is
+# hand-maintained and there is no teardown left to prompt the hand-edit - it is REPORTED
+# rather than skipped in silence, because an item left open silently is the one that
+# recomposes that card. Best-effort means never failing a landed merge, never hiding.
+#
+# Refreshing the project clone is the second (fm-teardown.sh's own fm-fleet-sync.sh call).
+# Left stale, the clone hands an out-of-date base to bin/fm-review-diff.sh and to every
+# follow-on dispatch until the next session start syncs the fleet. The project name comes
+# from the backlog item's own "(repo: <name>)" marker - the only record of it that
+# outlives the meta - read BEFORE the close, because "tasks-axi done" moves the item and
+# done_keep prunes it out of the file entirely once Done is full.
 #
 # gh-axi pr merge expects a PR number and --repo <owner>/<repo>; it does not
 # parse a full https://github.com/<owner>/<repo>/pull/<n> URL. This script
@@ -36,8 +75,25 @@ shift 2
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+# Spelled exactly as fm-fleet-sync.sh spells its own, so the path handed to it below is
+# one it labels back to the bare project name (its project_label), and thus reads the
+# project's delivery mode by the name data/projects.md registers.
+PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
+# The bound on the clone check below, resolved once. PHYSICAL and absolute because that is
+# the only form git honors, and empty when projects/ will not open, which skips the check
+# entirely - no clone can live under a dir that is not there (see the refresh below).
+PROJECTS_CEILING=$(cd "$PROJECTS" 2>/dev/null && pwd -P) || PROJECTS_CEILING=""
 META="$STATE/$ID.meta"
-[ -f "$META" ] || { echo "error: no meta for task $ID at $META; refusing to merge without recording pr=" >&2; exit 1; }
+# Absolute, because the close below runs from the backlog's own home and a relative path
+# would then resolve against that cwd instead of the caller's.
+BACKLOG="$DATA/backlog.md"
+case "$BACKLOG" in /*) ;; *) BACKLOG="$PWD/$BACKLOG" ;; esac
+# shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-backlog-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-backlog-lib.sh"
 
 caller_has_merge_method() {
   local arg
@@ -79,8 +135,13 @@ reject_repo_overrides() {
 parse_pr_url "$URL" || exit 1
 reject_repo_overrides "$@" || exit 1
 
-"$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
-grep -qxF "pr=$URL" "$META" || { echo "error: fm-pr-check did not record pr=$URL in $META; refusing to merge" >&2; exit 1; }
+# The live crew's record, kept exactly as it was: record, verify, then merge. The
+# verification stays hard - while a meta exists, a merge whose pr= did not land is
+# the silent-omission failure this script was written to make impossible.
+if [ -f "$META" ]; then
+  "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
+  grep -qxF "pr=$URL" "$META" || { echo "error: fm-pr-check did not record pr=$URL in $META; refusing to merge" >&2; exit 1; }
+fi
 
 merge_args=()
 if ! caller_has_merge_method "$@"; then
@@ -88,3 +149,87 @@ if ! caller_has_merge_method "$@"; then
 fi
 
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" ${merge_args[@]+"${merge_args[@]}"} "$@"
+
+# The torn-down task's own bookkeeping, owed only where no teardown is left to do it (see
+# the header). Strictly AFTER the merge, so a refused or failed merge never marks work
+# Done that never landed, nor syncs a clone for a merge that never happened - "set -e"
+# has already exited by here in that case.
+if [ ! -f "$META" ]; then
+  # Before the close, which is what moves (and can prune) the item both answers come from.
+  BL_ITEM=$(fm_backlog_item_of "$BACKLOG" "$ID")
+  BL_SECTION=${BL_ITEM%%$'\t'*}
+  PROJECT=${BL_ITEM#*$'\t'}
+
+  # BEST-EFFORT, exactly as fm-pr-check.sh's durable half is: closing the backlog must
+  # never fail a merge that GitHub has already taken, and it cannot be undone by exiting
+  # non-zero here. The shared probe owns "is the tasks-axi backend available", so it can
+  # never drift from bootstrap's. --file pins the write to THIS home's backlog and nowhere
+  # else (prime directive 1 holds: never a project).
+  #
+  # Best-effort is not silent, though: an item this path leaves open is the very one the
+  # next sync recomposes the captain's just-answered Merge card from, offering to re-merge
+  # landed work. Reporting it is what lets firstmate close the item by hand instead of
+  # meeting that card again - so every way the close can fail to happen is reported, and
+  # the two ways it can be rightly SKIPPED are the only silence:
+  #
+  #   - the item is not there to close. "code: NOT_FOUND" is the backlog answering that it
+  #     does not carry this id at all (or has no such file); an empty or "done" section is
+  #     the same answer read from the file, for a backend that is not asked. Either way no
+  #     open item exists, so no card can compose from one, and warning would send firstmate
+  #     hunting for an item that is not there.
+  #   - the merge itself never happened. "set -e" has already exited above.
+  #
+  # Everything else is reported, including the case that reaches NEITHER branch's write:
+  # tasks-axi absent, incompatible, or config/backlog-backend=manual leaving the backlog to
+  # hand-editing (AGENTS.md section 10). The close is skipped there by design, but it is
+  # still owed - and no teardown is left to prompt the hand-edit, because a missing meta is
+  # what says teardown has already run.
+  if fm_tasks_axi_backend_available "$CONFIG"; then
+    # Run from the backlog's own home. --file pins WHICH backlog is written, but not the
+    # .tasks.toml that governs HOW: tasks-axi reads it from its own cwd (0.2.2 reads that
+    # directory only, without walking up), so a foreign cwd closes the item by the tool's
+    # defaults - Done grows past the 10 section 10 caps it at, "do not hand-prune" leaves
+    # nobody to trim it, and data/done-archive.md never receives the pruned entry. A cwd
+    # that carries a .tasks.toml of its own is worse: it would prune by a stranger's rules,
+    # into a stranger's archive. AGENTS.md section 2 sanctions invoking bin/ from any cwd,
+    # so this cannot rest on the caller standing in the right one.
+    # "done" is quoted only to keep it a literal argument rather than the shell keyword.
+    if ! close_err=$({ cd "$DATA/.." && tasks-axi "done" "$ID" --pr "$URL" --file "$BACKLOG"; } 2>&1); then
+      case "$close_err" in
+        *'code: NOT_FOUND'*) ;;
+        *) echo "warning: merged $URL but could not close backlog item $ID; close it by hand or the board will re-offer the merge: ${close_err//$'\n'/ }" >&2 ;;
+      esac
+    fi
+  elif [ -n "$BL_SECTION" ] && [ "$BL_SECTION" != 'done' ]; then
+    echo "warning: merged $URL but the tasks-axi backend is not in use, so backlog item $ID is still open; move it to Done by hand or the board will re-offer the merge" >&2
+  fi
+
+  # The clone refresh teardown would have done, best-effort on the same terms and for the
+  # same reason: a landed merge must not fail on bookkeeping. A project the backlog never
+  # named - or named but never cloned into THIS home - is simply nothing to sync here; the
+  # next session start's fleet sweep still gets every clone that is.
+  #
+  # This home's clone is addressed by its path, and only once git confirms a repository AT
+  # that path, because neither the name nor a directory pins one. Two ways the refresh
+  # otherwise reaches a repo nobody named, both ending in a fetch, a prune, and a
+  # fast-forward of it:
+  #
+  #   - fm-fleet-sync.sh resolves a bare name against this home's projects dir, but falls
+  #     back to reading one it cannot resolve there as a path relative to the CALLER's cwd.
+  #   - its own repo test walks UP from whatever path it is given, so a projects/<name>
+  #     that is merely a directory - a scratch dir, a half-finished clone - answers with
+  #     the repository ENCLOSING it, which in the shipped layout is firstmate's own
+  #     checkout (FM_HOME is a git repo; gitignoring projects/ does not stop discovery).
+  #
+  # AGENTS.md section 2 sanctions invoking bin/ from any cwd, so where firstmate stands
+  # when the captain taps Merge cannot be an input to which repo gets written. Passing the
+  # joined path closes the first; bounding discovery at projects/ closes the second, the
+  # way bin/fm-logbook-compose.sh bounds the same lookup - and a non-clone then resolves
+  # nothing, which is simply nothing to sync here. The next session start's fleet sweep
+  # still reaches every clone that is one.
+  if [ -n "$PROJECT" ] && [ -n "$PROJECTS_CEILING" ] &&
+    GIT_CEILING_DIRECTORIES="$PROJECTS_CEILING" \
+      git -C "$PROJECTS/$PROJECT" rev-parse --git-dir >/dev/null 2>&1; then
+    "$SCRIPT_DIR/fm-fleet-sync.sh" "$PROJECTS/$PROJECT" || true
+  fi
+fi
