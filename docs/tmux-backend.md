@@ -142,6 +142,18 @@ The lease is durable (`treehouse get --lease` reserves the worktree in treehouse
 `validate_spawn_worktree` also asserts the resolved worktree is not the primary checkout (`$FM_HOME`/`$FM_ROOT`), so any future capture regression aborts the spawn loudly instead of silently recording `worktree=$FM_HOME` again.
 Verified by `tests/fm-tangle-guard.test.sh` (leased-worktree capture, meta records the real path, and the `$FM_HOME` backstop abort).
 
+### Respawn: reuse the recorded worktree, never lease a second
+
+Because the lease is durable, a respawn over a live task id must not lease again: the meta write would overwrite the only record of the first worktree, stranding the crew's branch, commits, and uncommitted work behind a lease `prune` can never reclaim.
+So a respawn reuses the `worktree=` already in `state/<id>.meta` - a surviving meta means the task was never torn down, since `fm-teardown.sh` releases the worktree and removes the meta together.
+`bin/fm-spawn.sh`'s header owns the resulting contract; the two non-obvious parts of it are worth the why:
+
+- **Why a respawn refuses on a `project=`/`kind=` mismatch.** Reuse trusts one meta field, so the meta must first be proven to describe the task being spawned, and `project=`/`kind=` are that proof. `fm-spawn.sh <id> projects/bar` over a meta recording `projects/foo` would otherwise launch the crew into foo's worktree carrying bar's brief - invisible to `validate_spawn_worktree`, because foo's worktree is a real git toplevel that is neither `projects/bar` nor `$FM_HOME` - and then record a `project=`/`worktree=` pair `fm-teardown.sh` can never release, since treehouse resolves the pool from the working directory and refuses a worktree from another pool. A `kind=secondmate` meta is worse: its `worktree=` is a HOME path. Falling back to a fresh lease is not the answer either, as that meta write is itself what strands the other task's worktree; a mismatch means firstmate lost track of the task, so it stops.
+- **Why an unreserved worktree warns instead of re-leasing.** The meta does not imply treehouse still reserves the path: a task spawned before this capture landed recorded a worktree held only by the old pane-side `treehouse get` subshell, which reserves nothing once that subshell dies. Reuse asks `treehouse status` and treats `leased` or `in-use` as reserved (`available` means the next `get` may hand it out and hard-reset it). treehouse v2.0.0 has no verb to lease an existing path (`get`/`return`/`prune`/`destroy`/`status` only), so warning is the whole remedy: the crew's work is IN that worktree, a fresh lease abandons it, and the launch makes the path `in-use` within seconds. This case self-closes once pre-fix tasks turn over.
+
+`treehouse status` has no machine-readable mode, so the reservation check parses its table (`<name>  <state>  <path>  [(held by <holder>)]`).
+Two properties of that output, verified against treehouse v2.0.0, are load-bearing: `$HOME` is printed abbreviated to `~`, so a raw compare against an absolute `worktree=` silently never matches, and a worktree's process list is an indented continuation line that can never match a reserved state plus the path.
+
 ## Limitations
 
 None specific to tmux for the reference path itself - it is the fully verified reference backend, while Orca and cmux are the backends without secondmate support.

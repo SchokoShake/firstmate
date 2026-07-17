@@ -746,16 +746,14 @@ make_spawn_fakebin() {  # <dir> <fake-worktree-path> -> echoes fakebin dir
 set -u
 { printf 'tmux'; for a in "\$@"; do printf '\\x1f%s' "\$a"; done; printf '\\n'; } >> "\${FM_TMUX_LOG:?}"
 case "\${1:-}" in
-  display-message)
-    for a in "\$@"; do case "\$a" in *pane_current_path*) printf '%s\\n' "$wt"; exit 0 ;; esac; done
-    printf 'firstmate\\n'; exit 0 ;;
+  display-message) printf 'firstmate\\n'; exit 0 ;;
   list-windows) exit 0 ;;
 esac
 exit 0
 SH
   chmod +x "$fb/tmux"
   # `treehouse get --lease` is the authoritative worktree source (fm-spawn-wt-batch-x5):
-  # it prints the leased worktree path to stdout. Emit the same $wt the fake pane reports.
+  # it prints the leased worktree path to stdout, and the pane is then cd'd into it.
   fm_fake_treehouse_lease "$fb" "$wt"
   printf '%s\n' "$fb"
 }

@@ -105,10 +105,18 @@ SH
 # --lease` stdout (fm-spawn-wt-batch-x5), so the stub prints <worktree-path> for
 # any `get`. Omit <worktree-path> and the stub reads $FM_FAKE_PANE_PATH at call
 # time instead, letting a test vary the leased path per spawn without
-# reinstalling the stub. Every other verb - including the `treehouse return
-# --force` fm-spawn's lease-abort path and fm-teardown use to release the lease -
-# is a silent success. When $FM_TMUX_REC is set, every call is recorded there so
+# reinstalling the stub. When $FM_TMUX_REC is set, every call is recorded there so
 # a test can assert on the capture calls themselves.
+#
+# The stub keeps a real lease LEDGER rather than faking each verb independently,
+# because fm-spawn's reuse path asks `treehouse status` whether a recorded
+# worktree is still reserved: `get` appends the handed-out path, `return` drops
+# it, and `status` renders the survivors in the real binary's table shape
+# (`<name>  <state>  <path>  (held by <holder>)`, verified against treehouse
+# v2.0.0). So a worktree this stub leased reads back as held - and one it never
+# leased, e.g. a hand-written pre-fix meta's worktree=, reads back as unheld,
+# which is exactly the shape that makes fm-spawn warn. Every other verb is a
+# silent success.
 fm_fake_treehouse_lease() {  # <fakebin> [worktree-path]
   local fakebin=$1 wt=${2:-} emit
   # Resolved HERE, not nested inside the heredoc: a `${wt:-\${...}}` there would
@@ -116,14 +124,33 @@ fm_fake_treehouse_lease() {  # <fakebin> [worktree-path]
   if [ -n "$wt" ]; then
     emit=$wt
   else
+    # shellcheck disable=SC2016 # Deliberate literal: expanded by the generated stub at call time, not here.
     emit='${FM_FAKE_PANE_PATH:-}'
   fi
   cat > "$fakebin/treehouse" <<SH
 #!/usr/bin/env bash
 set -u
 [ -n "\${FM_TMUX_REC:-}" ] && printf 'treehouse %s\n' "\$*" >> "\$FM_TMUX_REC"
+ledger=$(printf '%q' "$fakebin/.leases")
 case "\${1:-}" in
-  get) printf '%s\n' "$emit" ;;
+  get)
+    printf '%s\n' "$emit"
+    printf '%s\n' "$emit" >> "\$ledger"
+    ;;
+  return)
+    # Last arg is the path; drop it from the ledger like a real release.
+    for p in "\$@"; do :; done
+    [ -f "\$ledger" ] && { grep -vxF "\$p" "\$ledger" > "\$ledger.tmp" || true; mv "\$ledger.tmp" "\$ledger"; }
+    ;;
+  status)
+    [ -f "\$ledger" ] || exit 0
+    n=0
+    while IFS= read -r p; do
+      [ -n "\$p" ] || continue
+      n=\$((n + 1))
+      printf '%-4s  %s  %s  (held by fm-test)\n' "\$n" leased "\$p"
+    done < "\$ledger"
+    ;;
 esac
 exit 0
 SH
