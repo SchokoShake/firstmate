@@ -473,6 +473,25 @@ test_spawn_respawn_identity_gate() {
   assert_no_grep "treehouse" "$rec" \
     "a refused respawn must not lease or reuse: an Orca worktree was never in the pool"
 
+  # The backend check is scoped to the ORCA boundary, and must not fire between two
+  # pool backends: they borrow the SAME treehouse pool, so reuse adopts the recorded
+  # worktree unchanged and nothing is stranded. Refusing here would break ordinary
+  # recovery after a config/backend edit or a session under a different
+  # auto-detected runtime - including bin/fm-bootstrap.sh's secondmate liveness
+  # sweep, which respawns with no --backend at all.
+  fm_write_meta "$home/state/ident-pool-hh3.meta" \
+    "window=fm-ident-pool-hh3" "worktree=$wtA" "project=$projA" \
+    "harness=codex" "kind=ship" "mode=no-mistakes" "yolo=off" "backend=herdr"
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-pool-hh3 "$projA" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "a tmux respawn over a herdr meta must not refuse: both borrow the pool"
+  assert_not_contains "$out" "already recorded as backend=" \
+    "a non-orca <-> non-orca crossing strands no worktree and must not refuse"
+  assert_grep "worktree=$wtA" "$home/state/ident-pool-hh3.meta" \
+    "the pool crossing must reuse the recorded worktree, not lease a second"
+  assert_no_grep "treehouse get" "$rec" \
+    "reuse must not lease: the recorded pool worktree still holds the crew's work"
+
   # The gate must never false-refuse the default backend: a tmux meta never writes
   # backend= at all, so the compare must go through fm_backend_of_meta's
   # absent-means-tmux contract rather than an empty-string compare.

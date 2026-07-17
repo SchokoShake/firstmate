@@ -67,12 +67,14 @@
 #   can re-lease an existing path). Reuse covers the treehouse-pool backends only:
 #   an orca respawn skips it, because orca owns its own worktree and never leases
 #   from the pool. The identity gate below is what keeps that exclusion safe.
-#   Any respawn refuses outright when the recorded meta's project=, kind=, or
-#   backend= disagrees with what is being spawned: that meta describes a task
-#   firstmate has lost track of, and neither reusing its worktree= nor overwriting
-#   it with a fresh lease is safe. backend= counts because orca owns its own
-#   worktree while every other backend borrows the pool, so a backend crossing
-#   strands whichever worktree the recorded meta named.
+#   Any respawn refuses outright when the recorded meta's project= or kind=
+#   disagrees with what is being spawned: that meta describes a task firstmate has
+#   lost track of, and neither reusing its worktree= nor overwriting it with a
+#   fresh lease is safe. backend= refuses too, but only across the ORCA boundary
+#   (exactly one of recorded/resolved is orca), because orca owns its own worktree
+#   while every other backend borrows the pool, so an orca crossing strands
+#   whichever worktree the recorded meta named. A non-orca <-> non-orca respawn is
+#   a normal recovery and reuses the recorded pool worktree unchanged.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -100,7 +102,9 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  sed -n '2,78p' "$0" | sed 's/^# \{0,1\}//'
+  # Derive the header's end rather than pinning a line number: quit at the first
+  # non-comment line, so --help survives the next header edit intact.
+  sed -n '2,${/^#/!q;p;}' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -753,13 +757,21 @@ PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_AB
 # project's brief, then rewrites meta to a contradictory project=/worktree= pair
 # that fm-teardown cannot release (treehouse resolves the pool from the project
 # dir, so its `treehouse return` refuses a worktree from a different pool and the
-# slot leaks). backend= is as load-bearing as the other two, because orca owns its
-# own worktree while every other backend borrows the treehouse pool, so a backend
-# crossing breaks the reuse decision in both directions: a non-orca meta respawned
-# --backend orca skips the reuse block entirely and strands the leased worktree,
-# and an orca meta respawned on any other backend reuses the ORCA worktree and
-# rewrites meta without backend=/orca_worktree_id=, leaving fm-teardown to run
-# `treehouse return` against a path treehouse never owned. Refuse rather than fall
+# slot leaks). backend= is load-bearing for the same reason, but ONLY across the
+# orca boundary: orca owns its own worktree while every other backend borrows the
+# treehouse pool, so an orca crossing breaks the reuse decision in both directions
+# - a non-orca meta respawned --backend orca skips the reuse block entirely and
+# strands the leased worktree, and an orca meta respawned on any other backend
+# reuses the ORCA worktree and rewrites meta without backend=/orca_worktree_id=,
+# leaving fm-teardown to run `treehouse return` against a path treehouse never
+# owned. A non-orca <-> non-orca crossing strands nothing: both sides borrow the
+# same pool, so reuse below adopts the recorded worktree unchanged and only
+# window= is rewritten. That crossing is a normal recovery (a config/backend edit,
+# or a session under a different auto-detected runtime), and refusing it would
+# break bootstrap's secondmate liveness respawn, which re-spawns with no --backend
+# at all. So the refusal is scoped to the orca boundary, and kind=secondmate falls
+# out of it for free: orca never spawns a secondmate (refused above), so a
+# secondmate can neither record nor resolve orca. Refuse rather than fall
 # back to a fresh lease: the fresh lease's meta write would silently overwrite the
 # only record of the OTHER task's live worktree, stranding its branch, commits, and
 # uncommitted work behind a lease prune can never reclaim - the exact loss the
@@ -777,8 +789,9 @@ if [ -f "$RESPAWN_META" ]; then
     echo "error: $ID is already recorded as kind=$RESPAWN_KIND in $RESPAWN_META, but this spawn is kind=$KIND; refusing to respawn over a task firstmate has lost track of. Tear the recorded task down first, or spawn under a different id." >&2
     exit 1
   fi
-  if [ "$RESPAWN_BACKEND" != "$BACKEND" ]; then
-    echo "error: $ID is already recorded as backend=$RESPAWN_BACKEND in $RESPAWN_META, but this spawn is backend=$BACKEND; refusing to respawn over a task firstmate has lost track of. Tear the recorded task down first, or spawn under a different id." >&2
+  if [ "$RESPAWN_BACKEND" != "$BACKEND" ] &&
+     { [ "$RESPAWN_BACKEND" = orca ] || [ "$BACKEND" = orca ]; }; then
+    echo "error: $ID is already recorded as backend=$RESPAWN_BACKEND in $RESPAWN_META, but this spawn is backend=$BACKEND; refusing to respawn across the orca boundary, which would strand the worktree the recorded meta names. Re-run with --backend $RESPAWN_BACKEND to respawn the task as recorded, or tear it down first to switch backends deliberately." >&2
     exit 1
   fi
   # Compare PHYSICAL forms: project= is recorded from the ship/scout branch's
@@ -1011,7 +1024,11 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # down (fm-teardown returns the worktree and removes the meta together), so its
   # recorded worktree is still this task's own leased one: reuse it. The identity
   # gate above has already refused a meta whose project=/kind= says it describes
-  # some OTHER task, so worktree= here is this task's own.
+  # some OTHER task, so worktree= here is this task's own, and its backend= check
+  # is what makes this block's own orca exclusion safe: an orca meta can never
+  # reach here to have its non-pool worktree adopted. A non-orca backend crossing
+  # does reach here, and is meant to - every pool backend's worktree= is reusable
+  # by every other.
   WT=
   WT_SOURCE="treehouse get --lease"
   WT_REUSED=0
