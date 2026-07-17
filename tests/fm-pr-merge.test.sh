@@ -26,7 +26,8 @@
 #   (h) repo override args fail fast because the repo comes from the URL
 #   (i) a missing meta closes the backlog item, but only on a merge that succeeded,
 #       and never while a live meta leaves the close to teardown
-#   (j) a missing meta refreshes the clone of the project the backlog names, and
+#   (j) a missing meta refreshes the clone of the project the backlog names - and only
+#       ever a clone of THIS home's, never a repo reached through the caller's cwd - and
 #       never while a live meta leaves that to teardown
 #   (k) a close that fails is reported rather than swallowed, and still never fails
 #       a merge GitHub has already taken; an id the backlog never carried is not a
@@ -160,24 +161,59 @@ build_clone_behind_origin() {
   git -C "$work" rev-parse HEAD
 }
 
+# build_repo_behind_origin_at <case_dir> <name> <dir> <tracked-subdir>: the same
+# behind-its-origin clone, but at an arbitrary <dir> and carrying a COMMITTED
+# <tracked-subdir> - a repository that is NOT one of this home's project clones, holding a
+# subdirectory whose name a backlog marker could carry. Committed, because an untracked dir
+# would leave the tree dirty and fm-fleet-sync.sh declines to fast-forward a dirty tree:
+# the clone would then survive for a reason that has nothing to do with the guard under
+# test. Echoes the origin's tip sha, which is where a sync would take it.
+build_repo_behind_origin_at() {
+  local case_dir=$1 name=$2 dir=$3 subdir=$4 work remote remote_abs
+  work="$case_dir/work-$name"
+  remote="$case_dir/remotes/$name.git"
+  mkdir -p "$case_dir/remotes" "$work/$subdir"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  printf 'v0\n' > "$work/file.txt"
+  printf 'notes\n' > "$work/$subdir/readme.md"
+  git -C "$work" add file.txt "$subdir/readme.md"
+  git -C "$work" commit -qm C0
+
+  git clone --quiet --bare "$work" "$remote"
+  remote_abs=$(cd "$remote" && pwd)
+  git -C "$work" remote add origin "file://$remote_abs"
+  git -C "$work" push -q -u origin main
+
+  git clone --quiet "file://$remote_abs" "$dir"
+
+  printf 'v1\n' > "$work/file.txt"
+  git -C "$work" add file.txt
+  git -C "$work" commit -qm C1
+  git -C "$work" push -q origin main
+
+  git -C "$work" rev-parse HEAD
+}
+
 clone_head_of() {
   git -C "$1" rev-parse HEAD
 }
 
-# seed_backlog <case_dir> <id> <url>: a real tasks-axi backlog holding one in-flight,
-# captain-held task carrying <url> in the structured link position - exactly what a
-# torn-down review-ready task leaves behind, and what the board composes its Merge card
-# from. Driving the real tool is the same precedent tests/fm-pr-check.test.sh sets: the
-# assertion is about the item's real resulting STATE, which only the real backend can
+# seed_backlog <case_dir> <id> <url> [<project>]: a real tasks-axi backlog holding one
+# in-flight, captain-held task carrying <url> in the structured link position - exactly
+# what a torn-down review-ready task leaves behind, and what the board composes its Merge
+# card from. Driving the real tool is the same precedent tests/fm-pr-check.test.sh sets:
+# the assertion is about the item's real resulting STATE, which only the real backend can
 # answer for. A no-op when tasks-axi is not installed, so the cases below assert on the
 # backlog only when there is one.
 seed_backlog() {
-  local case_dir=$1 id=$2 url=$3
+  local case_dir=$1 id=$2 url=$3 project=${4:-alpha}
   local bl="$case_dir/data/backlog.md"
   mkdir -p "$case_dir/data" "$case_dir/config"
   command -v tasks-axi >/dev/null 2>&1 || return 0
   printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$bl"
-  tasks-axi add "$id" "Ship the widget endpoint" --kind ship --repo alpha --start \
+  tasks-axi add "$id" "Ship the widget endpoint" --kind ship --repo "$project" --start \
     --file "$bl" >/dev/null 2>&1 || true
   tasks-axi update "$id" --pr "$url" --file "$bl" >/dev/null 2>&1 || true
   tasks-axi hold "$id" --reason 'review-ready - your call' --kind captain \
@@ -394,6 +430,41 @@ test_missing_meta_refreshes_the_project_clone() {
   [ "$head" = "$tip" ] \
     || fail "missing-meta-syncs: the merged project's clone was left stale at $head, not refreshed to $tip"
   pass "fm-pr-merge refreshes the merged project's clone when a torn-down task has no meta"
+}
+
+# The refresh must reach THIS home's clone of the named project or nothing at all. A
+# marker naming no clone here is the case that decides it: fm-fleet-sync.sh reads a name
+# it cannot resolve under projects/ as a path relative to the CALLER's cwd, and git walks
+# up from there to whatever repository encloses it - so the bare name alone would sync a
+# repo chosen by where firstmate happened to be standing when the captain tapped Merge,
+# which AGENTS.md section 2 says may be anywhere.
+test_missing_meta_clone_refresh_cannot_escape_to_the_callers_cwd() {
+  local case_dir stranger tip before after url=https://github.com/example/repo/pull/29
+  command -v tasks-axi >/dev/null 2>&1 || {
+    pass "fm-pr-merge no-meta clone refresh cwd guard (skipped: no tasks-axi on PATH)"
+    return 0
+  }
+  case_dir="$TMP_ROOT/missing-meta-cwd-escape"
+  stranger="$case_dir/stranger"
+  mkdir -p "$case_dir/state" "$case_dir/fakebin" "$case_dir/projects"
+  add_gh_mocks "$case_dir" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  : > "$case_dir/gh-axi.log"
+  # "docs" passes every name rule and this home has no such clone - the projects dir is
+  # empty. The only thing that could answer the name is the cwd below.
+  seed_backlog "$case_dir" missing-x2 "$url" docs
+  tip=$(build_repo_behind_origin_at "$case_dir" stray "$stranger" docs)
+  before=$(clone_head_of "$stranger")
+  [ "$before" != "$tip" ] \
+    || fail "fixture: the repo standing in the cwd must start behind its origin"
+
+  ( cd "$stranger" && run_pr_merge "$case_dir" missing-x2 "$url" ) \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "missing-meta-cwd-escape: fm-pr-merge failed"$'\n'"$(cat "$case_dir/stderr")"
+
+  after=$(clone_head_of "$stranger")
+  [ "$after" = "$before" ] \
+    || fail "missing-meta-cwd-escape: a repo that is not a project clone was synced from $before to $after"
+  pass "fm-pr-merge does not sync a repo the caller's cwd stands in when no clone matches"
 }
 
 test_live_meta_leaves_the_clone_refresh_to_teardown() {
@@ -819,6 +890,7 @@ test_missing_meta_closes_the_backlog_item
 test_missing_meta_failed_merge_leaves_the_item_open
 test_live_meta_leaves_the_close_to_teardown
 test_missing_meta_refreshes_the_project_clone
+test_missing_meta_clone_refresh_cannot_escape_to_the_callers_cwd
 test_live_meta_leaves_the_clone_refresh_to_teardown
 test_missing_meta_close_honors_the_homes_tasks_config
 test_missing_meta_failed_close_is_reported_not_swallowed

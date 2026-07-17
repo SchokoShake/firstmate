@@ -77,6 +77,10 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+# Spelled exactly as fm-fleet-sync.sh spells its own, so the path handed to it below is
+# one it labels back to the bare project name (its project_label), and thus reads the
+# project's delivery mode by the name data/projects.md registers.
+PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 META="$STATE/$ID.meta"
 # Absolute, because the close below runs from the backlog's own home and a relative path
 # would then resolve against that cwd instead of the caller's.
@@ -156,10 +160,12 @@ reject_repo_overrides() {
 # "(repo: <name>) (since <date>)", so the name ends at the first "," or ")".
 #
 # The name is then held to the same rule bin/fm-logbook-compose.sh's valid_project_name
-# holds it to (no whitespace, "/", "\", or ".."). fm-fleet-sync.sh falls back to reading
-# an unresolvable name as a path, so an item whose marker was hand-edited into something
-# that is not a project name must resolve to nothing here rather than point a sanctioned
-# write at a directory outside projects/.
+# holds it to (no whitespace, "/", "\", or ".."), so a marker hand-edited into something
+# that is not a project name stays a plain component that can address nothing but a clone
+# directly under projects/ - it cannot traverse out of the dir the refresh below joins it
+# onto, and so cannot point a sanctioned write at a directory outside projects/. Being a
+# valid name is not being a clone, though; only the refresh's own check on the joined path
+# decides that.
 backlog_item_of() {
   local id=$1 line rest item repo section=""
   [ -f "$BACKLOG" ] || return 0
@@ -284,8 +290,17 @@ if [ ! -f "$META" ]; then
 
   # The clone refresh teardown would have done, best-effort on the same terms and for the
   # same reason: a landed merge must not fail on bookkeeping. A project the backlog never
-  # named is simply nothing to sync - the next session start's fleet sweep still gets it.
-  if [ -n "$PROJECT" ]; then
-    "$SCRIPT_DIR/fm-fleet-sync.sh" "$PROJECT" || true
+  # named - or named but never cloned into THIS home - is simply nothing to sync here; the
+  # next session start's fleet sweep still gets every clone that is.
+  #
+  # This home's clone is addressed by its path, and only once that path is a directory,
+  # because the name alone does not pin one: fm-fleet-sync.sh resolves a bare name against
+  # this home's projects dir but falls back to reading an unresolvable one as a path
+  # relative to the CALLER's cwd, and git then walks UP from it to whatever repository
+  # encloses it. A marker naming no clone would otherwise fetch, prune, and fast-forward
+  # a repo picked by where firstmate happened to be standing - and AGENTS.md section 2
+  # sanctions invoking bin/ from any cwd, so where it stands cannot be an input.
+  if [ -n "$PROJECT" ] && [ -d "$PROJECTS/$PROJECT" ]; then
+    "$SCRIPT_DIR/fm-fleet-sync.sh" "$PROJECTS/$PROJECT" || true
   fi
 fi
