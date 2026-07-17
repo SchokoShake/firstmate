@@ -61,7 +61,10 @@ fi
 # here and long after - while the crew lives, compose reads pr= from the meta and the card
 # looks right; once fm-teardown.sh sweeps that meta, this record's absence is what silently
 # downgrades the card to no PR link and no Merge, which is the exact durability this
-# script's second half exists to provide.
+# script's second half exists to provide. So every way the record fails to happen is
+# reported - including the one that reaches no write at all, where the backend is not in
+# use and the record is skipped by design but still owed, with nothing else left to write
+# it: fm-teardown.sh's reminder prompts the Done move, never this.
 #
 # NOT_FOUND is the one failure that is nothing to report, and it is the tolerated case the
 # probe above cannot cover: the backlog answering that it does not carry this id yet - the
@@ -73,6 +76,8 @@ if fm_tasks_axi_backend_available "$CONFIG"; then
       *) echo "warning: could not record $URL on backlog item $ID; the board will lose this PR once the crew is torn down: ${record_err//$'\n'/ }" >&2 ;;
     esac
   fi
+else
+  echo "warning: the tasks-axi backend is not in use, so $URL is not recorded on backlog item $ID; add it to the item line by hand or the board will lose this PR once the crew is torn down" >&2
 fi
 
 cat > "$STATE/$ID.check.sh" <<EOF

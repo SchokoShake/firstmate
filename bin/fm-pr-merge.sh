@@ -78,6 +78,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 META="$STATE/$ID.meta"
+# Absolute, because the close below runs from the backlog's own home and a relative path
+# would then resolve against that cwd instead of the caller's.
+BACKLOG="$DATA/backlog.md"
+case "$BACKLOG" in /*) ;; *) BACKLOG="$PWD/$BACKLOG" ;; esac
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 
@@ -158,7 +162,7 @@ reject_repo_overrides() {
 # write at a directory outside projects/.
 backlog_item_of() {
   local id=$1 line rest item repo section=""
-  [ -f "$DATA/backlog.md" ] || return 0
+  [ -f "$BACKLOG" ] || return 0
   while IFS= read -r line; do
     case "$line" in
       '## In flight'*) section=in_flight; continue ;;
@@ -202,7 +206,7 @@ backlog_item_of() {
     fi
     printf '%s\t%s' "$section" "$repo"
     return 0
-  done < "$DATA/backlog.md"
+  done < "$BACKLOG"
   return 0
 }
 
@@ -259,8 +263,16 @@ if [ ! -f "$META" ]; then
   # still owed - and no teardown is left to prompt the hand-edit, because a missing meta is
   # what says teardown has already run.
   if fm_tasks_axi_backend_available "$CONFIG"; then
+    # Run from the backlog's own home. --file pins WHICH backlog is written, but not the
+    # .tasks.toml that governs HOW: tasks-axi reads it from its own cwd (0.2.2 reads that
+    # directory only, without walking up), so a foreign cwd closes the item by the tool's
+    # defaults - Done grows past the 10 section 10 caps it at, "do not hand-prune" leaves
+    # nobody to trim it, and data/done-archive.md never receives the pruned entry. A cwd
+    # that carries a .tasks.toml of its own is worse: it would prune by a stranger's rules,
+    # into a stranger's archive. AGENTS.md section 2 sanctions invoking bin/ from any cwd,
+    # so this cannot rest on the caller standing in the right one.
     # "done" is quoted only to keep it a literal argument rather than the shell keyword.
-    if ! close_err=$(tasks-axi "done" "$ID" --pr "$URL" --file "$DATA/backlog.md" 2>&1); then
+    if ! close_err=$({ cd "$DATA/.." && tasks-axi "done" "$ID" --pr "$URL" --file "$BACKLOG"; } 2>&1); then
       case "$close_err" in
         *'code: NOT_FOUND'*) ;;
         *) echo "warning: merged $URL but could not close backlog item $ID; close it by hand or the board will re-offer the merge: ${close_err//$'\n'/ }" >&2 ;;

@@ -421,6 +421,77 @@ test_live_meta_leaves_the_clone_refresh_to_teardown() {
   pass "fm-pr-merge leaves a live crew's clone refresh to teardown"
 }
 
+# The close must be governed by the home's own .tasks.toml - done_keep and the archive
+# path - and tasks-axi reads that file from its OWN cwd, which --file does not redirect.
+# AGENTS.md section 2 sanctions running bin/ from any cwd, so the caller's happens to be
+# wherever firstmate last stood: this drives the merge from a foreign one, and gives that
+# foreign cwd a competing .tasks.toml so "the home's rules won" is asserted against a
+# stranger's actively trying to win instead of against nothing at all.
+test_missing_meta_close_honors_the_homes_tasks_config() {
+  local case_dir foreign rc url=https://github.com/example/repo/pull/33
+  command -v tasks-axi >/dev/null 2>&1 || {
+    pass "fm-pr-merge no-meta close config guard (skipped: no tasks-axi on PATH)"
+    return 0
+  }
+  case_dir="$TMP_ROOT/missing-meta-config-cwd"
+  foreign="$TMP_ROOT/missing-meta-config-cwd-foreign"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/config" "$case_dir/fakebin" \
+    "$foreign/data"
+  add_gh_mocks "$case_dir" ffffffffffffffffffffffffffffffffffffffff
+  : > "$case_dir/gh-axi.log"
+
+  # The home's rules: keep one Done entry, archive the rest here.
+  cat > "$case_dir/.tasks.toml" <<'EOF'
+backend = "markdown"
+
+[markdown]
+path = "data/backlog.md"
+archive = "data/done-archive.md"
+done_keep = 1
+EOF
+  # The stranger's: keep everything, and archive into the stranger's own tree.
+  cat > "$foreign/.tasks.toml" <<'EOF'
+backend = "markdown"
+
+[markdown]
+path = "data/backlog.md"
+archive = "data/stolen-archive.md"
+done_keep = 99
+EOF
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+    '# Backlog' '' '## In flight' \
+    "- [ ] missing-x1 - Ship the widget endpoint $url (repo: alpha) (hold-kind: captain)" \
+    '' '## Queued' '' > "$case_dir/data/backlog.md"
+  printf '%s\n%s\n' '## Done' \
+    '- [x] older-w0 - An older shipped thing - https://github.com/example/repo/pull/1 (merged 2026-07-01)' \
+    >> "$case_dir/data/backlog.md"
+
+  set +e
+  ( cd "$foreign" && run_pr_merge "$case_dir" missing-x1 "$url" ) \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "missing-meta-config-cwd: the close must not fail the landed merge"
+  grep -qxF 'pr merge 33 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "missing-meta-config-cwd: the merge itself must still have happened"
+  # The close landing is the precondition, not the point: read from a cwd with no config
+  # the item still closes, just by the tool's defaults - silently unpruned, unarchived.
+  assert_grep 'missing-x1' "$case_dir/data/backlog.md" \
+    "missing-meta-config-cwd: fixture: the item must still be recorded Done"
+  assert_present "$case_dir/data/done-archive.md" \
+    "missing-meta-config-cwd: the home's archive must receive the pruned entry"
+  assert_grep 'older-w0' "$case_dir/data/done-archive.md" \
+    "missing-meta-config-cwd: done_keep=1 must prune the older entry into the archive"
+  assert_no_grep 'older-w0' "$case_dir/data/backlog.md" \
+    "missing-meta-config-cwd: the pruned entry must leave the backlog"
+  # Section 10 caps Done at 10 and tells firstmate not to hand-prune, so a close that
+  # ignores the home's config grows Done unbounded with nobody left to trim it.
+  assert_absent "$foreign/data/stolen-archive.md" \
+    "missing-meta-config-cwd: a foreign cwd's .tasks.toml must never govern this close"
+  pass "fm-pr-merge's no-meta close obeys the home's .tasks.toml from any cwd"
+}
+
 # A tasks-axi whose backend probe passes but whose "done" fails for a reason that is not
 # the backlog simply not carrying the id - a store or config error, or an id shape a
 # hand-maintained backlog carries that the tool rejects.
@@ -749,6 +820,7 @@ test_missing_meta_failed_merge_leaves_the_item_open
 test_live_meta_leaves_the_close_to_teardown
 test_missing_meta_refreshes_the_project_clone
 test_live_meta_leaves_the_clone_refresh_to_teardown
+test_missing_meta_close_honors_the_homes_tasks_config
 test_missing_meta_failed_close_is_reported_not_swallowed
 test_missing_meta_manual_backend_reports_the_skipped_close
 test_missing_meta_manual_backend_untracked_id_is_quiet

@@ -49,12 +49,17 @@ make_home() {
   local name=$1 id=${2:-ship-a1} home
   home="$TMP_ROOT/$name"
   mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  # This repo's own root .tasks.toml shape, which is the only one tasks-axi reads: a
+  # top-level backend key plus a [markdown] table with archive (not archive_path). In any
+  # other shape the file parses as nothing, the tool silently falls back to its defaults,
+  # and the fixture home configures none of what it appears to.
   cat > "$home/.tasks.toml" <<'EOF'
-[backend]
-kind = "markdown"
+backend = "markdown"
+
+[markdown]
 path = "data/backlog.md"
+archive = "data/done-archive.md"
 done_keep = 10
-archive_path = "data/done-archive.md"
 EOF
   printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
   if [ -n "$TASKS_AXI_DIR" ]; then
@@ -164,6 +169,31 @@ test_manual_backend_does_not_touch_the_backlog() {
   assert_present "$home/state/ship-a1.check.sh" \
     "the manual backend must not stop fm-pr-check arming the merge poll"
   pass "fm-pr-check leaves the backlog alone under config/backlog-backend=manual"
+}
+
+test_manual_backend_reports_the_skipped_record() {
+  local home fakebin out rc
+  home=$(make_home manual-reports)
+  fakebin=$(make_tasks_axi_stub "$home" 0.2.2)
+  printf 'manual\n' > "$home/config/backlog-backend"
+
+  set +e
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" "$PR_CHECK" ship-a1 "$URL" 2>&1)
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "the manual backend must not fail fm-pr-check"
+  assert_present "$home/state/ship-a1.check.sh" \
+    "reporting the skipped record must not stop fm-pr-check arming the merge poll"
+  # Skipping the write is correct here - the captain opted out of the tool. Skipping it in
+  # SILENCE is not: nothing else records an open item's PR under this backend (teardown's
+  # reminder prompts the Done move, never this), so an unreported skip is the card losing
+  # its PR link and its Merge the moment teardown sweeps the meta, with nobody told why.
+  assert_contains "$out" 'not recorded on backlog item ship-a1' \
+    "a record skipped because the backend is not in use must be reported"
+  assert_contains "$out" 'by hand' \
+    "the report must tell firstmate what to do instead"
+  pass "fm-pr-check reports the record it cannot make under config/backlog-backend=manual"
 }
 
 test_incompatible_tasks_axi_does_not_touch_the_backlog() {
@@ -300,6 +330,7 @@ fi
 test_records_the_pr_on_the_durable_backlog
 test_the_durable_record_survives_the_crew
 test_manual_backend_does_not_touch_the_backlog
+test_manual_backend_reports_the_skipped_record
 test_incompatible_tasks_axi_does_not_touch_the_backlog
 test_absent_tasks_axi_is_not_fatal
 test_unknown_task_is_not_fatal
