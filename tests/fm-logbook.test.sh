@@ -1705,6 +1705,7 @@ write_remote_fixture() {
 - movebank-explorer [no-mistakes] - Cloned under a name of its own (added 2026-07-02)
 - gone [no-mistakes] - Registered but not cloned here (added 2026-07-03)
 - solo [local-only] - No remote at all (added 2026-07-04)
+- casefold [no-mistakes] - Cloned with owner and repo typed in another case (added 2026-07-05)
 EOF
   cat > "$home/data/backlog.md" <<'EOF'
 # Backlog
@@ -1716,6 +1717,8 @@ EOF
 - [ ] noclone-d4 - Ship the uncloned thing https://github.com/acme/gone/pull/8 (repo: gone) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 - [ ] noremote-e5 - Ship the solo thing https://github.com/acme/solo/pull/9 (repo: solo) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 - [ ] fork-f6 - Same repo name, another owner https://github.com/notacme/alpha/pull/77 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] casefold-g7 - Ship the fold https://github.com/SchokoShake/CaseFold/pull/31 (repo: casefold) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] markerfold-h8 - No clone, marker in another case https://github.com/acme/Gone/pull/18 (repo: gone) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 EOF
   git init -q "$home/projects/alpha"
   git -C "$home/projects/alpha" remote add origin https://github.com/acme/alpha.git
@@ -1725,6 +1728,11 @@ EOF
   git -C "$home/projects/movebank-explorer" remote add origin git@github.com:SchokoShake/movebank.git
   # A local-only project (AGENTS.md section 6): a real clone with no remote at all.
   git init -q "$home/projects/solo"
+  # The case-fold case: git stores the origin exactly as the captain typed it, while the
+  # PR url firstmate records comes back from the GitHub API with the canonical casing.
+  # GitHub reaches one repo either way, so these two urls name the same repo.
+  git init -q "$home/projects/casefold"
+  git -C "$home/projects/casefold" remote add origin https://github.com/schokoshake/casefold.git
 }
 
 test_compose_merge_survives_the_documented_combined_repo_marker() {
@@ -1784,6 +1792,32 @@ test_compose_merge_requires_the_prs_owner_to_match_too() {
       | .body | test("\\[alpha #77\\]\\(https://github\\.com/notacme/alpha/pull/77\\)")' >/dev/null \
     || fail "a PR under another owner must still render as a clickable link"$'\n'"$out"
   pass "fm-logbook-compose withholds Merge for a PR whose owner is not the clone's own"
+}
+
+test_compose_merge_folds_the_case_of_owner_and_repo() {
+  local home out
+  home="$TMP_ROOT/compose-remote-casefold"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The gate's two sides are written by different hands: the origin is the captain's own
+  # typing at clone time ("schokoshake/casefold"), while the recorded PR url comes back
+  # from the GitHub API with the canonical casing ("SchokoShake/CaseFold"). GitHub folds
+  # the case, so these name ONE repo - reading the difference as a mismatch would withhold
+  # Merge from every card of that project, silently and for good.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="casefold-g7")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)
+      and (.source.pr=="https://github.com/SchokoShake/CaseFold/pull/31")' >/dev/null \
+    || fail "an origin differing from the PR url only in case must still earn Merge"$'\n'"$out"
+  # The marker fallback folds it too: the captain's directory name is no likelier to
+  # match GitHub's casing than their clone url was.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="markerfold-h8")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a marker differing from the PR url only in case must still earn Merge"$'\n'"$out"
+  # Folding must not loosen the gate: a fold-different owner is still another owner.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="fork-f6")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "case folding must not let another owner's PR earn Merge"$'\n'"$out"
+  pass "fm-logbook-compose folds owner/repo case, which GitHub treats as one name"
 }
 
 test_compose_merge_falls_back_when_no_remote_resolves() {
@@ -2418,6 +2452,7 @@ test_compose_merge_needs_a_repo_marker_to_verify_against
 test_compose_merge_survives_the_documented_combined_repo_marker
 test_compose_merge_follows_the_clone_to_its_real_repo
 test_compose_merge_requires_the_prs_owner_to_match_too
+test_compose_merge_folds_the_case_of_owner_and_repo
 test_compose_merge_falls_back_when_no_remote_resolves
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge

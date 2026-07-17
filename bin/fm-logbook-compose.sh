@@ -266,6 +266,27 @@ pr_slug() {
   return 0
 }
 
+# same_repo_part <a> <b>: succeed when two owner or repo names name the same thing on
+# GitHub, which folds their case - "acme/Alpha" and "ACME/alpha" are one repo, not two,
+# and a clone url in any casing reaches it. The Merge gate must fold it too, because its
+# two sides are written by different hands: project_remote_repo reads the origin exactly
+# as the captain typed it at clone time, while the PR url firstmate records comes back
+# from the GitHub API carrying the canonical owner login. A byte-exact "=" would read
+# that case-only difference as a PROVEN mismatch and withhold the Merge from every card
+# of that project, silently and for good - the same loss this composer exists to prevent,
+# reached from the other side. Folding cannot loosen the gate in the other direction:
+# case-folded owner/repo names are unique on GitHub, so two that fold alike ARE the same
+# repo. An empty half never matches - it is unresolved, which proves nothing (compose_item).
+same_repo_part() {
+  local a=${1-} b=${2-}
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  # The overwhelmingly common case is byte-equal, and answering it here keeps the
+  # composer's per-card cost at no subshell at all.
+  [ "$a" = "$b" ] && return 0
+  [ "$(printf '%s' "$a" | tr '[:upper:]' '[:lower:]')" = \
+    "$(printf '%s' "$b" | tr '[:upper:]' '[:lower:]')" ]
+}
+
 # pr_link <url>: the url as a markdown link - "[<repo> #<n>](<url>)" when it parses
 # as .../<owner>/<repo>/pull/<n>, else a plain "[PR](<url>)". The label is derived
 # from the URL itself rather than the registry's project name so it can never
@@ -745,11 +766,11 @@ compose_item() {
       remote_name=$REMOTE_REPO_OUT
       remote_owner=$REMOTE_REPO_OWNER_OUT
       if [ -n "$remote_name" ]; then
-        if [ -n "$remote_owner" ] && [ "$pr_owner" = "$remote_owner" ] &&
-          [ "$pr_name" = "$remote_name" ]; then
+        if same_repo_part "$pr_owner" "$remote_owner" &&
+          same_repo_part "$pr_name" "$remote_name"; then
           pr_ok=$pr
         fi
-      elif [ -n "$repo" ] && [ "$pr_name" = "$repo" ]; then
+      elif same_repo_part "$pr_name" "$repo"; then
         pr_ok=$pr
       fi
     fi
