@@ -31,15 +31,24 @@
 # will ever clear again, reporting "merged" - of this very merge - on every watcher
 # cycle, forever, to no one.
 #
-# What IS owed on this path is closing the backlog item, because nothing else will.
-# fm-teardown.sh is what normally prompts the "tasks-axi done" that moves a task to
-# Done, and it refuses outright without a meta - so on this path it has already run
-# and will never run again. Left open, the item keeps its captain hold and its PR in
-# the structured link position, which is precisely what the board composes a Merge
-# card from (bin/fm-logbook-compose.sh): resolving the card only clears the board
+# What IS owed on this path is the bookkeeping fm-teardown.sh does after a PR-based
+# teardown, because nothing else will: it refuses outright without a meta, so on this
+# path it has already run and will never run again. Both halves are done here.
+#
+# Closing the backlog item is the first. fm-teardown.sh is what normally prompts the
+# "tasks-axi done" that moves a task to Done. Left open, the item keeps its captain hold
+# and its PR in the structured link position, which is precisely what the board composes
+# a Merge card from (bin/fm-logbook-compose.sh): resolving the card only clears the board
 # until the next sync recomposes the identical card from the still-open backlog, and
 # offers to re-merge work that already landed. Recording Done is what makes the
 # captain's merge stick.
+#
+# Refreshing the project clone is the second (fm-teardown.sh's own fm-fleet-sync.sh call).
+# Left stale, the clone hands an out-of-date base to bin/fm-review-diff.sh and to every
+# follow-on dispatch until the next session start syncs the fleet. The project name comes
+# from the backlog item's own "(repo: <name>)" marker - the only record of it that
+# outlives the meta - read BEFORE the close, because "tasks-axi done" moves the item and
+# done_keep prunes it out of the file entirely once Done is full.
 #
 # gh-axi pr merge expects a PR number and --repo <owner>/<repo>; it does not
 # parse a full https://github.com/<owner>/<repo>/pull/<n> URL. This script
@@ -106,6 +115,71 @@ reject_repo_overrides() {
   return 0
 }
 
+# backlog_project_of <id>: the bare project name from the item's "(repo: <name>)" marker
+# in THIS home's durable backlog, or nothing when the backlog does not carry the id, the
+# item records no project, or the name is not one that can address a clone.
+#
+# The file is read directly rather than through "tasks-axi show", for the same reason
+# bin/fm-logbook-compose.sh reads it directly: it then serves a backlog hand-maintained
+# under config/backlog-backend=manual exactly as it serves the default backend, and needs
+# no tool on PATH. ("tasks-axi show" would not help anyway - it reports the marker's raw
+# value, trailing content and all.)
+#
+# The item forms and the marker shape are AGENTS.md section 10's contract, matched as
+# bin/fm-logbook-compose.sh's backlog_parse matches them: the id is read from an item
+# line's own id position, never from anywhere the id merely appears, so a note line or
+# another task's prose citing this id cannot answer for its project. The marker value
+# carries trailing content in the combined "(repo: <name>, since <date>)" form section 10
+# documents for a hand-maintained backlog, rather than the tasks-axi backend's separate
+# "(repo: <name>) (since <date>)", so the name ends at the first "," or ")".
+#
+# The name is then held to the same rule bin/fm-logbook-compose.sh's valid_project_name
+# holds it to (no whitespace, "/", "\", or ".."). fm-fleet-sync.sh falls back to reading
+# an unresolvable name as a path, so an item whose marker was hand-edited into something
+# that is not a project name must resolve to nothing here rather than point a sanctioned
+# write at a directory outside projects/.
+backlog_project_of() {
+  local id=$1 line rest item repo
+  [ -f "$DATA/backlog.md" ] || return 0
+  while IFS= read -r line; do
+    item=""
+    case "$line" in
+      '- [ ] '*) rest=${line#'- [ ] '} ;;
+      '- [x] '*) rest=${line#'- [x] '} ;;
+      '- [X] '*) rest=${line#'- [X] '} ;;
+      '- **'*)
+        rest=${line#'- **'}
+        case "$rest" in
+          *'** - '*) item=${rest%%'** - '*} ;;
+          *) continue ;;
+        esac
+        ;;
+      *) continue ;;
+    esac
+    if [ -z "$item" ]; then
+      case "$rest" in
+        *' - '*) item=${rest%%' - '*} ;;
+        *) continue ;;
+      esac
+    fi
+    [ "$item" = "$id" ] || continue
+    case "$line" in
+      *' (repo: '*) repo=${line#*' (repo: '} ;;
+      *) return 0 ;;
+    esac
+    repo=${repo%%')'*}
+    repo=${repo%%,*}
+    repo=${repo#"${repo%%[![:space:]]*}"}
+    repo=${repo%"${repo##*[![:space:]]}"}
+    case "$repo" in
+      ''|*[[:space:]]*|*/*|*\\*|*..*) return 0 ;;
+    esac
+    printf '%s' "$repo"
+    return 0
+  done < "$DATA/backlog.md"
+  return 0
+}
+
 parse_pr_url "$URL" || exit 1
 reject_repo_overrides "$@" || exit 1
 
@@ -124,18 +198,45 @@ fi
 
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" ${merge_args[@]+"${merge_args[@]}"} "$@"
 
-# The torn-down task's own close, owed only where no teardown is left to prompt it (see
+# The torn-down task's own bookkeeping, owed only where no teardown is left to do it (see
 # the header). Strictly AFTER the merge, so a refused or failed merge never marks work
-# Done that never landed - "set -e" has already exited by here in that case.
-#
-# BEST-EFFORT, exactly as fm-pr-check.sh's durable half is: closing the backlog must
-# never fail a merge that GitHub has already taken, and it cannot be undone by exiting
-# non-zero here. It is equally a no-op when tasks-axi is absent, incompatible, or
-# config/backlog-backend=manual leaves the backlog to hand-editing, and when the id is
-# one the backlog never carried. The shared probe owns "is the tasks-axi backend
-# available", so it can never drift from bootstrap's. --file pins the write to THIS
-# home's backlog and nowhere else (prime directive 1 holds: never a project).
-if [ ! -f "$META" ] && fm_tasks_axi_backend_available "$CONFIG"; then
-  # "done" is quoted only to keep it a literal argument rather than the shell keyword.
-  tasks-axi "done" "$ID" --pr "$URL" --file "$DATA/backlog.md" >/dev/null 2>&1 || true
+# Done that never landed, nor syncs a clone for a merge that never happened - "set -e"
+# has already exited by here in that case.
+if [ ! -f "$META" ]; then
+  # Before the close, which is what moves (and can prune) the item that records it.
+  PROJECT=$(backlog_project_of "$ID")
+
+  # BEST-EFFORT, exactly as fm-pr-check.sh's durable half is: closing the backlog must
+  # never fail a merge that GitHub has already taken, and it cannot be undone by exiting
+  # non-zero here. It is equally a no-op when tasks-axi is absent, incompatible, or
+  # config/backlog-backend=manual leaves the backlog to hand-editing. The shared probe
+  # owns "is the tasks-axi backend available", so it can never drift from bootstrap's.
+  # --file pins the write to THIS home's backlog and nowhere else (prime directive 1
+  # holds: never a project).
+  #
+  # Best-effort is not silent, though: a close that fails leaves exactly the open item
+  # this path exists to close, so the next sync recomposes the Merge card the captain
+  # just answered and offers to re-merge landed work. Reporting it is what lets firstmate
+  # close the item by hand instead of meeting that card again.
+  #
+  # NOT_FOUND is the one failure that is genuinely nothing to report: it is the backlog
+  # answering that it does not carry this id at all (or has no such file), so there is no
+  # open item, and no card can compose from one. Warning there would send firstmate
+  # hunting for an item that does not exist.
+  if fm_tasks_axi_backend_available "$CONFIG"; then
+    # "done" is quoted only to keep it a literal argument rather than the shell keyword.
+    if ! close_err=$(tasks-axi "done" "$ID" --pr "$URL" --file "$DATA/backlog.md" 2>&1); then
+      case "$close_err" in
+        *'code: NOT_FOUND'*) ;;
+        *) echo "warning: merged $URL but could not close backlog item $ID; close it by hand or the board will re-offer the merge: ${close_err//$'\n'/ }" >&2 ;;
+      esac
+    fi
+  fi
+
+  # The clone refresh teardown would have done, best-effort on the same terms and for the
+  # same reason: a landed merge must not fail on bookkeeping. A project the backlog never
+  # named is simply nothing to sync - the next session start's fleet sweep still gets it.
+  if [ -n "$PROJECT" ]; then
+    "$SCRIPT_DIR/fm-fleet-sync.sh" "$PROJECT" || true
+  fi
 fi

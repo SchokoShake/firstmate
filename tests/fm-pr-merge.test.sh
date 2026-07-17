@@ -9,9 +9,11 @@
 # two halves are tested apart: with a meta, record-then-merge (a); with none -
 # the torn-down task a board card outlives - merge from the URL alone (d).
 #
-# The no-meta half owes the DURABLE backlog its close instead (i), because the
-# teardown that would normally prompt one is what removed the meta, and an item left
-# open recomposes the very Merge card the captain just answered.
+# The no-meta half owes the bookkeeping fm-teardown.sh does after a PR-based teardown
+# instead, because the teardown that would normally do it is what removed the meta:
+# the DURABLE backlog's close (i), or the item recomposes the very Merge card the
+# captain just answered; and the project clone's refresh (j), or it feeds a stale base
+# to bin/fm-review-diff.sh and every follow-on dispatch until the next session start.
 #
 # Matrix:
 #   (a) merge records pr= and pr_head= before merging, and merges
@@ -24,6 +26,11 @@
 #   (h) repo override args fail fast because the repo comes from the URL
 #   (i) a missing meta closes the backlog item, but only on a merge that succeeded,
 #       and never while a live meta leaves the close to teardown
+#   (j) a missing meta refreshes the clone of the project the backlog names, and
+#       never while a live meta leaves that to teardown
+#   (k) a close that fails is reported rather than swallowed, and still never fails
+#       a merge GitHub has already taken; an id the backlog never carried is not a
+#       failure to report at all
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -94,18 +101,63 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
-# The backlog and config are pinned INTO the case dir: the durable half of both the
-# recording path (fm-pr-check.sh) and the no-meta close writes through them, and left at
-# their defaults they would resolve against FM_ROOT_OVERRIDE - this repo's own checkout.
+# The backlog, config, and projects dir are pinned INTO the case dir: the durable half of
+# the recording path (fm-pr-check.sh), the no-meta close, and the no-meta clone refresh
+# all write through them, and left at their defaults they would resolve against
+# FM_ROOT_OVERRIDE - this repo's own checkout. FM_PROJECTS_OVERRIDE is read by the
+# fm-fleet-sync.sh child rather than by fm-pr-merge.sh itself, and reaches it by
+# inheritance.
 run_pr_merge() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_PROJECTS_OVERRIDE="$case_dir/projects" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
+}
+
+# build_clone_behind_origin <case_dir> <name>: a real projects/<name> clone sitting one
+# commit behind its origin - the shape a merged PR leaves this home's clone in. Echoes
+# the origin's tip sha, which is what a refreshed clone must be at.
+#
+# fm-fleet-sync.sh is invoked by fm-pr-merge.sh as a sibling of itself (the "own bin/"
+# rule of AGENTS.md section 2), so it cannot be stubbed on PATH the way gh-axi is. These
+# cases drive the real script against a real clone instead, which is the stronger
+# assertion anyway: that the clone is actually refreshed, not merely that a call was made.
+build_clone_behind_origin() {
+  local case_dir=$1 name=$2 work remote clone remote_abs
+  work="$case_dir/work-$name"
+  remote="$case_dir/remotes/$name.git"
+  clone="$case_dir/projects/$name"
+  mkdir -p "$case_dir/remotes" "$case_dir/projects"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  printf 'v0\n' > "$work/file.txt"
+  git -C "$work" add file.txt
+  git -C "$work" commit -qm C0
+
+  git clone --quiet --bare "$work" "$remote"
+  remote_abs=$(cd "$remote" && pwd)
+  git -C "$work" remote add origin "file://$remote_abs"
+  git -C "$work" push -q -u origin main
+
+  git clone --quiet "file://$remote_abs" "$clone"
+
+  # The merge lands on origin; this home's clone stays behind until something syncs it.
+  printf 'v1\n' > "$work/file.txt"
+  git -C "$work" add file.txt
+  git -C "$work" commit -qm C1
+  git -C "$work" push -q origin main
+
+  git -C "$work" rev-parse HEAD
+}
+
+clone_head_of() {
+  git -C "$1" rev-parse HEAD
 }
 
 # seed_backlog <case_dir> <id> <url>: a real tasks-axi backlog holding one in-flight,
@@ -308,6 +360,141 @@ test_live_meta_leaves_the_close_to_teardown() {
   pass "fm-pr-merge leaves a live crew's backlog item for teardown to close"
 }
 
+test_missing_meta_refreshes_the_project_clone() {
+  local case_dir fakebin tip head url=https://github.com/example/repo/pull/27
+  command -v tasks-axi >/dev/null 2>&1 || {
+    pass "fm-pr-merge no-meta clone refresh (skipped: no tasks-axi on PATH)"
+    return 0
+  }
+  case_dir="$TMP_ROOT/missing-meta-syncs"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$fakebin"
+  add_gh_mocks "$case_dir" cccccccccccccccccccccccccccccccccccccccc
+  : > "$case_dir/gh-axi.log"
+  # seed_backlog names project "alpha", which is the only surviving record of which
+  # clone this merge landed in: the meta that carried project= is gone.
+  seed_backlog "$case_dir" missing-x1 "$url"
+  tip=$(build_clone_behind_origin "$case_dir" alpha)
+
+  [ "$(clone_head_of "$case_dir/projects/alpha")" != "$tip" ] \
+    || fail "fixture: the clone must start behind origin"
+
+  run_pr_merge "$case_dir" missing-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "missing-meta-syncs: fm-pr-merge failed"$'\n'"$(cat "$case_dir/stderr")"
+
+  # fm-teardown.sh is what normally refreshes the clone after a PR-based teardown, and it
+  # is what removed the meta: it has already run and will never run again. Left stale, the
+  # clone hands an out-of-date base to fm-review-diff.sh and to every follow-on dispatch.
+  head=$(clone_head_of "$case_dir/projects/alpha")
+  [ "$head" = "$tip" ] \
+    || fail "missing-meta-syncs: the merged project's clone was left stale at $head, not refreshed to $tip"
+  pass "fm-pr-merge refreshes the merged project's clone when a torn-down task has no meta"
+}
+
+test_live_meta_leaves_the_clone_refresh_to_teardown() {
+  local case_dir tip head url=https://github.com/example/repo/pull/28
+  command -v tasks-axi >/dev/null 2>&1 || {
+    pass "fm-pr-merge live-meta clone refresh guard (skipped: no tasks-axi on PATH)"
+    return 0
+  }
+  case_dir=$(make_case live-meta-no-sync)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" dddddddddddddddddddddddddddddddddddddddd
+  : > "$case_dir/gh-axi.log"
+  seed_backlog "$case_dir" task-x1 "$url"
+  tip=$(build_clone_behind_origin "$case_dir" alpha)
+
+  run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "live-meta-no-sync: fm-pr-merge failed"
+
+  # Same division as the close: with a crew still standing, fm-teardown.sh does this
+  # after its own landed-check, and syncing here would refresh a clone whose worktree
+  # still holds the branch that check has to read.
+  head=$(clone_head_of "$case_dir/projects/alpha")
+  [ "$head" != "$tip" ] \
+    || fail "live-meta-no-sync: a live crew's clone refresh is teardown's, not fm-pr-merge's"
+  pass "fm-pr-merge leaves a live crew's clone refresh to teardown"
+}
+
+# A tasks-axi whose backend probe passes but whose "done" fails for a reason that is not
+# the backlog simply not carrying the id - a store or config error, or an id shape a
+# hand-maintained backlog carries that the tool rejects.
+add_failing_tasks_axi() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "--version "*|"--version") printf '0.2.2\n'; exit 0 ;;
+  "update --help") printf 'usage: tasks-axi update <id>\n  --archive-body\n'; exit 0 ;;
+  "mv --help") printf 'usage: tasks-axi mv [<id>...] <section>\n'; exit 0 ;;
+  "done "*)
+    printf 'error: "backlog store is locked"\ncode: IO_ERROR\n' >&2
+    exit 1
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/tasks-axi"
+}
+
+test_missing_meta_failed_close_is_reported_not_swallowed() {
+  local case_dir fakebin rc url=https://github.com/example/repo/pull/29
+  case_dir="$TMP_ROOT/missing-meta-close-fails"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/config" "$fakebin"
+  add_gh_mocks "$case_dir" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  add_failing_tasks_axi "$case_dir"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" missing-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  # The close is best-effort BECAUSE the merge has already landed and cannot be undone by
+  # exiting non-zero - which is a reason not to FAIL, never a reason to hide.
+  expect_code 0 "$rc" "missing-meta-close-fails: bookkeeping must never fail a landed merge"
+  grep -qxF 'pr merge 29 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "missing-meta-close-fails: the merge itself must still have happened"
+  # Without a diagnostic the item this path exists to close stays open silently, and the
+  # next sync recomposes the Merge card the captain just answered.
+  assert_grep 'could not close backlog item missing-x1' "$case_dir/stderr" \
+    "missing-meta-close-fails: a failed close must be reported, not swallowed"
+  assert_grep 'IO_ERROR' "$case_dir/stderr" \
+    "missing-meta-close-fails: the report must carry the backend's own reason"
+  pass "fm-pr-merge reports a failed backlog close without failing the landed merge"
+}
+
+test_missing_meta_untracked_id_closes_quietly() {
+  local case_dir fakebin rc url=https://github.com/example/repo/pull/30
+  command -v tasks-axi >/dev/null 2>&1 || {
+    pass "fm-pr-merge untracked-id quiet close (skipped: no tasks-axi on PATH)"
+    return 0
+  }
+  case_dir="$TMP_ROOT/missing-meta-untracked"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$fakebin"
+  add_gh_mocks "$case_dir" ffffffffffffffffffffffffffffffffffffffff
+  : > "$case_dir/gh-axi.log"
+  # A real backlog that simply does not carry this id.
+  seed_backlog "$case_dir" other-x9 https://github.com/example/repo/pull/99
+
+  set +e
+  run_pr_merge "$case_dir" missing-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  # An id the backlog never carried is nothing to close: no item is left open, so no card
+  # can compose from one. Reporting it would send firstmate hunting for a phantom item.
+  expect_code 0 "$rc" "missing-meta-untracked: an untracked id must not fail the merge"
+  assert_no_grep 'could not close backlog item' "$case_dir/stderr" \
+    "missing-meta-untracked: an id the backlog never carried is not a failure to report"
+  pass "fm-pr-merge does not report a close for an id the backlog never carried"
+}
+
 test_malformed_url_refuses_before_merge() {
   local case_dir rc
   case_dir=$(make_case malformed-url)
@@ -437,6 +624,10 @@ test_missing_meta_merges_from_the_url_alone
 test_missing_meta_closes_the_backlog_item
 test_missing_meta_failed_merge_leaves_the_item_open
 test_live_meta_leaves_the_close_to_teardown
+test_missing_meta_refreshes_the_project_clone
+test_live_meta_leaves_the_clone_refresh_to_teardown
+test_missing_meta_failed_close_is_reported_not_swallowed
+test_missing_meta_untracked_id_closes_quietly
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording
