@@ -341,6 +341,32 @@ before_marker_tail() {
   printf '%s' "$seg"
 }
 
+# blocked_by_ids <item-line>: the blocker id from every "blocked-by: <id>" record on the
+# line, space-separated, or nothing. A task can have several: "tasks-axi block" and
+# "--blocked-by" are both repeatable, and the backend emits one marker per blocker
+# ("blocked-by: b1 blocked-by: b2 (repo: ...)"), so the whole line is walked rather than
+# only the first record read.
+#
+# An id is the first token after its marker, which is all either documented form puts
+# there: the backend's own "blocked-by: <id>" and AGENTS.md section 10's
+# "blocked-by: <id> - <reason>", whose trailing reason falls away with the rest of the
+# token's line. That also ends the id at the marker tail, since every marker the backend
+# appends is preceded by a space.
+blocked_by_ids() {
+  local seg=${1-} out="" id
+  while :; do
+    case "$seg" in
+      *' blocked-by:'*) seg=${seg#*' blocked-by:'} ;;
+      *) break ;;
+    esac
+    id=$(trim "$seg")
+    id=${id%%[[:space:]]*}
+    logbook_valid_id "$id" || continue
+    out="$out $id"
+  done
+  trim "$out"
+}
+
 ITEMS_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-items.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
 REG_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-reg.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
 SUB_JSONL=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-compose-sub.XXXXXX") || { echo "fm-logbook-compose: cannot create temp file" >&2; exit 1; }
@@ -375,7 +401,8 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 # poll, so the durable record is there before the crew that produced it is torn down.
 # That run holds link tokens of both kinds the backend appends, in either order, so a
 # promoted scout's "--report" path never hides the PR behind it (see
-# pr_token/report_token).
+# pr_token/report_token), and it can hold several PRs, of which the newest is this
+# task's live one (see the peel).
 # Everything else on the line is free-form prose: a "(hold: ...)" reason routinely
 # cites ANOTHER task's PR ("blocked until <url> lands"), as do note lines under a
 # task. A card's PR drives a Merge option, and per the logbook-respond skill a "merge"
@@ -432,34 +459,44 @@ backlog_parse() {
     # all firstmate's own records, not something to read to the captain.
     #
     # "blocked-by:" is dropped from the title but RECORDED, not discarded: like a hold,
-    # it is firstmate's own record that the work is not ready, and compose_item's Merge
-    # gate has to see it. Both documented placements have to count - AGENTS.md section
-    # 10 writes it AFTER the "(repo: ...)" marker, while the tasks-axi backend emits it
-    # BEFORE the marker tail - so the record is read from the WHOLE item line while the
-    # title is cut from the pre-marker text. Reading it from the title alone would gate
-    # the tasks-axi backend and silently never gate the hand-maintained one this
-    # composer explicitly serves. The value is only ever used as a yes/no, so the
-    # documented form's trailing " - <reason>" needs no further parsing.
+    # it is firstmate's own record of a dependency, and compose_item's Merge gate has to
+    # see it. Both documented placements have to count - AGENTS.md section 10 writes it
+    # AFTER the "(repo: ...)" marker, while the tasks-axi backend emits it BEFORE the
+    # marker tail - so the record is read from the WHOLE item line while the title is cut
+    # from the pre-marker text. Reading it from the title alone would gate the tasks-axi
+    # backend and silently never gate the hand-maintained one this composer explicitly
+    # serves.
     #
-    # Erring eager here is the safe direction: the worst a false positive (a hold reason
-    # quoting the literal string) can do is withhold one Merge click, while a miss offers
-    # the captain an irreversible merge on work the fleet recorded as not-ready.
+    # The BLOCKER IDS are what is recorded, not the raw text: the marker alone cannot say
+    # whether the dependency still holds, because nothing ever rewrites it (see
+    # dep_unresolved). So the ids are kept for the state lookup that decides that.
     own=$(before_marker_tail "$rest")
-    blocked_by=""
-    case "$rest" in
-      *' blocked-by:'*) blocked_by=$(trim "$(before_marker_tail "${rest#*' blocked-by:'}")") ;;
-    esac
+    blocked_by=$(blocked_by_ids "$rest")
     title=${own%%' blocked-by:'*}
 
     # The PR, harvested from that structured link run ONLY (see the header): peel the
     # trailing link tokens off the title, stopping at the first token that is not one
-    # the backend appends, and keep the FIRST PR-shaped url among them. Peeling
-    # right-to-left means the last assignment is the leftmost url.
+    # the backend appends, and keep the NEWEST PR-shaped url among them.
+    #
+    # A run can hold SEVERAL PR urls: "tasks-axi update --pr" is a no-op only for a url
+    # already recorded, so re-recording a DIFFERENT one appends it and the line then
+    # carries both, oldest-first in the order they were recorded. That is a task whose
+    # PR was superseded - the first closed, the work moved to a new one - and the last
+    # url recorded is the live one. Peeling runs right-to-left, so the newest url is the
+    # FIRST one seen: keep it and let the older ones peel away beneath it. Keeping the
+    # last assignment instead would surface the leftmost = oldest = the dead PR, and
+    # offer the captain a Merge on it.
+    #
+    # This also agrees with meta's half of the same lookup, where "pr=" is read last-wins
+    # (meta_get) - so a task recorded twice resolves to the same PR whether its crew is
+    # still live or long torn down. And newest-wins cannot hide a Merge on live work: the
+    # worst it can do is offer the newest of several urls, which is the one the fleet
+    # recorded last.
     pr=""
     while :; do
       word=${title##* }
       if pr_token "$word"; then
-        pr=$word
+        [ -n "$pr" ] || pr=$word     # the first seen is the rightmost: the newest
       elif ! report_token "$word"; then
         break
       fi
@@ -535,6 +572,37 @@ backlog_parse() {
   return 0
 }
 
+# dep_unresolved <blocker-ids>: succeed when any of these blockers is still unfinished,
+# which is the only thing that makes a "blocked-by:" record mean the work cannot land.
+#
+# The marker cannot answer that itself: NOTHING ever rewrites it. tasks-axi resolves a
+# dependency by looking up the blocker's state, so "blocked-by: <id>" stays on the line
+# for good - through the blocker landing, through this task being dispatched, shipped,
+# and left review-ready. Reading the marker as the answer therefore gates such a task
+# forever, withholding Merge from work whose dependency cleared long ago (verified
+# against tasks-axi 0.2.2: a queued task whose blocker is Done is listed by
+# `tasks-axi ready` while its line still carries the marker).
+#
+# So the blocker's STATE is the answer, exactly as the backend reads it, and this can
+# only run once backlog_parse has recorded every task: a blocker is routinely written
+# LATER in the file than its dependent (Done sits below Queued).
+#
+# An UNKNOWN blocker counts as resolved, which is what the backend answers too. This is
+# not the rare case it looks like: "done_keep = 10" prunes finished tasks out of the
+# backlog into data/done-archive.md (AGENTS.md section 10) while every dependent's marker
+# survives, so a long-landed blocker is normally absent - the steady state, not an edge.
+# Counting absence as unresolved would re-break the gate the moment a blocker aged out.
+# Live work is never the absent case: only Done is pruned, so a blocker that could still
+# hold this task up is still on the line.
+dep_unresolved() {
+  local ids=${1-} id
+  for id in $ids; do
+    [ -f "$BL_DIR/$id" ] || continue                       # unknown: finished and pruned
+    [ "$(meta_get "$BL_DIR/$id" state)" = 'done' ] || return 0
+  done
+  return 1
+}
+
 # compose_item <id>: emit this task's card to $ITEMS_JSONL, or nothing when it does
 # not earn one. The backlog record decides whether there is a card at all; the live
 # crew's meta only enriches it.
@@ -566,12 +634,17 @@ compose_item() {
 
   # NOT-READY: firstmate's own durable record that this work cannot land yet, in either
   # form AGENTS.md section 10 gives it - an ACTIVE hold that is not a captain hold
-  # (external, parked, future), or an uncleared "blocked-by: <id>" dependency. One
-  # concept, read once, so the Merge gate below can never guard one form and miss the
-  # other. A captain hold is deliberately NOT not-ready: it is the captain themself the
-  # work waits on, which is the whole point of the card.
+  # (external, parked, future), or a "blocked-by: <id>" dependency that is still
+  # UNFINISHED. One concept, read once, so the Merge gate below can never guard one form
+  # and miss the other. A captain hold is deliberately NOT not-ready: it is the captain
+  # themself the work waits on, which is the whole point of the card.
+  #
+  # Both forms are read as the state they describe rather than the text that records
+  # them, and for the same reason: a lapsed "(hold-until: ...)" gate is no longer a hold,
+  # and a landed blocker is no longer a blocker. Neither marker is ever rewritten to say
+  # so, so trusting the text alone would pin a card as not-ready for good (dep_unresolved).
   not_ready=no
-  if [ -n "$blocked_by" ]; then not_ready=yes; fi
+  if dep_unresolved "$blocked_by"; then not_ready=yes; fi
   if [ "$held" = yes ] && [ "$captain_held" != yes ]; then not_ready=yes; fi
 
   # What earns a card (see the header): In flight, captain-held in any state, or a
@@ -646,9 +719,9 @@ compose_item() {
   # answer, which is how firstmate actually writes hold reasons.
   #
   # NOT-READY work is never offered for merge, however ready the url looks - whether the
-  # record is an active non-captain hold or a "blocked-by: <id>" dependency. A Merge
-  # button captioned by the very reason the work is blocked is a contradiction, and the
-  # board must never invite the captain to merge work firstmate has recorded as
+  # record is an active non-captain hold or an unfinished "blocked-by: <id>" dependency.
+  # A Merge button captioned by the very reason the work is blocked is a contradiction,
+  # and the board must never invite the captain to merge work firstmate has recorded as
   # not-ready: acting on it would land a change over the fleet's own objection, and
   # merging is irreversible. Such a task falls through to the fyi branch (or, when the
   # captain is also holding it, stays the question that hold already poses), which

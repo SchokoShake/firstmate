@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Tests for bin/fm-pr-merge.sh: the one path firstmate uses to merge a task's
-# PR, which must always record pr= and any available pr_head= into the task's
-# meta before merging so fm-teardown.sh's landed-check has a PR reference to
-# verify against, even on repos with no PR CI where the usual "checks green"
+# PR, which must record pr= and any available pr_head= into the task's meta
+# before merging so fm-teardown.sh's landed-check has a PR reference to verify
+# against, even on repos with no PR CI where the usual "checks green"
 # fm-pr-check.sh trigger never fires.
+#
+# That recording is owed only while there is still a crew to tear down, so the
+# two halves are tested apart: with a meta, record-then-merge (a); with none -
+# the torn-down task a board card outlives - merge from the URL alone (d).
 #
 # Matrix:
 #   (a) merge records pr= and pr_head= before merging, and merges
 #   (b) merge is refused when gh-axi pr merge itself fails (no silent success)
 #   (c) extra gh-axi pr merge args are forwarded after number and --repo
-#   (d) merge is refused before gh-axi when task meta is missing
+#   (d) a missing meta merges from the URL alone, recording and arming nothing
 #   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
@@ -150,27 +154,32 @@ test_extra_merge_args_forwarded() {
   pass "fm-pr-merge forwards extra flags to gh-axi pr merge after the -- separator"
 }
 
-test_missing_meta_refuses_before_merge() {
-  local case_dir fakebin rc
+test_missing_meta_merges_from_the_url_alone() {
+  local case_dir fakebin
   case_dir="$TMP_ROOT/missing-meta"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$fakebin"
   add_gh_mocks "$case_dir" 3333333333333333333333333333333333333333
   : > "$case_dir/gh-axi.log"
 
-  set +e
+  # THE headline flow: the captain taps Merge on a board card whose crew was torn
+  # down long ago, so there is no meta - which is the documented end-state for
+  # review-ready work (AGENTS.md section 7), not a fault. Refusing here dead-ended
+  # the one path the board's Merge option exists to drive.
   run_pr_merge "$case_dir" missing-x1 https://github.com/example/repo/pull/21 \
-    > "$case_dir/stdout" 2> "$case_dir/stderr"
-  rc=$?
-  set -e
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "missing-meta: fm-pr-merge must merge from the PR URL alone"$'\n'"$(cat "$case_dir/stderr")"
 
-  expect_code 1 "$rc" "missing-meta: fm-pr-merge should refuse"
-  assert_grep 'no meta for task missing-x1' "$case_dir/stderr" \
-    "missing-meta: refusal did not explain missing meta"
-  [ ! -s "$case_dir/gh-axi.log" ] || fail "missing-meta: gh-axi pr merge was invoked"
+  grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "missing-meta: the URL alone must still parse to number + --repo"$'\n'"$(cat "$case_dir/gh-axi.log")"
+  # Recording is not merely tolerated when absent - it is skipped. It exists to serve
+  # a later teardown, and teardown is what removed the meta: it has already run and
+  # will never run again, so an armed poll would report this very merge forever.
   assert_absent "$case_dir/state/missing-x1.check.sh" \
-    "missing-meta: fm-pr-check should not arm a poll for an unknown task"
-  pass "fm-pr-merge refuses before merging when task meta is missing"
+    "missing-meta: no meta means teardown already swept this task - arming a merge poll would strand it"
+  assert_absent "$case_dir/state/missing-x1.meta" \
+    "missing-meta: a torn-down task's meta must not be resurrected by merging"
+  pass "fm-pr-merge merges from the PR URL alone when a torn-down task has no meta"
 }
 
 test_malformed_url_refuses_before_merge() {
@@ -298,7 +307,7 @@ test_parses_pr_url_for_gh_axi() {
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
-test_missing_meta_refuses_before_merge
+test_missing_meta_merges_from_the_url_alone
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording

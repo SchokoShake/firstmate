@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Merge a task's PR, always recording pr= and any available pr_head= into
+# Merge a task's PR, recording pr= and any available pr_head= into
 # state/<id>.meta first via bin/fm-pr-check.sh, so bin/fm-teardown.sh's
 # landed-check has a PR reference to verify a squash merge against.
 #
@@ -13,6 +13,23 @@
 # This script makes recording part of the merge itself, so it cannot be skipped
 # by omission. Use it for every PR merge (captain-requested or yolo-authorized),
 # in place of calling `gh-axi pr merge` directly.
+#
+# NO META: merge from the PR URL alone. Recording exists to serve a LATER
+# teardown, so it is owed only while there is still a crew to tear down - and
+# both halves of that debt are settled here. This script used to refuse outright,
+# for two reasons that only hold while the meta does: to stop merging a PR the
+# fleet never recorded, and to leave teardown a reference to verify a squash
+# merge against. No meta means teardown has already run: the task is gone, so
+# there is no landed-check left to serve and nothing left to record it into. The
+# durable backlog is the record now (AGENTS.md section 10), which is where the
+# board reads the url the captain merges from (bin/fm-logbook-compose.sh) - so
+# by the time that url reaches this script the PR is recorded, not unknown.
+#
+# Recording is SKIPPED here rather than attempted: fm-pr-check.sh tolerates a
+# missing meta, but it also arms state/<id>.check.sh, and only fm-teardown.sh
+# removes that. Arming a merge poll for a task teardown has already swept would
+# strand a check no teardown will ever clear again, reporting "merged" - of this
+# very merge - on every watcher cycle, forever, to no one.
 #
 # gh-axi pr merge expects a PR number and --repo <owner>/<repo>; it does not
 # parse a full https://github.com/<owner>/<repo>/pull/<n> URL. This script
@@ -37,7 +54,6 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 META="$STATE/$ID.meta"
-[ -f "$META" ] || { echo "error: no meta for task $ID at $META; refusing to merge without recording pr=" >&2; exit 1; }
 
 caller_has_merge_method() {
   local arg
@@ -79,8 +95,13 @@ reject_repo_overrides() {
 parse_pr_url "$URL" || exit 1
 reject_repo_overrides "$@" || exit 1
 
-"$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
-grep -qxF "pr=$URL" "$META" || { echo "error: fm-pr-check did not record pr=$URL in $META; refusing to merge" >&2; exit 1; }
+# The live crew's record, kept exactly as it was: record, verify, then merge. The
+# verification stays hard - while a meta exists, a merge whose pr= did not land is
+# the silent-omission failure this script was written to make impossible.
+if [ -f "$META" ]; then
+  "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
+  grep -qxF "pr=$URL" "$META" || { echo "error: fm-pr-check did not record pr=$URL in $META; refusing to merge" >&2; exit 1; }
+fi
 
 merge_args=()
 if ! caller_has_merge_method "$@"; then

@@ -1576,6 +1576,11 @@ test_compose_pr_is_read_only_from_the_structured_position() {
 # tasks-axi itself emits it (verified against 0.2.2, which validates "--pr" as an
 # http(s) url ending in "/pull/<number>" and "--report" as a "data/<id>/report.md"
 # path, and appends both into the title in the order they were recorded).
+#
+# The blockers are deliberately of every STATE, not just unfinished ones: "blocked-by:"
+# is never rewritten when a blocker lands, so a fixture whose blockers are all in flight
+# cannot tell a gate that reads the dependency from one that reads the marker - they
+# agree on every such line. cleared-j2/prunedblk-k3/multiblk-l4 are what separates them.
 write_link_fixture() {
   local home=$1
   mkdir -p "$home/data" "$home/state"
@@ -1597,6 +1602,12 @@ EOF
 - [ ] blocked-g8 - Held and blocked https://github.com/acme/alpha/pull/50 blocked-by: extheld-e6 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 - [ ] blockplain-h9 - Blocked, no hold https://github.com/acme/alpha/pull/51 blocked-by: extheld-e6 (repo: alpha) (kind: ship)
 - [ ] blockdoc-i1 - Blocked the documented way https://github.com/acme/alpha/pull/52 (repo: alpha) blocked-by: extheld-e6 - waiting on the schema
+- [ ] cleared-j2 - Blocker landed, now review-ready https://github.com/acme/alpha/pull/53 blocked-by: landed-w0 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] prunedblk-k3 - Blocker pruned out of Done https://github.com/acme/alpha/pull/54 blocked-by: ghost-z9 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] multiblk-l4 - One landed, one still running https://github.com/acme/alpha/pull/55 blocked-by: landed-w0 blocked-by: extheld-e6 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] superseded-m5 - First PR closed, work moved https://github.com/acme/alpha/pull/682 https://github.com/acme/alpha/pull/687 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+## Done
+- [x] landed-w0 - The blocker that landed https://github.com/acme/alpha/pull/49 (repo: alpha) (kind: ship) (merged 2026-07-13)
 EOF
 }
 
@@ -1839,6 +1850,63 @@ test_compose_blocked_by_is_not_a_merge() {
       | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
     || fail "an unblocked captain-held task must still offer Merge"$'\n'"$out"
   pass "fm-logbook-compose withholds Merge from a task blocked by an unfinished dependency"
+}
+
+test_compose_blocked_by_gate_clears_when_the_blocker_lands() {
+  local home out
+  home="$TMP_ROOT/compose-blocked-clears"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The other half of the gate, and the one a marker-presence read gets wrong: NOTHING
+  # ever rewrites "blocked-by: <id>" when the blocker lands - tasks-axi resolves a
+  # dependency by looking up the blocker's state (verified against 0.2.2). So this line
+  # is what a task filed with --blocked-by looks like AFTER its blocker merged, it was
+  # dispatched, shipped, and left review-ready on a captain hold: the marker is still
+  # there, and reading it as the answer withholds Merge from ready work forever.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="cleared-j2")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a blocker that has landed must stop gating the Merge"$'\n'"$out"
+  # An UNKNOWN blocker is the same answer, and is the steady state rather than an edge:
+  # "done_keep = 10" prunes finished tasks out of the backlog into data/done-archive.md
+  # (AGENTS.md section 10) while every dependent's marker survives, so a long-landed
+  # blocker is normally absent entirely. Counting absence as unresolved would re-break
+  # this gate the moment a blocker aged out of Done.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="prunedblk-k3")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "a blocker pruned out of Done must not gate the Merge forever"$'\n'"$out"
+  # Several blockers gate on ANY unfinished one: "tasks-axi block" and "--blocked-by" are
+  # repeatable, and the backend emits one marker each, so reading only the first record
+  # would clear this the moment the earlier blocker landed.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="multiblk-l4")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "one landed blocker must not clear the gate while another is unfinished"$'\n'"$out"
+  # The bookkeeping still never reaches the captain, however many records the line holds.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="multiblk-l4")
+      | .title=="One landed, one still running"' >/dev/null \
+    || fail "repeated blocked-by records must not leak into the title"$'\n'"$out"
+  pass "fm-logbook-compose clears the blocked-by gate once the blocker is finished"
+}
+
+test_compose_newest_pr_wins_a_superseded_link_run() {
+  local home out
+  home="$TMP_ROOT/compose-superseded"; write_link_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # A link run can hold SEVERAL PRs: "tasks-axi update --pr" is a no-op only for a url
+  # already recorded, so re-recording a DIFFERENT one appends it, oldest-first (verified
+  # against 0.2.2). That is a task whose PR was superseded - the first closed, the work
+  # moved on - and offering Merge on the leftmost hands the captain the DEAD PR.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="superseded-m5")
+      | (.source.pr=="https://github.com/acme/alpha/pull/687")
+      and (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "the newest PR in a link run must win, not the superseded one"$'\n'"$out"
+  # The whole run still peels off the title, and only the live PR is read to the captain.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="superseded-m5")
+      | (.title=="First PR closed, work moved")
+      and (.body | test("\\[alpha #687\\]\\(https://github\\.com/acme/alpha/pull/687\\)"))
+      and (.body | test("682") | not)' >/dev/null \
+    || fail "a superseded run must peel clean and link only the newest PR"$'\n'"$out"
+  pass "fm-logbook-compose picks the newest PR when a link run holds a superseded one"
 }
 
 # write_nested_home_fixture <home>: a firstmate home that is itself inside a git repo -
@@ -2332,6 +2400,8 @@ test_compose_merge_falls_back_when_no_remote_resolves
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge
 test_compose_blocked_by_is_not_a_merge
+test_compose_blocked_by_gate_clears_when_the_blocker_lands
+test_compose_newest_pr_wins_a_superseded_link_run
 test_compose_remote_lookup_cannot_escape_a_non_repo_project_dir
 test_compose_title_drops_the_marker_tail_without_a_repo
 test_compose_captain_hold_without_pr_is_a_decision
