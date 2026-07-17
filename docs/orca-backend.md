@@ -43,9 +43,15 @@ Before spawn mutates any repo/worktree state, firstmate runs `orca status --json
 ## Task Shape
 
 An Orca task is one Orca-managed git worktree plus one Orca terminal.
-Unlike `tmux`, `herdr`, `zellij`, and `cmux`, Orca is not only a session provider; it also provides the task worktree, so `fm-spawn.sh` does not run `treehouse get` for Orca tasks.
+Unlike `tmux`, `herdr`, `zellij`, and `cmux`, Orca is not only a session provider; it also provides the task worktree, so `fm-spawn.sh` never leases a treehouse worktree for Orca tasks.
 
 The normal firstmate invariant still applies: a ship or scout task must run outside the project primary checkout, and teardown must refuse to discard unlanded ship work.
+
+That worktree-ownership split is why a respawn may not cross the Orca boundary.
+Every other backend borrows the same treehouse pool, so respawning a task across them reuses the recorded `worktree=` unchanged; Orca owns its own worktree instead, so respawning an Orca-recorded task on another backend (or a pool-recorded task with `--backend orca`) would strand whichever worktree the recorded meta names.
+`fm-spawn.sh` therefore refuses outright when exactly one of the recorded and resolved backends is `orca`, naming the recorded backend to re-run with.
+Switching a task across that boundary mid-flight means tearing the recorded task down first, which is what closing the old backend's terminal needs anyway.
+[`docs/tmux-backend.md`](tmux-backend.md) ("Respawn: reuse the recorded worktree, never lease a second") owns the full contract, including the `project=`/`kind=` half of the same identity gate.
 
 ## Metadata
 

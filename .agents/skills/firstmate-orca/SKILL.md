@@ -31,6 +31,8 @@ Before switching or spawning against Orca:
 - Confirm the Orca app is running and the backend readiness checks pass before expecting spawn to work.
 - Inspect active `state/*.meta` records before changing backend selection.
 - Treat a backend switch as affecting future spawns only; existing tasks keep their recorded backend.
+  This is enforced at the Orca boundary: because Orca owns its own worktree while every other backend borrows the treehouse pool, `bin/fm-spawn.sh` refuses to respawn an Orca-recorded task on another backend, or a pool-recorded task with `--backend orca`, rather than strand the worktree the recorded meta names.
+  Re-run with the recorded backend to respawn the task as recorded, or tear it down first to switch it deliberately.
 - Reconcile watcher wakes before unrelated work, especially if Orca tasks are already in flight.
 
 ## Spawn

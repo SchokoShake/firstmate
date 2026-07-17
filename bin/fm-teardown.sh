@@ -4,6 +4,12 @@
 # clear volatile state, refresh/prune the project's clone for PR-based ship
 # tasks, then print a backlog-refresh reminder for ship and scout teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
+# A crew worktree is a DURABLE treehouse lease (fm-spawn.sh acquires it with
+# `treehouse get --lease`; docs/tmux-backend.md "Worktree capture"), so the
+# `treehouse return` below is the ONLY thing that frees its pool slot - a skipped
+# teardown leaks the slot for good, since prune cannot reclaim a lease. That is
+# the same durable-lease contract secondmate homes already had, now true of every
+# pool-backed task worktree too.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
 # hard-resets/removes the worktree and kills its processes. Work has landed when it is
 # reachable from any remote-tracking branch (a fork counts as a remote, so
