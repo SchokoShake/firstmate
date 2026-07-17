@@ -597,6 +597,49 @@ test_spawn_refuses_orca_nonisolated_worktree() {
   pass "fm-spawn.sh --backend orca: refuses non-isolated worktrees and closes implicit terminals"
 }
 
+# The other half of the respawn identity gate's backend check, from Orca's side.
+# Orca owns its own worktree, so an Orca respawn skips the treehouse reuse block
+# entirely. Over a meta recording a POOL worktree that is silent loss: the meta
+# write replaces worktree= with Orca's own, and the durably-leased pool worktree -
+# holding the crew's branch, commits, and uncommitted work - is left named by
+# nothing, never handed out again and never pruned. Only the gate catches it, and
+# it must fire before Orca creates anything.
+test_spawn_refuses_orca_respawn_over_pool_backed_meta() {
+  local proj wt data state config id out status
+  id="orcaxbackz9"
+  proj="$TMP_ROOT/xback-project"
+  wt="$TMP_ROOT/xback-wt"
+  data="$TMP_ROOT/xback-data"
+  state="$TMP_ROOT/xback-state"
+  config="$TMP_ROOT/xback-config"
+  fm_git_init_commit "$proj"
+  fm_git_worktree "$proj" "$wt" "fm/$id"
+  mkdir -p "$data/$id" "$state" "$config"
+  printf 'brief\n' > "$data/$id/brief.md"
+  touch "$state/.last-watcher-beat"
+  # A default tmux meta: backend= is never written, so the gate must read it
+  # through fm_backend_of_meta's absent-means-tmux contract to see the crossing.
+  fm_write_meta "$state/$id.meta" \
+    "window=firstmate:fm-$id" "worktree=$wt" "project=$proj" \
+    "harness=claude" "kind=ship" "mode=no-mistakes" "yolo=off"
+  orca_case xback
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    FM_PROJECTS_OVERRIDE="$TMP_ROOT/unused-projects" FM_SPAWN_NO_GUARD=1 \
+    "$ROOT/bin/fm-spawn.sh" "$id" "$proj" claude --backend orca 2>&1 )
+  status=$?
+  expect_code 1 "$status" "an Orca respawn over a treehouse-pool meta must refuse"
+  assert_contains "$out" "already recorded as backend=tmux" \
+    "the backend-mismatch refusal must name the recorded backend (absent backend= means tmux)"
+  assert_contains "$out" "this spawn is backend=orca" \
+    "the backend-mismatch refusal must name the spawn's backend"
+  assert_grep "worktree=$wt" "$state/$id.meta" \
+    "a refused respawn must leave the pool worktree recorded; overwriting it is the loss the gate prevents"
+  assert_not_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''create' \
+    "the gate must refuse before Orca creates a worktree"
+  pass "fm-spawn.sh --backend orca: refuses a respawn over a treehouse-pool-backed meta"
+}
+
 test_spawn_removes_orca_worktree_when_terminal_create_fails() {
   local proj wt data state config id out status
   id="orcatermfailz8"
@@ -1304,6 +1347,7 @@ test_spawn_writes_orca_metadata_and_launches_harness
 test_spawn_refuses_orca_secondmate_before_home_mutation
 test_spawn_refuses_orca_when_runtime_not_ready
 test_spawn_refuses_orca_nonisolated_worktree
+test_spawn_refuses_orca_respawn_over_pool_backed_meta
 test_spawn_removes_orca_worktree_when_terminal_create_fails
 test_spawn_preserves_orca_metadata_when_abort_cleanup_fails
 test_spawn_releases_orca_resources_when_metadata_write_fails

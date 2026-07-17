@@ -452,6 +452,36 @@ test_spawn_respawn_identity_gate() {
   assert_contains "$out" "already recorded as kind=secondmate" \
     "the refusal must name the recorded secondmate kind (its worktree= is a HOME path)"
 
+  # backend= mismatch, the orca half: an Orca worktree is a real git toplevel that
+  # is neither the project nor $FM_HOME, so validate_spawn_worktree clears it and a
+  # project/kind-only gate would let the reuse block adopt it. The rewritten meta
+  # would then drop backend=orca and orca_worktree_id=, leaving fm-teardown to run
+  # `treehouse return` against a path treehouse never owned. Only the gate sees it.
+  fm_write_meta "$home/state/ident-orca-bb2.meta" \
+    "window=fm-ident-orca-bb2" "worktree=$wtA" "project=$projA" \
+    "harness=codex" "kind=ship" "mode=no-mistakes" "yolo=off" \
+    "backend=orca" "orca_worktree_id=wt-ident-orca-bb2" "terminal=term-ident-orca-bb2"
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-orca-bb2 "$projA" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 1 "$status" "a tmux respawn over a backend=orca meta must refuse"
+  assert_contains "$out" "already recorded as backend=orca" \
+    "the backend-mismatch refusal must name the recorded backend"
+  assert_grep "backend=orca" "$home/state/ident-orca-bb2.meta" \
+    "a refused respawn must leave the recorded Orca meta intact"
+  assert_grep "orca_worktree_id=wt-ident-orca-bb2" "$home/state/ident-orca-bb2.meta" \
+    "a refused respawn must not drop the Orca worktree id fm-teardown needs"
+  assert_no_grep "treehouse" "$rec" \
+    "a refused respawn must not lease or reuse: an Orca worktree was never in the pool"
+
+  # The gate must never false-refuse the default backend: a tmux meta never writes
+  # backend= at all, so the compare must go through fm_backend_of_meta's
+  # absent-means-tmux contract rather than an empty-string compare.
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-rr7 "$projA" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "a tmux respawn over a tmux meta (no backend= field) must not trip the gate"
+  assert_not_contains "$out" "already recorded as backend=" \
+    "an absent backend= means tmux and must not be read as a different backend"
+
   # The gate must never false-refuse the same project reached through a symlinked
   # prefix: project= is recorded from a LOGICAL pwd, so only a physical compare
   # holds (the same reason PROJ_ABS_REAL exists).
@@ -462,7 +492,7 @@ test_spawn_respawn_identity_gate() {
   assert_not_contains "$out" "already recorded against project=" \
     "a symlinked path to the SAME project must not be read as a different project"
 
-  pass "fm-spawn: a respawn refuses when the recorded meta's project= or kind= describes another task"
+  pass "fm-spawn: a respawn refuses when the recorded meta's project=, kind=, or backend= describes another task"
 }
 
 # --- GUARD 1h: fm-spawn reuse checks the worktree is still reserved -----------

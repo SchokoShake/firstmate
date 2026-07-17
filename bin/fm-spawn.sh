@@ -64,11 +64,15 @@
 #   a durably-leased worktree nothing names. A recorded worktree that no longer
 #   exists warns and falls back to a fresh lease; one treehouse no longer reserves
 #   warns and is reused anyway (the crew's work is in it, and no treehouse verb
-#   can re-lease an existing path).
-#   Any respawn refuses outright when the recorded meta's project= or kind=
-#   disagrees with what is being spawned: that meta describes a task firstmate has
-#   lost track of, and neither reusing its worktree= nor overwriting it with a
-#   fresh lease is safe.
+#   can re-lease an existing path). Reuse covers the treehouse-pool backends only:
+#   an orca respawn skips it, because orca owns its own worktree and never leases
+#   from the pool. The identity gate below is what keeps that exclusion safe.
+#   Any respawn refuses outright when the recorded meta's project=, kind=, or
+#   backend= disagrees with what is being spawned: that meta describes a task
+#   firstmate has lost track of, and neither reusing its worktree= nor overwriting
+#   it with a fresh lease is safe. backend= counts because orca owns its own
+#   worktree while every other backend borrows the pool, so a backend crossing
+#   strands whichever worktree the recorded meta named.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -741,25 +745,40 @@ PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_AB
 # meta together), so this spawn is a RESPAWN of that task and the capture below
 # adopts its recorded worktree= rather than leasing a second one. Before anything
 # trusts one field of that meta, confirm the meta describes the task actually
-# being spawned: project= and kind= sit beside worktree= and are exactly the
-# record of WHICH task it is. A mismatch means firstmate lost track of the task,
-# and adopting worktree= anyway is worse than either half alone - a kind=secondmate
-# meta's worktree= is a HOME path, not a pool worktree, and another project's
-# worktree launches the crew into the OLD project carrying the NEW project's
-# brief, then rewrites meta to a contradictory project=/worktree= pair that
-# fm-teardown cannot release (treehouse resolves the pool from the project dir,
-# so its `treehouse return` refuses a worktree from a different pool and the slot
-# leaks). Refuse rather than fall back to a fresh lease: the fresh lease's meta
-# write would silently overwrite the only record of the OTHER task's live
-# worktree, stranding its branch, commits, and uncommitted work behind a lease
-# prune can never reclaim - the exact loss the reuse exists to prevent. Runs
-# before the backend creates anything, so a mismatch costs no window or worktree.
+# being spawned: project=, kind=, and backend= sit beside worktree= and are
+# exactly the record of WHICH task it is. A mismatch means firstmate lost track of
+# the task, and adopting worktree= anyway is worse than either half alone - a
+# kind=secondmate meta's worktree= is a HOME path, not a pool worktree, and another
+# project's worktree launches the crew into the OLD project carrying the NEW
+# project's brief, then rewrites meta to a contradictory project=/worktree= pair
+# that fm-teardown cannot release (treehouse resolves the pool from the project
+# dir, so its `treehouse return` refuses a worktree from a different pool and the
+# slot leaks). backend= is as load-bearing as the other two, because orca owns its
+# own worktree while every other backend borrows the treehouse pool, so a backend
+# crossing breaks the reuse decision in both directions: a non-orca meta respawned
+# --backend orca skips the reuse block entirely and strands the leased worktree,
+# and an orca meta respawned on any other backend reuses the ORCA worktree and
+# rewrites meta without backend=/orca_worktree_id=, leaving fm-teardown to run
+# `treehouse return` against a path treehouse never owned. Refuse rather than fall
+# back to a fresh lease: the fresh lease's meta write would silently overwrite the
+# only record of the OTHER task's live worktree, stranding its branch, commits, and
+# uncommitted work behind a lease prune can never reclaim - the exact loss the
+# reuse exists to prevent. Runs before the backend creates anything, so a mismatch
+# costs no window or worktree.
 RESPAWN_META="$STATE/$ID.meta"
 if [ -f "$RESPAWN_META" ]; then
   RESPAWN_KIND=$(fm_meta_get "$RESPAWN_META" kind)
   RESPAWN_PROJECT=$(fm_meta_get "$RESPAWN_META" project)
+  # fm_backend_of_meta owns the absent-backend=-means-tmux contract, so a default
+  # tmux meta (which never writes the field) compares equal to a resolved tmux
+  # spawn instead of false-refusing on an empty string.
+  RESPAWN_BACKEND=$(fm_backend_of_meta "$RESPAWN_META")
   if [ -n "$RESPAWN_KIND" ] && [ "$RESPAWN_KIND" != "$KIND" ]; then
     echo "error: $ID is already recorded as kind=$RESPAWN_KIND in $RESPAWN_META, but this spawn is kind=$KIND; refusing to respawn over a task firstmate has lost track of. Tear the recorded task down first, or spawn under a different id." >&2
+    exit 1
+  fi
+  if [ "$RESPAWN_BACKEND" != "$BACKEND" ]; then
+    echo "error: $ID is already recorded as backend=$RESPAWN_BACKEND in $RESPAWN_META, but this spawn is backend=$BACKEND; refusing to respawn over a task firstmate has lost track of. Tear the recorded task down first, or spawn under a different id." >&2
     exit 1
   fi
   # Compare PHYSICAL forms: project= is recorded from the ship/scout branch's
