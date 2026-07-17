@@ -81,6 +81,10 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 # one it labels back to the bare project name (its project_label), and thus reads the
 # project's delivery mode by the name data/projects.md registers.
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
+# The bound on the clone check below, resolved once. PHYSICAL and absolute because that is
+# the only form git honors, and empty when projects/ will not open, which skips the check
+# entirely - no clone can live under a dir that is not there (see the refresh below).
+PROJECTS_CEILING=$(cd "$PROJECTS" 2>/dev/null && pwd -P) || PROJECTS_CEILING=""
 META="$STATE/$ID.meta"
 # Absolute, because the close below runs from the backlog's own home and a relative path
 # would then resolve against that cwd instead of the caller's.
@@ -88,6 +92,8 @@ BACKLOG="$DATA/backlog.md"
 case "$BACKLOG" in /*) ;; *) BACKLOG="$PWD/$BACKLOG" ;; esac
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-backlog-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-backlog-lib.sh"
 
 caller_has_merge_method() {
   local arg
@@ -126,96 +132,6 @@ reject_repo_overrides() {
   return 0
 }
 
-# backlog_item_of <id>: THIS home's durable record of <id>, as "<section>\t<project>", or
-# nothing at all when the backlog does not carry the id as an item of its own.
-#
-# One scan, read ONCE and BEFORE the close - which is the only moment both answers exist,
-# because closing is what moves the item and done_keep can then prune it out of the file
-# entirely. Two callers ask two questions of the same line:
-#
-#   <section>  the "## " heading the item sits under, normalized as
-#              bin/fm-logbook-compose.sh's backlog_parse normalizes it, and empty under a
-#              heading that is not a task section (where compose reads no item either).
-#              "done" is the one value that means nothing is owed: compose_item returns
-#              early on a Done item, so no card can compose from one and there is nothing
-#              left to close. This is the same question "code: NOT_FOUND" answers for the
-#              tasks-axi path - asked of the file, so the manual backend can answer it too.
-#   <project>  the bare project name from the item's "(repo: <name>)" marker, or empty
-#              when the item records no project, or one that cannot address a clone.
-#              Deliberately NOT gated on section: the clone refresh is owed for the merge
-#              that just landed, whatever shape the heading around the item is in.
-#
-# The file is read directly rather than through "tasks-axi show", for the same reason
-# bin/fm-logbook-compose.sh reads it directly: it then serves a backlog hand-maintained
-# under config/backlog-backend=manual exactly as it serves the default backend, and needs
-# no tool on PATH. ("tasks-axi show" would not help anyway - it reports the marker's raw
-# value, trailing content and all.)
-#
-# The item forms and the marker shape are AGENTS.md section 10's contract, matched as
-# bin/fm-logbook-compose.sh's backlog_parse matches them: the id is read from an item
-# line's own id position, never from anywhere the id merely appears, so a note line or
-# another task's prose citing this id cannot answer for its project. The marker value
-# carries trailing content in the combined "(repo: <name>, since <date>)" form section 10
-# documents for a hand-maintained backlog, rather than the tasks-axi backend's separate
-# "(repo: <name>) (since <date>)", so the name ends at the first "," or ")".
-#
-# The name is then held to the same rule bin/fm-logbook-compose.sh's valid_project_name
-# holds it to (no whitespace, "/", "\", or ".."), so a marker hand-edited into something
-# that is not a project name stays a plain component that can address nothing but a clone
-# directly under projects/ - it cannot traverse out of the dir the refresh below joins it
-# onto, and so cannot point a sanctioned write at a directory outside projects/. Being a
-# valid name is not being a clone, though; only the refresh's own check on the joined path
-# decides that.
-backlog_item_of() {
-  local id=$1 line rest item repo section=""
-  [ -f "$BACKLOG" ] || return 0
-  while IFS= read -r line; do
-    case "$line" in
-      '## In flight'*) section=in_flight; continue ;;
-      '## Queued'*)    section=queued;    continue ;;
-      '## Done'*)      section='done';    continue ;;   # quoted to stay a literal, not the keyword
-      '## '*)          section="";        continue ;;   # some other H2: not a task section
-    esac
-    item=""
-    case "$line" in
-      '- [ ] '*) rest=${line#'- [ ] '} ;;
-      '- [x] '*) rest=${line#'- [x] '} ;;
-      '- [X] '*) rest=${line#'- [X] '} ;;
-      '- **'*)
-        rest=${line#'- **'}
-        case "$rest" in
-          *'** - '*) item=${rest%%'** - '*} ;;
-          *) continue ;;
-        esac
-        ;;
-      *) continue ;;
-    esac
-    if [ -z "$item" ]; then
-      case "$rest" in
-        *' - '*) item=${rest%%' - '*} ;;
-        *) continue ;;
-      esac
-    fi
-    [ "$item" = "$id" ] || continue
-    repo=""
-    case "$line" in
-      *' (repo: '*) repo=${line#*' (repo: '} ;;
-    esac
-    if [ -n "$repo" ]; then
-      repo=${repo%%')'*}
-      repo=${repo%%,*}
-      repo=${repo#"${repo%%[![:space:]]*}"}
-      repo=${repo%"${repo##*[![:space:]]}"}
-      case "$repo" in
-        ''|*[[:space:]]*|*/*|*\\*|*..*) repo="" ;;
-      esac
-    fi
-    printf '%s\t%s' "$section" "$repo"
-    return 0
-  done < "$BACKLOG"
-  return 0
-}
-
 parse_pr_url "$URL" || exit 1
 reject_repo_overrides "$@" || exit 1
 
@@ -240,7 +156,7 @@ gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" ${merge_args[@]+"${merg
 # has already exited by here in that case.
 if [ ! -f "$META" ]; then
   # Before the close, which is what moves (and can prune) the item both answers come from.
-  BL_ITEM=$(backlog_item_of "$ID")
+  BL_ITEM=$(fm_backlog_item_of "$BACKLOG" "$ID")
   BL_SECTION=${BL_ITEM%%$'\t'*}
   PROJECT=${BL_ITEM#*$'\t'}
 
@@ -293,14 +209,27 @@ if [ ! -f "$META" ]; then
   # named - or named but never cloned into THIS home - is simply nothing to sync here; the
   # next session start's fleet sweep still gets every clone that is.
   #
-  # This home's clone is addressed by its path, and only once that path is a directory,
-  # because the name alone does not pin one: fm-fleet-sync.sh resolves a bare name against
-  # this home's projects dir but falls back to reading an unresolvable one as a path
-  # relative to the CALLER's cwd, and git then walks UP from it to whatever repository
-  # encloses it. A marker naming no clone would otherwise fetch, prune, and fast-forward
-  # a repo picked by where firstmate happened to be standing - and AGENTS.md section 2
-  # sanctions invoking bin/ from any cwd, so where it stands cannot be an input.
-  if [ -n "$PROJECT" ] && [ -d "$PROJECTS/$PROJECT" ]; then
+  # This home's clone is addressed by its path, and only once git confirms a repository AT
+  # that path, because neither the name nor a directory pins one. Two ways the refresh
+  # otherwise reaches a repo nobody named, both ending in a fetch, a prune, and a
+  # fast-forward of it:
+  #
+  #   - fm-fleet-sync.sh resolves a bare name against this home's projects dir, but falls
+  #     back to reading one it cannot resolve there as a path relative to the CALLER's cwd.
+  #   - its own repo test walks UP from whatever path it is given, so a projects/<name>
+  #     that is merely a directory - a scratch dir, a half-finished clone - answers with
+  #     the repository ENCLOSING it, which in the shipped layout is firstmate's own
+  #     checkout (FM_HOME is a git repo; gitignoring projects/ does not stop discovery).
+  #
+  # AGENTS.md section 2 sanctions invoking bin/ from any cwd, so where firstmate stands
+  # when the captain taps Merge cannot be an input to which repo gets written. Passing the
+  # joined path closes the first; bounding discovery at projects/ closes the second, the
+  # way bin/fm-logbook-compose.sh bounds the same lookup - and a non-clone then resolves
+  # nothing, which is simply nothing to sync here. The next session start's fleet sweep
+  # still reaches every clone that is one.
+  if [ -n "$PROJECT" ] && [ -n "$PROJECTS_CEILING" ] &&
+    GIT_CEILING_DIRECTORIES="$PROJECTS_CEILING" \
+      git -C "$PROJECTS/$PROJECT" rev-parse --git-dir >/dev/null 2>&1; then
     "$SCRIPT_DIR/fm-fleet-sync.sh" "$PROJECTS/$PROJECT" || true
   fi
 fi

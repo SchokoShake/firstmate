@@ -27,8 +27,9 @@
 #   (i) a missing meta closes the backlog item, but only on a merge that succeeded,
 #       and never while a live meta leaves the close to teardown
 #   (j) a missing meta refreshes the clone of the project the backlog names - and only
-#       ever a clone of THIS home's, never a repo reached through the caller's cwd - and
-#       never while a live meta leaves that to teardown
+#       ever a clone of THIS home's, never a repo reached through the caller's cwd, nor
+#       the one merely enclosing a projects/<name> that is not a clone - and never while
+#       a live meta leaves that to teardown
 #   (k) a close that fails is reported rather than swallowed, and still never fails
 #       a merge GitHub has already taken; an id the backlog never carried is not a
 #       failure to report at all
@@ -467,6 +468,59 @@ test_missing_meta_clone_refresh_cannot_escape_to_the_callers_cwd() {
   pass "fm-pr-merge does not sync a repo the caller's cwd stands in when no clone matches"
 }
 
+# The other way the refresh reaches a repo nobody named, and the one a path alone does not
+# close: git's own repo discovery walks UP from whatever path it is given, so a
+# projects/<name> that is merely a directory answers with the repository ENCLOSING it -
+# in the shipped layout, firstmate's own checkout (FM_HOME is a git repo; gitignoring
+# projects/ does not stop discovery). The mirror of
+# test_compose_remote_lookup_cannot_escape_a_non_repo_project_dir, which bounds the same
+# lookup for the composer that offers the Merge this script performs.
+test_missing_meta_clone_refresh_cannot_escape_a_non_repo_project_dir() {
+  local case_dir enclosing tip before after rc url=https://github.com/example/repo/pull/34
+  command -v tasks-axi >/dev/null 2>&1 || {
+    pass "fm-pr-merge no-meta clone refresh non-repo guard (skipped: no tasks-axi on PATH)"
+    return 0
+  }
+  case_dir="$TMP_ROOT/missing-meta-nonrepo-escape"
+  enclosing="$case_dir/enclosing"
+  mkdir -p "$case_dir/state" "$case_dir/fakebin"
+  add_gh_mocks "$case_dir" 4141414141414141414141414141414141414141
+  : > "$case_dir/gh-axi.log"
+  # The backlog names alpha, and projects/alpha IS there - as a plain directory, not a
+  # clone (a scratch dir, or a half-finished clone). The projects dir lives INSIDE a
+  # repository that is behind its origin, so an unbounded lookup has something to find,
+  # and syncing it would be visible. data/, state/, and config/ stay outside it, or the
+  # tree would be dirty and fm-fleet-sync.sh would decline to fast-forward for a reason
+  # that has nothing to do with the guard under test.
+  seed_backlog "$case_dir" missing-x3 "$url" alpha
+  tip=$(build_repo_behind_origin_at "$case_dir" enclosed "$enclosing" projects/alpha)
+  before=$(clone_head_of "$enclosing")
+  [ "$before" != "$tip" ] \
+    || fail "fixture: the repo enclosing projects/ must start behind its origin"
+  [ -d "$enclosing/projects/alpha" ] \
+    || fail "fixture: projects/alpha must exist as a plain directory"
+  git -C "$enclosing/projects/alpha" rev-parse --git-dir >/dev/null 2>&1 \
+    || fail "fixture: an UNBOUNDED lookup from projects/alpha must find the enclosing repo, or this proves nothing"
+
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_PROJECTS_OVERRIDE="$enclosing/projects" \
+  FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$PR_MERGE" missing-x3 "$url" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "missing-meta-nonrepo-escape: fm-pr-merge must not fail"$'\n'"$(cat "$case_dir/stderr")"
+  after=$(clone_head_of "$enclosing")
+  [ "$after" = "$before" ] \
+    || fail "missing-meta-nonrepo-escape: the repo merely enclosing projects/ was synced from $before to $after"
+  pass "fm-pr-merge does not sync the repo enclosing a projects/<name> that is not a clone"
+}
+
 test_live_meta_leaves_the_clone_refresh_to_teardown() {
   local case_dir tip head url=https://github.com/example/repo/pull/28
   command -v tasks-axi >/dev/null 2>&1 || {
@@ -891,6 +945,7 @@ test_missing_meta_failed_merge_leaves_the_item_open
 test_live_meta_leaves_the_close_to_teardown
 test_missing_meta_refreshes_the_project_clone
 test_missing_meta_clone_refresh_cannot_escape_to_the_callers_cwd
+test_missing_meta_clone_refresh_cannot_escape_a_non_repo_project_dir
 test_live_meta_leaves_the_clone_refresh_to_teardown
 test_missing_meta_close_honors_the_homes_tasks_config
 test_missing_meta_failed_close_is_reported_not_swallowed

@@ -21,8 +21,11 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+BACKLOG="$DATA/backlog.md"
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-backlog-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-backlog-lib.sh"
 "$FM_ROOT/bin/fm-guard.sh" || true
 ID=$1
 URL=$2
@@ -66,18 +69,33 @@ fi
 # use and the record is skipped by design but still owed, with nothing else left to write
 # it: fm-teardown.sh's reminder prompts the Done move, never this.
 #
-# NOT_FOUND is the one failure that is nothing to report, and it is the tolerated case the
-# probe above cannot cover: the backlog answering that it does not carry this id yet - the
-# window between fm-spawn and the backlog write. Everything else is a real loss.
+# What is NOT owed is a report about an item that carries no card to lose - and there is
+# no such item in two shapes, which are one question asked of two sources. "code:
+# NOT_FOUND" is the backend's own answer that it does not carry this id (the window
+# between fm-spawn and the backlog write, which the header tolerates); an empty or "done"
+# section is that same answer read from the FILE, which is the only way to ask a backend
+# that is never consulted. Warning on either would send firstmate hand-editing an item
+# that is already closed, or one that is not there at all. Everything else is a real loss.
+#
+# An item that IS open is reported to whoever asked, because this script cannot tell why:
+# bin/fm-pr-merge.sh re-runs it for every merge it makes, where the record is not really
+# owed (teardown moves that item to Done, and compose_item returns early on one), but an
+# in-flight item looks identical at the PR-ready call, where the record is exactly what
+# the board will need. Erring toward the report keeps the durable half's own failure the
+# loud one; a spurious hand-record on an item about to close costs nothing but the read.
 if fm_tasks_axi_backend_available "$CONFIG"; then
-  if ! record_err=$(tasks-axi update "$ID" --pr "$URL" --file "$DATA/backlog.md" 2>&1); then
+  if ! record_err=$(tasks-axi update "$ID" --pr "$URL" --file "$BACKLOG" 2>&1); then
     case "$record_err" in
       *'code: NOT_FOUND'*) ;;
       *) echo "warning: could not record $URL on backlog item $ID; the board will lose this PR once the crew is torn down: ${record_err//$'\n'/ }" >&2 ;;
     esac
   fi
 else
-  echo "warning: the tasks-axi backend is not in use, so $URL is not recorded on backlog item $ID; add it to the item line by hand or the board will lose this PR once the crew is torn down" >&2
+  BL_SECTION=$(fm_backlog_item_of "$BACKLOG" "$ID")
+  BL_SECTION=${BL_SECTION%%$'\t'*}
+  if [ -n "$BL_SECTION" ] && [ "$BL_SECTION" != 'done' ]; then
+    echo "warning: the tasks-axi backend is not in use, so $URL is not recorded on backlog item $ID; add it to the item line by hand or the board will lose this PR once the crew is torn down" >&2
+  fi
 fi
 
 cat > "$STATE/$ID.check.sh" <<EOF

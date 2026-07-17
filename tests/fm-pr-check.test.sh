@@ -16,7 +16,9 @@
 # Matrix:
 #   (a) the default backend records the PR on the backlog item AND in the meta, and arms
 #   (b) that durable record alone still composes a Merge card after the crew is gone
-#   (c) config/backlog-backend=manual makes no tasks-axi call, and still arms
+#   (c) config/backlog-backend=manual makes no tasks-axi call, and still arms - reporting
+#       the record it skips, but only for an item that is actually there and still open,
+#       since neither an untracked nor an already-Done item leaves a card to lose a PR
 #   (d) an incompatible tasks-axi makes no update call, and still arms
 #   (e) tasks-axi absent from PATH is non-fatal, and still arms
 #   (f) a task the backlog has not caught up to is non-fatal, still arms, and stays quiet
@@ -94,6 +96,23 @@ exit 0
 SH
   chmod +x "$fakebin/tasks-axi"
   printf '%s\n' "$fakebin"
+}
+
+# hand_backlog <home> <id> <section>: the shape a manual home actually keeps - an item
+# written by hand rather than by the tool, because under that backend nothing else ever
+# writes it. <section> is the heading it sits under, which is what decides whether a
+# record this script cannot make is still owed.
+hand_backlog() {
+  local home=$1 id=$2 section=$3 bl in_flight="" done_item=""
+  bl="$home/data/backlog.md"
+  mkdir -p "$home/data"
+  if [ "$section" = Done ]; then
+    done_item="- [x] $id - Ship the widget endpoint - https://github.com/acme/alpha/pull/42 (merged 2026-07-17)"
+  else
+    in_flight="- [ ] $id - Ship the widget endpoint (repo: alpha) (hold-kind: captain) (hold: review-ready - your call)"
+  fi
+  printf '# Backlog\n\n## In flight\n\n%s\n\n## Queued\n\n## Done\n\n%s\n' \
+    "$in_flight" "$done_item" > "$bl"
 }
 
 # The task's own PR, in the repo its project pushes to - so nothing but the presence of
@@ -194,6 +213,53 @@ test_manual_backend_reports_the_skipped_record() {
   assert_contains "$out" 'by hand' \
     "the report must tell firstmate what to do instead"
   pass "fm-pr-check reports the record it cannot make under config/backlog-backend=manual"
+}
+
+test_manual_backend_untracked_id_is_quiet() {
+  local home fakebin out rc
+  home=$(make_home manual-untracked)
+  fakebin=$(make_tasks_axi_stub "$home" 0.2.2)
+  printf 'manual\n' > "$home/config/backlog-backend"
+  # A real hand-maintained backlog that simply does not carry this id - the window
+  # between fm-spawn and the backlog write.
+  hand_backlog "$home" other-x9 'In flight'
+
+  set +e
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" "$PR_CHECK" ghost-z9 "$URL" 2>&1)
+  rc=$?
+  set -e
+
+  # The same rule the tasks-axi path reads out of "code: NOT_FOUND", asked of the FILE so
+  # the backend that is never consulted can answer it too: no item means no card to lose a
+  # PR link, so nothing is owed and the warning would send firstmate hand-editing a line
+  # that is not there.
+  expect_code 0 "$rc" "an untracked id must not fail fm-pr-check under the manual backend"
+  assert_present "$home/state/ghost-z9.check.sh" \
+    "an untracked id must not stop fm-pr-check arming the merge poll"
+  assert_not_contains "$out" 'not recorded on backlog item' \
+    "an id a manual backlog never carried is not a record to report"
+  pass "fm-pr-check does not report a skipped record for an id a manual backlog never carried"
+}
+
+test_manual_backend_done_item_is_quiet() {
+  local home fakebin out rc
+  home=$(make_home manual-done)
+  fakebin=$(make_tasks_axi_stub "$home" 0.2.2)
+  printf 'manual\n' > "$home/config/backlog-backend"
+  # Already closed by hand: the merge landed and firstmate moved the item itself.
+  hand_backlog "$home" ship-a1 Done
+
+  set +e
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" "$PR_CHECK" ship-a1 "$URL" 2>&1)
+  rc=$?
+  set -e
+
+  # A Done item composes no card at all (fm-logbook-compose.sh returns early on it), so
+  # there is no PR link left for the board to lose and the warning would be a false alarm.
+  expect_code 0 "$rc" "an already-closed item must not fail fm-pr-check"
+  assert_not_contains "$out" 'not recorded on backlog item' \
+    "an item already in Done is not a record to report"
+  pass "fm-pr-check does not report a skipped record for an item already in Done"
 }
 
 test_incompatible_tasks_axi_does_not_touch_the_backlog() {
@@ -331,6 +397,8 @@ test_records_the_pr_on_the_durable_backlog
 test_the_durable_record_survives_the_crew
 test_manual_backend_does_not_touch_the_backlog
 test_manual_backend_reports_the_skipped_record
+test_manual_backend_untracked_id_is_quiet
+test_manual_backend_done_item_is_quiet
 test_incompatible_tasks_axi_does_not_touch_the_backlog
 test_absent_tasks_axi_is_not_fatal
 test_unknown_task_is_not_fatal
