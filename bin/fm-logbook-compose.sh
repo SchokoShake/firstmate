@@ -414,6 +414,15 @@ before_marker_tail() {
 # "blocked-by: <id> - <reason>", whose trailing reason falls away with the rest of the
 # token's line. That also ends the id at the marker tail, since every marker the backend
 # appends is preceded by a space.
+#
+# A marker whose token is not a valid id records $BLOCKER_UNRESOLVABLE instead of being
+# dropped, because dropping it is indistinguishable from a line that carries no marker at
+# all - and the two mean opposite things to dep_unresolved. Absence means the blocker
+# landed and was pruned; a present-but-unreadable record is the line asserting a
+# dependency this cannot resolve either way, which only the conservative answer is safe
+# for: the gate it feeds guards an irreversible merge. The sentinel is a token
+# logbook_valid_id rejects, so no real id can ever collide with it.
+BLOCKER_UNRESOLVABLE='?'
 blocked_by_ids() {
   local seg=${1-} out="" id
   while :; do
@@ -423,8 +432,11 @@ blocked_by_ids() {
     esac
     id=$(trim "$seg")
     id=${id%%[[:space:]]*}
-    logbook_valid_id "$id" || continue
-    out="$out $id"
+    if logbook_valid_id "$id"; then
+      out="$out $id"
+    else
+      out="$out $BLOCKER_UNRESOLVABLE"
+    fi
   done
   trim "$out"
 }
@@ -656,8 +668,19 @@ backlog_parse() {
 # Counting absence as unresolved would re-break the gate the moment a blocker aged out.
 # Live work is never the absent case: only Done is pruned, so a blocker that could still
 # hold this task up is still on the line.
+#
+# An UNREADABLE blocker is the opposite answer, and the distinction is the whole reason
+# blocked_by_ids records $BLOCKER_UNRESOLVABLE rather than dropping it: absence is the
+# backlog saying the dependency is gone, while an unreadable record is the line asserting
+# one this cannot look up. That is not evidence the work can land, and the gate below
+# guards an irreversible merge, so it is answered unresolved. It is checked before the
+# lookup so the sentinel never reaches the loop's unquoted expansion, where it would
+# glob against the working directory.
 dep_unresolved() {
   local ids=${1-} id
+  case " $ids " in
+    *" $BLOCKER_UNRESOLVABLE "*) return 0 ;;               # recorded but unreadable
+  esac
   for id in $ids; do
     [ -f "$BL_DIR/$id" ] || continue                       # unknown: finished and pruned
     [ "$(meta_get "$BL_DIR/$id" state)" = 'done' ] || return 0

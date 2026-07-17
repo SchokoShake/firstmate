@@ -1581,6 +1581,8 @@ test_compose_pr_is_read_only_from_the_structured_position() {
 # is never rewritten when a blocker lands, so a fixture whose blockers are all in flight
 # cannot tell a gate that reads the dependency from one that reads the marker - they
 # agree on every such line. cleared-j2/prunedblk-k3/multiblk-l4 are what separates them.
+# badblk-n6 separates the two ways a gate can find no blocker id: pruned away (landed)
+# and written unreadably (unknowable), which mean opposite things.
 write_link_fixture() {
   local home=$1
   mkdir -p "$home/data" "$home/state"
@@ -1605,6 +1607,7 @@ EOF
 - [ ] cleared-j2 - Blocker landed, now review-ready https://github.com/acme/alpha/pull/53 blocked-by: landed-w0 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 - [ ] prunedblk-k3 - Blocker pruned out of Done https://github.com/acme/alpha/pull/54 blocked-by: ghost-z9 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 - [ ] multiblk-l4 - One landed, one still running https://github.com/acme/alpha/pull/55 blocked-by: landed-w0 blocked-by: extheld-e6 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] badblk-n6 - Blocker written as an issue number https://github.com/acme/alpha/pull/56 (repo: alpha) blocked-by: #42 - waiting on the upstream PR (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 - [ ] superseded-m5 - First PR closed, work moved https://github.com/acme/alpha/pull/682 https://github.com/acme/alpha/pull/687 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 ## Done
 - [x] landed-w0 - The blocker that landed https://github.com/acme/alpha/pull/49 (repo: alpha) (kind: ship) (merged 2026-07-13)
@@ -1929,6 +1932,20 @@ test_compose_blocked_by_gate_clears_when_the_blocker_lands() {
   printf '%s' "$out" | jq -e '.items[] | select(.id=="prunedblk-k3")
       | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
     || fail "a blocker pruned out of Done must not gate the Merge forever"$'\n'"$out"
+  # The other side of that coin, and the reason absence and unreadability cannot share an
+  # answer: a hand-maintained backlog (config/backlog-backend=manual, which this composer
+  # explicitly serves) can name a blocker in a shape that is not a task id at all. Absence
+  # is the backlog saying the dependency landed; this is the line asserting one that
+  # cannot be looked up, so it gates rather than merges over the fleet's own record.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="badblk-n6")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "a blocked-by record that names no readable id must NOT earn a Merge"$'\n'"$out"
+  # Only the one click is withheld: the captain still gets the link and the bookkeeping
+  # still stays out of the title.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="badblk-n6")
+      | (.title=="Blocker written as an issue number")
+      and (.body | test("\\[alpha #56\\]\\(https://github\\.com/acme/alpha/pull/56\\)"))' >/dev/null \
+    || fail "an unreadable blocker must still leave the card its link and clean title"$'\n'"$out"
   # Several blockers gate on ANY unfinished one: "tasks-axi block" and "--blocked-by" are
   # repeatable, and the backend emits one marker each, so reading only the first record
   # would clear this the moment the earlier blocker landed.
