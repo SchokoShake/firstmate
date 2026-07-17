@@ -57,6 +57,12 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+#   A ship/scout respawn over an existing task id REUSES the worktree= already
+#   recorded in state/<id>.meta rather than leasing a second one, so recovering a
+#   husk task (docs/herdr-backend.md "Respawn idempotency") keeps the crew's
+#   branch, commits, and uncommitted work reachable instead of stranding them in
+#   a durably-leased worktree nothing names. A recorded worktree that no longer
+#   exists warns and falls back to a fresh lease.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -250,11 +256,20 @@ orca_spawn_abort_cleanup() {  # <status>
 # it. Release it here on any such abort, mirroring ORCA_ABORT_CLEANUP above; the
 # flag is cleared once meta is written and teardown owns the lease instead.
 lease_spawn_abort_cleanup() {
+  local out
   [ "$LEASE_ABORT_CLEANUP" = 1 ] || return 0
   LEASE_ABORT_CLEANUP=0
   [ -n "$LEASED_WT" ] || return 0
-  ( cd "$PROJ_ABS" && treehouse return --force "$LEASED_WT" ) >/dev/null 2>&1 \
-    || echo "warning: could not release the treehouse lease on '$LEASED_WT' after a failed spawn of $ID; release it with 'cd $PROJ_ABS && treehouse return --force $LEASED_WT'" >&2
+  out=$( ( cd "$PROJ_ABS" && treehouse return --force "$LEASED_WT" ) 2>&1 ) && return 0
+  # An isolation-guard abort captured a path that is by definition NOT a pool
+  # worktree, so treehouse refuses to return it and there is no lease to leak.
+  # Staying silent there keeps the guard's own error the only thing the captain
+  # reads, instead of a second warning naming a command that just repeats the
+  # refusal. Every other failure is a real un-released lease and must be loud.
+  case "$out" in
+    *'not managed by treehouse'*) return 0 ;;
+  esac
+  echo "warning: could not release the treehouse lease on '$LEASED_WT' after a failed spawn of $ID; release it with 'cd $PROJ_ABS && treehouse return --force $LEASED_WT'" >&2
 }
 
 # Both handlers are `|| true`-guarded: each returns non-zero on its own
@@ -887,17 +902,48 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # from capture entirely. The lease is durable and released by fm-teardown's
   # `treehouse return --force <worktree=>`, exactly like every crew worktree
   # before (treehouse return handles leased and subshell-held worktrees alike).
-  WT=$( cd "$PROJ_ABS" && treehouse get --lease --lease-holder "fm-$ID" ) || {
-    echo "error: treehouse get --lease failed to lease a worktree for $ID in $PROJ_ABS; inspect window $T" >&2
-    exit 1
-  }
-  [ -n "$WT" ] || { echo "error: treehouse get --lease reported no worktree for $ID; inspect window $T" >&2; exit 1; }
-  # The lease is now durably held and only state/<id>.meta will hand it to
-  # teardown; arm the abort release for every failure path until that write.
-  LEASED_WT="$WT"
-  LEASE_ABORT_CLEANUP=1
+  #
+  # RESPAWN REUSE first, mirroring the secondmate branch's home= readback above:
+  # spawning over an existing task id is a documented recovery flow (a restarted
+  # server leaves a husk tab; docs/herdr-backend.md "Respawn idempotency"), and an
+  # unconditional lease there would reserve a SECOND worktree while the meta write
+  # below overwrote the only record of the first - stranding the crew's branch,
+  # commits, and uncommitted work in a durably-leased worktree nothing names and
+  # prune can never reclaim. A meta with worktree= means the task was never torn
+  # down (fm-teardown returns the worktree and removes the meta together), so its
+  # recorded worktree is still this task's own leased one: reuse it.
+  WT=
+  WT_SOURCE="treehouse get --lease"
+  if [ -f "$STATE/$ID.meta" ]; then
+    RESPAWN_WT=$(grep '^worktree=' "$STATE/$ID.meta" | cut -d= -f2- || true)
+    if [ -n "$RESPAWN_WT" ] && [ -d "$RESPAWN_WT" ]; then
+      WT="$RESPAWN_WT"
+      WT_SOURCE="the worktree= recorded in state/$ID.meta"
+    elif [ -n "$RESPAWN_WT" ]; then
+      # Recorded but gone: nothing of the crew's work survives there, so a fresh
+      # lease is the only way forward. Name the old path - treehouse may still
+      # hold its lease, and only the operator can release a path we cannot verify.
+      echo "warning: the worktree recorded for $ID ('$RESPAWN_WT') no longer exists; leasing a fresh one. If treehouse still holds its lease, release it with 'cd $PROJ_ABS && treehouse return --force $RESPAWN_WT'" >&2
+    fi
+  fi
+  if [ -z "$WT" ]; then
+    WT=$( cd "$PROJ_ABS" && treehouse get --lease --lease-holder "fm-$ID" ) || {
+      echo "error: treehouse get --lease failed to lease a worktree for $ID in $PROJ_ABS; inspect window $T" >&2
+      exit 1
+    }
+    [ -n "$WT" ] || { echo "error: treehouse get --lease reported no worktree for $ID; inspect window $T" >&2; exit 1; }
+    # The lease is now durably held and only state/<id>.meta will hand it to
+    # teardown; arm the abort release for every failure path until that write. A
+    # REUSED worktree is deliberately never armed: its meta already names it, so
+    # teardown owns that lease and releasing it here would hand a live crewmate's
+    # work back to the pool.
+    LEASED_WT="$WT"
+    LEASE_ABORT_CLEANUP=1
+  fi
 
-  validate_spawn_worktree "treehouse get --lease" "$T"
+  # Runs on the reuse path too: a meta written by the pre-fix capture can itself
+  # carry the poisoned worktree=$FM_HOME this guard exists to catch.
+  validate_spawn_worktree "$WT_SOURCE" "$T"
 
   # Move the crewmate's pane into the leased worktree with an absolute cd, so the
   # pane and the recorded worktree are the same path by construction - no polling,
