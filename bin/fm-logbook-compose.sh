@@ -114,12 +114,20 @@ valid_project_name() {
   return 0
 }
 
-# project_remote_repo <project>: sets REMOTE_REPO_OUT to the "<repo>" component of the
-# clone's "origin" remote, so the Merge gate can check a PR against the project's REAL
-# GitHub repo rather than the local directory name (which AGENTS.md section 6 lets the
-# captain choose freely: "git clone <url> projects/<name>"). Empty when the clone is
-# absent, is not a git repo, or has no "origin" - a local-only project legitimately has
-# none.
+# project_remote_repo <project>: sets REMOTE_REPO_OWNER_OUT and REMOTE_REPO_OUT to the
+# "<owner>" and "<repo>" components of the clone's "origin" remote, so the Merge gate can
+# check a PR against the project's REAL GitHub repo rather than the local directory name
+# (which AGENTS.md section 6 lets the captain choose freely: "git clone <url>
+# projects/<name>"). Empty when the clone is absent, is not a git repo, or has no
+# "origin" - a local-only project legitimately has none.
+#
+# The owner is resolved because the repo NAME alone identifies nothing: every fork of
+# <owner>/<repo> shares it, so repo-only matching would hand a one-click Merge to any
+# "https://github.com/anyone/<repo>/pull/<n>" - a fork's PR, or an unrelated repo that
+# merely shares a common name. REMOTE_REPO_OUT stays the resolution signal (an origin
+# either parses to a repo or it did not resolve at all); an origin whose shape yields a
+# repo but no owner - the owner-less "git@host:repo.git" form - is simply unprovable, and
+# the gate reads that as the non-match it is.
 #
 # The ONLY filesystem/git access in this otherwise pure text composer, deliberately
 # confined to this one call site and memoized per PROJECT (not per item) so composing a
@@ -141,50 +149,67 @@ valid_project_name() {
 # must be absolute (git ignores a relative entry); an unresolvable projects/ leaves it
 # empty and skips the lookup, since no clone can live under a dir that will not open.
 #
-# The cache is a newline-terminated "<project>\t<repo>" string rather than an
+# The cache is a newline-terminated "<project>\t<owner>\t<repo>" string rather than an
 # associative array, so this composes on bash 3.2 as well as 4+ (the stance
 # bin/fm-classify-lib.sh states and the rest of bin/ keeps); a "declare -A" here would
 # abort the whole script under "set -e" on a host whose bash is 3.2, taking the board
-# down with it. Neither field can hold whitespace - valid_project_name rejects it in the
-# key and the parse below blanks a repo containing any - so the record shape is
-# unambiguous, and anchoring the lookup on the leading separator keeps a project name
-# that is merely the SUFFIX of another (app vs. myapp) from matching its record.
+# down with it. No field can hold whitespace - valid_project_name rejects it in the key
+# and the parse below blanks an owner or repo containing any (the separator is itself
+# whitespace, so this is what keeps the record shape unambiguous) - and anchoring the
+# lookup on the leading separator keeps a project name that is merely the SUFFIX of
+# another (app vs. myapp) from matching its record.
 REMOTE_REPO_SEP=$'\t'
 REMOTE_REPO_EOR=$'\n'
 REMOTE_REPO_CACHE=$REMOTE_REPO_EOR
 REMOTE_REPO_OUT=""
+REMOTE_REPO_OWNER_OUT=""
 PROJECTS_CEILING=$(cd "$PROJECTS_DIR" 2>/dev/null && pwd -P) || PROJECTS_CEILING=""
 project_remote_repo() {
-  local project=${1-} url rest repo
+  local project=${1-} url rest record repo owner owner_rest
   REMOTE_REPO_OUT=""
+  REMOTE_REPO_OWNER_OUT=""
   valid_project_name "$project" || return 0
   case "$REMOTE_REPO_CACHE" in
     *"$REMOTE_REPO_EOR$project$REMOTE_REPO_SEP"*)
       rest=${REMOTE_REPO_CACHE#*"$REMOTE_REPO_EOR$project$REMOTE_REPO_SEP"}
-      REMOTE_REPO_OUT=${rest%%"$REMOTE_REPO_EOR"*}
+      record=${rest%%"$REMOTE_REPO_EOR"*}
+      REMOTE_REPO_OWNER_OUT=${record%%"$REMOTE_REPO_SEP"*}
+      REMOTE_REPO_OUT=${record#*"$REMOTE_REPO_SEP"}
       return 0
       ;;
   esac
   repo=""
+  owner=""
   url=""
   if [ -n "$PROJECTS_CEILING" ]; then
     url=$(GIT_CEILING_DIRECTORIES="$PROJECTS_CEILING" \
       git -C "$PROJECTS_DIR/$project" remote get-url origin 2>/dev/null) || url=""
   fi
   if [ -n "$url" ]; then
-    # Both remote forms end in the repo: "https://host/owner/repo[.git]" and
-    # "git@host:owner/repo[.git]" (whose owner-less shape leaves the "host:" prefix
-    # on the last path component).
+    # Both remote forms end in the repo, one path component below the owner:
+    # "https://host/owner/repo[.git]" and "git@host:owner/repo[.git]" (whose scp-style
+    # shape leaves the "host:" prefix on whichever component follows no "/" - the owner
+    # here, or the repo itself in the owner-less "git@host:repo.git" form, which yields
+    # no owner at all).
     rest=${url%.git}
     rest=${rest%/}
     repo=${rest##*/}
     repo=${repo##*:}
+    owner_rest=${rest%/*}
+    if [ "$owner_rest" != "$rest" ]; then
+      owner=${owner_rest##*/}
+      owner=${owner##*:}
+    fi
     case "$repo" in
       *[[:space:]]*) repo="" ;;
     esac
+    case "$owner" in
+      *[[:space:]]*) owner="" ;;
+    esac
   fi
-  REMOTE_REPO_CACHE=$REMOTE_REPO_CACHE$project$REMOTE_REPO_SEP$repo$REMOTE_REPO_EOR
+  REMOTE_REPO_CACHE=$REMOTE_REPO_CACHE$project$REMOTE_REPO_SEP$owner$REMOTE_REPO_SEP$repo$REMOTE_REPO_EOR
   REMOTE_REPO_OUT=$repo
+  REMOTE_REPO_OWNER_OUT=$owner
   return 0
 }
 
@@ -208,12 +233,22 @@ pr_url_ok() {
   return 0
 }
 
-# pr_repo <url>: the "<repo>" path component of a .../<owner>/<repo>/pull/<n> url;
-# empty when the url does not parse that way. The single owner of this parse: both
-# the label the captain reads and the repo the Merge gate checks are the same two
-# halves of one safety story, so they must never drift apart.
-pr_repo() {
-  local url=${1-} rest num
+# pr_slug <url>: sets PR_OWNER_OUT and PR_REPO_OUT to the "<owner>" and "<repo>" path
+# components of a .../<owner>/<repo>/pull/<n> url; both empty when the url does not parse
+# that way. The single owner of this parse: both the label the captain reads and the
+# owner/repo the Merge gate checks are the same two halves of one safety story, so they
+# must never drift apart. It answers through globals rather than stdout because the gate
+# needs BOTH halves and a "$(...)" reader could carry only one back out of its subshell.
+#
+# The repo is set even when no owner resolves, because the two halves are owed to
+# different callers: the label needs only the repo, while the gate demands both and reads
+# a missing owner as the non-match it is (compose_item).
+PR_OWNER_OUT=""
+PR_REPO_OUT=""
+pr_slug() {
+  local url=${1-} rest num owner_rest
+  PR_OWNER_OUT=""
+  PR_REPO_OUT=""
   case "$url" in
     *'/pull/'*) ;;
     *) return 0 ;;
@@ -223,7 +258,12 @@ pr_repo() {
     ''|*[!0-9]*) return 0 ;;
   esac
   rest=${url%'/pull/'*}
-  printf '%s' "${rest##*/}"
+  PR_REPO_OUT=${rest##*/}
+  # An unchanged strip means there was no further "/" and so no owner component at all,
+  # which must never be read as the repo standing in for its own owner.
+  owner_rest=${rest%/*}
+  if [ "$owner_rest" != "$rest" ]; then PR_OWNER_OUT=${owner_rest##*/}; fi
+  return 0
 }
 
 # pr_link <url>: the url as a markdown link - "[<repo> #<n>](<url>)" when it parses
@@ -234,7 +274,8 @@ pr_repo() {
 # card BODY, because a bare "#N" is dead text to the board's renderer.
 pr_link() {
   local url=$1 repo
-  repo=$(pr_repo "$url")
+  pr_slug "$url"                        # answers in PR_REPO_OUT; see its header
+  repo=$PR_REPO_OUT
   # The label sits inside "[...]", which the board's link regex reads as [^\]]+, so a
   # "]" in it would break the link; an unparseable url has no label to use at all.
   case "$repo" in
@@ -413,7 +454,7 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 # By that same logic the position alone is not proof: a captain who ends their own
 # one-liner with another repo's PR-shaped url hands the structured position a url that
 # is not this task's PR either. So the Merge option needs a VERIFIED PR - harvested
-# here AND naming the repo this task's project actually pushes to, read from the
+# here AND naming the owner/repo this task's project actually pushes to, read from the
 # clone's own "origin" remote (compose_item, project_remote_repo). Only the one-click
 # merge is withheld when it is not; the url still renders as a link.
 backlog_parse() {
@@ -610,7 +651,8 @@ compose_item() {
   local id=$1
   local rec="$BL_DIR/$id" meta="$STATE/$id.meta"
   local bstate title repo held hold_kind hold_reason blocked_by bl_pr captain_held live
-  local not_ready proj_path project pr pr_ok pr_name remote_name base_branch last kind detail
+  local not_ready proj_path project pr pr_ok pr_name pr_owner remote_name remote_owner
+  local base_branch last kind detail
   local body options note
 
   bstate=$(meta_get "$rec" state)
@@ -676,12 +718,17 @@ compose_item() {
 
   # A VERIFIED PR is one that is demonstrably THIS task's: its url names the repo this
   # task's project actually pushes to (see the header). Only a verified PR earns the
-  # Merge option a "merge" answer would irreversibly authorize. The match is on the
-  # repo alone, never owner/repo: the fallback marker records the project name with no
-  # owner, so requiring one would withhold every merge there is.
+  # Merge option a "merge" answer would irreversibly authorize.
   #
   # The clone's own "origin" is the authority, because the local directory name is the
   # captain's free choice (AGENTS.md section 6) and only incidentally equals the repo.
+  # A resolved origin is matched on the FULL owner/repo, which is what actually names a
+  # GitHub repo: the repo half alone is shared by every fork and by every unrelated
+  # project that happens to pick the same name, so matching it alone would offer the
+  # one-click Merge on a stranger's PR. The marker fallback below can only match the repo
+  # half - "(repo: <name>)" records the project name with no owner - which is exactly why
+  # it stays the fallback and never the authority.
+  #
   # When no remote resolves - no clone, not a repo, or a local-only project with no
   # remote at all - fall back to the marker rather than withhold: silently hiding the
   # Merge because infrastructure is ABSENT would be the very regression this composer
@@ -690,12 +737,18 @@ compose_item() {
   # Merge; the card still carries the link, so the captain loses only the one click.
   pr_ok=""
   if [ -n "$pr" ]; then
-    pr_name=$(pr_repo "$pr")
+    pr_slug "$pr"                         # answers in PR_OWNER_OUT/PR_REPO_OUT
+    pr_name=$PR_REPO_OUT
+    pr_owner=$PR_OWNER_OUT
     if [ -n "$pr_name" ]; then
-      project_remote_repo "$project"      # answers in REMOTE_REPO_OUT; see its header
+      project_remote_repo "$project"      # answers in REMOTE_REPO_*_OUT; see its header
       remote_name=$REMOTE_REPO_OUT
+      remote_owner=$REMOTE_REPO_OWNER_OUT
       if [ -n "$remote_name" ]; then
-        if [ "$pr_name" = "$remote_name" ]; then pr_ok=$pr; fi
+        if [ -n "$remote_owner" ] && [ "$pr_owner" = "$remote_owner" ] &&
+          [ "$pr_name" = "$remote_name" ]; then
+          pr_ok=$pr
+        fi
       elif [ -n "$repo" ] && [ "$pr_name" = "$repo" ]; then
         pr_ok=$pr
       fi

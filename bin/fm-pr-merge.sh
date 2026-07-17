@@ -25,11 +25,21 @@
 # board reads the url the captain merges from (bin/fm-logbook-compose.sh) - so
 # by the time that url reaches this script the PR is recorded, not unknown.
 #
-# Recording is SKIPPED here rather than attempted: fm-pr-check.sh tolerates a
-# missing meta, but it also arms state/<id>.check.sh, and only fm-teardown.sh
-# removes that. Arming a merge poll for a task teardown has already swept would
-# strand a check no teardown will ever clear again, reporting "merged" - of this
-# very merge - on every watcher cycle, forever, to no one.
+# fm-pr-check.sh is not the way to record it: it tolerates a missing meta, but it
+# also arms state/<id>.check.sh, and only fm-teardown.sh removes that. Arming a
+# merge poll for a task teardown has already swept would strand a check no teardown
+# will ever clear again, reporting "merged" - of this very merge - on every watcher
+# cycle, forever, to no one.
+#
+# What IS owed on this path is closing the backlog item, because nothing else will.
+# fm-teardown.sh is what normally prompts the "tasks-axi done" that moves a task to
+# Done, and it refuses outright without a meta - so on this path it has already run
+# and will never run again. Left open, the item keeps its captain hold and its PR in
+# the structured link position, which is precisely what the board composes a Merge
+# card from (bin/fm-logbook-compose.sh): resolving the card only clears the board
+# until the next sync recomposes the identical card from the still-open backlog, and
+# offers to re-merge work that already landed. Recording Done is what makes the
+# captain's merge stick.
 #
 # gh-axi pr merge expects a PR number and --repo <owner>/<repo>; it does not
 # parse a full https://github.com/<owner>/<repo>/pull/<n> URL. This script
@@ -53,7 +63,11 @@ shift 2
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 META="$STATE/$ID.meta"
+# shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 
 caller_has_merge_method() {
   local arg
@@ -109,3 +123,19 @@ if ! caller_has_merge_method "$@"; then
 fi
 
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" ${merge_args[@]+"${merge_args[@]}"} "$@"
+
+# The torn-down task's own close, owed only where no teardown is left to prompt it (see
+# the header). Strictly AFTER the merge, so a refused or failed merge never marks work
+# Done that never landed - "set -e" has already exited by here in that case.
+#
+# BEST-EFFORT, exactly as fm-pr-check.sh's durable half is: closing the backlog must
+# never fail a merge that GitHub has already taken, and it cannot be undone by exiting
+# non-zero here. It is equally a no-op when tasks-axi is absent, incompatible, or
+# config/backlog-backend=manual leaves the backlog to hand-editing, and when the id is
+# one the backlog never carried. The shared probe owns "is the tasks-axi backend
+# available", so it can never drift from bootstrap's. --file pins the write to THIS
+# home's backlog and nowhere else (prime directive 1 holds: never a project).
+if [ ! -f "$META" ] && fm_tasks_axi_backend_available "$CONFIG"; then
+  # "done" is quoted only to keep it a literal argument rather than the shell keyword.
+  tasks-axi "done" "$ID" --pr "$URL" --file "$DATA/backlog.md" >/dev/null 2>&1 || true
+fi

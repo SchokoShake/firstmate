@@ -9,15 +9,21 @@
 # two halves are tested apart: with a meta, record-then-merge (a); with none -
 # the torn-down task a board card outlives - merge from the URL alone (d).
 #
+# The no-meta half owes the DURABLE backlog its close instead (i), because the
+# teardown that would normally prompt one is what removed the meta, and an item left
+# open recomposes the very Merge card the captain just answered.
+#
 # Matrix:
 #   (a) merge records pr= and pr_head= before merging, and merges
 #   (b) merge is refused when gh-axi pr merge itself fails (no silent success)
 #   (c) extra gh-axi pr merge args are forwarded after number and --repo
-#   (d) a missing meta merges from the URL alone, recording and arming nothing
+#   (d) a missing meta merges from the URL alone, recording and arming no state
 #   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
+#   (i) a missing meta closes the backlog item, but only on a merge that succeeded,
+#       and never while a live meta leaves the close to teardown
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -88,13 +94,48 @@ SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
 }
 
+# The backlog and config are pinned INTO the case dir: the durable half of both the
+# recording path (fm-pr-check.sh) and the no-meta close writes through them, and left at
+# their defaults they would resolve against FM_ROOT_OVERRIDE - this repo's own checkout.
 run_pr_merge() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
+}
+
+# seed_backlog <case_dir> <id> <url>: a real tasks-axi backlog holding one in-flight,
+# captain-held task carrying <url> in the structured link position - exactly what a
+# torn-down review-ready task leaves behind, and what the board composes its Merge card
+# from. Driving the real tool is the same precedent tests/fm-pr-check.test.sh sets: the
+# assertion is about the item's real resulting STATE, which only the real backend can
+# answer for. A no-op when tasks-axi is not installed, so the cases below assert on the
+# backlog only when there is one.
+seed_backlog() {
+  local case_dir=$1 id=$2 url=$3
+  local bl="$case_dir/data/backlog.md"
+  mkdir -p "$case_dir/data" "$case_dir/config"
+  command -v tasks-axi >/dev/null 2>&1 || return 0
+  printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$bl"
+  tasks-axi add "$id" "Ship the widget endpoint" --kind ship --repo alpha --start \
+    --file "$bl" >/dev/null 2>&1 || true
+  tasks-axi update "$id" --pr "$url" --file "$bl" >/dev/null 2>&1 || true
+  tasks-axi hold "$id" --reason 'review-ready - your call' --kind captain \
+    --file "$bl" >/dev/null 2>&1 || true
+}
+
+# The item's own section, so a close is asserted as the state change it is rather than
+# by grepping for a marker that appears in every section alike.
+backlog_section_of() {
+  local bl=$1 id=$2
+  awk -v id="$id" '
+    /^## /  { section = substr($0, 4) }
+    index($0, id) && /^- \[/ { print section; exit }
+  ' "$bl"
 }
 
 test_records_pr_and_head_before_merging() {
@@ -155,31 +196,116 @@ test_extra_merge_args_forwarded() {
 }
 
 test_missing_meta_merges_from_the_url_alone() {
-  local case_dir fakebin
+  local case_dir fakebin url=https://github.com/example/repo/pull/21
   case_dir="$TMP_ROOT/missing-meta"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$fakebin"
   add_gh_mocks "$case_dir" 3333333333333333333333333333333333333333
   : > "$case_dir/gh-axi.log"
+  seed_backlog "$case_dir" missing-x1 "$url"
 
   # THE headline flow: the captain taps Merge on a board card whose crew was torn
   # down long ago, so there is no meta - which is the documented end-state for
   # review-ready work (AGENTS.md section 7), not a fault. Refusing here dead-ended
   # the one path the board's Merge option exists to drive.
-  run_pr_merge "$case_dir" missing-x1 https://github.com/example/repo/pull/21 \
+  run_pr_merge "$case_dir" missing-x1 "$url" \
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "missing-meta: fm-pr-merge must merge from the PR URL alone"$'\n'"$(cat "$case_dir/stderr")"
 
   grep -qxF 'pr merge 21 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "missing-meta: the URL alone must still parse to number + --repo"$'\n'"$(cat "$case_dir/gh-axi.log")"
-  # Recording is not merely tolerated when absent - it is skipped. It exists to serve
-  # a later teardown, and teardown is what removed the meta: it has already run and
-  # will never run again, so an armed poll would report this very merge forever.
+  # The META record is skipped rather than tolerated-when-absent. It exists to serve a
+  # later teardown, and teardown is what removed the meta: it has already run and will
+  # never run again, so an armed poll would report this very merge forever.
   assert_absent "$case_dir/state/missing-x1.check.sh" \
     "missing-meta: no meta means teardown already swept this task - arming a merge poll would strand it"
   assert_absent "$case_dir/state/missing-x1.meta" \
     "missing-meta: a torn-down task's meta must not be resurrected by merging"
   pass "fm-pr-merge merges from the PR URL alone when a torn-down task has no meta"
+}
+
+test_missing_meta_closes_the_backlog_item() {
+  local case_dir fakebin section url=https://github.com/example/repo/pull/24
+  command -v tasks-axi >/dev/null 2>&1 || {
+    pass "fm-pr-merge backlog close (skipped: no tasks-axi on PATH)"
+    return 0
+  }
+  case_dir="$TMP_ROOT/missing-meta-closes"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$fakebin"
+  add_gh_mocks "$case_dir" aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  : > "$case_dir/gh-axi.log"
+  seed_backlog "$case_dir" missing-x1 "$url"
+
+  section=$(backlog_section_of "$case_dir/data/backlog.md" missing-x1)
+  [ "$section" = "In flight" ] \
+    || fail "fixture: the item must start In flight, not '$section'"
+
+  run_pr_merge "$case_dir" missing-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "missing-meta-closes: fm-pr-merge failed"$'\n'"$(cat "$case_dir/stderr")"
+
+  # Without this, resolving the card only clears the board until the next sync
+  # recomposes the identical Merge card from the still-open backlog item - offering to
+  # re-merge work that already landed. No teardown is left to prompt the close: it is
+  # what removed the meta.
+  section=$(backlog_section_of "$case_dir/data/backlog.md" missing-x1)
+  [ "$section" = "Done" ] \
+    || fail "missing-meta-closes: the merged item must land in Done, not '$section'"$'\n'"$(cat "$case_dir/data/backlog.md")"
+  assert_grep "$url" "$case_dir/data/backlog.md" \
+    "missing-meta-closes: the Done entry must keep the PR url it merged"
+  pass "fm-pr-merge closes the backlog item when a torn-down task has no meta"
+}
+
+test_missing_meta_failed_merge_leaves_the_item_open() {
+  local case_dir fakebin rc section url=https://github.com/example/repo/pull/25
+  command -v tasks-axi >/dev/null 2>&1 || {
+    pass "fm-pr-merge failed-merge backlog guard (skipped: no tasks-axi on PATH)"
+    return 0
+  }
+  case_dir="$TMP_ROOT/missing-meta-merge-fails"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$fakebin"
+  add_gh_mocks_merge_fails "$case_dir"
+  : > "$case_dir/gh-axi.log"
+  seed_backlog "$case_dir" missing-x1 "$url"
+
+  set +e
+  run_pr_merge "$case_dir" missing-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  # The close is a record OF the merge, so it must never outrun one: a card the captain
+  # still owes a merge is the honest board.
+  expect_code 1 "$rc" "missing-meta-merge-fails: the gh-axi merge failure must propagate"
+  section=$(backlog_section_of "$case_dir/data/backlog.md" missing-x1)
+  [ "$section" = "In flight" ] \
+    || fail "missing-meta-merge-fails: a failed merge must leave the item open, not '$section'"
+  pass "fm-pr-merge does not close the backlog item when the merge itself fails"
+}
+
+test_live_meta_leaves_the_close_to_teardown() {
+  local case_dir section url=https://github.com/example/repo/pull/26
+  command -v tasks-axi >/dev/null 2>&1 || {
+    pass "fm-pr-merge live-meta close guard (skipped: no tasks-axi on PATH)"
+    return 0
+  }
+  case_dir=$(make_case live-meta-no-close)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  : > "$case_dir/gh-axi.log"
+  seed_backlog "$case_dir" task-x1 "$url"
+
+  run_pr_merge "$case_dir" task-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "live-meta-no-close: fm-pr-merge failed"
+
+  # The close belongs to whoever is last: with a crew still standing, fm-teardown.sh is
+  # what prompts it, and closing here would race its landed-check to the record.
+  section=$(backlog_section_of "$case_dir/data/backlog.md" task-x1)
+  [ "$section" = "In flight" ] \
+    || fail "live-meta-no-close: a live crew's item is teardown's to close, not '$section'"
+  pass "fm-pr-merge leaves a live crew's backlog item for teardown to close"
 }
 
 test_malformed_url_refuses_before_merge() {
@@ -308,6 +434,9 @@ test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
 test_missing_meta_merges_from_the_url_alone
+test_missing_meta_closes_the_backlog_item
+test_missing_meta_failed_merge_leaves_the_item_open
+test_live_meta_leaves_the_close_to_teardown
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording
 test_repo_override_args_refuse_before_recording

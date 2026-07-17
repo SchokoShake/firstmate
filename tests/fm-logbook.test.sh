@@ -1715,6 +1715,7 @@ EOF
 - [ ] spoof-c3 - Looks local, is not https://github.com/acme/movebank-explorer/pull/13 (repo: movebank-explorer) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 - [ ] noclone-d4 - Ship the uncloned thing https://github.com/acme/gone/pull/8 (repo: gone) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 - [ ] noremote-e5 - Ship the solo thing https://github.com/acme/solo/pull/9 (repo: solo) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] fork-f6 - Same repo name, another owner https://github.com/notacme/alpha/pull/77 (repo: alpha) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
 EOF
   git init -q "$home/projects/alpha"
   git -C "$home/projects/alpha" remote add origin https://github.com/acme/alpha.git
@@ -1763,6 +1764,26 @@ test_compose_merge_follows_the_clone_to_its_real_repo() {
       and (.body | test("\\[movebank-explorer #13\\]\\(https://github\\.com/acme/movebank-explorer/pull/13\\)"))' >/dev/null \
     || fail "a resolved origin must overrule a matching marker, while keeping the link"$'\n'"$out"
   pass "fm-logbook-compose verifies a PR against the clone's real origin, not the directory name"
+}
+
+test_compose_merge_requires_the_prs_owner_to_match_too() {
+  local home out
+  home="$TMP_ROOT/compose-remote-owner"; write_remote_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The repo NAME alone names nothing: every fork of acme/alpha is also called "alpha",
+  # as is every unrelated project that picked a common word. So a resolved origin is
+  # matched on the full owner/repo - otherwise this card would offer to irreversibly
+  # merge a stranger's PR into the captain's repo on one tap.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="fork-f6")
+      | (.kind=="decision") and (.options == [])' >/dev/null \
+    || fail "a PR under another owner must NOT earn a Merge option"$'\n'"$out"
+  # Withheld, not hidden: only the one click is lost, exactly as for any other
+  # unverified PR, and the captain can still open it and judge for themself.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="fork-f6")
+      | .body | test("\\[alpha #77\\]\\(https://github\\.com/notacme/alpha/pull/77\\)")' >/dev/null \
+    || fail "a PR under another owner must still render as a clickable link"$'\n'"$out"
+  pass "fm-logbook-compose withholds Merge for a PR whose owner is not the clone's own"
 }
 
 test_compose_merge_falls_back_when_no_remote_resolves() {
@@ -2396,6 +2417,7 @@ test_compose_merge_needs_a_repo_matched_pr
 test_compose_merge_needs_a_repo_marker_to_verify_against
 test_compose_merge_survives_the_documented_combined_repo_marker
 test_compose_merge_follows_the_clone_to_its_real_repo
+test_compose_merge_requires_the_prs_owner_to_match_too
 test_compose_merge_falls_back_when_no_remote_resolves
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge
