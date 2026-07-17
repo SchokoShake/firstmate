@@ -31,6 +31,10 @@
 #   (k) a close that fails is reported rather than swallowed, and still never fails
 #       a merge GitHub has already taken; an id the backlog never carried is not a
 #       failure to report at all
+#   (l) a close SKIPPED because the backlog is hand-maintained is reported on the same
+#       terms - it is equally an item left open, and there is no teardown left to prompt
+#       the hand-edit - while an untracked or already-Done item stays quiet, because
+#       neither leaves a card to recompose
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -467,6 +471,125 @@ test_missing_meta_failed_close_is_reported_not_swallowed() {
   pass "fm-pr-merge reports a failed backlog close without failing the landed merge"
 }
 
+# A tasks-axi the shared probe REFUSES, so the close is skipped rather than attempted.
+# config/backlog-backend=manual is the captain's documented opt-out (AGENTS.md section 10)
+# and reaches the same skip through the same probe; stubbing the tool as well is what makes
+# "no close was attempted" a claim about the gate rather than about the tool's absence.
+add_manual_backend() {
+  local case_dir=$1
+  printf 'manual\n' > "$case_dir/config/backlog-backend"
+  cat > "$case_dir/fakebin/tasks-axi" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$case_dir/tasks-axi.log"
+case "\${1:-} \${2:-}" in
+  "--version "*|"--version") printf '0.2.2\n'; exit 0 ;;
+  "update --help") printf 'usage: tasks-axi update <id>\n  --archive-body\n'; exit 0 ;;
+  "mv --help") printf 'usage: tasks-axi mv [<id>...] <section>\n'; exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/tasks-axi"
+}
+
+# hand_backlog <case_dir> <id> <section> <url>: the shape a manual home actually keeps -
+# a captain-held item carrying <url> in the structured link position, written by hand
+# rather than by the tool, because under this backend nothing else ever writes it. The
+# item is placed under <section>, the heading that decides whether anything is still owed.
+hand_backlog() {
+  local case_dir=$1 id=$2 section=$3 url=$4 bl in_flight="" done_item=""
+  bl="$case_dir/data/backlog.md"
+  mkdir -p "$case_dir/data" "$case_dir/config"
+  if [ "$section" = Done ]; then
+    done_item="- [x] $id - Ship the widget endpoint - $url (merged 2026-07-17)"
+  else
+    in_flight="- [ ] $id - Ship the widget endpoint $url (repo: alpha) (hold-kind: captain) (hold: review-ready - your call)"
+  fi
+  printf '# Backlog\n\n## In flight\n\n%s\n\n## Queued\n\n## Done\n\n%s\n' \
+    "$in_flight" "$done_item" > "$bl"
+}
+
+test_missing_meta_manual_backend_reports_the_skipped_close() {
+  local case_dir fakebin rc url=https://github.com/example/repo/pull/31
+  case_dir="$TMP_ROOT/missing-meta-manual"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/config" "$fakebin"
+  add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
+  add_manual_backend "$case_dir"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/tasks-axi.log"
+  hand_backlog "$case_dir" missing-x1 'In flight' "$url"
+
+  set +e
+  run_pr_merge "$case_dir" missing-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "missing-meta-manual: the backlog backend must never fail a landed merge"
+  grep -qxF 'pr merge 31 --repo example/repo --squash' "$case_dir/gh-axi.log" \
+    || fail "missing-meta-manual: the merge itself must still have happened"
+  # The opt-out is honored: hand-editing means hand-editing, so nothing writes the backlog.
+  assert_no_grep 'done missing-x1' "$case_dir/tasks-axi.log" \
+    "missing-meta-manual: the manual backend must make no tasks-axi done call"
+  # But the close is still OWED, and no teardown is left to prompt the hand-edit - a missing
+  # meta is what says teardown has already run. Skipped in silence, the item stays open and
+  # the next sync recomposes the very Merge card the captain just answered.
+  assert_grep 'backlog item missing-x1 is still open' "$case_dir/stderr" \
+    "missing-meta-manual: a close skipped because the backend is not in use must be reported"
+  pass "fm-pr-merge reports the close it cannot perform under config/backlog-backend=manual"
+}
+
+test_missing_meta_manual_backend_untracked_id_is_quiet() {
+  local case_dir fakebin rc url=https://github.com/example/repo/pull/32
+  case_dir="$TMP_ROOT/missing-meta-manual-untracked"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/config" "$fakebin"
+  add_gh_mocks "$case_dir" 2121212121212121212121212121212121212121
+  add_manual_backend "$case_dir"
+  : > "$case_dir/gh-axi.log"
+  # A real hand-maintained backlog that simply does not carry this id.
+  hand_backlog "$case_dir" other-x9 'In flight' https://github.com/example/repo/pull/99
+
+  set +e
+  run_pr_merge "$case_dir" missing-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  # Same rule the tasks-axi path reads out of "code: NOT_FOUND", asked of the FILE so the
+  # backend that is never consulted can answer it too: no open item means no card can
+  # compose from one, so there is nothing to close and nothing to report.
+  expect_code 0 "$rc" "missing-meta-manual-untracked: an untracked id must not fail the merge"
+  assert_no_grep 'still open' "$case_dir/stderr" \
+    "missing-meta-manual-untracked: an id the backlog never carried is not a close to report"
+  pass "fm-pr-merge does not report a skipped close for an id a manual backlog never carried"
+}
+
+test_missing_meta_manual_backend_done_item_is_quiet() {
+  local case_dir fakebin rc url=https://github.com/example/repo/pull/33
+  case_dir="$TMP_ROOT/missing-meta-manual-done"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/config" "$fakebin"
+  add_gh_mocks "$case_dir" 3131313131313131313131313131313131313131
+  add_manual_backend "$case_dir"
+  : > "$case_dir/gh-axi.log"
+  # Already closed by hand - the captain merged from a card composed before they did.
+  hand_backlog "$case_dir" missing-x1 Done "$url"
+
+  set +e
+  run_pr_merge "$case_dir" missing-x1 "$url" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  # A Done item composes no card at all (fm-logbook-compose.sh returns early on it), so
+  # nothing is owed and the warning would be a false alarm.
+  expect_code 0 "$rc" "missing-meta-manual-done: an already-closed item must not fail the merge"
+  assert_no_grep 'still open' "$case_dir/stderr" \
+    "missing-meta-manual-done: an item already in Done is not a close to report"
+  pass "fm-pr-merge does not report a skipped close for an item already in Done"
+}
+
 test_missing_meta_untracked_id_closes_quietly() {
   local case_dir fakebin rc url=https://github.com/example/repo/pull/30
   command -v tasks-axi >/dev/null 2>&1 || {
@@ -627,6 +750,9 @@ test_live_meta_leaves_the_close_to_teardown
 test_missing_meta_refreshes_the_project_clone
 test_live_meta_leaves_the_clone_refresh_to_teardown
 test_missing_meta_failed_close_is_reported_not_swallowed
+test_missing_meta_manual_backend_reports_the_skipped_close
+test_missing_meta_manual_backend_untracked_id_is_quiet
+test_missing_meta_manual_backend_done_item_is_quiet
 test_missing_meta_untracked_id_closes_quietly
 test_malformed_url_refuses_before_merge
 test_rejects_unsafe_url_segments_before_recording

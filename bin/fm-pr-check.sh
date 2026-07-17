@@ -55,8 +55,24 @@ fi
 # tasks-axi is absent, incompatible, or config/backlog-backend=manual leaves the backlog
 # to hand-editing - as must an id the backlog has not caught up to yet. The shared probe
 # owns "is the tasks-axi backend available", so it can never drift from bootstrap's.
+#
+# Best-effort is not silent, though, and the two are easy to conflate: not failing the arm
+# is the point, hiding WHY the record is missing never was. The loss surfaces nowhere near
+# here and long after - while the crew lives, compose reads pr= from the meta and the card
+# looks right; once fm-teardown.sh sweeps that meta, this record's absence is what silently
+# downgrades the card to no PR link and no Merge, which is the exact durability this
+# script's second half exists to provide.
+#
+# NOT_FOUND is the one failure that is nothing to report, and it is the tolerated case the
+# probe above cannot cover: the backlog answering that it does not carry this id yet - the
+# window between fm-spawn and the backlog write. Everything else is a real loss.
 if fm_tasks_axi_backend_available "$CONFIG"; then
-  tasks-axi update "$ID" --pr "$URL" --file "$DATA/backlog.md" >/dev/null 2>&1 || true
+  if ! record_err=$(tasks-axi update "$ID" --pr "$URL" --file "$DATA/backlog.md" 2>&1); then
+    case "$record_err" in
+      *'code: NOT_FOUND'*) ;;
+      *) echo "warning: could not record $URL on backlog item $ID; the board will lose this PR once the crew is torn down: ${record_err//$'\n'/ }" >&2 ;;
+    esac
+  fi
 fi
 
 cat > "$STATE/$ID.check.sh" <<EOF

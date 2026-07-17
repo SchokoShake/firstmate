@@ -41,7 +41,10 @@
 # a Merge card from (bin/fm-logbook-compose.sh): resolving the card only clears the board
 # until the next sync recomposes the identical card from the still-open backlog, and
 # offers to re-merge work that already landed. Recording Done is what makes the
-# captain's merge stick.
+# captain's merge stick. Where the close cannot be performed - it failed, or the backlog is
+# hand-maintained and there is no teardown left to prompt the hand-edit - it is REPORTED
+# rather than skipped in silence, because an item left open silently is the one that
+# recomposes that card. Best-effort means never failing a landed merge, never hiding.
 #
 # Refreshing the project clone is the second (fm-teardown.sh's own fm-fleet-sync.sh call).
 # Left stale, the clone hands an out-of-date base to bin/fm-review-diff.sh and to every
@@ -115,9 +118,24 @@ reject_repo_overrides() {
   return 0
 }
 
-# backlog_project_of <id>: the bare project name from the item's "(repo: <name>)" marker
-# in THIS home's durable backlog, or nothing when the backlog does not carry the id, the
-# item records no project, or the name is not one that can address a clone.
+# backlog_item_of <id>: THIS home's durable record of <id>, as "<section>\t<project>", or
+# nothing at all when the backlog does not carry the id as an item of its own.
+#
+# One scan, read ONCE and BEFORE the close - which is the only moment both answers exist,
+# because closing is what moves the item and done_keep can then prune it out of the file
+# entirely. Two callers ask two questions of the same line:
+#
+#   <section>  the "## " heading the item sits under, normalized as
+#              bin/fm-logbook-compose.sh's backlog_parse normalizes it, and empty under a
+#              heading that is not a task section (where compose reads no item either).
+#              "done" is the one value that means nothing is owed: compose_item returns
+#              early on a Done item, so no card can compose from one and there is nothing
+#              left to close. This is the same question "code: NOT_FOUND" answers for the
+#              tasks-axi path - asked of the file, so the manual backend can answer it too.
+#   <project>  the bare project name from the item's "(repo: <name>)" marker, or empty
+#              when the item records no project, or one that cannot address a clone.
+#              Deliberately NOT gated on section: the clone refresh is owed for the merge
+#              that just landed, whatever shape the heading around the item is in.
 #
 # The file is read directly rather than through "tasks-axi show", for the same reason
 # bin/fm-logbook-compose.sh reads it directly: it then serves a backlog hand-maintained
@@ -138,10 +156,16 @@ reject_repo_overrides() {
 # an unresolvable name as a path, so an item whose marker was hand-edited into something
 # that is not a project name must resolve to nothing here rather than point a sanctioned
 # write at a directory outside projects/.
-backlog_project_of() {
-  local id=$1 line rest item repo
+backlog_item_of() {
+  local id=$1 line rest item repo section=""
   [ -f "$DATA/backlog.md" ] || return 0
   while IFS= read -r line; do
+    case "$line" in
+      '## In flight'*) section=in_flight; continue ;;
+      '## Queued'*)    section=queued;    continue ;;
+      '## Done'*)      section='done';    continue ;;   # quoted to stay a literal, not the keyword
+      '## '*)          section="";        continue ;;   # some other H2: not a task section
+    esac
     item=""
     case "$line" in
       '- [ ] '*) rest=${line#'- [ ] '} ;;
@@ -163,18 +187,20 @@ backlog_project_of() {
       esac
     fi
     [ "$item" = "$id" ] || continue
+    repo=""
     case "$line" in
       *' (repo: '*) repo=${line#*' (repo: '} ;;
-      *) return 0 ;;
     esac
-    repo=${repo%%')'*}
-    repo=${repo%%,*}
-    repo=${repo#"${repo%%[![:space:]]*}"}
-    repo=${repo%"${repo##*[![:space:]]}"}
-    case "$repo" in
-      ''|*[[:space:]]*|*/*|*\\*|*..*) return 0 ;;
-    esac
-    printf '%s' "$repo"
+    if [ -n "$repo" ]; then
+      repo=${repo%%')'*}
+      repo=${repo%%,*}
+      repo=${repo#"${repo%%[![:space:]]*}"}
+      repo=${repo%"${repo##*[![:space:]]}"}
+      case "$repo" in
+        ''|*[[:space:]]*|*/*|*\\*|*..*) repo="" ;;
+      esac
+    fi
+    printf '%s\t%s' "$section" "$repo"
     return 0
   done < "$DATA/backlog.md"
   return 0
@@ -203,26 +229,35 @@ gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" ${merge_args[@]+"${merg
 # Done that never landed, nor syncs a clone for a merge that never happened - "set -e"
 # has already exited by here in that case.
 if [ ! -f "$META" ]; then
-  # Before the close, which is what moves (and can prune) the item that records it.
-  PROJECT=$(backlog_project_of "$ID")
+  # Before the close, which is what moves (and can prune) the item both answers come from.
+  BL_ITEM=$(backlog_item_of "$ID")
+  BL_SECTION=${BL_ITEM%%$'\t'*}
+  PROJECT=${BL_ITEM#*$'\t'}
 
   # BEST-EFFORT, exactly as fm-pr-check.sh's durable half is: closing the backlog must
   # never fail a merge that GitHub has already taken, and it cannot be undone by exiting
-  # non-zero here. It is equally a no-op when tasks-axi is absent, incompatible, or
-  # config/backlog-backend=manual leaves the backlog to hand-editing. The shared probe
-  # owns "is the tasks-axi backend available", so it can never drift from bootstrap's.
-  # --file pins the write to THIS home's backlog and nowhere else (prime directive 1
-  # holds: never a project).
+  # non-zero here. The shared probe owns "is the tasks-axi backend available", so it can
+  # never drift from bootstrap's. --file pins the write to THIS home's backlog and nowhere
+  # else (prime directive 1 holds: never a project).
   #
-  # Best-effort is not silent, though: a close that fails leaves exactly the open item
-  # this path exists to close, so the next sync recomposes the Merge card the captain
-  # just answered and offers to re-merge landed work. Reporting it is what lets firstmate
-  # close the item by hand instead of meeting that card again.
+  # Best-effort is not silent, though: an item this path leaves open is the very one the
+  # next sync recomposes the captain's just-answered Merge card from, offering to re-merge
+  # landed work. Reporting it is what lets firstmate close the item by hand instead of
+  # meeting that card again - so every way the close can fail to happen is reported, and
+  # the two ways it can be rightly SKIPPED are the only silence:
   #
-  # NOT_FOUND is the one failure that is genuinely nothing to report: it is the backlog
-  # answering that it does not carry this id at all (or has no such file), so there is no
-  # open item, and no card can compose from one. Warning there would send firstmate
-  # hunting for an item that does not exist.
+  #   - the item is not there to close. "code: NOT_FOUND" is the backlog answering that it
+  #     does not carry this id at all (or has no such file); an empty or "done" section is
+  #     the same answer read from the file, for a backend that is not asked. Either way no
+  #     open item exists, so no card can compose from one, and warning would send firstmate
+  #     hunting for an item that is not there.
+  #   - the merge itself never happened. "set -e" has already exited above.
+  #
+  # Everything else is reported, including the case that reaches NEITHER branch's write:
+  # tasks-axi absent, incompatible, or config/backlog-backend=manual leaving the backlog to
+  # hand-editing (AGENTS.md section 10). The close is skipped there by design, but it is
+  # still owed - and no teardown is left to prompt the hand-edit, because a missing meta is
+  # what says teardown has already run.
   if fm_tasks_axi_backend_available "$CONFIG"; then
     # "done" is quoted only to keep it a literal argument rather than the shell keyword.
     if ! close_err=$(tasks-axi "done" "$ID" --pr "$URL" --file "$DATA/backlog.md" 2>&1); then
@@ -231,6 +266,8 @@ if [ ! -f "$META" ]; then
         *) echo "warning: merged $URL but could not close backlog item $ID; close it by hand or the board will re-offer the merge: ${close_err//$'\n'/ }" >&2 ;;
       esac
     fi
+  elif [ -n "$BL_SECTION" ] && [ "$BL_SECTION" != 'done' ]; then
+    echo "warning: merged $URL but the tasks-axi backend is not in use, so backlog item $ID is still open; move it to Done by hand or the board will re-offer the merge" >&2
   fi
 
   # The clone refresh teardown would have done, best-effort on the same terms and for the

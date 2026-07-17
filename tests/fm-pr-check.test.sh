@@ -19,8 +19,10 @@
 #   (c) config/backlog-backend=manual makes no tasks-axi call, and still arms
 #   (d) an incompatible tasks-axi makes no update call, and still arms
 #   (e) tasks-axi absent from PATH is non-fatal, and still arms
-#   (f) a task the backlog has not caught up to is non-fatal, and still arms
-#   (g) re-arming the same PR does not record it twice
+#   (f) a task the backlog has not caught up to is non-fatal, still arms, and stays quiet
+#   (g) a record that fails for any OTHER reason is reported rather than swallowed, and
+#       still never fails the arm
+#   (h) re-arming the same PR does not record it twice
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -217,7 +219,61 @@ test_unknown_task_is_not_fatal() {
   expect_code 0 "$rc" "fm-pr-check must exit 0 for a task the backlog does not have"
   assert_present "$home/state/ghost-z9.check.sh" \
     "an unknown task must not stop fm-pr-check arming the merge poll"
+  # Tolerated means quiet: this is the one failure that is genuinely nothing to report, so
+  # it must not be lumped in with the store errors that ARE a real loss.
+  assert_not_contains "$out" 'could not record' \
+    "an id the backlog has not caught up to yet is not a failure to report"
   pass "fm-pr-check tolerates a task the backlog has not caught up to yet"
+}
+
+# A tasks-axi whose backend probe passes but whose "update" fails for a reason that is not
+# the backlog simply not carrying the id - a store or config error.
+make_failing_tasks_axi() {
+  local home=$1 fakebin
+  fakebin=$(fm_fakebin "$home")
+  cat > "$fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version|-v|-V) printf '%s\n' 'tasks-axi 0.2.2'; exit 0 ;;
+  update)
+    case " $* " in
+      *--help*) printf '%s\n' '  --archive-body   archive the previous body'; exit 0 ;;
+    esac
+    printf 'error: "backlog store is locked"\ncode: IO_ERROR\n' >&2
+    exit 1
+    ;;
+  mv) case " $* " in *--help*) printf '%s\n' 'usage: tasks-axi mv [<id>...] --to <path>'; exit 0 ;; esac ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tasks-axi"
+  printf '%s\n' "$fakebin"
+}
+
+test_failed_record_is_reported_not_swallowed() {
+  local home fakebin out rc
+  home=$(make_home record-fails)
+  fakebin=$(make_failing_tasks_axi "$home")
+
+  set +e
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" "$PR_CHECK" ship-a1 "$URL" 2>&1)
+  rc=$?
+  set -e
+
+  # Best-effort is about not failing the ARM, which is this script's actual job - never
+  # about hiding why the durable record is missing.
+  expect_code 0 "$rc" "a failed backlog record must not fail fm-pr-check"
+  assert_present "$home/state/ship-a1.check.sh" \
+    "a failed backlog record must not stop fm-pr-check arming the merge poll"
+  # Swallowed, this loss surfaces nowhere near here and long after: the card looks right
+  # while the crew lives (compose reads pr= from the meta), and silently loses its PR link
+  # and its Merge the moment teardown sweeps that meta - which is exactly when the captain
+  # needs it.
+  assert_contains "$out" 'could not record' \
+    "a failed backlog record must be reported, not swallowed"
+  assert_contains "$out" 'IO_ERROR' \
+    "the report must carry the backend's own reason"
+  pass "fm-pr-check reports a failed durable record without failing the arm"
 }
 
 test_rearming_does_not_duplicate_the_record() {
@@ -247,4 +303,5 @@ test_manual_backend_does_not_touch_the_backlog
 test_incompatible_tasks_axi_does_not_touch_the_backlog
 test_absent_tasks_axi_is_not_fatal
 test_unknown_task_is_not_fatal
+test_failed_record_is_reported_not_swallowed
 test_rearming_does_not_duplicate_the_record
