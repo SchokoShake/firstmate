@@ -5,11 +5,11 @@
 # Usage: fm-logbook-refresh.sh
 #
 # Runs fm-logbook-compose.sh (the {projects, items} baseline from data/projects.md,
-# data/backlog.md, state/*.meta, and state/*.status) and hands it to
-# fm-logbook-sync.sh (POST /api/sync). This is what bootstrap invokes after the
-# board server is up so the session-start reconcile is automatic, not a step
-# firstmate has to remember; firstmate can also run it by hand mid-session to
-# re-truth the board.
+# data/backlog.md, state/*.meta, state/*.status, and each project clone's "origin"
+# remote) and hands it to fm-logbook-sync.sh (POST /api/sync). This is what
+# bootstrap invokes after the board server is up so the session-start reconcile is
+# automatic, not a step firstmate has to remember; firstmate can also run it by
+# hand mid-session to re-truth the board.
 #
 # Inert by default: a hard no-op (exit 0, no output) unless logbook is opted in via
 # a truthy LOGBOOK_ENABLE. Honors LOGBOOK_DRY_RUN transitively - fm-logbook-sync.sh

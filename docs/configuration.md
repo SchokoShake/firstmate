@@ -20,6 +20,9 @@ Bootstrap requires compatible `tasks-axi` on every profile; see "Toolchain" belo
 Set the local, gitignored `config/backlog-backend` file to `manual` to force manual backlog editing and suppress `TASKS_AXI: available`, not missing-tool reporting.
 Absent or `tasks-axi` selects the default tasks-axi backend.
 The file format is unchanged in both modes; tasks-axi and manual edits produce the same `## In flight`, `## Queued`, and `## Done` sections.
+Two lifecycle scripts mutate the backlog on firstmate's behalf and are gated by the same knob and probe: `bin/fm-pr-check.sh` records a PR-ready task's PR onto its item, and `bin/fm-pr-merge.sh` closes the item of a task it merged after teardown had already swept the meta.
+Both are best-effort - neither fails its real job on the backlog - but neither is silent: an item left open without its record or its close is reported on stderr, including under `manual` where they must not write it, for firstmate to finish by hand.
+Reading the file is not gated at all: `bin/fm-logbook-compose.sh` parses `data/backlog.md` directly rather than shelling out to a backlog tool, so the attention board composes identically in both modes and with no `tasks-axi` on `PATH`, and `bin/fm-backlog-lib.sh` is the shared single-item read behind the two scripts above.
 
 ## Runtime backend (config/backend / FM_BACKEND)
 
@@ -365,6 +368,7 @@ Because `data/projects.md` is local and gitignored, its declarations live only i
 
 Each item is tagged with its sub-project by its base or integration branch, recorded per task in `state/<id>.meta` as an optional `base_branch=<branch>` field (the branch the task's PR targets).
 Firstmate records `base_branch=` at dispatch for a task that targets a declared integration branch, by appending the field to the task's meta; most tasks target the project's default branch, carry no `base_branch`, and stay ungrouped.
+That field lives only in the live crew's meta, which `bin/fm-teardown.sh` removes with the crew, while the item set itself is composed from the durable backlog and outlives it, so a torn-down task composes ungrouped until its branch is recorded somewhere durable - a deferred follow-up alongside the dispatch recording itself.
 
 `fm-logbook-compose.sh` then emits, into the `POST /api/sync` baseline body it produces (fed via `bin/fm-logbook-sync.sh`):
 - Per project, an ordered `subprojects` array of `{ key, name, branch }`, empty when none are declared and capped at the tool's 100-per-project limit.

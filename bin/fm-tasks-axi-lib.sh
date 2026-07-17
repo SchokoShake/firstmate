@@ -1,6 +1,8 @@
 # shellcheck shell=bash
 # Shared tasks-axi backend selection and compatibility probe for bootstrap,
-# teardown, and secondmate backlog handoff.
+# teardown, secondmate backlog handoff, and the two PR scripts that record a task's
+# PR on its backlog item (fm-pr-check.sh) and close that item once it merges
+# (fm-pr-merge.sh).
 # Usage: . bin/fm-tasks-axi-lib.sh
 # Compatible means tasks-axi --version reports 0.1.1 or newer,
 # `tasks-axi update --help` exposes --archive-body for recoverable note rewrites,
