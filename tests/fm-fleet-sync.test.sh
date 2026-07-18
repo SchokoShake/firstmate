@@ -12,6 +12,11 @@
 # The pre-existing fast-forward / already-current / local-only / no-origin paths
 # must be unchanged, and bootstrap must relay the new outcomes as FLEET_SYNC lines.
 #
+# It also pins the clone gate against git's own repo discovery: a directory under
+# projects/ that is not a clone must be declined, not resolved to the repository
+# ENCLOSING projects/ - firstmate's own checkout in the shipped layout - and then
+# fetched, pruned and fast-forwarded in its place.
+#
 # It also pins the orphaned .git/packed-refs.lock recovery in the fetch step
 # (fetch_with_packed_refs_lock_guard, backed by bin/fm-lock-lib.sh's shared
 # staleness proof): a provably-stale lock is retried then removed and the clone
@@ -123,6 +128,51 @@ build_packed_prunable() {
 }
 
 plant_packed_refs_lock() { : > "$1/.git/packed-refs.lock"; }
+
+# --- discovery-escape fixture -----------------------------------------------
+
+# build_enclosing_repo <case_dir>: a git repo for the caller to build a projects/
+# dir inside and then point fleet-sync at - the shipped layout, where FM_HOME is
+# firstmate's own checkout and projects/ is a gitignored directory within it.
+# Echoes the enclosing repo path. It is left exposed to every write the sweep
+# makes, so a wrong-target sync is visible rather than merely possible: one commit
+# BEHIND its origin (a fast-forward moves its HEAD), and holding a local `feature`
+# branch whose upstream has been deleted (prune_gone_branches would `branch -D` it).
+#
+# Its .gitignore ignores everything but the two tracked files, so the projects/
+# tree, and the work and remote repos of any clone built under it, leave the
+# enclosing tree CLEAN. That matters: a dirty tree would have fleet-sync report the
+# enclosing repo STUCK and decline the fast-forward for a reason that has nothing to
+# do with the guard under test, and the wrong-target write would stop being visible.
+build_enclosing_repo() {
+  local case_dir=$1 work remote enclosing remote_abs
+  work="$case_dir/work-enclosing"
+  remote="$case_dir/remote-enclosing.git"
+  enclosing="$case_dir/enclosing"
+  mkdir -p "$case_dir"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  printf '/*\n!/.gitignore\n!/README\n' > "$work/.gitignore"
+  printf 'enclosing\n' > "$work/README"
+  git -C "$work" add .gitignore README
+  git -C "$work" commit -qm C0
+
+  git clone --quiet --bare "$work" "$remote"
+  remote_abs=$(cd "$remote" && pwd)
+  git -C "$work" remote add origin "file://$remote_abs"
+  git -C "$work" push -q -u origin main
+  git -C "$work" push -q origin main:refs/heads/feature
+
+  git clone --quiet "file://$remote_abs" "$enclosing"
+  git -C "$enclosing" branch -q feature origin/feature
+
+  commit_file "$work" README enclosing-v1 C1
+  git -C "$work" push -q origin main
+  git -C "$work" push -q origin --delete feature
+
+  printf '%s\n' "$enclosing"
+}
 
 # lsof shims mirror tests/fm-teardown.test.sh: no-holder (provably free), a live
 # holder, and an lsof error. Written into a per-home fakebin/ prepended to PATH.
@@ -450,6 +500,48 @@ test_whole_fleet_form() {
   pass "whole-fleet form processes every clone under projects/"
 }
 
+# The sweep iterates every directory under projects/ and lets git's own repo test
+# decide which are clones - but that test walks UP from the directory it is given, so
+# a projects/<name> that is merely a directory answers with the repository ENCLOSING
+# it: in the shipped layout, firstmate's own checkout. The sweep then fetched, pruned
+# and fast-forwarded firstmate's own repo, once per non-clone directory, at every
+# session start, under bootstrap's "|| true". The mirror of fm-pr-merge.test.sh's
+# test_missing_meta_clone_refresh_cannot_escape_a_non_repo_project_dir and
+# fm-logbook.test.sh's test_compose_remote_lookup_cannot_escape_a_non_repo_project_dir,
+# which bound the same lookup for the two newer call sites.
+test_sweep_cannot_escape_a_non_clone_project_dir() {
+  local home enclosing tip before after out
+  home=$(new_home)
+  enclosing=$(build_enclosing_repo "$TMP_ROOT/enclosed-sweep")
+  # The non-clone the sweep must decline: a scratch dir, or a half-finished clone.
+  mkdir -p "$enclosing/projects/scratch"
+  # A real clone beside it, to prove the bound costs the normal path nothing.
+  build_pair "$enclosing" real >/dev/null
+  advance_origin "$enclosing" real C1
+
+  tip=$(head_sha "$TMP_ROOT/enclosed-sweep/work-enclosing")
+  before=$(head_sha "$enclosing")
+  [ "$before" != "$tip" ] \
+    || fail "fixture: the repo enclosing projects/ must start behind its origin"
+  git -C "$enclosing" show-ref --verify --quiet refs/heads/feature \
+    || fail "fixture: the enclosing repo must start holding a prunable feature branch"
+  git -C "$enclosing/projects/scratch" rev-parse --git-dir >/dev/null 2>&1 \
+    || fail "fixture: an UNBOUNDED lookup from projects/scratch must find the enclosing repo, or this proves nothing"
+
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_PROJECTS_OVERRIDE="$enclosing/projects" \
+    "$ROOT/bin/fm-fleet-sync.sh" 2>/dev/null)
+
+  after=$(head_sha "$enclosing")
+  [ "$after" = "$before" ] \
+    || fail "the repo merely enclosing projects/ was fast-forwarded from $before to $after"
+  git -C "$enclosing" show-ref --verify --quiet refs/heads/feature \
+    || fail "the repo merely enclosing projects/ had its feature branch pruned"
+  assert_contains "$out" "scratch: skipped: not a git repo" "a non-clone directory is declined, not synced"
+  assert_contains "$out" "real: synced" "a real clone under an enclosed projects/ still syncs"
+  pass "the sweep does not sync the repo enclosing a projects/<name> that is not a clone"
+}
+
 test_bootstrap_relays_recovered_and_stuck() {
   local home stuck rec out
   home=$(new_home)
@@ -619,6 +711,7 @@ test_single_project_by_projects_relative_name_resolves
 test_single_project_by_projects_relative_name_ignores_cwd_shadow
 test_single_project_unresolvable_name_still_skips
 test_whole_fleet_form
+test_sweep_cannot_escape_a_non_clone_project_dir
 test_bootstrap_relays_recovered_and_stuck
 test_orphaned_stale_packed_refs_lock_recovers
 test_live_packed_refs_lock_is_never_removed
