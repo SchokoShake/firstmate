@@ -223,6 +223,7 @@ In a read-only session that did not get the fleet lock, the same line is advisor
 The locked session-start bootstrap step also runs a best-effort project clone refresh through `fm-fleet-sync.sh`.
 It emits `FLEET_SYNC:` for skipped refreshes that may matter, recovered self-heals, and `STUCK:` alarms.
 Normal completed runs keep local-only and no-origin skips silent.
+A directory under `projects/` that is not a clone at all - a scratch dir, an interrupted clone - is skipped as `not a git repo` and is relayed, so it surfaces once per session start until it is finished, removed, or accepted rather than passing as a refreshed project.
 If bootstrap kills a timed-out refresh, it replays any completed `fm-fleet-sync.sh` output before the aggregate timeout skip so no finished result is lost.
 A killed refresh (or a teardown process kill) can leave an orphaned `.git/packed-refs.lock` in a clone, which makes the next refresh's fetch fail with Git's `Unable to create '...packed-refs.lock': File exists`.
 On that signature only, `fm-fleet-sync.sh` retries the fetch with a bounded wait for the lock to self-clear, then removes the lock and retries once more only when it can prove the lock stale, exactly like the `fm-teardown.sh` `index.lock` recovery.
