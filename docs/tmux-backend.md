@@ -114,7 +114,8 @@ Resolving this would need either a `pi`-specific env marker inspectable from out
 ## Worktree capture (why `treehouse get --lease`, not a pane poll)
 
 `fm-spawn.sh` records the crew's isolated worktree in `state/<id>.meta` and installs the turn-end hook into it, so that recorded path must be exact.
-It is captured authoritatively: `fm-spawn.sh` runs `treehouse get --lease` from the project directory, whose stdout is only the leased `~/.treehouse/...` path, and then sends the pane a `cd` into that path (`bin/fm-spawn.sh`, backlog `fm-spawn-wt-batch-x5`).
+It is captured authoritatively: `fm-spawn.sh` runs `treehouse get --lease --lease-holder fm-<id>` from the project directory, whose stdout is only the leased `~/.treehouse/...` path, and then sends the pane a `cd` into that path (`bin/fm-spawn.sh`, backlog `fm-spawn-wt-batch-x5`).
+The `--lease-holder fm-<id>` tag is what the respawn reservation check below matches the leased row against, so it can tell this task's own reservation apart from one that treehouse has since re-leased to a different task.
 
 This replaced an earlier design that sent `treehouse get` into the pane and polled `#{pane_current_path}` until it differed from the project directory, taking that first differing path as the worktree.
 That poll mis-recorded `worktree=$FM_HOME` (the primary firstmate checkout) on every `projects/*` spawn, forcing a manual repair each time, while firstmate-self spawns were immune.
