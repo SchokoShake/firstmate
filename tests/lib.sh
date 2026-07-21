@@ -110,13 +110,15 @@ SH
 #
 # The stub keeps a real lease LEDGER rather than faking each verb independently,
 # because fm-spawn's reuse path asks `treehouse status` whether a recorded
-# worktree is still reserved: `get` appends the handed-out path, `return` drops
-# it, and `status` renders the survivors in the real binary's table shape
-# (`<name>  <state>  <path>  (held by <holder>)`, verified against treehouse
-# v2.0.0). So a worktree this stub leased reads back as held - and one it never
-# leased, e.g. a hand-written pre-fix meta's worktree=, reads back as unheld,
-# which is exactly the shape that makes fm-spawn warn. Every other verb is a
-# silent success.
+# worktree is still reserved: `get` appends the handed-out path AND the caller's
+# --lease-holder, `return` drops the row, and `status` renders the survivors in the
+# real binary's table shape (`<name>  <state>  <path>  (held by <holder>)`, verified
+# against treehouse v2.0.0). Recording the holder matters because fm-spawn leases
+# with `--lease-holder fm-<id>` and its reuse check now matches that holder (review
+# #3): a worktree this stub leased reads back as held by the SAME fm-<id> that leased
+# it, one leased under a different id reads back held-by-another, and one it never
+# leased - e.g. a hand-written pre-fix meta's worktree= - reads back as unheld. Every
+# other verb is a silent success.
 fm_fake_treehouse_lease() {  # <fakebin> [worktree-path]
   local fakebin=$1 wt=${2:-} emit
   # Resolved HERE, not nested inside the heredoc: a `${wt:-\${...}}` there would
@@ -134,21 +136,38 @@ set -u
 ledger=$(printf '%q' "$fakebin/.leases")
 case "\${1:-}" in
   get)
+    # Capture --lease-holder exactly as the real 'treehouse get' records it, so the
+    # status table renders (held by <holder>) with the caller's real fm-<id>, not a
+    # hard-coded label (review #3). Mirrors tests/secondmate-helpers.sh's parse.
+    holder=
+    shift
+    while [ \$# -gt 0 ]; do
+      case "\$1" in
+        --lease-holder) shift; holder=\${1:-} ;;
+        --lease-holder=*) holder=\${1#--lease-holder=} ;;
+      esac
+      shift
+    done
     printf '%s\n' "$emit"
-    printf '%s\n' "$emit" >> "\$ledger"
+    printf '%s\t%s\n' "$emit" "\$holder" >> "\$ledger"
     ;;
   return)
-    # Last arg is the path; drop it from the ledger like a real release.
+    # Last arg is the path; drop its ledger row (keyed on the path field) like a
+    # real release.
     for p in "\$@"; do :; done
-    [ -f "\$ledger" ] && { grep -vxF "\$p" "\$ledger" > "\$ledger.tmp" || true; mv "\$ledger.tmp" "\$ledger"; }
+    [ -f "\$ledger" ] && { awk -F'\t' -v p="\$p" '\$1 != p' "\$ledger" > "\$ledger.tmp" || true; mv "\$ledger.tmp" "\$ledger"; }
     ;;
   status)
     [ -f "\$ledger" ] || exit 0
     n=0
-    while IFS= read -r p; do
+    while IFS=\$'\t' read -r p holder; do
       [ -n "\$p" ] || continue
       n=\$((n + 1))
-      printf '%-4s  %s  %s  (held by fm-test)\n' "\$n" leased "\$p"
+      if [ -n "\$holder" ]; then
+        printf '%-4s  %s  %s  (held by %s)\n' "\$n" leased "\$p" "\$holder"
+      else
+        printf '%-4s  %s  %s\n' "\$n" leased "\$p"
+      fi
     done < "\$ledger"
     ;;
 esac

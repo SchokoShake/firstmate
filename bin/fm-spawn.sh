@@ -62,9 +62,11 @@
 #   husk task (docs/herdr-backend.md "Respawn idempotency") keeps the crew's
 #   branch, commits, and uncommitted work reachable instead of stranding them in
 #   a durably-leased worktree nothing names. A recorded worktree that no longer
-#   exists warns and falls back to a fresh lease; one treehouse no longer reserves
-#   warns and is reused anyway (the crew's work is in it, and no treehouse verb
-#   can re-lease an existing path). Reuse covers the treehouse-pool backends only:
+#   exists warns and falls back to a fresh lease; a recorded worktree still present
+#   is reused anyway (the crew's work is in it, and no treehouse verb can re-lease an
+#   existing path), with a per-case warning when treehouse reports it unreserved, held
+#   by a different task, or unreachable to ask - see treehouse_reservation below.
+#   Reuse covers the treehouse-pool backends only:
 #   an orca respawn skips it, because orca owns its own worktree and never leases
 #   from the pool. The identity gate below is what keeps that exclusion safe.
 #   Any respawn refuses outright when the recorded meta's project= or kind=
@@ -280,31 +282,73 @@ lease_spawn_abort_cleanup() {
   # Staying silent there keeps the guard's own error the only thing the captain
   # reads, instead of a second warning naming a command that just repeats the
   # refusal. Every other failure is a real un-released lease and must be loud.
+  # This `not managed by treehouse` string is a conscious v2.0.0 text coupling;
+  # treehouse_reservation's header (below) owns the shared sign-off for both text
+  # sites - why no machine-readable alternative exists, and why both fail
+  # loud-but-wrong rather than silently-dangerous (backlog fm-spawn-wt-batch-x5,
+  # review #5).
   case "$out" in
     *'not managed by treehouse'*) return 0 ;;
   esac
   echo "warning: could not release the treehouse lease on '$LEASED_WT' after a failed spawn of $ID; release it with 'cd $PROJ_ABS && treehouse return --force $LEASED_WT'" >&2
 }
 
-# treehouse_holds_worktree: true when treehouse still RESERVES <worktree>, i.e.
-# will not hand the same path to a later `get`. Both reserved states count:
-# `leased` (durably held until a `treehouse return`) and `in-use` (a live process
-# inside it); `available` means the next `get` may hand it out - and reset it hard
-# - underneath whoever is already there. Only a REUSED worktree needs asking: a
-# path this spawn just leased is held by construction.
+# treehouse_reservation: report whether treehouse still RESERVES <worktree>, and
+# for whom, echoing exactly one token so a respawn can tell genuinely different
+# situations apart instead of collapsing them (backlog fm-spawn-wt-batch-x5):
+#   held              - reserved and this task's own: a `leased` row whose holder
+#                       matches <expected-holder>, an `in-use` row (a live process;
+#                       treehouse prints no holder for it), or a `leased` row
+#                       treehouse printed with no holder at all. Reuse silently.
+#   held-by-other:<h> - reserved, but a `leased` row names a DIFFERENT holder <h>:
+#                       treehouse re-leased the path to another task (e.g. a partial
+#                       teardown dropped the lease but left the meta), so reuse would
+#                       put two tasks in one worktree. The identity gate upstream
+#                       makes this rare, but the holder is already in the table, so
+#                       catching it is free (review #3).
+#   available         - treehouse ANSWERED and the path is not reserved: the next
+#                       `get` may hand it out and hard-reset it under whoever is there.
+#   unknown           - the `treehouse status` command itself FAILED (missing binary,
+#                       unreadable pool, non-zero exit). We could not ASK, so the
+#                       caller must not assert the path is unreserved. Folding this
+#                       into `available` was a false "no longer reserves" alarm on
+#                       EVERY respawn while treehouse was down - the noise that teaches
+#                       a captain to ignore the warning (review #1). The exit code is
+#                       the only thing that tells the two apart, so it is captured
+#                       separately below rather than swallowed by `2>/dev/null || true`.
 #
 # `treehouse status` (v2.0.0) has no machine-readable mode, so this parses its
-# table - `<name>  <state>  <path>  [(held by <holder>)]` - with two properties
-# verified against the real binary: $HOME is printed ABBREVIATED to `~`, so a raw
-# compare against an absolute worktree= silently never matches; and a worktree's
-# process list is an indented continuation line, which can never match a reserved
-# state AND the path, so it falls through. Paths are compared in physical form
-# for the same reason PROJ_ABS_REAL exists. treehouse resolves the pool from the
+# table - `<name>  <state>  <path>  [(held by <holder>)]` - with properties verified
+# against the real binary (docs/tmux-backend.md "Worktree capture"): $HOME is printed
+# ABBREVIATED to `~`, so a raw compare against an absolute worktree= silently never
+# matches; a worktree's process list is an indented continuation line, which can never
+# match a reserved state AND the path, so it falls through; an `in-use` row carries NO
+# `(held by ...)` (verified), so the holder gate can only ever fire on a `leased` row
+# that names someone else - it strengthens, never weakens; and the version-update
+# banner prints to stderr, so the `2>/dev/null` capture keeps the table clean while a
+# real failure still surfaces through the exit code. Paths are compared in physical
+# form for the same reason PROJ_ABS_REAL exists. treehouse resolves the pool from the
 # working directory, exactly like fm-teardown's release, so ask from $PROJ_ABS.
-treehouse_holds_worktree() {  # <worktree>
-  local want=$1 want_real state path path_real
+#
+# CONSCIOUS v2.0.0 TEXT COUPLING (review #5): the `(held by ...)` parse here and
+# lease_spawn_abort_cleanup's `not managed by treehouse` match (above) are the two
+# places this file keys on treehouse's HUMAN output. There is no machine-readable
+# alternative - `treehouse --help` advertises no --json/--porcelain and `status`/
+# `return` no structured mode (verified 2026-07-21, v2.0.0). Both couple LOUD-BUT-WRONG,
+# never silently-dangerous, if a future treehouse rewords: a reworded holder line
+# degrades to `held` (safe reuse, no false catch), and a reworded refusal re-arms
+# lease_spawn_abort_cleanup's warning. Neither is worth a per-spawn `treehouse
+# --version` probe; keep the two sites in sync when the treehouse adapter is revised.
+treehouse_reservation() {  # <worktree> <expected-holder>
+  local want=$1 expect=$2 want_real state path path_real rest holder status_out
   want_real=$(cd "$want" 2>/dev/null && pwd -P) || want_real=$want
-  while read -r _ state path _; do
+  # Capture the status rc through `if !` so set -e cannot abort before we read it: a
+  # failed command means we could NOT ask, which is not the same as "available".
+  if ! status_out=$( (cd "$PROJ_ABS" && treehouse status) 2>/dev/null ); then
+    printf 'unknown\n'
+    return 0
+  fi
+  while read -r _ state path rest; do
     case "$state" in
       leased|in-use) ;;
       *) continue ;;
@@ -314,11 +358,23 @@ treehouse_holds_worktree() {  # <worktree>
       "~/"*) path="$HOME/${path#\~/}" ;;
     esac
     path_real=$(cd "$path" 2>/dev/null && pwd -P) || path_real=$path
-    [ "$path_real" = "$want_real" ] && return 0
+    [ "$path_real" = "$want_real" ] || continue
+    # A `leased` row carries `(held by <holder>)`; an `in-use` row does not. Only a
+    # DIFFERENT named holder is a caught reuse - absent or matching holder is ours.
+    holder=
+    case "$rest" in
+      *'(held by '*) holder=${rest#*'(held by '}; holder=${holder%%')'*} ;;
+    esac
+    if [ -n "$holder" ] && [ "$holder" != "$expect" ]; then
+      printf 'held-by-other:%s\n' "$holder"
+    else
+      printf 'held\n'
+    fi
+    return 0
   done <<EOF
-$( (cd "$PROJ_ABS" && treehouse status) 2>/dev/null || true )
+$status_out
 EOF
-  return 1
+  printf 'available\n'
 }
 
 # Both handlers are `|| true`-guarded: each returns non-zero on its own
@@ -1079,8 +1135,28 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # Deliberately after the isolation guard: a poisoned pre-fix worktree=$FM_HOME
   # is never a pool worktree either, and aborting there keeps the guard's own
   # error the only thing the captain reads.
-  if [ "$WT_REUSED" = 1 ] && ! treehouse_holds_worktree "$WT"; then
-    echo "warning: treehouse no longer reserves the worktree recorded for $ID ('$WT'); reusing it anyway so the crew's branch and uncommitted work stay reachable, but until the crewmate is running in it a concurrent 'treehouse get' can hand the same worktree to another task. Check 'cd $PROJ_ABS && treehouse status'." >&2
+  if [ "$WT_REUSED" = 1 ]; then
+    # Three-way, not boolean: a transient treehouse outage (unknown) must not print
+    # the false "no longer reserves" claim it once printed on every respawn, and a
+    # path re-leased to a different task (held-by-other) is caught, not passed off as
+    # ours (reviews #1 and #3). All four cases still REUSE - the crew's work is IN the
+    # worktree; only the warning differs.
+    RESV=$(treehouse_reservation "$WT" "fm-$ID")
+    case "$RESV" in
+      held)
+        : # still this task's own reservation; reuse silently
+        ;;
+      held-by-other:*)
+        echo "warning: the worktree recorded for $ID ('$WT') is now leased to a DIFFERENT holder ('${RESV#held-by-other:}'), not fm-$ID; reusing it anyway so the crew's branch and uncommitted work stay reachable, but two tasks now claim one worktree. Check 'cd $PROJ_ABS && treehouse status'." >&2
+        ;;
+      unknown)
+        echo "warning: could not ask treehouse whether the worktree recorded for $ID ('$WT') is still reserved (its 'treehouse status' failed); reusing it anyway so the crew's branch and uncommitted work stay reachable. If treehouse is unavailable this is transient; otherwise check 'cd $PROJ_ABS && treehouse status'." >&2
+        ;;
+      *)
+        # available: treehouse answered and the path is no longer reserved.
+        echo "warning: treehouse no longer reserves the worktree recorded for $ID ('$WT'); reusing it anyway so the crew's branch and uncommitted work stay reachable, but until the crewmate is running in it a concurrent 'treehouse get' can hand the same worktree to another task. Check 'cd $PROJ_ABS && treehouse status'." >&2
+        ;;
+    esac
   fi
 
   # Move the crewmate's pane into the leased worktree with an absolute cd, so the
@@ -1088,6 +1164,20 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # no startup-transient race. Sent to the stable window id (WT_TARGET) for the
   # same rename-safety reason bin/backends/tmux.sh pins it, and buffered by the
   # pane exactly like the GOTMPDIR export and launch command sent below.
+  #
+  # DELIBERATE TRADE (backlog fm-spawn-wt-batch-x5, review #4): the deleted
+  # pane-current-path poll incidentally acted as a READINESS BARRIER - it hard-failed
+  # after 60s if the pane never left the project, absorbing the ~0.5-1s of login-shell
+  # startup documented in "Worktree capture" (docs/tmux-backend.md). This cd is fired
+  # into a pane whose shell may not have exec'd yet. pty send-ordering keeps the normal
+  # case correct; the ONE narrow failure - the buffered cd dropped, e.g. an rc-file
+  # `stty` flushing pending input - lands the agent in $PROJ_ABS while meta records the
+  # leased worktree. Nothing in fm-spawn detects that divergence. It is caught LOUD, not
+  # silent, ONLY by the brief's isolation assertion (bin/fm-brief.sh, "blocked: launched
+  # in primary checkout"). That assertion is therefore LOAD-BEARING for this trade: do
+  # not weaken or remove it. And do NOT re-add a pane probe here - a pane-cwd read is the
+  # exact class of code that caused the $FM_HOME mis-capture this task fixed; the lease
+  # is the authoritative worktree source now.
   spawn_send_text_line "$WT_TARGET" "cd $(shell_quote "$WT")"
 fi
 
