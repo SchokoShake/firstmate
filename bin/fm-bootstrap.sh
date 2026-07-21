@@ -154,6 +154,15 @@ fleet_sync_relay_filtered_output() {
     case "$line" in
       *': skipped: local-only project') ;;
       *': skipped: no origin remote') ;;
+      # The catch-all forwards every other skip, including "skipped: not a git repo"
+      # - a non-clone directory under projects/. Captain-signed-off 2026-07-18 to
+      # stay UNFILTERED: a healthy fleet is all real clones so this never fires, and
+      # when it does it names the exact drift the projects/ ceiling bound guards (a
+      # phantom project the captain believes they have). Do NOT add a ': skipped: not
+      # a git repo' exclusion here - that noise is the same signal the bug suppressed:
+      # an unbounded gate mis-synced the ENCLOSING repo, whose "synced"/"already
+      # current" this filter already drops, so silencing it would re-hide the anomaly
+      # the fix exists to surface.
       *': skipped:'*) echo "FLEET_SYNC: $line" ;;
       *': STUCK:'*) echo "FLEET_SYNC: $line" ;;
       *': recovered:'*) echo "FLEET_SYNC: $line" ;;

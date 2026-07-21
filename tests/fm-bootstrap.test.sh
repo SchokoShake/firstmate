@@ -147,6 +147,28 @@ add_no_origin_projects() {
   done
 }
 
+# build_enclosing_home_with_projects <home> <scratch_count>: an origin-backed git
+# repo to use as FM_HOME, with a projects/ dir inside it holding one real
+# origin-backed clone plus <scratch_count> non-clone scratch dirs. This is the
+# shipped layout - FM_HOME is firstmate's own checkout and projects/ a gitignored
+# directory within it - reduced to what the clone COUNT needs: an enclosing repo
+# carrying an origin, so an UNBOUNDED lookup out of a non-clone projects/<name>
+# resolves to it and miscounts that scratch dir as an origin-backed project.
+# No commits or reachable remotes are needed; the count reads git config only.
+build_enclosing_home_with_projects() {
+  local home=$1 scratch_count=$2 i
+  mkdir -p "$home/projects"
+  git init -q "$home"
+  git -C "$home" remote add origin "file://$home/remotes/enclosing.git"
+  git init -q "$home/projects/real"
+  git -C "$home/projects/real" remote add origin "file://$home/remotes/real.git"
+  i=1
+  while [ "$i" -le "$scratch_count" ]; do
+    mkdir -p "$home/projects/scratch-$i"
+    i=$((i + 1))
+  done
+}
+
 run_bootstrap_timeout_case() {
   local home=$1 fake_root=$2 fakebin=$3 override started_marker git_record wait_for_marker
   override=__unset__
@@ -384,6 +406,42 @@ test_fleet_sync_timeout_floor_preserves_small_fleets() {
   pass "bootstrap keeps the quick 20s default for small fleets"
 }
 
+# The bootstrap timeout is sized by fleet_sync_origin_backed_project_count, the
+# counter half of the projects/ ceiling fix. Like the sweep's own clone gate it must
+# bound git's repo discovery at projects/ (GIT_CEILING_DIRECTORIES), or a non-clone
+# dir under projects/ resolves to the repo ENCLOSING projects/ - firstmate's own
+# origin-backed checkout in the shipped layout - and every scratch dir is miscounted
+# as an origin-backed project, silently inflating the timeout. This pins that counter
+# directly: tests/fm-fleet-sync.test.sh pins the SWEEP gate, a wholly independent code
+# path, so it would stay green if GIT_CEILING_DIRECTORIES were dropped from this line.
+# One real clone sits beside 18 non-clone dirs inside an origin-backed enclosing repo:
+# bounded the count is 1 and the timeout stays at the 20s floor; drop the ceiling and
+# the count becomes 19 and the timeout jumps to 62s (5 + 3*19), which the assertions
+# below reject.
+test_fleet_sync_timeout_counter_bounds_discovery_at_projects() {
+  local case_dir home fakebin fake_root out
+  case_dir="$TMP_ROOT/fleet-timeout-enclosing"
+  home="$case_dir/home"
+  build_enclosing_home_with_projects "$home" 18
+  mkdir -p "$home/config"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  # Guard the guard: if an UNBOUNDED lookup out of a scratch dir did not reach the
+  # origin-backed enclosing repo, the bound would be untested and this case would
+  # pass no matter what.
+  git -C "$home/projects/scratch-1" rev-parse --git-dir >/dev/null 2>&1 \
+    || fail "fixture: an unbounded lookup from projects/scratch-1 must find the enclosing repo, or this proves nothing"
+  git -C "$home/projects/scratch-1" remote get-url origin >/dev/null 2>&1 \
+    || fail "fixture: the enclosing repo must carry an origin, or a scratch dir cannot be miscounted as origin-backed"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  fake_root=$(make_fake_fleet_sync_root "$case_dir")
+
+  out=$(run_bootstrap_timeout_case "$home" "$fake_root" "$fakebin")
+
+  assert_contains "$out" "FLEET_SYNC: fleet: skipped: bootstrap refresh timed out (timeout=20s elapsed=20s)" "one real clone under an origin-backed enclosing projects/ counts as 1, holding the 20s floor"
+  assert_not_contains "$out" "timeout=62s" "the 18 non-clone dirs must not be miscounted as origin-backed projects (an unbounded count of 19 sizes the timeout to 62s)"
+  pass "the bootstrap timeout counter bounds discovery at projects/ and counts only real clones"
+}
+
 test_fleet_sync_timeout_explicit_override_wins() {
   local case_dir home fakebin fake_root out
   case_dir="$TMP_ROOT/fleet-timeout-override"
@@ -498,6 +556,7 @@ test_git_is_required_with_supported_install_instruction
 test_orca_backend_gates_orca_tool_only_when_selected
 test_fleet_sync_timeout_scales_with_origin_backed_project_count
 test_fleet_sync_timeout_floor_preserves_small_fleets
+test_fleet_sync_timeout_counter_bounds_discovery_at_projects
 test_fleet_sync_timeout_explicit_override_wins
 test_fleet_sync_timeout_empty_override_uses_default
 test_fleet_sync_timeout_is_computed_before_launch

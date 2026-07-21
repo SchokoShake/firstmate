@@ -46,9 +46,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # Ceiling for the clone gate in sync_project. PHYSICAL (git compares it against its
 # own getcwd, which resolves symlinks) and absolute (git ignores a relative entry).
-# Empty when projects/ will not open, which leaves the gate exactly as unbounded as
-# it was before: the single-project form legitimately accepts a path OUTSIDE this
-# home's projects dir, so an unresolvable projects/ must not decline to sync one.
+# Empty when projects/ will not open, which leaves the gate unbounded: the
+# single-project form legitimately accepts a path OUTSIDE this home's projects
+# dir, so an unresolvable projects/ must not decline to sync one.
 # A ceiling that is not an ancestor of the target is simply inert, so those
 # out-of-tree paths are unaffected either way.
 PROJECTS_CEILING=$(cd "$PROJECTS" 2>/dev/null && pwd -P) || PROJECTS_CEILING=""
