@@ -65,6 +65,15 @@ FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
 # this is the one owner of the verb literal, overridable via FM_CLASSIFY_RESOLVE_VERB.
 FM_CLASSIFY_RESOLVE_VERB_DEFAULT='resolved'
 
+# The captain-held transfer verb, read by the watcher's paused-or-captain-held
+# stale check (status_is_paused_or_captain_held) so a durable captain hold gets
+# the same bounded re-surface cadence as a declared pause once its agent is
+# confidently dead. This is the one owner of the verb literal, overridable via
+# FM_CLASSIFY_CAPTAIN_HELD_VERB. This fleet surfaces captain-held state from the
+# backlog hold via logbook rather than a status-file verb, so the check's
+# captain-held branch is inert today but stays forward-compatible.
+FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
+
 # Return the last non-blank line of a status file (empty if missing/blank).
 last_status_line() {
   local f=$1
