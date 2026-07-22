@@ -269,17 +269,6 @@ case "$out" in
 esac
 pass "real herdr: send_literal + send_key Enter submit as two separate steps (verified: send-text does NOT auto-submit)"
 
-# --- current_path -------------------------------------------------------------
-
-fm_backend_herdr_send_text_line "$TARGET" "cd /tmp"
-sleep 0.3
-p=$(fm_backend_herdr_current_path "$TARGET") || fail "current_path failed"
-case "$p" in
-  */tmp) : ;;
-  *) fail "real herdr: current_path did not report the pane's cwd after cd /tmp, got '$p'" ;;
-esac
-pass "real herdr: current_path reads the pane's live cwd"
-
 # --- busy_state on a real claude harness (verified in herdr-verification-p2.md) ---
 
 if [ "${FM_HERDR_SMOKE_REAL_CLAUDE:-0}" = 1 ] && command -v claude >/dev/null 2>&1; then

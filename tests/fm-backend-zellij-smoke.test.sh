@@ -34,15 +34,6 @@ cleanup_all() {
   zellij_safe_delete "$SESSION"
 }
 
-TMP_CWD="${TMPDIR:-/tmp}"
-[ -d "$TMP_CWD" ] || fail "temporary directory does not exist: $TMP_CWD"
-TMP_CWD=$(cd "$TMP_CWD" && pwd -P) || fail "could not resolve temporary directory: $TMP_CWD"
-printf -v TMP_CWD_Q '%q' "$TMP_CWD"
-LONG_CWD="$TMP_CWD/fm-zellij-wrap-$$/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccccccccccccccccccc/dddddddddddddddddddddddddddddddddddddddd"
-mkdir -p "$LONG_CWD" || fail "could not create long cwd fixture: $LONG_CWD"
-LONG_CWD=$(cd "$LONG_CWD" && pwd -P) || fail "could not resolve long cwd fixture: $LONG_CWD"
-printf -v LONG_CWD_Q '%q' "$LONG_CWD"
-
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
 fm_backend_source zellij || fail "fm_backend_source zellij failed"
@@ -122,41 +113,6 @@ case "$out" in
   *) fail "real zellij: full-scrollback capture did not include recent output"$'\n'"$out" ;;
 esac
 pass "real zellij: capture supports viewport-sized reads and larger full-scrollback reads"
-
-# --- current_path -------------------------------------------------------------
-
-fm_backend_zellij_send_text_line "$TARGET" "cd /tmp"
-sleep 0.3
-p=$(fm_backend_zellij_current_path "$TARGET") || fail "current_path failed"
-case "$p" in
-  */tmp) : ;;
-  *) fail "real zellij: current_path did not report the pane's cwd after cd /tmp, got '$p'" ;;
-esac
-pass "real zellij: current_path reads the pane's live cwd after a direct cd"
-
-fm_backend_zellij_send_text_line "$TARGET" "cd $LONG_CWD_Q"
-sleep 0.3
-p_wrap=$(fm_backend_zellij_current_path "$TARGET") || fail "current_path failed for a long wrapped path"
-[ "$p_wrap" = "$LONG_CWD" ] || fail "real zellij: current_path did not reconstruct a long wrapped cwd, got '$p_wrap'"
-pass "real zellij: current_path reconstructs a long cwd that can wrap in the terminal"
-
-# The load-bearing case: a NESTED SUBSHELL's own cd (exactly what `treehouse
-# get` does). Verified real bug: zellij's `pane_cwd` JSON field stays frozen
-# at wherever the pane's shell was when it launched the subshell as a
-# foreground command - it never follows the subshell's own cd, even once
-# that subshell is fully interactive. fm_backend_zellij_current_path's active
-# pwd-probe (docs/zellij-backend.md) is what fm-spawn.sh's worktree-discovery
-# poll actually depends on, so this must be proven against a real subshell,
-# not just a plain cd in the pane's own top-level shell (the case above).
-fm_backend_zellij_send_text_line "$TARGET" 'cd / && bash'
-sleep 0.5
-fm_backend_zellij_send_text_line "$TARGET" "cd $TMP_CWD_Q"
-sleep 0.3
-p2=$(fm_backend_zellij_current_path "$TARGET") || fail "current_path failed inside a nested subshell"
-[ "$p2" = "$TMP_CWD" ] || fail "real zellij: current_path did not track a nested subshell's own cd (the treehouse-get-shaped case), got '$p2'"
-pass "real zellij: current_path tracks a NESTED SUBSHELL's own cd (the treehouse-get-shaped case a bare pane_cwd read cannot see)"
-fm_backend_zellij_send_text_line "$TARGET" 'exit'
-sleep 0.3
 
 # --- key names: Escape and Ctrl-C, verified names --------------------------
 

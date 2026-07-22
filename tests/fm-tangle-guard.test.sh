@@ -149,18 +149,16 @@ test_brief_assertion_precedes_branch() {
 
 # --- GUARD 1b: fm-spawn isolation abort -------------------------------------
 
-# A fake tmux that reports FM_FAKE_PANE_PATH as the post-`treehouse get` pane cwd
-# (so the spawn's worktree-resolution loop resolves to a path we control), names
-# the session on '#S', and swallows window ops. Echoes the fakebin dir.
+# A fake tmux that swallows window ops and names the session on '#S', paired with
+# a treehouse stub whose `get --lease` prints FM_FAKE_PANE_PATH as the leased
+# worktree - so the spawn's authoritative worktree capture resolves to a path we
+# control (fm-spawn-wt-batch-x5). Echoes the fakebin dir.
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
@@ -169,7 +167,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
@@ -214,21 +212,565 @@ test_spawn_isolation_abort() {
   pass "fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree"
 }
 
+# --- GUARD 1d: fm-spawn $FM_HOME backstop (fm-spawn-wt-batch-x5) -------------
+
+# The historical mis-capture recorded worktree=$FM_HOME (the primary firstmate
+# checkout) on projects/* spawns. Because firstmate is a git repo of itself,
+# $FM_HOME is a VALID git toplevel distinct from a projects/* project, so it
+# cleared every clause of the isolation guard above and was recorded silently.
+# validate_spawn_worktree now asserts the resolved worktree is NOT the primary
+# checkout, so a regression ABORTS loudly instead of corrupting meta and tangling
+# the turn-end hook into the primary. This pins that backstop.
+test_spawn_fm_home_worktree_backstop() {
+  local home proj fakebin out status
+  # $FM_HOME is itself a git repo (the firstmate-is-a-git-repo-of-itself shape).
+  home=$(make_repo "$TMP_ROOT/fmhome-home")
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/fmhome-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/fmhome-fake")
+
+  # The lease resolves to $FM_HOME itself - the exact mis-capture value. It is a
+  # valid git toplevel distinct from the project, so it clears the isolation
+  # clauses and only the $FM_HOME backstop can catch it.
+  out=$(run_spawn "$home" abort-fmhome-hh8 "$proj" "$home" "$fakebin"); status=$?
+  expect_code 1 "$status" "a worktree resolving to \$FM_HOME must abort"
+  assert_contains "$out" "primary firstmate checkout" "the \$FM_HOME backstop error was not printed"
+  assert_not_contains "$out" "did not yield an isolated worktree" "the \$FM_HOME case must hit the dedicated backstop, not the generic isolation clause"
+  assert_not_contains "$out" "spawned abort-fmhome-hh8" "the guarded spawn must not report success"
+  assert_absent "$home/state/abort-fmhome-hh8.meta" "a \$FM_HOME-mis-captured spawn must not record meta"
+  pass "fm-spawn: aborts loudly when the resolved worktree is the primary firstmate checkout (\$FM_HOME)"
+}
+
+# --- GUARD 1e: fm-spawn lease release on abort -------------------------------
+
+# `treehouse get --lease` reserves the worktree DURABLY - treehouse never hands
+# it out again and never prunes it until a `treehouse return` releases it. Only
+# state/<id>.meta's worktree= tells fm-teardown which worktree to release, so an
+# abort BETWEEN the lease and that write would strand the pool slot forever with
+# nothing left naming it. Every guard above is exactly such an abort. This pins
+# that fm-spawn releases the lease itself on those paths.
+test_spawn_releases_lease_on_abort() {
+  local home proj fakebin rec out status
+  home=$(make_repo "$TMP_ROOT/lease-home")
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/lease-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/lease-fake")
+  rec="$TMP_ROOT/lease-rec.log"
+  mkdir -p "$TMP_ROOT/lease-notgit"
+
+  # The $FM_HOME backstop abort: the leased worktree must still be returned.
+  : > "$rec"
+  out=$(FM_TMUX_REC="$rec" run_spawn "$home" lease-fmhome-jj9 "$proj" "$home" "$fakebin"); status=$?
+  expect_code 1 "$status" "the \$FM_HOME backstop must still abort"
+  assert_grep "treehouse get --lease" "$rec" "the spawn did not lease a worktree at all"
+  assert_grep "treehouse return --force $home" "$rec" \
+    "an aborted spawn must release its durable lease (else the pool slot leaks with no meta to name it)"
+
+  # The generic isolation abort releases its lease too.
+  : > "$rec"
+  out=$(FM_TMUX_REC="$rec" run_spawn "$home" lease-notgit-kk1 "$proj" "$TMP_ROOT/lease-notgit" "$fakebin"); status=$?
+  expect_code 1 "$status" "the non-worktree isolation guard must still abort"
+  assert_grep "treehouse return --force $TMP_ROOT/lease-notgit" "$rec" \
+    "an isolation-aborted spawn must release its durable lease"
+
+  # A SUCCESSFUL spawn must NOT return the lease: meta now records worktree= and
+  # fm-teardown owns the release. Returning here would hand the live crewmate's
+  # worktree back to the pool underneath it.
+  : > "$rec"
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/lease-wt" >/dev/null 2>&1
+  out=$(FM_TMUX_REC="$rec" run_spawn "$home" lease-ok-ll2 "$proj" "$TMP_ROOT/lease-wt" "$fakebin"); status=$?
+  expect_code 0 "$status" "a genuine isolated worktree should spawn"
+  assert_present "$home/state/lease-ok-ll2.meta" "a successful spawn must record meta"
+  assert_no_grep "treehouse return" "$rec" \
+    "a successful spawn must NOT release the lease; meta records worktree= and fm-teardown owns the release"
+  pass "fm-spawn: releases the durable treehouse lease on abort, and never on success"
+}
+
+# The abort release is best-effort, so its failure warning must carry signal. An
+# isolation-guard abort captured a path that is BY DEFINITION not a pool worktree,
+# so treehouse refuses to return it and there is no lease to leak: warning there
+# would print a second, spurious line telling the captain to hand-run a command
+# that just repeats the refusal, burying the guard's own error. Every OTHER return
+# failure is a real un-released lease and must stay loud. This pins both halves.
+test_spawn_lease_release_warning_is_signal() {
+  local home proj fakebin out status
+  home=$(make_repo "$TMP_ROOT/warn-home")
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/warn-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/warn-fake")
+
+  # Real treehouse refuses an unmanaged path exactly this way (verified against
+  # treehouse v2.0.0): rc=1, "worktree <path> is not managed by treehouse".
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  get) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  return) printf 'worktree %s is not managed by treehouse\n' "${3:-}" >&2; exit 1 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+  out=$(run_spawn "$home" warn-quiet-pp5 "$proj" "$home" "$fakebin"); status=$?
+  expect_code 1 "$status" "the \$FM_HOME backstop must still abort"
+  assert_contains "$out" "primary firstmate checkout" "the guard's own error must still be printed"
+  assert_not_contains "$out" "could not release the treehouse lease" \
+    "an unmanaged path holds no lease; warning there buries the guard's error under a dead-end command"
+
+  # A genuine release failure must still be loud - the lease really is stranded.
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+  get) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  return) printf 'fatal: Unable to create index.lock: File exists\n' >&2; exit 1 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+  out=$(run_spawn "$home" warn-loud-qq6 "$proj" "$home" "$fakebin"); status=$?
+  expect_code 1 "$status" "the \$FM_HOME backstop must still abort"
+  assert_contains "$out" "could not release the treehouse lease" \
+    "a real release failure strands the lease and must be reported"
+  pass "fm-spawn: the lease-release warning fires on a real strand, never on a path treehouse never managed"
+}
+
+# The trap (bin/fm-spawn.sh) claims to cover ANY abort between the lease and the meta
+# write, but the two tests above only pin the guard aborts and the success path. The
+# per-harness turn-end hook block runs AFTER the lease is armed and BEFORE it is
+# disarmed, and does mkdir/cat/mktemp under set -e - a failure there is a leaked
+# durable lease with no meta left to name it, the exact leak class the trap exists for
+# and one new to this change. This exercises it: the claude hook block's
+# `mkdir -p "$WT/.claude"` fails because that path already exists as a FILE, so the
+# spawn aborts in the hook block, and the lease must still be returned. A regression
+# that moved the disarm above the hook block would leak silently, and this is the case
+# that catches it (backlog fm-spawn-wt-batch-x5, review #2).
+test_spawn_releases_lease_on_hook_block_failure() {
+  local home proj fakebin rec out status wt
+  home=$(make_repo "$TMP_ROOT/hookfail-home")
+  mkdir -p "$home/data/hookfail-ww7"
+  printf 'brief\n' > "$home/data/hookfail-ww7/brief.md"
+  proj=$(make_repo "$TMP_ROOT/hookfail-proj")
+  fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/hookfail-fake")
+  rec="$TMP_ROOT/hookfail-rec.log"
+  wt="$TMP_ROOT/hookfail-wt"
+  git -C "$proj" worktree add -q --detach "$wt" >/dev/null 2>&1
+  # Poison the claude turn-end hook block: a FILE where it must `mkdir -p .claude`,
+  # so the mkdir fails under set -e after the lease is armed, before the meta write.
+  printf 'not a dir\n' > "$wt/.claude"
+
+  : > "$rec"
+  # Spawned with the claude harness (its hook block writes .claude/), not codex (a
+  # no-op block), so the failure lands between the lease and the meta write.
+  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_TMUX_REC="$rec" PATH="$fakebin:$PATH" \
+    "$ROOT/bin/fm-spawn.sh" hookfail-ww7 "$proj" claude 2>&1); status=$?
+
+  expect_code 1 "$status" "a failure in the turn-end hook block must abort the spawn"
+  assert_grep "treehouse get --lease" "$rec" "the spawn must have leased before reaching the hook block"
+  assert_grep "treehouse return --force $wt" "$rec" \
+    "a hook-block abort must release the durable lease (else the pool slot leaks with no meta to name it)"
+  assert_absent "$home/state/hookfail-ww7.meta" \
+    "an aborted spawn must not record meta; the abort is before the meta write"
+  pass "fm-spawn: releases the durable lease when the turn-end hook block fails between lease and meta write"
+}
+
+# --- GUARD 1f: fm-spawn respawn reuses the recorded worktree -----------------
+
+# Spawning over an existing task id is a documented recovery flow (a restarted
+# server leaves a husk tab; docs/herdr-backend.md "Respawn idempotency"). Because
+# a lease is DURABLE, an unconditional `treehouse get --lease` there would reserve
+# a SECOND worktree while the meta write overwrote the only record of the first -
+# stranding the crew's branch, commits, and uncommitted work in a leased worktree
+# nothing names and prune can never reclaim. fm-teardown returns the worktree and
+# removes the meta together, so a surviving worktree= is still this task's own
+# leased one. This pins the reuse, mirroring the secondmate branch's home= readback.
+test_spawn_respawn_reuses_recorded_worktree() {
+  local home proj fakebin rec out status wt1 wt2 wt3 wt4
+  home=$(make_repo "$TMP_ROOT/respawn-home")
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/respawn-proj")
+  fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/respawn-fake")
+  rec="$TMP_ROOT/respawn-rec.log"
+  wt1="$TMP_ROOT/respawn-wt1"; wt2="$TMP_ROOT/respawn-wt2"
+  wt3="$TMP_ROOT/respawn-wt3"; wt4="$TMP_ROOT/respawn-wt4"
+  for w in "$wt1" "$wt2" "$wt3" "$wt4"; do
+    git -C "$proj" worktree add -q --detach "$w" >/dev/null 2>&1
+  done
+
+  # First spawn leases wt1 and records it.
+  : > "$rec"
+  out=$(run_spawn_record "$home" respawn-mm3 "$proj" "$wt1" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "the first spawn should succeed"
+  assert_grep "treehouse get --lease" "$rec" "the first spawn must lease a worktree"
+  assert_grep "worktree=$wt1" "$home/state/respawn-mm3.meta" "the first spawn must record its leased worktree"
+
+  # Respawn the SAME id while the stub stands ready to hand out a different
+  # worktree (wt2). The respawn must reuse wt1 and never lease at all.
+  : > "$rec"
+  out=$(run_spawn_record "$home" respawn-mm3 "$proj" "$wt2" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "a respawn over an existing task id should succeed"
+  assert_no_grep "treehouse get" "$rec" \
+    "a respawn must NOT lease a second worktree; the first would be stranded, leased, with no meta naming it"
+  assert_grep "worktree=$wt1" "$home/state/respawn-mm3.meta" \
+    "a respawn must keep the recorded worktree, so fm-teardown still names the crew's real work"
+  assert_no_grep "worktree=$wt2" "$home/state/respawn-mm3.meta" \
+    "a respawn must not overwrite worktree= with a freshly leased path"
+  assert_grep "cd '$wt1'" "$rec" "the respawned pane must be cd'd into the REUSED worktree"
+  assert_not_contains "$out" "no longer reserves" \
+    "wt1's lease is still held, so the reuse must not warn about a lost reservation"
+
+  # A recorded worktree that no longer exists holds nothing to reuse: lease fresh,
+  # and name the old path so its possibly-still-held lease can be released by hand.
+  : > "$rec"
+  out=$(run_spawn_record "$home" respawn-gone-nn4 "$proj" "$wt3" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "the first spawn should succeed"
+  git -C "$proj" worktree remove --force "$wt3" >/dev/null 2>&1 || rm -rf "$wt3"
+  : > "$rec"
+  out=$(run_spawn_record "$home" respawn-gone-nn4 "$proj" "$wt4" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "a respawn whose recorded worktree vanished should still spawn"
+  assert_contains "$out" "no longer exists" "a vanished recorded worktree must warn"
+  assert_contains "$out" "$wt3" "the warning must name the old path whose lease may still be held"
+  assert_grep "treehouse get --lease" "$rec" "a vanished recorded worktree must fall back to a fresh lease"
+  assert_grep "worktree=$wt4" "$home/state/respawn-gone-nn4.meta" "the fresh lease must be recorded"
+
+  pass "fm-spawn: a respawn reuses the recorded worktree instead of stranding it behind a second lease"
+}
+
+# --- GUARD 1g: fm-spawn respawn identity gate --------------------------------
+
+# Reuse trusts ONE field of a meta (worktree=), so the meta must first be proven
+# to describe the task actually being spawned. project= and kind= sit right beside
+# worktree= and are exactly that proof. Without the gate, `fm-spawn <id> projects/bar`
+# over a meta recording projects/foo launches the crew into FOO's worktree carrying
+# BAR's brief - the isolation guard cannot see it, because foo's worktree is a real
+# git toplevel that is neither projects/bar nor $FM_HOME - and then rewrites meta to
+# a project=bar/worktree=<foo wt> pair fm-teardown can never release (treehouse
+# resolves the pool from the project dir). A kind=secondmate meta is worse still:
+# its worktree= is a HOME path. Refuse both; a fresh lease instead would overwrite
+# the only record of the other task's live worktree.
+test_spawn_respawn_identity_gate() {
+  local home projA projB fakebin rec out status wtA
+  home=$(make_repo "$TMP_ROOT/ident-home")
+  mkdir -p "$home/data"
+  projA=$(make_repo "$TMP_ROOT/ident-projA")
+  projB=$(make_repo "$TMP_ROOT/ident-projB")
+  fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/ident-fake")
+  rec="$TMP_ROOT/ident-rec.log"
+  wtA="$TMP_ROOT/ident-wtA"
+  git -C "$projA" worktree add -q --detach "$wtA" >/dev/null 2>&1
+
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-rr7 "$projA" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "the first spawn should succeed"
+  assert_grep "worktree=$wtA" "$home/state/ident-rr7.meta" "the first spawn must record its worktree"
+
+  # project= mismatch: same id, different project.
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-rr7 "$projB" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 1 "$status" "a respawn against a different project must refuse"
+  assert_contains "$out" "already recorded against project=$projA" \
+    "the project-mismatch refusal must name the recorded project"
+  assert_not_contains "$out" "spawned ident-rr7" "a refused respawn must not report success"
+  assert_grep "project=$projA" "$home/state/ident-rr7.meta" \
+    "a refused respawn must leave the recorded task's meta intact"
+  assert_no_grep "treehouse get" "$rec" \
+    "a refused respawn must not lease; that meta write would strand the recorded task's worktree"
+
+  # kind= mismatch: the recorded ship task respawned as a scout.
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-rr7 "$projA" "$wtA" "$fakebin" "$rec" --scout); status=$?
+  expect_code 1 "$status" "a respawn under a different kind must refuse"
+  assert_contains "$out" "already recorded as kind=ship" "the kind-mismatch refusal must name the recorded kind"
+  assert_grep "kind=ship" "$home/state/ident-rr7.meta" "a refused respawn must leave kind= intact"
+
+  # A kind=secondmate meta's worktree= is a HOME path, never a pool worktree.
+  fm_write_secondmate_meta "$home/state/ident-sm-ss8.meta" "$projA"
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-sm-ss8 "$projA" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 1 "$status" "a crewmate spawn over a kind=secondmate meta must refuse"
+  assert_contains "$out" "already recorded as kind=secondmate" \
+    "the refusal must name the recorded secondmate kind (its worktree= is a HOME path)"
+
+  # backend= mismatch, the orca half: an Orca worktree is a real git toplevel that
+  # is neither the project nor $FM_HOME, so validate_spawn_worktree clears it and a
+  # project/kind-only gate would let the reuse block adopt it. The rewritten meta
+  # would then drop backend=orca and orca_worktree_id=, leaving fm-teardown to run
+  # `treehouse return` against a path treehouse never owned. Only the gate sees it.
+  fm_write_meta "$home/state/ident-orca-bb2.meta" \
+    "window=fm-ident-orca-bb2" "worktree=$wtA" "project=$projA" \
+    "harness=codex" "kind=ship" "mode=no-mistakes" "yolo=off" \
+    "backend=orca" "orca_worktree_id=wt-ident-orca-bb2" "terminal=term-ident-orca-bb2"
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-orca-bb2 "$projA" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 1 "$status" "a tmux respawn over a backend=orca meta must refuse"
+  assert_contains "$out" "already recorded as backend=orca" \
+    "the backend-mismatch refusal must name the recorded backend"
+  assert_grep "backend=orca" "$home/state/ident-orca-bb2.meta" \
+    "a refused respawn must leave the recorded Orca meta intact"
+  assert_grep "orca_worktree_id=wt-ident-orca-bb2" "$home/state/ident-orca-bb2.meta" \
+    "a refused respawn must not drop the Orca worktree id fm-teardown needs"
+  assert_no_grep "treehouse" "$rec" \
+    "a refused respawn must not lease or reuse: an Orca worktree was never in the pool"
+
+  # The backend check is scoped to the ORCA boundary, and must not fire between two
+  # pool backends: they borrow the SAME treehouse pool, so reuse adopts the recorded
+  # worktree unchanged and nothing is stranded. Refusing here would break ordinary
+  # recovery after a config/backend edit or a session under a different
+  # auto-detected runtime - including bin/fm-bootstrap.sh's secondmate liveness
+  # sweep, which respawns with no --backend at all.
+  fm_write_meta "$home/state/ident-pool-hh3.meta" \
+    "window=fm-ident-pool-hh3" "worktree=$wtA" "project=$projA" \
+    "harness=codex" "kind=ship" "mode=no-mistakes" "yolo=off" "backend=herdr"
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-pool-hh3 "$projA" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "a tmux respawn over a herdr meta must not refuse: both borrow the pool"
+  assert_not_contains "$out" "already recorded as backend=" \
+    "a non-orca <-> non-orca crossing strands no worktree and must not refuse"
+  assert_grep "worktree=$wtA" "$home/state/ident-pool-hh3.meta" \
+    "the pool crossing must reuse the recorded worktree, not lease a second"
+  assert_no_grep "treehouse get" "$rec" \
+    "reuse must not lease: the recorded pool worktree still holds the crew's work"
+
+  # The gate must never false-refuse the default backend: a tmux meta never writes
+  # backend= at all, so the compare must go through fm_backend_of_meta's
+  # absent-means-tmux contract rather than an empty-string compare.
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-rr7 "$projA" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "a tmux respawn over a tmux meta (no backend= field) must not trip the gate"
+  assert_not_contains "$out" "already recorded as backend=" \
+    "an absent backend= means tmux and must not be read as a different backend"
+
+  # The gate must never false-refuse the same project reached through a symlinked
+  # prefix: project= is recorded from a LOGICAL pwd, so only a physical compare
+  # holds (the same reason PROJ_ABS_REAL exists).
+  ln -s "$projA" "$TMP_ROOT/ident-link"
+  : > "$rec"
+  out=$(run_spawn_record "$home" ident-rr7 "$TMP_ROOT/ident-link" "$wtA" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "the same project via a symlinked path must not trip the identity gate"
+  assert_not_contains "$out" "already recorded against project=" \
+    "a symlinked path to the SAME project must not be read as a different project"
+
+  pass "fm-spawn: a respawn refuses when the recorded meta's project=, kind=, or backend= describes another task"
+}
+
+# --- GUARD 1h: fm-spawn reuse checks the worktree is still reserved -----------
+
+# A reused worktree is only as safe as treehouse's reservation of it, and the meta
+# does not imply one: a task spawned before the fm-spawn-side lease landed recorded
+# a worktree held only by the old pane-side `treehouse get` subshell, which reserves
+# nothing once that subshell dies. Reusing an unreserved path lets a concurrent
+# `treehouse get` hand the same worktree to another task. treehouse v2.0.0 has no
+# verb to lease an existing path, so fm-spawn warns and reuses anyway - the crew's
+# work is IN that worktree, and a fresh lease would abandon it.
+test_spawn_reuse_warns_when_lease_is_gone() {
+  local home proj fakebin rec out status wt wt2
+  home=$(make_repo "$TMP_ROOT/unheld-home")
+  mkdir -p "$home/data" "$home/state"
+  proj=$(make_repo "$TMP_ROOT/unheld-proj")
+  fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/unheld-fake")
+  rec="$TMP_ROOT/unheld-rec.log"
+  wt="$TMP_ROOT/unheld-wt"; wt2="$TMP_ROOT/unheld-wt2"
+  git -C "$proj" worktree add -q --detach "$wt" >/dev/null 2>&1
+  git -C "$proj" worktree add -q --detach "$wt2" >/dev/null 2>&1
+
+  # A pre-fix meta: a real worktree the stub's pool never leased, so `treehouse
+  # status` does not report it reserved - exactly the post-fast-forward shape.
+  fm_write_meta "$home/state/unheld-tt9.meta" \
+    "window=firstmate:fm-unheld-tt9" "worktree=$wt" "project=$proj" \
+    "harness=codex" "kind=ship" "mode=no-mistakes" "yolo=off"
+  : > "$rec"
+  out=$(run_spawn_record "$home" unheld-tt9 "$proj" "$wt2" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "an unreserved recorded worktree must still spawn"
+  assert_contains "$out" "no longer reserves the worktree recorded for unheld-tt9" \
+    "reusing a worktree treehouse no longer reserves must warn: a concurrent get can hand it out"
+  assert_contains "$out" "$wt" "the warning must name the unreserved worktree"
+  assert_grep "treehouse status" "$rec" "the reuse must ASK treehouse whether the worktree is still reserved"
+  assert_no_grep "treehouse get" "$rec" \
+    "an unreserved worktree still holds the crew's work; a fresh lease would abandon it"
+  assert_grep "worktree=$wt" "$home/state/unheld-tt9.meta" "the reused worktree must stay recorded"
+  assert_grep "cd '$wt'" "$rec" "the pane must still be cd'd into the reused worktree"
+
+  # The happy path stays silent: a worktree this pool really leased reads back held.
+  : > "$rec"
+  out=$(run_spawn_record "$home" held-uu1 "$proj" "$wt2" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "the first spawn should succeed"
+  : > "$rec"
+  out=$(run_spawn_record "$home" held-uu1 "$proj" "$wt2" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "a respawn of a still-leased worktree should succeed"
+  assert_not_contains "$out" "no longer reserves" \
+    "a worktree treehouse still holds must reuse silently"
+
+  pass "fm-spawn: reusing a worktree treehouse no longer reserves warns instead of passing it off as held"
+}
+
+# The reservation check reads a human table, so it is only as good as its grip on
+# treehouse's REAL output shape. Both of these were verified against treehouse
+# v2.0.0 and would otherwise fail silently - as a spurious warning on every reuse
+# of a genuinely-held pool worktree, which is exactly the noise that teaches a
+# captain to ignore the warning:
+#   - `in-use` (a live process inside the worktree) is reserved just like `leased`;
+#     only `available` means the next `get` may hand the path out.
+#   - a path under $HOME is printed ABBREVIATED to `~`, so a raw compare against an
+#     absolute worktree= never matches; and a worktree's processes are listed on an
+#     indented continuation line that must not be parsed as a pool entry.
+test_spawn_reuse_reads_real_treehouse_status_shape() {
+  local home proj fakebin rec out status hwt
+  home=$(make_repo "$TMP_ROOT/shape-home")
+  mkdir -p "$home/data" "$home/state"
+  proj=$(make_repo "$TMP_ROOT/shape-proj")
+  fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/shape-fake")
+  rec="$TMP_ROOT/shape-rec.log"
+  # Lives directly under the HOME handed to the spawn, so treehouse's `~` form
+  # resolves back to it.
+  hwt="$TMP_ROOT/shape-wt"
+  git -C "$proj" worktree add -q --detach "$hwt" >/dev/null 2>&1
+
+  # A pool reporting the recorded worktree in treehouse's real shape: `in-use`,
+  # $HOME abbreviated to `~`, and a process continuation line. No `get` verb at
+  # all - a reuse that leases instead would get an empty path and fail loudly.
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ -n "${FM_TMUX_REC:-}" ] && printf 'treehouse %s\n' "$*" >> "$FM_TMUX_REC"
+case "${1:-}" in
+  status)
+    printf '%-4s  %s  %s\n' 1 in-use '~/shape-wt'
+    printf '                   bash (2203717), codex (2203718)\n'
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+  fm_write_meta "$home/state/shape-vv2.meta" \
+    "window=firstmate:fm-shape-vv2" "worktree=$hwt" "project=$proj" \
+    "harness=codex" "kind=ship" "mode=no-mistakes" "yolo=off"
+
+  : > "$rec"
+  out=$(mkdir -p "$home/data/shape-vv2" && printf 'brief\n' > "$home/data/shape-vv2/brief.md"
+    FM_ROOT_OVERRIDE='' FM_HOME="$home" HOME="$TMP_ROOT" \
+      FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+      FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+      FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$hwt" TMUX="fake,1,0" \
+      FM_TMUX_REC="$rec" PATH="$fakebin:$PATH" \
+      "$ROOT/bin/fm-spawn.sh" shape-vv2 "$proj" codex 2>&1); status=$?
+  expect_code 0 "$status" "a respawn onto an in-use pool worktree should succeed"
+  assert_not_contains "$out" "no longer reserves" \
+    "an in-use, ~-abbreviated pool worktree IS reserved; warning there is spurious noise on every reuse"
+  assert_grep "cd '$hwt'" "$rec" "the pane must still be cd'd into the reused worktree"
+
+  pass "fm-spawn: the reservation check reads treehouse's real status shape (in-use, ~-abbreviated \$HOME, process lines)"
+}
+
+# The reuse check asks not just IS the path reserved but BY WHOM: the lease is taken
+# with `--lease-holder fm-<id>`, and `treehouse status` carries the holder back as
+# `(held by <holder>)`. Matching it against this task's own id turns a worktree
+# treehouse re-leased to a DIFFERENT task - e.g. a partial teardown dropped the lease
+# but left the meta, then the pool handed the path to another task - from a silent
+# reuse into a caught one (backlog fm-spawn-wt-batch-x5, review #3).
+test_spawn_reuse_catches_worktree_leased_to_another_task() {
+  local home proj fakebin rec out status wt other_wt
+  home=$(make_repo "$TMP_ROOT/otherhold-home")
+  mkdir -p "$home/data" "$home/state"
+  proj=$(make_repo "$TMP_ROOT/otherhold-proj")
+  fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/otherhold-fake")
+  rec="$TMP_ROOT/otherhold-rec.log"
+  wt="$TMP_ROOT/otherhold-wt"; other_wt="$TMP_ROOT/otherhold-otherwt"
+  git -C "$proj" worktree add -q --detach "$wt" >/dev/null 2>&1
+  git -C "$proj" worktree add -q --detach "$other_wt" >/dev/null 2>&1
+
+  # A different live task leases $wt, so the pool records it held by fm-otherlease-aa1.
+  : > "$rec"
+  out=$(run_spawn_record "$home" otherlease-aa1 "$proj" "$wt" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "the other task's first spawn should succeed"
+
+  # The victim task's meta still names $wt. On respawn the reuse check must SEE that
+  # $wt is now held by a different holder and warn, instead of adopting it silently.
+  fm_write_meta "$home/state/reuse-victim-xx3.meta" \
+    "window=firstmate:fm-reuse-victim-xx3" "worktree=$wt" "project=$proj" \
+    "harness=codex" "kind=ship" "mode=no-mistakes" "yolo=off"
+  : > "$rec"
+  out=$(run_spawn_record "$home" reuse-victim-xx3 "$proj" "$other_wt" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "a respawn onto a differently-held worktree must still spawn (reuse anyway)"
+  assert_contains "$out" "leased to a DIFFERENT holder ('fm-otherlease-aa1')" \
+    "reuse must catch a worktree treehouse re-leased to another task, naming the holder"
+  assert_not_contains "$out" "no longer reserves" \
+    "a differently-held worktree IS reserved; the 'no longer reserves' claim would be wrong"
+  assert_grep "treehouse status" "$rec" "the reuse must ASK treehouse who holds the worktree"
+  assert_no_grep "treehouse get" "$rec" \
+    "a differently-held worktree still holds the crew's work; a fresh lease would abandon it"
+  assert_grep "worktree=$wt" "$home/state/reuse-victim-xx3.meta" "the reused worktree must stay recorded"
+  assert_grep "cd '$wt'" "$rec" "the pane must be cd'd into the reused worktree"
+  pass "fm-spawn: a respawn catches a recorded worktree treehouse has re-leased to a different task"
+}
+
+# A FAILED `treehouse status` (missing binary, unreadable pool, non-zero exit) is not
+# the same as an answered "not reserved". The old boolean collapsed them, so a
+# treehouse that was merely unavailable printed a false "no longer reserves" claim on
+# EVERY respawn - the noise that teaches a captain to ignore the warning. This stub's
+# status EXITS NON-ZERO; the reuse must say it could not ASK, and must NOT assert the
+# worktree is unreserved (backlog fm-spawn-wt-batch-x5, review #1).
+test_spawn_reuse_unknown_when_status_fails() {
+  local home proj fakebin rec out status wt wt2
+  home=$(make_repo "$TMP_ROOT/statusfail-home")
+  mkdir -p "$home/data" "$home/state"
+  proj=$(make_repo "$TMP_ROOT/statusfail-proj")
+  fakebin=$(make_spawn_record_fakebin "$TMP_ROOT/statusfail-fake")
+  rec="$TMP_ROOT/statusfail-rec.log"
+  wt="$TMP_ROOT/statusfail-wt"; wt2="$TMP_ROOT/statusfail-wt2"
+  git -C "$proj" worktree add -q --detach "$wt" >/dev/null 2>&1
+  git -C "$proj" worktree add -q --detach "$wt2" >/dev/null 2>&1
+
+  # A treehouse whose `status` FAILS (e.g. an unreadable pool) but whose other verbs
+  # still work, so the ONLY difference from the happy path is the unanswerable status.
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+set -u
+[ -n "${FM_TMUX_REC:-}" ] && printf 'treehouse %s\n' "$*" >> "$FM_TMUX_REC"
+case "${1:-}" in
+  get) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  status) printf 'treehouse: cannot read pool state\n' >&2; exit 1 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+
+  fm_write_meta "$home/state/statusfail-yy4.meta" \
+    "window=firstmate:fm-statusfail-yy4" "worktree=$wt" "project=$proj" \
+    "harness=codex" "kind=ship" "mode=no-mistakes" "yolo=off"
+  : > "$rec"
+  out=$(run_spawn_record "$home" statusfail-yy4 "$proj" "$wt2" "$fakebin" "$rec"); status=$?
+  expect_code 0 "$status" "a respawn whose status check fails must still spawn (reuse anyway)"
+  assert_contains "$out" "could not ask treehouse whether the worktree recorded for statusfail-yy4" \
+    "a failed 'treehouse status' must report that firstmate could not ASK, not assert unreserved"
+  assert_not_contains "$out" "no longer reserves" \
+    "a failed status is not evidence the worktree is unreserved; that claim must not print"
+  assert_grep "treehouse status" "$rec" "the reuse must still ASK treehouse"
+  assert_no_grep "treehouse get" "$rec" \
+    "an unanswerable status still holds the crew's work; a fresh lease would abandon it"
+  assert_grep "cd '$wt'" "$rec" "the pane must be cd'd into the reused worktree"
+  pass "fm-spawn: a failed 'treehouse status' during reuse reports could-not-ask, not a false 'no longer reserves'"
+}
+
 # --- GUARD 1c: fm-spawn tmux window construction ----------------------------
 
 # The prevention guard also depends on fm-spawn building robust tmux commands
 # under a non-default tmux config (base-index 1, automatic-rename on). A RECORDING
-# fake tmux logs every invocation and returns a sentinel window id, so these
-# assertions pin the command construction deterministically, with no live tmux:
+# fake tmux+treehouse logs every invocation and returns a sentinel window id, so
+# these assertions pin the command construction deterministically, with no live
+# tmux:
 #   - window creation targets the session with a trailing colon (append form), so
 #     tmux appends at the next free index instead of the active window index, which
 #     collides under base-index 1;
 #   - the window id is captured (-P -F #{window_id}) and automatic-rename/allow-rename
-#     are disabled so the fm-<id> name survives treehouse cd'ing into the worktree;
-#   - the treehouse-get send-keys and the worktree wait loop target that stable
-#     window id, never the (possibly-renamed) name - a lost name would let
-#     display-message fall back to the active client's window and misread firstmate's
-#     OWN pane as the worktree, tangling a hook into the primary checkout.
+#     are disabled so the fm-<id> name survives the pane cd'ing into the worktree;
+#   - the worktree is captured authoritatively from `treehouse get --lease` (not a
+#     pane-current-path poll, which could latch $FM_HOME), and the cd-into-worktree
+#     send targets that stable window id, never the (possibly-renamed) name
+#     (fm-spawn-wt-batch-x5).
 make_spawn_record_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -236,9 +778,6 @@ make_spawn_record_fakebin() {
 #!/usr/bin/env bash
 set -u
 [ -n "${FM_TMUX_REC:-}" ] && printf 'tmux %s\n' "$*" >> "$FM_TMUX_REC"
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   new-window) printf '%s\n' "@spawnwid"; exit 0 ;;
@@ -248,12 +787,15 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  # Recording treehouse stub: logs every call to FM_TMUX_REC and emits
+  # FM_FAKE_PANE_PATH as the leased worktree on `get --lease` (fm-spawn-wt-batch-x5).
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 
-run_spawn_record() {
+run_spawn_record() {  # <home> <id> <proj> <pane> <fakebin> <rec> [extra spawn args...]
   local home=$1 id=$2 proj=$3 pane=$4 fakebin=$5 rec=$6
+  shift 6
   mkdir -p "$home/data/$id"
   printf 'brief\n' > "$home/data/$id/brief.md"
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
@@ -262,7 +804,7 @@ run_spawn_record() {
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$pane" TMUX="fake,1,0" \
     FM_TMUX_REC="$rec" \
     PATH="$fakebin:$PATH" \
-    "$ROOT/bin/fm-spawn.sh" "$id" "$proj" codex 2>&1
+    "$ROOT/bin/fm-spawn.sh" "$id" "$proj" codex "$@" 2>&1
 }
 
 test_spawn_tmux_window_construction() {
@@ -292,13 +834,26 @@ test_spawn_tmux_window_construction() {
   assert_grep "set-window-option -t @spawnwid allow-rename off" "$rec" \
     "must disable allow-rename on the spawned window"
 
-  # Bug 2 fix (b): treehouse-get and the worktree wait loop target the stable id.
-  assert_grep "send-keys -t @spawnwid treehouse get Enter" "$rec" \
-    "treehouse get must be sent to the stable window id"
-  assert_grep "display-message -p -t @spawnwid #{pane_current_path}" "$rec" \
-    "the worktree wait loop must query the stable window id, not the name"
+  # Authoritative capture (fm-spawn-wt-batch-x5): the worktree is leased via
+  # `treehouse get --lease`, the pane is moved into it with a cd sent to the stable
+  # window id, and there is no pane_current_path poll (that poll latched $FM_HOME).
+  assert_grep "treehouse get --lease" "$rec" \
+    "the worktree must be captured authoritatively via treehouse get --lease"
+  assert_grep "send-keys -t @spawnwid cd " "$rec" \
+    "the cd-into-worktree send must target the stable window id"
+  assert_no_grep "send-keys -t @spawnwid treehouse get Enter" "$rec" \
+    "the pane must not run a bare 'treehouse get' (capture is now the fm-spawn-side lease)"
+  assert_no_grep "#{pane_current_path}" "$rec" \
+    "worktree capture must not poll pane_current_path (that poll latched \$FM_HOME)"
 
-  pass "fm-spawn: appends windows by session-colon, pins the name, and targets the window id"
+  # The recorded worktree= is the real leased path, NOT $FM_HOME (the exact
+  # projects/*-only mis-capture this task fixes). Here FM_HOME=$home != $wt.
+  assert_grep "worktree=$wt" "$home/state/rec-win-gg7.meta" \
+    "meta must record the real leased worktree"
+  assert_no_grep "worktree=$home" "$home/state/rec-win-gg7.meta" \
+    "meta must never record worktree=\$FM_HOME (the historical mis-capture)"
+
+  pass "fm-spawn: appends windows by session-colon, pins the name, leases the worktree, records it in meta, and targets the window id"
 }
 
 test_lib_classification
@@ -306,4 +861,14 @@ test_guard_banner
 test_bootstrap_line
 test_brief_assertion_precedes_branch
 test_spawn_isolation_abort
+test_spawn_fm_home_worktree_backstop
+test_spawn_releases_lease_on_abort
+test_spawn_lease_release_warning_is_signal
+test_spawn_releases_lease_on_hook_block_failure
+test_spawn_respawn_identity_gate
+test_spawn_reuse_warns_when_lease_is_gone
+test_spawn_reuse_reads_real_treehouse_status_shape
+test_spawn_reuse_catches_worktree_leased_to_another_task
+test_spawn_reuse_unknown_when_status_fails
+test_spawn_respawn_reuses_recorded_worktree
 test_spawn_tmux_window_construction

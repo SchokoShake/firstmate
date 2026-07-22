@@ -17,8 +17,8 @@
 #   then tmux.
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
-#   session provider only, exactly like herdr/zellij, so it does. An
+#   terminal, so ship/scout Orca spawns do not lease a treehouse worktree; cmux
+#   is a session provider only, exactly like herdr/zellij, so it does. An
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
@@ -57,6 +57,26 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+#   A ship/scout respawn over an existing task id REUSES the worktree= already
+#   recorded in state/<id>.meta rather than leasing a second one, so recovering a
+#   husk task (docs/herdr-backend.md "Respawn idempotency") keeps the crew's
+#   branch, commits, and uncommitted work reachable instead of stranding them in
+#   a durably-leased worktree nothing names. A recorded worktree that no longer
+#   exists warns and falls back to a fresh lease; a recorded worktree still present
+#   is reused anyway (the crew's work is in it, and no treehouse verb can re-lease an
+#   existing path), with a per-case warning when treehouse reports it unreserved, held
+#   by a different task, or unreachable to ask - see treehouse_reservation below.
+#   Reuse covers the treehouse-pool backends only:
+#   an orca respawn skips it, because orca owns its own worktree and never leases
+#   from the pool. The identity gate below is what keeps that exclusion safe.
+#   Any respawn refuses outright when the recorded meta's project= or kind=
+#   disagrees with what is being spawned: that meta describes a task firstmate has
+#   lost track of, and neither reusing its worktree= nor overwriting it with a
+#   fresh lease is safe. backend= refuses too, but only across the ORCA boundary
+#   (exactly one of recorded/resolved is orca), because orca owns its own worktree
+#   while every other backend borrows the pool, so an orca crossing strands
+#   whichever worktree the recorded meta named. A non-orca <-> non-orca respawn is
+#   a normal recovery and reuses the recorded pool worktree unchanged.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -84,7 +104,9 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-  sed -n '2,78p' "$0" | sed 's/^# \{0,1\}//'
+  # Derive the header's end rather than pinning a line number: quit at the first
+  # non-comment line, so --help survives the next header edit intact.
+  sed -n '2,${/^#/!q;p;}' "$0" | sed 's/^# \{0,1\}//'
 }
 
 case "${1:-}" in
@@ -190,6 +212,8 @@ fi
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
+LEASE_ABORT_CLEANUP=0
+LEASED_WT=
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -208,8 +232,8 @@ parse_orca_worktree_result() {
   fi
 }
 
-orca_spawn_abort_cleanup() {
-  local status=$?
+orca_spawn_abort_cleanup() {  # <status>
+  local status=$1
   [ "$ORCA_ABORT_CLEANUP" = 1 ] || return "$status"
   ORCA_ABORT_CLEANUP=0
   if [ -n "${ORCA_TERMINAL:-}" ]; then
@@ -239,7 +263,130 @@ orca_spawn_abort_cleanup() {
   fi
   return "$status"
 }
-trap orca_spawn_abort_cleanup EXIT
+
+# `treehouse get --lease` reserves the worktree DURABLY: treehouse never hands it
+# out again and never prunes it, with or without a process inside, until a
+# `treehouse return` releases it. fm-teardown releases it from the recorded
+# worktree=, so a spawn that leases and then aborts BEFORE writing
+# state/<id>.meta would strand the pool slot forever with nothing left to name
+# it. Release it here on any such abort, mirroring ORCA_ABORT_CLEANUP above; the
+# flag is cleared once meta is written and teardown owns the lease instead.
+lease_spawn_abort_cleanup() {
+  local out
+  [ "$LEASE_ABORT_CLEANUP" = 1 ] || return 0
+  LEASE_ABORT_CLEANUP=0
+  [ -n "$LEASED_WT" ] || return 0
+  out=$( ( cd "$PROJ_ABS" && treehouse return --force "$LEASED_WT" ) 2>&1 ) && return 0
+  # An isolation-guard abort captured a path that is by definition NOT a pool
+  # worktree, so treehouse refuses to return it and there is no lease to leak.
+  # Staying silent there keeps the guard's own error the only thing the captain
+  # reads, instead of a second warning naming a command that just repeats the
+  # refusal. Every other failure is a real un-released lease and must be loud.
+  # This `not managed by treehouse` string is a conscious v2.0.0 text coupling;
+  # treehouse_reservation's header (below) owns the shared sign-off for both text
+  # sites - why no machine-readable alternative exists, and why both fail
+  # loud-but-wrong rather than silently-dangerous (backlog fm-spawn-wt-batch-x5,
+  # review #5).
+  case "$out" in
+    *'not managed by treehouse'*) return 0 ;;
+  esac
+  echo "warning: could not release the treehouse lease on '$LEASED_WT' after a failed spawn of $ID; release it with 'cd $PROJ_ABS && treehouse return --force $LEASED_WT'" >&2
+}
+
+# treehouse_reservation: report whether treehouse still RESERVES <worktree>, and
+# for whom, echoing exactly one token so a respawn can tell genuinely different
+# situations apart instead of collapsing them (backlog fm-spawn-wt-batch-x5):
+#   held              - reserved and this task's own: a `leased` row whose holder
+#                       matches <expected-holder>, an `in-use` row (a live process;
+#                       treehouse prints no holder for it), or a `leased` row
+#                       treehouse printed with no holder at all. Reuse silently.
+#   held-by-other:<h> - reserved, but a `leased` row names a DIFFERENT holder <h>:
+#                       treehouse re-leased the path to another task (e.g. a partial
+#                       teardown dropped the lease but left the meta), so reuse would
+#                       put two tasks in one worktree. The identity gate upstream
+#                       makes this rare, but the holder is already in the table, so
+#                       catching it is free (review #3).
+#   available         - treehouse ANSWERED and the path is not reserved: the next
+#                       `get` may hand it out and hard-reset it under whoever is there.
+#   unknown           - the `treehouse status` command itself FAILED (missing binary,
+#                       unreadable pool, non-zero exit). We could not ASK, so the
+#                       caller must not assert the path is unreserved. Folding this
+#                       into `available` was a false "no longer reserves" alarm on
+#                       EVERY respawn while treehouse was down - the noise that teaches
+#                       a captain to ignore the warning (review #1). The exit code is
+#                       the only thing that tells the two apart, so it is captured
+#                       separately below rather than swallowed by `2>/dev/null || true`.
+#
+# `treehouse status` (v2.0.0) has no machine-readable mode, so this parses its
+# table - `<name>  <state>  <path>  [(held by <holder>)]` - with properties verified
+# against the real binary (docs/tmux-backend.md "Worktree capture"): $HOME is printed
+# ABBREVIATED to `~`, so a raw compare against an absolute worktree= silently never
+# matches; a worktree's process list is an indented continuation line, which can never
+# match a reserved state AND the path, so it falls through; an `in-use` row carries NO
+# `(held by ...)` (verified), so the holder gate can only ever fire on a `leased` row
+# that names someone else - it strengthens, never weakens; and the version-update
+# banner prints to stderr, so the `2>/dev/null` capture keeps the table clean while a
+# real failure still surfaces through the exit code. Paths are compared in physical
+# form for the same reason PROJ_ABS_REAL exists. treehouse resolves the pool from the
+# working directory, exactly like fm-teardown's release, so ask from $PROJ_ABS.
+#
+# CONSCIOUS v2.0.0 TEXT COUPLING (review #5): the `(held by ...)` parse here and
+# lease_spawn_abort_cleanup's `not managed by treehouse` match (above) are the two
+# places this file keys on treehouse's HUMAN output. There is no machine-readable
+# alternative - `treehouse --help` advertises no --json/--porcelain and `status`/
+# `return` no structured mode (verified 2026-07-21, v2.0.0). Both couple LOUD-BUT-WRONG,
+# never silently-dangerous, if a future treehouse rewords: a reworded holder line
+# degrades to `held` (safe reuse, no false catch), and a reworded refusal re-arms
+# lease_spawn_abort_cleanup's warning. Neither is worth a per-spawn `treehouse
+# --version` probe; keep the two sites in sync when the treehouse adapter is revised.
+treehouse_reservation() {  # <worktree> <expected-holder>
+  local want=$1 expect=$2 want_real state path path_real rest holder status_out
+  want_real=$(cd "$want" 2>/dev/null && pwd -P) || want_real=$want
+  # Capture the status rc through `if !` so set -e cannot abort before we read it: a
+  # failed command means we could NOT ask, which is not the same as "available".
+  if ! status_out=$( (cd "$PROJ_ABS" && treehouse status) 2>/dev/null ); then
+    printf 'unknown\n'
+    return 0
+  fi
+  while read -r _ state path rest; do
+    case "$state" in
+      leased|in-use) ;;
+      *) continue ;;
+    esac
+    # shellcheck disable=SC2088 # Matching treehouse's LITERAL '~', not expanding one.
+    case "$path" in
+      "~/"*) path="$HOME/${path#\~/}" ;;
+    esac
+    path_real=$(cd "$path" 2>/dev/null && pwd -P) || path_real=$path
+    [ "$path_real" = "$want_real" ] || continue
+    # A `leased` row carries `(held by <holder>)`; an `in-use` row does not. Only a
+    # DIFFERENT named holder is a caught reuse - absent or matching holder is ours.
+    holder=
+    case "$rest" in
+      *'(held by '*) holder=${rest#*'(held by '}; holder=${holder%%')'*} ;;
+    esac
+    if [ -n "$holder" ] && [ "$holder" != "$expect" ]; then
+      printf 'held-by-other:%s\n' "$holder"
+    else
+      printf 'held\n'
+    fi
+    return 0
+  done <<EOF
+$status_out
+EOF
+  printf 'available\n'
+}
+
+# Both handlers are `|| true`-guarded: each returns non-zero on its own
+# not-my-spawn path, and `set -e` is still in force inside an EXIT trap, so an
+# unguarded call would abort the trap and silently skip every handler after it.
+spawn_abort_cleanup() {
+  local status=$?
+  orca_spawn_abort_cleanup "$status" || true
+  lease_spawn_abort_cleanup || true
+  return "$status"
+}
+trap spawn_abort_cleanup EXIT
 
 # Batch dispatch (see header): when the first positional is an `id=repo` pair, treat every
 # positional as one and spawn each by re-execing this script in single-task mode. We use
@@ -646,24 +793,74 @@ fi
 
 # PROJ_ABS can still carry a symlinked path component (e.g. macOS's /tmp ->
 # /private/tmp) when it came from the ship/scout branch's logical `pwd` above.
-# Every backend's own current-path read (tmux's pane_current_path, herdr's
-# foreground_cwd, zellij/cmux's active pwd probe against the live shell) can
-# report the OS-level, physically-resolved cwd, so comparing it against a
-# still-symlinked PROJ_ABS can misfire both ways: false-negative (the poll
-# below never notices the pane left the project) or false-positive (the
-# isolation guard refuses a spawn that never actually tangled). Canonicalize
-# once here so every downstream comparison uses the same physical form
-# (docs/herdr-backend.md "Known gaps").
+# The isolation guard (validate_spawn_worktree) compares the leased worktree's
+# PHYSICAL path against this project path, so canonicalize the project once here
+# to the same physical form; otherwise a still-symlinked PROJ_ABS could differ
+# string-for-string from the worktree's OS-level path and trip a false isolation
+# refusal (docs/herdr-backend.md "Known gaps").
 PROJ_ABS_REAL=$(cd "$PROJ_ABS" 2>/dev/null && pwd -P) || PROJ_ABS_REAL="$PROJ_ABS"
 
-real_path_or_raw() {  # <path>
-  local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P); then
-    printf '%s\n' "$real"
-  else
-    printf '%s\n' "$path"
+# Respawn identity gate (fm-spawn-wt-batch-x5). A surviving state/<id>.meta means
+# the task was never torn down (fm-teardown releases the worktree and removes the
+# meta together), so this spawn is a RESPAWN of that task and the capture below
+# adopts its recorded worktree= rather than leasing a second one. Before anything
+# trusts one field of that meta, confirm the meta describes the task actually
+# being spawned: project=, kind=, and backend= sit beside worktree= and are
+# exactly the record of WHICH task it is. A mismatch means firstmate lost track of
+# the task, and adopting worktree= anyway is worse than either half alone - a
+# kind=secondmate meta's worktree= is a HOME path, not a pool worktree, and another
+# project's worktree launches the crew into the OLD project carrying the NEW
+# project's brief, then rewrites meta to a contradictory project=/worktree= pair
+# that fm-teardown cannot release (treehouse resolves the pool from the project
+# dir, so its `treehouse return` refuses a worktree from a different pool and the
+# slot leaks). backend= is load-bearing for the same reason, but ONLY across the
+# orca boundary: orca owns its own worktree while every other backend borrows the
+# treehouse pool, so an orca crossing breaks the reuse decision in both directions
+# - a non-orca meta respawned --backend orca skips the reuse block entirely and
+# strands the leased worktree, and an orca meta respawned on any other backend
+# reuses the ORCA worktree and rewrites meta without backend=/orca_worktree_id=,
+# leaving fm-teardown to run `treehouse return` against a path treehouse never
+# owned. A non-orca <-> non-orca crossing strands nothing: both sides borrow the
+# same pool, so reuse below adopts the recorded worktree unchanged and only
+# window= is rewritten. That crossing is a normal recovery (a config/backend edit,
+# or a session under a different auto-detected runtime), and refusing it would
+# break bootstrap's secondmate liveness respawn, which re-spawns with no --backend
+# at all. So the refusal is scoped to the orca boundary, and kind=secondmate falls
+# out of it for free: orca never spawns a secondmate (refused above), so a
+# secondmate can neither record nor resolve orca. Refuse rather than fall
+# back to a fresh lease: the fresh lease's meta write would silently overwrite the
+# only record of the OTHER task's live worktree, stranding its branch, commits, and
+# uncommitted work behind a lease prune can never reclaim - the exact loss the
+# reuse exists to prevent. Runs before the backend creates anything, so a mismatch
+# costs no window or worktree.
+RESPAWN_META="$STATE/$ID.meta"
+if [ -f "$RESPAWN_META" ]; then
+  RESPAWN_KIND=$(fm_meta_get "$RESPAWN_META" kind)
+  RESPAWN_PROJECT=$(fm_meta_get "$RESPAWN_META" project)
+  # fm_backend_of_meta owns the absent-backend=-means-tmux contract, so a default
+  # tmux meta (which never writes the field) compares equal to a resolved tmux
+  # spawn instead of false-refusing on an empty string.
+  RESPAWN_BACKEND=$(fm_backend_of_meta "$RESPAWN_META")
+  if [ -n "$RESPAWN_KIND" ] && [ "$RESPAWN_KIND" != "$KIND" ]; then
+    echo "error: $ID is already recorded as kind=$RESPAWN_KIND in $RESPAWN_META, but this spawn is kind=$KIND; refusing to respawn over a task firstmate has lost track of. Tear the recorded task down first, or spawn under a different id." >&2
+    exit 1
   fi
-}
+  if [ "$RESPAWN_BACKEND" != "$BACKEND" ] &&
+     { [ "$RESPAWN_BACKEND" = orca ] || [ "$BACKEND" = orca ]; }; then
+    echo "error: $ID is already recorded as backend=$RESPAWN_BACKEND in $RESPAWN_META, but this spawn is backend=$BACKEND; refusing to respawn across the orca boundary, which would strand the worktree the recorded meta names. Re-run with --backend $RESPAWN_BACKEND to respawn the task as recorded, or tear it down first to switch backends deliberately." >&2
+    exit 1
+  fi
+  # Compare PHYSICAL forms: project= is recorded from the ship/scout branch's
+  # LOGICAL `cd && pwd`, so the same project reached once through a symlinked
+  # prefix and once directly would false-refuse on a string compare (the
+  # PROJ_ABS_REAL canonicalization directly above exists for the same reason).
+  RESPAWN_PROJECT_REAL=$(cd "$RESPAWN_PROJECT" 2>/dev/null && pwd -P) || RESPAWN_PROJECT_REAL=$RESPAWN_PROJECT
+  [ -n "$RESPAWN_PROJECT_REAL" ] || RESPAWN_PROJECT_REAL=$RESPAWN_PROJECT
+  if [ -n "$RESPAWN_PROJECT" ] && [ "$RESPAWN_PROJECT_REAL" != "$PROJ_ABS_REAL" ]; then
+    echo "error: $ID is already recorded against project=$RESPAWN_PROJECT in $RESPAWN_META, but this spawn targets $PROJ_ABS; refusing to respawn over a task firstmate has lost track of. Tear the recorded task down first, or spawn under a different id." >&2
+    exit 1
+  fi
+fi
 
 # Session-provider container-ensure + task creation. tmux stays exactly as P1
 # left it (same session-name / new-window sequence, see bin/backends/tmux.sh);
@@ -673,8 +870,16 @@ real_path_or_raw() {  # <path>
 # herdr-sm-spaces-k4). Both branches converge on the same $T ("target") string
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
+
+# LOAD-BEARING, not a belt-and-braces assertion: this is the upstream half of
+# the worktree-tangle guard (AGENTS.md section 8) and the only automated check
+# standing between a bad worktree capture and a hook installed into - plus
+# worktree= recorded as - the primary checkout. It is what turns the historical
+# mis-capture into a loud abort, so never relax it to a warning or skip it for a
+# "trusted" capture source; fm-guard.sh's tangle banner and the brief's own
+# isolation check are downstream backstops that fire only after the damage.
 validate_spawn_worktree() {  # <source> <inspect-target>
-  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
+  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real fm_home_real fm_root_real
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -689,6 +894,22 @@ validate_spawn_worktree() {  # <source> <inspect-target>
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
+  # Loud backstop against the historical mis-capture (fm-spawn-wt-batch-x5): a
+  # worktree resolving to this firstmate's own primary checkout ($FM_HOME, or
+  # $FM_ROOT where bin/ lives) passed EVERY clause above, because firstmate is a
+  # git repo of itself - so $FM_HOME is a valid git toplevel distinct from a
+  # projects/* PROJ_ABS. Assert the resolved worktree is NOT the primary checkout,
+  # so any future capture regression ABORTS loudly here instead of silently
+  # recording worktree=$FM_HOME and installing the turn-end hook into it. A
+  # legitimate firstmate-self spawn leases a ~/.treehouse/... worktree, never the
+  # checkout itself, so this never false-refuses a real spawn.
+  fm_home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P || true)
+  fm_root_real=$(cd "$FM_ROOT" 2>/dev/null && pwd -P || true)
+  if { [ -n "$fm_home_real" ] && [ "$wt_real" = "$fm_home_real" ]; } \
+    || { [ -n "$fm_root_real" ] && [ "$wt_real" = "$fm_root_real" ]; }; then
+    echo "error: $source resolved the worktree to the primary firstmate checkout ('$wt_real'); refusing to launch to avoid recording worktree=\$FM_HOME and tangling the primary checkout. Inspect target $inspect_target" >&2
+    exit 1
+  fi
 }
 
 W="fm-$ID"
@@ -698,9 +919,9 @@ case "$BACKEND" in
     T="$SES:$W"
     # #134 robustness (tmux): fm_backend_tmux_create_task captures a stable window
     # id and pins the window name (automatic-rename/allow-rename off) so a captain's
-    # non-default tmux config cannot rename the window away from fm-<id> once
-    # treehouse cd's into the worktree. WT_TARGET carries that stable id for the
-    # rename-critical worktree-detection steps below; the persisted window= handle
+    # non-default tmux config cannot rename the window away from fm-<id> once the
+    # pane cd's into the worktree. WT_TARGET carries that stable id for the
+    # rename-safe cd-into-worktree send below; the persisted window= handle
     # stays $T (the name form), which is safe now that rename is disabled.
     WID=$(fm_backend_tmux_create_task "$SES" "$W" "$PROJ_ABS") || exit 1
     WT_TARGET="$WID"
@@ -792,11 +1013,11 @@ EOF
     T="$ORCA_TERMINAL"
     ;;
 esac
-# #134 robustness: only tmux needs a worktree-detection target distinct from $T -
+# #134 robustness: only tmux needs a cd-into-worktree target distinct from $T -
 # its rename-safe stable window id, set as WT_TARGET=$WID in the tmux branch above.
 # Every other backend addresses its pane/surface by the id already in $T, so default
-# WT_TARGET to $T for them (and for any future backend) - the shared treehouse-get +
-# worktree-detection steps below must never reference an unbound WT_TARGET under set -u.
+# WT_TARGET to $T for them (and for any future backend) - the shared cd-into-worktree
+# send below must never reference an unbound WT_TARGET under set -u.
 : "${WT_TARGET:=$T}"
 spawn_send_text_line() {  # <target> <text>
   case "$BACKEND" in
@@ -805,14 +1026,6 @@ spawn_send_text_line() {  # <target> <text>
     zellij) fm_backend_zellij_send_text_line "$1" "$2" "$W" ;;
     orca) fm_backend_orca_send_text_line "$1" "$2" ;;
     cmux) fm_backend_cmux_send_text_line "$1" "$2" "$W" ;;
-  esac
-}
-spawn_current_path() {  # <target>
-  case "$BACKEND" in
-    tmux) fm_backend_tmux_current_path "$1" ;;
-    herdr) fm_backend_herdr_current_path "$1" ;;
-    zellij) fm_backend_zellij_current_path "$1" "$W" ;;
-    cmux) fm_backend_cmux_current_path "$1" "$W" ;;
   esac
 }
 spawn_send_literal() {  # <target> <text>
@@ -834,30 +1047,138 @@ spawn_send_key() {  # <target> <key>
   esac
 }
 if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
-
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
-  # Target the stable window id, not the name: if the name is ever lost (e.g. an
-  # automatic-rename slips through), display-message -t <bad-name> falls back to the
-  # active client's window, which would misread firstmate's OWN pane path as the
-  # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
-  # prefix would otherwise make the pane's OS-level cwd read differ from
-  # PROJ_ABS on the very first poll, before the pane has actually moved.
-  for _ in $(seq 1 60); do
-    p=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$p" ] && [ "$(real_path_or_raw "$p")" != "$PROJ_ABS_REAL" ]; then
-      WT="$p"
-      break
+  # Authoritative worktree capture (fm-spawn-wt-batch-x5). Lease the worktree
+  # from fm-spawn ITSELF: `treehouse get --lease` durably reserves a pool
+  # worktree and prints ONLY its ~/.treehouse/... path to stdout (all banners go
+  # to stderr). That leased path is the source of truth for worktree= and for the
+  # turn-end hook install below, replacing the old pane_current_path poll.
+  #
+  # Why the poll mis-captured $FM_HOME on projects/* spawns: right after the
+  # backend creates the window, the pane's process is still the forked
+  # session-server child (the shell has not yet exec'd and chdir'd), so a
+  # pane-cwd read transiently reports the SERVER's own start dir - the primary
+  # firstmate checkout, $FM_HOME - before settling on the -c project dir a moment
+  # later. The poll's exit condition was "any path != project dir", so on a
+  # projects/* spawn ($FM_HOME != $FM_HOME/projects/<repo>) it latched that
+  # transient $FM_HOME on the very first iteration, BEFORE `treehouse get` had
+  # run. A firstmate-self spawn ($FM_HOME == the project dir) did not satisfy the
+  # condition and kept polling until the real worktree appeared - the exact
+  # projects/*-only signature seen in the field. #134's stable-window-id
+  # targeting could not fix it because targeting was never wrong: the RIGHT
+  # pane transiently reports the server cwd. Leasing here removes pane timing
+  # from capture entirely. The lease is durable and released by fm-teardown's
+  # `treehouse return --force <worktree=>`, exactly like every crew worktree
+  # before (treehouse return handles leased and subshell-held worktrees alike).
+  #
+  # RESPAWN REUSE first, mirroring the secondmate branch's home= readback above:
+  # spawning over an existing task id is a documented recovery flow (a restarted
+  # server leaves a husk tab; docs/herdr-backend.md "Respawn idempotency"), and an
+  # unconditional lease there would reserve a SECOND worktree while the meta write
+  # below overwrote the only record of the first - stranding the crew's branch,
+  # commits, and uncommitted work in a durably-leased worktree nothing names and
+  # prune can never reclaim. A meta with worktree= means the task was never torn
+  # down (fm-teardown returns the worktree and removes the meta together), so its
+  # recorded worktree is still this task's own leased one: reuse it. The identity
+  # gate above has already refused a meta whose project=/kind= says it describes
+  # some OTHER task, so worktree= here is this task's own, and its backend= check
+  # is what makes this block's own orca exclusion safe: an orca meta can never
+  # reach here to have its non-pool worktree adopted. A non-orca backend crossing
+  # does reach here, and is meant to - every pool backend's worktree= is reusable
+  # by every other.
+  WT=
+  WT_SOURCE="treehouse get --lease"
+  WT_REUSED=0
+  if [ -f "$RESPAWN_META" ]; then
+    RESPAWN_WT=$(fm_meta_get "$RESPAWN_META" worktree)
+    if [ -n "$RESPAWN_WT" ] && [ -d "$RESPAWN_WT" ]; then
+      WT="$RESPAWN_WT"
+      WT_SOURCE="the worktree= recorded in state/$ID.meta"
+      WT_REUSED=1
+    elif [ -n "$RESPAWN_WT" ]; then
+      # Recorded but gone: nothing of the crew's work survives there, so a fresh
+      # lease is the only way forward. Name the old path - treehouse may still
+      # hold its lease, and only the operator can release a path we cannot verify.
+      echo "warning: the worktree recorded for $ID ('$RESPAWN_WT') no longer exists; leasing a fresh one. If treehouse still holds its lease, release it with 'cd $PROJ_ABS && treehouse return --force $RESPAWN_WT'" >&2
     fi
-    sleep 1
-  done
+  fi
   if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
-    exit 1
+    WT=$( cd "$PROJ_ABS" && treehouse get --lease --lease-holder "fm-$ID" ) || {
+      echo "error: treehouse get --lease failed to lease a worktree for $ID in $PROJ_ABS; inspect window $T" >&2
+      exit 1
+    }
+    [ -n "$WT" ] || { echo "error: treehouse get --lease reported no worktree for $ID; inspect window $T" >&2; exit 1; }
+    # The lease is now durably held and only state/<id>.meta will hand it to
+    # teardown; arm the abort release for every failure path until that write. A
+    # REUSED worktree is deliberately never armed: its meta already names it, so
+    # teardown owns that lease and releasing it here would hand a live crewmate's
+    # work back to the pool.
+    LEASED_WT="$WT"
+    LEASE_ABORT_CLEANUP=1
   fi
 
-  validate_spawn_worktree "treehouse get" "$T"
+  # Runs on the reuse path too: a meta written by the pre-fix capture can itself
+  # carry the poisoned worktree=$FM_HOME this guard exists to catch.
+  validate_spawn_worktree "$WT_SOURCE" "$T"
+
+  # A reused worktree is only as safe as treehouse's reservation of it, and that
+  # reservation is NOT implied by the meta. A task spawned before this capture
+  # landed recorded a worktree acquired by the old pane-side `treehouse get`
+  # subshell, which reserves nothing durable once that subshell dies, and a
+  # fm-teardown that released the worktree but died before removing the meta
+  # leaves the same shape. Reusing an unreserved path lets a concurrent
+  # `treehouse get` hand it out - two crewmates in one worktree, the newcomer's
+  # hard reset over the incumbent's work. Reuse anyway rather than lease fresh:
+  # the crew's branch, commits, and uncommitted work are IN that worktree, a fresh
+  # lease abandons them, and the launch below makes the path in-use (so no longer
+  # handed out) within seconds. treehouse v2.0.0 has no verb to lease an existing
+  # path (get/return/prune/destroy/status only), so warning is the whole remedy.
+  # Deliberately after the isolation guard: a poisoned pre-fix worktree=$FM_HOME
+  # is never a pool worktree either, and aborting there keeps the guard's own
+  # error the only thing the captain reads.
+  if [ "$WT_REUSED" = 1 ]; then
+    # Three-way, not boolean: a transient treehouse outage (unknown) must not print
+    # the false "no longer reserves" claim it once printed on every respawn, and a
+    # path re-leased to a different task (held-by-other) is caught, not passed off as
+    # ours (reviews #1 and #3). All four cases still REUSE - the crew's work is IN the
+    # worktree; only the warning differs.
+    RESV=$(treehouse_reservation "$WT" "fm-$ID")
+    case "$RESV" in
+      held)
+        : # still this task's own reservation; reuse silently
+        ;;
+      held-by-other:*)
+        echo "warning: the worktree recorded for $ID ('$WT') is now leased to a DIFFERENT holder ('${RESV#held-by-other:}'), not fm-$ID; reusing it anyway so the crew's branch and uncommitted work stay reachable, but two tasks now claim one worktree. Check 'cd $PROJ_ABS && treehouse status'." >&2
+        ;;
+      unknown)
+        echo "warning: could not ask treehouse whether the worktree recorded for $ID ('$WT') is still reserved (its 'treehouse status' failed); reusing it anyway so the crew's branch and uncommitted work stay reachable. If treehouse is unavailable this is transient; otherwise check 'cd $PROJ_ABS && treehouse status'." >&2
+        ;;
+      *)
+        # available: treehouse answered and the path is no longer reserved.
+        echo "warning: treehouse no longer reserves the worktree recorded for $ID ('$WT'); reusing it anyway so the crew's branch and uncommitted work stay reachable, but until the crewmate is running in it a concurrent 'treehouse get' can hand the same worktree to another task. Check 'cd $PROJ_ABS && treehouse status'." >&2
+        ;;
+    esac
+  fi
+
+  # Move the crewmate's pane into the leased worktree with an absolute cd, so the
+  # pane and the recorded worktree are the same path by construction - no polling,
+  # no startup-transient race. Sent to the stable window id (WT_TARGET) for the
+  # same rename-safety reason bin/backends/tmux.sh pins it, and buffered by the
+  # pane exactly like the GOTMPDIR export and launch command sent below.
+  #
+  # DELIBERATE TRADE (backlog fm-spawn-wt-batch-x5, review #4): the deleted
+  # pane-current-path poll incidentally acted as a READINESS BARRIER - it hard-failed
+  # after 60s if the pane never left the project, absorbing the ~0.5-1s of login-shell
+  # startup documented in "Worktree capture" (docs/tmux-backend.md). This cd is fired
+  # into a pane whose shell may not have exec'd yet. pty send-ordering keeps the normal
+  # case correct; the ONE narrow failure - the buffered cd dropped, e.g. an rc-file
+  # `stty` flushing pending input - lands the agent in $PROJ_ABS while meta records the
+  # leased worktree. Nothing in fm-spawn detects that divergence. It is caught LOUD, not
+  # silent, ONLY by the brief's isolation assertion (bin/fm-brief.sh, "blocked: launched
+  # in primary checkout"). That assertion is therefore LOAD-BEARING for this trade: do
+  # not weaken or remove it. And do NOT re-add a pane probe here - a pane-cwd read is the
+  # exact class of code that caused the $FM_HOME mis-capture this task fixed; the lease
+  # is the authoritative worktree source now.
+  spawn_send_text_line "$WT_TARGET" "cd $(shell_quote "$WT")"
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -1029,6 +1350,8 @@ META_WINDOW=$T
   fi
 } > "$STATE/$ID.meta"
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+# worktree= is recorded, so fm-teardown now owns the lease release.
+LEASE_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")

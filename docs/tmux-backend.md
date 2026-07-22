@@ -111,6 +111,53 @@ The classifier deliberately reports `unknown` for `node`/`python`/`python3` rath
 Practical effect: a dead `pi` secondmate is not auto-healed by the liveness sweep today; it is reported as `skipped: liveness probe inconclusive` instead, which still surfaces it for a human to act on.
 Resolving this would need either a `pi`-specific env marker inspectable from outside the process (mirroring `PI_CODING_AGENT=true`, which `bin/fm-harness.sh` already uses for self-detection but which is not readable from a different process without deeper introspection) or accepting the argument-inspection fragility - not attempted here.
 
+## Worktree capture (why `treehouse get --lease`, not a pane poll)
+
+`fm-spawn.sh` records the crew's isolated worktree in `state/<id>.meta` and installs the turn-end hook into it, so that recorded path must be exact.
+It is captured authoritatively: `fm-spawn.sh` runs `treehouse get --lease --lease-holder fm-<id>` from the project directory, whose stdout is only the leased `~/.treehouse/...` path, and then sends the pane a `cd` into that path (`bin/fm-spawn.sh`, backlog `fm-spawn-wt-batch-x5`).
+The `--lease-holder fm-<id>` tag is what the respawn reservation check below matches the leased row against, so it can tell this task's own reservation apart from one that treehouse has since re-leased to a different task.
+
+This replaced an earlier design that sent `treehouse get` into the pane and polled `#{pane_current_path}` until it differed from the project directory, taking that first differing path as the worktree.
+That poll mis-recorded `worktree=$FM_HOME` (the primary firstmate checkout) on every `projects/*` spawn, forcing a manual repair each time, while firstmate-self spawns were immune.
+
+Root cause, verified 2026-07-15 with tmux 3.6 on this reference host (tmux server started from `$FM_HOME=/home/metoo/firstmate`):
+immediately after `tmux new-window -c <project>`, the pane's process is still the forked tmux-server child (the login shell has not yet `exec`'d and `chdir`'d), so `#{pane_current_path}` transiently reports the **tmux server's own cwd**, which is `$FM_HOME`, before settling on the `-c` project directory a fraction of a second later.
+
+Reproduce it directly (a detached window whose `-c` start dir is a fresh temp project):
+
+```
+$ tmux new-window -dP -F '#{window_id}' -t "$S:" -c /tmp/proj      # -> @51
+$ tmux display-message -p -t @51 'start=#{pane_start_path} cur=#{pane_current_path} cmd=#{pane_current_command}'
+start=/tmp/proj cur=/home/metoo/firstmate cmd=tmux                 # cur = the SERVER cwd, cmd still "tmux"
+# ~0.5-1s later the shell execs and chdir's:
+$ tmux display-message -p -t @51 '#{pane_current_path}'
+/tmp/proj
+```
+
+The poll's exit condition was "any path != project dir", so on a `projects/*` spawn (`$FM_HOME` != `$FM_HOME/projects/<repo>`) it latched that transient `$FM_HOME` on its very first iteration, before `treehouse get` had even run.
+A firstmate-self spawn (`$FM_HOME` == the project dir) never satisfied the condition and kept polling until the real worktree appeared - the exact projects/*-only signature.
+The stable-`#{window_id}` targeting from #134 could not fix this: targeting was never wrong, but the correctly targeted pane transiently reports the server cwd.
+Leasing from `fm-spawn.sh` itself removes pane timing from capture entirely.
+
+The lease is durable (`treehouse get --lease` reserves the worktree in treehouse's persistent state) and released by `fm-teardown.sh`'s `treehouse return --force <worktree=>`, exactly like every crew worktree before - `treehouse return` handles leased and subshell-held worktrees alike.
+`validate_spawn_worktree` also asserts the resolved worktree is not the primary checkout (`$FM_HOME`/`$FM_ROOT`), so any future capture regression aborts the spawn loudly instead of silently recording `worktree=$FM_HOME` again.
+Verified by `tests/fm-tangle-guard.test.sh` (leased-worktree capture, meta records the real path, and the `$FM_HOME` backstop abort).
+
+### Respawn: reuse the recorded worktree, never lease a second
+
+Because the lease is durable, a respawn over a live task id must not lease again: the meta write would overwrite the only record of the first worktree, stranding the crew's branch, commits, and uncommitted work behind a lease `prune` can never reclaim.
+So a respawn reuses the `worktree=` already in `state/<id>.meta` - a surviving meta means the task was never torn down, since `fm-teardown.sh` releases the worktree and removes the meta together.
+Reuse is a treehouse-pool contract, so it covers every backend except orca, which owns its own worktree and never leases from the pool; the identity gate's `backend=` check below is what keeps that exclusion from becoming the hole it would otherwise be.
+`bin/fm-spawn.sh`'s header owns the resulting contract; the three non-obvious parts of it are worth the why:
+
+- **Why a respawn refuses on a `project=`/`kind=` mismatch.** Reuse trusts one meta field, so the meta must first be proven to describe the task being spawned, and `project=`/`kind=` are that proof. `fm-spawn.sh <id> projects/bar` over a meta recording `projects/foo` would otherwise launch the crew into foo's worktree carrying bar's brief - invisible to `validate_spawn_worktree`, because foo's worktree is a real git toplevel that is neither `projects/bar` nor `$FM_HOME` - and then record a `project=`/`worktree=` pair `fm-teardown.sh` can never release, since treehouse resolves the pool from the working directory and refuses a worktree from another pool. A `kind=secondmate` meta is worse: its `worktree=` is a HOME path. Falling back to a fresh lease is not the answer either, as that meta write is itself what strands the other task's worktree; a mismatch means firstmate lost track of the task, so it stops.
+- **Why `backend=` is part of that same proof, but only across the orca boundary.** Orca's worktree exclusion makes the recorded backend load-bearing exactly when one side of the respawn is orca, and both such crossings lose a worktree. A non-orca meta respawned `--backend orca` passes a project/kind-only gate, then skips reuse entirely and overwrites `worktree=` with orca's own - stranding the leased pool worktree the reuse exists to protect. An orca meta respawned on any other backend is the mirror: the orca worktree is a real git toplevel that clears every `validate_spawn_worktree` clause, so reuse adopts it, `treehouse status` (correctly) reports it unreserved, and the rewritten meta drops `backend=orca` and `orca_worktree_id=` - leaving `fm-teardown.sh` to run `treehouse return` against a path treehouse never owned and orphaning the Orca worktree with its id gone from the record. The gate reads the field through `fm_backend_of_meta`, which owns the absent-means-tmux contract, so a default tmux meta still compares equal to a tmux spawn. A non-orca `<->` non-orca crossing is deliberately NOT refused: both sides borrow the same pool, so reuse adopts the recorded `worktree=` unchanged and only `window=` is rewritten. Nothing is stranded, and that crossing is ordinary recovery - a `config/backend` edit, or a session started under a different auto-detected runtime - which `bin/fm-bootstrap.sh`'s secondmate liveness sweep depends on, since it respawns with no `--backend` at all. Switching a task across the orca boundary mid-flight therefore means tearing the recorded task down first, which is what closing the old backend's window or terminal needs anyway.
+- **Why an unreserved worktree warns instead of re-leasing.** The meta does not imply treehouse still reserves the path: a task spawned before this capture landed recorded a worktree held only by the old pane-side `treehouse get` subshell, which reserves nothing once that subshell dies. Reuse asks `treehouse status` and treats `leased` or `in-use` as reserved (`available` means the next `get` may hand it out and hard-reset it). treehouse v2.0.0 has no verb to lease an existing path (`get`/`return`/`prune`/`destroy`/`status` only), so warning is the whole remedy: the crew's work is IN that worktree, a fresh lease abandons it, and the launch makes the path `in-use` within seconds. This case self-closes once pre-fix tasks turn over. The check (`treehouse_reservation` in `bin/fm-spawn.sh`) reads the status **exit code** separately from its output, so a treehouse that is merely unavailable (a failed command) is reported as *could-not-ask* rather than folded into *unreserved* - the difference between a transient no-op and a false "no longer reserves" alarm on every respawn. It also matches the leased row's `(held by <holder>)` against this task's own `fm-<id>` lease-holder, so a path treehouse re-leased to a *different* task (after, say, a partial teardown that dropped the lease but left the meta) is caught rather than silently adopted; an `in-use` row carries no holder, so that gate only ever strengthens.
+
+`treehouse status` has no machine-readable mode, so the reservation check parses its table (`<name>  <state>  <path>  [(held by <holder>)]`).
+Three properties of that output, verified against treehouse v2.0.0, are load-bearing: `$HOME` is printed abbreviated to `~`, so a raw compare against an absolute `worktree=` silently never matches; a worktree's process list is an indented continuation line that can never match a reserved state plus the path; and the version-update banner prints to stderr, so suppressing stderr keeps the table clean while a genuine command failure still surfaces through the exit code.
+Both the `(held by <holder>)` parse and `fm-spawn.sh`'s `not managed by treehouse` refusal match key on treehouse's human text: a conscious v2.0.0 coupling with no machine-readable alternative (`treehouse --help` advertises no `--json`/`--porcelain`), left in place because both fail loud-but-wrong rather than silently-dangerous if a future treehouse rewords.
+
 ## Limitations
 
 None specific to tmux for the reference path itself - it is the fully verified reference backend, while Orca and cmux are the backends without secondmate support.

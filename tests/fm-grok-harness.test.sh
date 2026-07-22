@@ -15,9 +15,6 @@ make_spawn_fakebin() {
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
@@ -26,7 +23,11 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse gh-axi gh
+  fm_fake_exit0 "$fakebin" gh-axi gh
+  # `treehouse get --lease` is the authoritative worktree source (fm-spawn-wt-batch-x5):
+  # it prints the leased worktree path to stdout. Reuse FM_FAKE_PANE_PATH as that
+  # path so the existing run_spawn wiring is unchanged.
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 

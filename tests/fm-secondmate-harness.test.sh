@@ -410,17 +410,16 @@ meta_field() { grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2-; }
 # `send-keys -l <cmd>` launch command into FM_FAKE_LAUNCH_LOG, mirroring the
 # capture technique in fm-spawn-dispatch-profile.test.sh so the constructed
 # launch command (not just meta) can be asserted on. Also answers the
-# `#{pane_current_path}` probe from FM_FAKE_PANE_PATH so this same stub works
-# for a crew/scout (non-secondmate) spawn's treehouse-worktree wait loop.
+# leased worktree from FM_FAKE_PANE_PATH (via a treehouse stub) so this same
+# fakebin works for a crew/scout (non-secondmate) spawn's authoritative
+# `treehouse get --lease` worktree capture (fm-spawn-wt-batch-x5). Secondmate
+# spawns never lease, so the treehouse stub is inert for them.
 make_launch_capturing_tmux() {
   local dir=$1 fakebin="$1/fakebin"
   mkdir -p "$fakebin"
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
-case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
-esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
@@ -441,6 +440,9 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
+  # A crew/scout spawn captures its worktree from `treehouse get --lease` stdout;
+  # emit FM_FAKE_PANE_PATH as the leased path (fm-spawn-wt-batch-x5).
+  fm_fake_treehouse_lease "$fakebin"
   printf '%s\n' "$fakebin"
 }
 

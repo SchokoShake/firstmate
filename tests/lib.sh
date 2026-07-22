@@ -100,6 +100,82 @@ SH
   done
 }
 
+# fm_fake_treehouse_lease: install the `treehouse` stub every fm-spawn.sh test
+# needs. fm-spawn captures the crew worktree authoritatively from `treehouse get
+# --lease` stdout (fm-spawn-wt-batch-x5), so the stub prints <worktree-path> for
+# any `get`. Omit <worktree-path> and the stub reads $FM_FAKE_PANE_PATH at call
+# time instead, letting a test vary the leased path per spawn without
+# reinstalling the stub. When $FM_TMUX_REC is set, every call is recorded there so
+# a test can assert on the capture calls themselves.
+#
+# The stub keeps a real lease LEDGER rather than faking each verb independently,
+# because fm-spawn's reuse path asks `treehouse status` whether a recorded
+# worktree is still reserved: `get` appends the handed-out path AND the caller's
+# --lease-holder, `return` drops the row, and `status` renders the survivors in the
+# real binary's table shape (`<name>  <state>  <path>  (held by <holder>)`, verified
+# against treehouse v2.0.0). Recording the holder matters because fm-spawn leases
+# with `--lease-holder fm-<id>` and its reuse check now matches that holder (review
+# #3): a worktree this stub leased reads back as held by the SAME fm-<id> that leased
+# it, one leased under a different id reads back held-by-another, and one it never
+# leased - e.g. a hand-written pre-fix meta's worktree= - reads back as unheld. Every
+# other verb is a silent success.
+fm_fake_treehouse_lease() {  # <fakebin> [worktree-path]
+  local fakebin=$1 wt=${2:-} emit
+  # Resolved HERE, not nested inside the heredoc: a `${wt:-\${...}}` there would
+  # close on the escaped inner brace and leak a literal '}' into the stub's path.
+  if [ -n "$wt" ]; then
+    emit=$wt
+  else
+    # shellcheck disable=SC2016 # Deliberate literal: expanded by the generated stub at call time, not here.
+    emit='${FM_FAKE_PANE_PATH:-}'
+  fi
+  cat > "$fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+set -u
+[ -n "\${FM_TMUX_REC:-}" ] && printf 'treehouse %s\n' "\$*" >> "\$FM_TMUX_REC"
+ledger=$(printf '%q' "$fakebin/.leases")
+case "\${1:-}" in
+  get)
+    # Capture --lease-holder exactly as the real 'treehouse get' records it, so the
+    # status table renders (held by <holder>) with the caller's real fm-<id>, not a
+    # hard-coded label (review #3). Mirrors tests/secondmate-helpers.sh's parse.
+    holder=
+    shift
+    while [ \$# -gt 0 ]; do
+      case "\$1" in
+        --lease-holder) shift; holder=\${1:-} ;;
+        --lease-holder=*) holder=\${1#--lease-holder=} ;;
+      esac
+      shift
+    done
+    printf '%s\n' "$emit"
+    printf '%s\t%s\n' "$emit" "\$holder" >> "\$ledger"
+    ;;
+  return)
+    # Last arg is the path; drop its ledger row (keyed on the path field) like a
+    # real release.
+    for p in "\$@"; do :; done
+    [ -f "\$ledger" ] && { awk -F'\t' -v p="\$p" '\$1 != p' "\$ledger" > "\$ledger.tmp" || true; mv "\$ledger.tmp" "\$ledger"; }
+    ;;
+  status)
+    [ -f "\$ledger" ] || exit 0
+    n=0
+    while IFS=\$'\t' read -r p holder; do
+      [ -n "\$p" ] || continue
+      n=\$((n + 1))
+      if [ -n "\$holder" ]; then
+        printf '%-4s  %s  %s  (held by %s)\n' "\$n" leased "\$p" "\$holder"
+      else
+        printf '%-4s  %s  %s\n' "\$n" leased "\$p"
+      fi
+    done < "\$ledger"
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
+}
+
 # --- deterministic git identity and fixtures --------------------------------
 
 # fm_git_identity [name] [email]: export a fixed author/committer identity so
