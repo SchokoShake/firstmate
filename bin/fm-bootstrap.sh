@@ -110,13 +110,22 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
 
+# How many clones the sweep below will actually work on, used only to size its
+# timeout - so this must count what fm-fleet-sync.sh counts. Its repo test is
+# bounded at projects/ for that reason and for the one bin/fm-fleet-sync.sh's
+# header gives: unbounded, git's discovery walks up out of a projects/<name> that
+# is not a clone and answers with the repository ENCLOSING it, which in the shipped
+# layout is firstmate's own checkout - and that repo has an origin, so every
+# non-clone directory counted as an origin-backed project and inflated the timeout.
 fleet_sync_origin_backed_project_count() {
-  local count proj
+  local count proj ceiling
   count=0
   [ -d "$PROJECTS" ] || { echo 0; return 0; }
+  ceiling=$(cd "$PROJECTS" 2>/dev/null && pwd -P) || ceiling=""
   for proj in "$PROJECTS"/*; do
     [ -d "$proj" ] || continue
-    git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || continue
+    GIT_CEILING_DIRECTORIES="$ceiling" \
+      git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || continue
     git -C "$proj" remote get-url origin >/dev/null 2>&1 || continue
     count=$((count + 1))
   done
@@ -145,6 +154,15 @@ fleet_sync_relay_filtered_output() {
     case "$line" in
       *': skipped: local-only project') ;;
       *': skipped: no origin remote') ;;
+      # The catch-all forwards every other skip, including "skipped: not a git repo"
+      # - a non-clone directory under projects/. Captain-signed-off 2026-07-18 to
+      # stay UNFILTERED: a healthy fleet is all real clones so this never fires, and
+      # when it does it names the exact drift the projects/ ceiling bound guards (a
+      # phantom project the captain believes they have). Do NOT add a ': skipped: not
+      # a git repo' exclusion here - that noise is the same signal the bug suppressed:
+      # an unbounded gate mis-synced the ENCLOSING repo, whose "synced"/"already
+      # current" this filter already drops, so silencing it would re-hide the anomaly
+      # the fix exists to surface.
       *': skipped:'*) echo "FLEET_SYNC: $line" ;;
       *': STUCK:'*) echo "FLEET_SYNC: $line" ;;
       *': recovered:'*) echo "FLEET_SYNC: $line" ;;

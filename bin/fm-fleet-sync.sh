@@ -15,6 +15,17 @@
 # and fetch failures.
 # Pruning never deletes the checked-out branch or a branch that still has a
 # worktree, so it cannot discard unlanded work; set FM_FLEET_PRUNE=0 to disable it.
+# The repo test that gates every one of those writes is BOUNDED at projects/,
+# because git's discovery otherwise walks UP from the directory it is given: a
+# projects/<name> that is not a clone - a scratch dir, a half-finished clone -
+# answers with the repository ENCLOSING it, and in the shipped layout that is
+# firstmate's own checkout (FM_HOME is a git repo; gitignoring projects/ does not
+# stop discovery). Unbounded, the whole-fleet sweep fetched, pruned, and
+# fast-forwarded firstmate's OWN repo once per non-clone directory, at every
+# session start, silently (bootstrap runs the sweep under "|| true"). Bounded, a
+# non-clone resolves nothing and takes the "not a git repo" skip below.
+# bin/fm-logbook-compose.sh owns the full rationale and the pwd -P requirement;
+# bin/fm-pr-merge.sh bounds its own call into this script the same way.
 # When the fetch fails on an orphaned .git/packed-refs.lock (left by a ref rewrite
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
@@ -33,6 +44,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
+# Ceiling for the clone gate in sync_project. PHYSICAL (git compares it against its
+# own getcwd, which resolves symlinks) and absolute (git ignores a relative entry).
+# Empty when projects/ will not open, which leaves the gate unbounded: the
+# single-project form legitimately accepts a path OUTSIDE this home's projects
+# dir, so an unresolvable projects/ must not decline to sync one.
+# A ceiling that is not an ancestor of the target is simply inert, so those
+# out-of-tree paths are unaffected either way.
+PROJECTS_CEILING=$(cd "$PROJECTS" 2>/dev/null && pwd -P) || PROJECTS_CEILING=""
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
 FM_LOCK_LOG_PREFIX=fleet-sync
@@ -297,7 +316,12 @@ sync_project() {
     echo "$label: skipped: not a directory"
     return 0
   fi
-  if ! git -C "$PROJ" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # The clone gate, and the only place discovery can escape: past it every
+  # `git -C "$PROJ"` below finds $PROJ's own .git and never walks up. Bounded at
+  # projects/ so a directory that is not a clone cannot answer with the repository
+  # enclosing it - see the header.
+  if ! GIT_CEILING_DIRECTORIES="$PROJECTS_CEILING" \
+      git -C "$PROJ" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "$label: skipped: not a git repo"
     return 0
   fi

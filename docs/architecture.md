@@ -234,6 +234,9 @@ Clean default-branch clones fast-forward to `origin/<default>`, and a clean deta
 Dirty clones, non-default branches, detached HEADs with unique commits, diverged defaults, and default branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.
 Local-only projects, clones without an origin remote, and fetch failures remain benign skips.
+A directory under `projects/` that is not a clone at all is skipped too, and nothing is ever synced in its place: the repo test gating those writes is bounded at `projects/`, so git's upward discovery cannot answer with the repository enclosing it - firstmate's own checkout in the shipped layout.
+`bin/fm-logbook-compose.sh`'s header owns that bound's full rationale, and the fleet-sync sweep, the logbook-compose remote lookup, and the pr-merge clone refresh all carry the same bound; helpers handed a project path recorded by a successful spawn do not need it.
+`bin/fm-home-seed.sh`'s secondmate-seeding lookups (`clone_project` and `validate_seed_project`) are the known exception: still unbounded, so seeding a secondmate against a non-clone `projects/` directory would clone the enclosing checkout into the new home rather than fail, tracked as the follow-up `home-seed-bound-ceiling-w2`.
 The refresh also prunes local branches whose remote is gone and that no worktree still needs.
 
 ## Self-updates stay safe
