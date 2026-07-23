@@ -169,8 +169,27 @@ test_unreachable_pr_head_falls_back_with_warning() {
   pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
 }
 
+test_pr_head_fetch_leaves_no_lingering_ref() {
+  local case_dir out refs
+  case_dir=$(make_case pr-ref-cleanup)
+  stale_and_pr_commits "$case_dir"
+  git -C "$case_dir/wt" push -q origin "pr-head-tmp:refs/pull/9/head"
+  write_task_meta "$case_dir" "pr=https://github.com/example/repo/pull/9"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+pr-fixed' "pr-ref-cleanup: diff should still use the fetched PR head"
+  # The PR head is fetched into a private refs/fm-review/pull/<n>/head only to read
+  # its SHA; nothing must persist, or a long-lived pooled clone accumulates one ref
+  # per distinct PR number reviewed over time.
+  refs=$(git -C "$case_dir/wt" for-each-ref --format='%(refname)' | grep '^refs/fm-review/' || true)
+  [ -z "$refs" ] || fail "pr-ref-cleanup: private PR-head ref lingered after review: $refs"
+  pass "fm-review-diff deletes the private PR-head ref after reading its SHA"
+}
+
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
+test_pr_head_fetch_leaves_no_lingering_ref
 test_stale_recorded_pr_head_loses_to_fetched_pull_head
 test_no_pr_meta_uses_local_branch
 test_unreachable_pr_head_falls_back_with_warning

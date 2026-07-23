@@ -743,9 +743,61 @@ test_linux_pid_identity_ignores_wall_clock_and_detects_pid_reuse() {
   pass "Linux process identity detects pid reuse"
 }
 
+test_partial_proc_identity_read_resolves_to_reclaim() {
+  # A live watcher whose /proc parse fails (a zombie's empty cmdline, a short stat
+  # line) must read as "reclaim", never "healthy". fm_pid_identity returns non-zero
+  # WITHOUT the ps fallback (both are gated behind the same readable check), so
+  # fm_watcher_lock_matches_pid must report no-match and fm_watcher_healthy must
+  # report not-healthy, which drives the arm to re-arm rather than keep the holder.
+  [ "$(uname)" = Linux ] || {
+    pass "partial /proc read reclaim invariant skipped on non-Linux host"
+    return
+  }
+  local dir state proc_root live identity id_rc match_rc healthy_rc
+  dir=$(make_case partial-proc-reclaim)
+  state="$dir/state"
+  proc_root="$dir/proc"
+  sleep 300 &
+  live=$!
+  # Readable stat+cmdline (so the Linux /proc branch is entered) but a stat line
+  # too short to reach field 22 -> fm_pid_identity returns 1 with no ps fallback.
+  mkdir -p "$proc_root/$live"
+  printf '%s (sleep) S 1 2 3\n' "$live" > "$proc_root/$live/stat"
+  printf 'sleep\0300\0' > "$proc_root/$live/cmdline"
+
+  mkdir "$state/.watch.lock"
+  printf '%s\n' "$live" > "$state/.watch.lock/pid"
+  printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
+  printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
+  printf '%s\n' "some recorded identity" > "$state/.watch.lock/pid-identity"
+  touch "$state/.last-watcher-beat"
+
+  id_rc=0
+  identity=$(FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" \
+    bash -c '. "$1"; fm_pid_identity "$2"' _ "$LIB" "$live" 2>/dev/null) || id_rc=$?
+  match_rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" \
+    bash -c '. "$1"; fm_watcher_lock_matches_pid "$2" "$3" "$4" "$5"' \
+    _ "$LIB" "$state" "$WATCH" "$live" "$dir" || match_rc=$?
+  healthy_rc=0
+  FM_PROC_ROOT_OVERRIDE="$proc_root" FM_STATE_OVERRIDE="$state" \
+    bash -c '. "$1"; fm_watcher_healthy "$2" "$3" 300 "$4"' \
+    _ "$LIB" "$state" "$WATCH" "$dir" || healthy_rc=$?
+
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+
+  [ "$id_rc" -ne 0 ] || fail "fm_pid_identity returned 0 on a short stat line (partial read should fail)"
+  [ -z "$identity" ] || fail "fm_pid_identity emitted output on a failed partial read: '$identity'"
+  [ "$match_rc" -ne 0 ] || fail "fm_watcher_lock_matches_pid matched a live pid whose identity re-read failed (must reclaim)"
+  [ "$healthy_rc" -ne 0 ] || fail "fm_watcher_healthy reported healthy for a live pid whose identity re-read failed (must reclaim)"
+  pass "a partial /proc identity read resolves to reclaim, never a wrongly-kept live holder"
+}
+
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_linux_pid_identity_ignores_wall_clock_and_detects_pid_reuse
+test_partial_proc_identity_read_resolves_to_reclaim
 test_stale_watch_lock_reclaimed
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings

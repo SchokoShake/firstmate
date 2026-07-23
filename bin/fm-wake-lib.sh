@@ -26,6 +26,12 @@ fm_pid_alive() {
 fm_pid_identity() {
   local pid=$1 out proc_root stat_line starttime cmdline_hex
   local -a stat_fields
+  # The identity STRING SHAPE is a cross-version contract: a watcher records its
+  # identity once and fm_watcher_lock_matches_pid re-derives it later and compares
+  # byte-for-byte. Changing the shape - as this /proc form did versus the older
+  # `ps lstart` form - makes any watcher whose identity was recorded before the
+  # upgrade mismatch exactly once afterward, so it is reclaimed and re-armed a
+  # single time. That one-time re-arm across the upgrade is benign and self-healing.
   case "$pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
@@ -78,6 +84,14 @@ fm_watcher_lock_matches_pid() {
   lock_identity=$(cat "$lockdir/pid-identity" 2>/dev/null || true)
   [ "$lock_home" = "$home" ] || return 1
   [ "$lock_path" = "$watch_path" ] || return 1
+  # An empty stored identity, or a failed live re-read below (a partial /proc read
+  # - a zombie's empty cmdline, a short stat line - where fm_pid_identity returns
+  # non-zero without falling back to ps), deliberately returns "no match" here.
+  # Every caller - fm_watcher_healthy, and fm-watch-arm.sh's healthy and --restart
+  # paths - maps a no-match to "not healthy" and reclaims/re-arms the watcher; none
+  # treats it as a hard error. So a failed identity read always biases toward
+  # reclaim, never toward wrongly keeping a live holder or wrongly retaining a dead
+  # one.
   [ -n "$lock_identity" ] || return 1
   current_identity=$(fm_pid_identity "$pid") || return 1
   [ "$current_identity" = "$lock_identity" ]

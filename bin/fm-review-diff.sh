@@ -92,13 +92,19 @@ pr_number_from_target() {
 }
 
 fetch_pull_head() {
-  local n=$1 resolved
+  local n=$1 resolved ref
+  ref="refs/fm-review/pull/$n/head"
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
-  # Fetch into a private ref so a later base-branch fetch cannot clobber the
-  # compare tip via FETCH_HEAD, and so we never review a stale local object.
+  # Fetch into a private ref so this fetch cannot clobber the compare tip via
+  # FETCH_HEAD, and so we never review a stale local object.
   git -C "$WT" fetch --quiet origin \
-    "+refs/pull/$n/head:refs/fm-review/pull/$n/head" >/dev/null 2>&1 || return 1
-  resolved=$(git -C "$WT" rev-parse --verify "refs/fm-review/pull/$n/head^{commit}" 2>/dev/null) || return 1
+    "+refs/pull/$n/head:$ref" >/dev/null 2>&1 || return 1
+  resolved=$(git -C "$WT" rev-parse --verify "$ref^{commit}" 2>/dev/null) || resolved=""
+  # The ref was only needed as a clobber-proof fetch target; the resolved SHA
+  # keeps the fetched object reachable for the rest of this short-lived run, so
+  # drop the ref now (even on a parse failure). Leaving it would leak one ref per
+  # distinct PR number into a long-lived pooled clone over time.
+  git -C "$WT" update-ref -d "$ref" 2>/dev/null || true
   [ -n "$resolved" ] || return 1
   printf '%s' "$resolved"
 }
