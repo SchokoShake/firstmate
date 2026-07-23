@@ -384,23 +384,90 @@ trim() {
   printf '%s' "$s"
 }
 
-# before_marker_tail <text>: <text> up to the marker tail - everything before the first
-# marker the backend appends to an item line. The single owner of where that tail
-# BEGINS: both readers of it below (the title, and the hold reason inside the tail) must
-# agree on that boundary, or one silently mis-parses the other's field.
-# Stripping at "(repo: " alone would leak the whole tail into a captain-facing title
-# whenever an item carries no repo, which is the normal shape of the captain-gated
-# thread AGENTS.md section 10 recommends ("tasks-axi hold <id> --reason ... --kind
-# captain"), so every marker the backend emits ends the title.
-before_marker_tail() {
-  local seg=${1-} m
-  for m in ' (repo: ' ' (kind: ' ' (priority: ' ' (since ' ' (merged ' ' (reported ' \
-           ' (hold: ' ' (hold-kind: ' ' (hold-until: '; do
+# The backend appends a run of markers to the END of an item line: "(repo: ...)",
+# "(kind: ...)", "(priority: ...)", "(since ...)", "(merged ...)", "(reported ...)",
+# "(hold: ...)", "(hold-kind: ...)", "(hold-until: ...)", plus a free-form
+# "blocked-by: <id>" record. Everything below that reads a field needs where that tail
+# BEGINS - the title, every marker field (repo, hold, hold-kind, hold-until), and the
+# hold reason inside the tail - and they must agree on the boundary or one silently
+# mis-parses another's field.
+#
+# The boundary cannot be "the first marker-shaped substring": a human title or a
+# free-form hold reason may itself contain one (e.g. "handle the (repo: x) case"), and
+# cutting there truncates real prose and takes the true trailing marker's field with it.
+# The tail is instead the LEFTMOST point from which the remainder is nothing BUT
+# markers, found by walking candidate starts left to right.
+
+# marker_opens <text>: 0 if <text> begins with a marker the backend appends. The hold
+# reason and a "blocked-by:" record are free-form (they can carry ")" or "(") so their
+# extent is found by marker_tail_only, not here.
+marker_opens() {
+  case "${1-}" in
+    '(repo: '*|'(kind: '*|'(priority: '*|'(since '*|'(merged '*|'(reported '*) return 0 ;;
+    '(hold: '*|'(hold-kind: '*|'(hold-until: '*) return 0 ;;
+  esac
+  return 1
+}
+
+# marker_tail_only <text>: 0 if <text> (starting at a "(") is a contiguous run of
+# markers to end-of-line and nothing else. A "blocked-by:" record and a "(hold: "
+# reason are free-form and not closed by a fixed rule, so each ends wherever the rest of
+# the tail resumes - delegated to freeform_tail, which closes the mutual recursion.
+marker_tail_only() {
+  local seg=${1-}
+  while [ -n "$seg" ]; do
     case "$seg" in
-      *"$m"*) seg=${seg%%"$m"*} ;;
+      'blocked-by:'*) freeform_tail "${seg#'blocked-by:'}"; return $? ;;
+      '(hold: '*) freeform_tail "${seg#'(hold: '}"; return $? ;;
+    esac
+    marker_opens "$seg" || return 1
+    case "$seg" in
+      *')'*) seg=${seg#*')'}; seg=${seg# } ;;
+      *) seg="" ;;   # a marker the backend never closed: it runs to the line's end
     esac
   done
-  printf '%s' "$seg"
+  return 0
+}
+
+# freeform_tail <text>: 0 if <text> is a free-form value (a hold reason or a blocked-by
+# record) followed by a valid marker tail, or a free-form value running to end-of-line.
+# The value ends at the first " (" from which the rest parses as marker_tail_only.
+freeform_tail() {
+  local seg=${1-} pre rest
+  while :; do
+    case "$seg" in
+      *' ('*) ;;
+      *) return 0 ;;   # no more markers: the free-form value runs to the line's end
+    esac
+    pre=${seg%%' ('*}
+    rest=${seg#"$pre" }
+    marker_tail_only "$rest" && return 0
+    seg=${rest#'('}
+  done
+}
+
+# before_marker_tail <text>: <text> up to where the backend's marker tail begins -
+# everything before it, title or hold reason alike. Walks candidate starts left to right
+# and stops at the first whose remainder is marker_tail_only, so a marker-shaped
+# substring earlier in the prose is preserved while the true trailing marker still ends
+# the title. The single owner of that boundary: every reader of the tail agrees on it.
+before_marker_tail() {
+  local seg=${1-} head="" pre rest
+  while :; do
+    case "$seg" in
+      *' ('*) ;;
+      *) break ;;
+    esac
+    pre=${seg%%' ('*}
+    rest=${seg#"$pre" }
+    if marker_tail_only "$rest"; then
+      printf '%s' "$head$pre"
+      return 0
+    fi
+    head=$head$pre' ('
+    seg=${rest#'('}
+  done
+  printf '%s' "$head$seg"
 }
 
 # blocked_by_ids <item-line>: the blocker id from every "blocked-by: <id>" record on the
@@ -491,7 +558,7 @@ trap 'rm -f "$ITEMS_JSONL" "$REG_JSONL" "$SUB_JSONL"; rm -rf "$BL_DIR"' EXIT
 # clone's own "origin" remote (compose_item, project_remote_repo). Only the one-click
 # merge is withheld when it is not; the url still renders as a link.
 backlog_parse() {
-  local line section="" rest own id title repo held hold_kind hold_reason hold_until pr today word
+  local line section="" rest own tail id title repo held hold_kind hold_reason hold_until pr today word
   local blocked_by
   [ -f "$BACKLOG_MD" ] || return 0
   today=$(date +%Y-%m-%d 2>/dev/null) || today=""
@@ -545,6 +612,11 @@ backlog_parse() {
     # whether the dependency still holds, because nothing ever rewrites it (see
     # dep_unresolved). So the ids are kept for the state lookup that decides that.
     own=$(before_marker_tail "$rest")
+    # The marker tail itself - the suffix "own" leaves off. Every marker FIELD below
+    # reads from it, not from the whole line, so a marker-shaped parenthetical in the
+    # title prose (which lands in "own") can never hijack a field: the same single-owner
+    # boundary the title and the hold reason already trust.
+    tail=${rest#"$own"}
     blocked_by=$(blocked_by_ids "$rest")
     title=${own%%' blocked-by:'*}
 
@@ -587,9 +659,9 @@ backlog_parse() {
     # "(repo: <name>) (since <date>)" - and the whole value would then be neither a
     # usable project name nor a repo any url could match.
     repo=""
-    case "$line" in
+    case "$tail" in
       *' (repo: '*)
-        repo=${line#*' (repo: '}
+        repo=${tail#*' (repo: '}
         repo=${repo%%')'*}
         repo=${repo%%,*}
         repo=$(trim "$repo")
@@ -597,7 +669,7 @@ backlog_parse() {
     esac
 
     held=no; hold_kind=""; hold_reason=""; hold_until=""
-    case "$line" in
+    case "$tail" in
       *' (hold: '*)
         # The one marker value that can itself contain ")": the reason is free-form
         # human prose, and compose_item makes it a captain-facing card body verbatim.
@@ -609,16 +681,16 @@ backlog_parse() {
         # it where the marker tail resumes (or at end-of-line), then drop the marker's
         # own closing ")" - the LAST one, never the first. The other marker values need
         # none of this: repo, hold-kind, and hold-until cannot contain ")".
-        hold_reason=$(before_marker_tail "${line#*' (hold: '}")
+        hold_reason=$(before_marker_tail "${tail#*' (hold: '}")
         hold_reason=${hold_reason%')'*}
         held=yes
         ;;
     esac
-    case "$line" in
-      *' (hold-kind: '*) hold_kind=${line#*' (hold-kind: '}; hold_kind=${hold_kind%%')'*} ;;
+    case "$tail" in
+      *' (hold-kind: '*) hold_kind=${tail#*' (hold-kind: '}; hold_kind=${hold_kind%%')'*} ;;
     esac
-    case "$line" in
-      *' (hold-until: '*) hold_until=${line#*' (hold-until: '}; hold_until=${hold_until%%')'*} ;;
+    case "$tail" in
+      *' (hold-until: '*) hold_until=${tail#*' (hold-until: '}; hold_until=${hold_until%%')'*} ;;
     esac
     case "$hold_until" in
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
