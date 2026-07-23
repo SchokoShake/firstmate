@@ -2221,6 +2221,46 @@ EOF
   pass "fm-logbook-compose keeps a hold reason's own parentheses out of the truncation"
 }
 
+test_compose_title_keeps_a_marker_shaped_parenthetical_in_its_prose() {
+  local home out
+  home="$TMP_ROOT/compose-marker-prose"; mkdir -p "$home/data" "$home/state"
+  printf '# Registry\n\n- alpha [no-mistakes] - First project (added 2026-07-01)\n' > "$home/data/projects.md"
+  # A human title can carry a parenthetical that happens to look like a marker the
+  # backend appends - "handle the (repo: x) case". Cutting at the FIRST marker-shaped
+  # match truncated the title mid-sentence AND, because every field was read from the
+  # whole line, let that false "(repo: x)" steal the item's project from the real
+  # trailing "(repo: alpha)". The tail is now the trailing RUN of markers, and every
+  # field reads from that tail, so the prose survives whole and the real markers win.
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] mprose-repo-k1 - Handle the (repo: x) rename edge case (repo: alpha) (kind: ship) (since 2026-07-10)
+- [ ] mprose-kind-k2 - Drop the (kind: legacy) shim (repo: alpha) (kind: ship) (since 2026-07-10)
+- [ ] mprose-hold-k3 - Rework the (repo: x) flow (repo: alpha) (kind: ship) (hold: awaiting the go-ahead) (hold-kind: captain)
+## Queued
+## Done
+EOF
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The prose "(repo: x)" no longer truncates the title, and the real "(repo: alpha)"
+  # marker still ends it and sets the project.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="mprose-repo-k1")
+      | (.title=="Handle the (repo: x) rename edge case") and (.project=="alpha")' >/dev/null \
+    || fail "a (repo: ...)-shaped parenthetical in the title must not truncate it or steal the repo"$'\n'"$out"
+  # Any known marker shape in the prose behaves the same - here "(kind: legacy)".
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="mprose-kind-k2")
+      | (.title=="Drop the (kind: legacy) shim") and (.project=="alpha")' >/dev/null \
+    || fail "a (kind: ...)-shaped parenthetical in the title must survive whole too"$'\n'"$out"
+  # The hold reader shares the boundary: a captain-held card keeps its full title, its
+  # real project, and the real hold reason (not the prose parenthetical) as its body.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="mprose-hold-k3")
+      | (.title=="Rework the (repo: x) flow") and (.project=="alpha")
+      and (.kind=="decision") and (.body=="awaiting the go-ahead")' >/dev/null \
+    || fail "a captain-held card with marker-shaped title prose must keep title, repo, and reason"$'\n'"$out"
+  pass "fm-logbook-compose keeps a marker-shaped parenthetical in a title's prose whole and still reads every real field"
+}
+
 test_compose_memoizes_each_projects_remote_once() {
   local home out log shim
   home="$TMP_ROOT/compose-remote-memo"; mkdir -p "$home/data" "$home/state" "$home/projects"
@@ -2487,6 +2527,7 @@ test_compose_live_crew_missing_from_backlog_is_carded
 test_compose_done_drops_even_with_a_lingering_meta
 test_compose_expired_hold_gate_is_not_a_hold
 test_compose_hold_reason_survives_the_captains_own_parentheses
+test_compose_title_keeps_a_marker_shaped_parenthetical_in_its_prose
 test_compose_memoizes_each_projects_remote_once
 test_compose_action_body_carries_a_clickable_pr_link
 test_compose_runaway_body_never_truncates_the_pr_link
