@@ -37,6 +37,12 @@
 #
 # Compatibility: JSON is the primary machine-readable surface.
 # Human views must render this output instead of parsing state files again.
+#
+# Composed JSON payloads (the backlog, task rows, and other aggregates this
+# script assembles) reach jq via files or stdin and are NEVER inlined into a
+# shell argument: a single argv element is capped by the kernel (MAX_ARG_STRLEN,
+# 128KiB on Linux), and a real backlog once outgrew it and E2BIG-killed the
+# snapshot. Small fixed scalars (paths, ids, one-line reads) may stay --arg.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -383,11 +389,12 @@ task_json_lines() {
       --argjson worktree_path "$worktree_json" \
       --argjson home_path "$home_json" \
       --argjson endpoint_exists "$endpoint_exists" \
-      --argjson open_decisions "$open_decisions_json" \
+      --rawfile open_decisions_raw <(printf '%s\n' "$open_decisions_json") \
       --argjson pending_decision "$(bool_json "$pending_decision")" \
       --argjson blocked_event "$(bool_json "$blocked_event")" \
       --argjson report_present "$(bool_json "$report_present")" \
-      '{
+      '($open_decisions_raw | fromjson) as $open_decisions
+      | {
         id:$id,
         kind:$kind,
         harness:($harness // ""),
@@ -450,25 +457,25 @@ secondmate_landed_json() {
     backlog="$home/data/backlog.md"
     [ -f "$backlog" ] || continue
     bj=$(backlog_json "$backlog") \
-      || { unreadable=$(jq -n --argjson a "$unreadable" --arg h "$home" '$a + [$h]'); continue; }
+      || { unreadable=$(printf '%s\n' "$unreadable" | jq --arg h "$home" '. + [$h]'); continue; }
     rows=$(printf '%s' "$bj" | jq --arg home "$home" --arg id "$id" '
       [ .records[] | select(.state == "done" and .structured)
         | {id, title, pr_url, report_path, local_note, completion, home:$home, home_id:$id} ]
       | sort_by([(.completion.date // ""), .id]) | reverse') \
-      || { unreadable=$(jq -n --argjson a "$unreadable" --arg h "$home" '$a + [$h]'); continue; }
+      || { unreadable=$(printf '%s\n' "$unreadable" | jq --arg h "$home" '. + [$h]'); continue; }
     n=$(printf '%s' "$rows" | jq 'length')
     if [ "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" -gt 0 ] \
       && [ "$n" -gt "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" ]; then
-      truncated=$(jq -n --argjson a "$truncated" --arg h "$home" '$a + [$h]')
+      truncated=$(printf '%s\n' "$truncated" | jq --arg h "$home" '. + [$h]')
     fi
-    records=$(jq -n --argjson a "$records" --argjson b "$rows" \
+    records=$({ printf '%s\n' "$records"; printf '%s\n' "$rows"; } | jq -s \
       --argjson cap "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" \
-      '$a + (if $cap == 0 then $b else $b[:$cap] end)')
+      '.[0] + (if $cap == 0 then .[1] else .[1][:$cap] end)')
   done <<EOF
 $(live_secondmate_meta_records "$STATE" "$reg")
 EOF
-  jq -n --argjson records "$records" --argjson truncated "$truncated" --argjson unreadable "$unreadable" \
-    '{records:$records, truncated:$truncated, unreadable:$unreadable}'
+  { printf '%s\n' "$records"; printf '%s\n' "$truncated"; printf '%s\n' "$unreadable"; } | jq -s \
+    '{records:.[0], truncated:.[1], unreadable:.[2]}'
 }
 
 scout_report_lines() {
@@ -486,23 +493,25 @@ scout_report_lines() {
     | jq -s 'sort_by(.id)'
 }
 
-BACKLOG_JSON=$(backlog_json)
-TASKS_JSON=$(task_json_lines)
-SCOUT_REPORTS_JSON=$(scout_report_lines)
-SECONDMATE_LANDED_JSON=$(secondmate_landed_json)
-
-jq -n \
+# The composed payloads stream to jq on stdin (see the header's argv note);
+# the `input` bindings below consume them in the group's generator order.
+{
+  backlog_json
+  task_json_lines
+  scout_report_lines
+  secondmate_landed_json
+} | jq -n \
   --arg fm_home "$FM_HOME" \
   --arg fm_root "$FM_ROOT" \
   --arg state "$STATE" \
   --arg data "$DATA" \
   --arg config "$CONFIG" \
   --arg projects "$PROJECTS" \
-  --argjson backlog "$BACKLOG_JSON" \
-  --argjson tasks "$TASKS_JSON" \
-  --argjson scout_reports "$SCOUT_REPORTS_JSON" \
-  --argjson secondmate_landed "$SECONDMATE_LANDED_JSON" \
-  'def backlog_by_id($id): ($backlog.records[]? | select(.structured == true and .id == $id) | .) // null;
+  'input as $backlog
+   | input as $tasks
+   | input as $scout_reports
+   | input as $secondmate_landed
+   | def backlog_by_id($id): ($backlog.records[]? | select(.structured == true and .id == $id) | .) // null;
    def task_by_id($id): ($tasks[]? | select(.id == $id) | .) // null;
    def report_kind($id): (task_by_id($id).kind // backlog_by_id($id).kind // "scout");
    {
