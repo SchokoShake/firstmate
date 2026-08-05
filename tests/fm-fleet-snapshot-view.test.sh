@@ -552,8 +552,36 @@ test_parked_scout_decision_stays_pending() {
   pass "a scout still parked at a decision stays pending (terminal clear does not over-fire)"
 }
 
+# Composed payloads must reach jq via files/stdin, never argv: a real backlog
+# grew past the kernel's per-argument cap (MAX_ARG_STRLEN, 128KiB on Linux) and
+# E2BIG-killed the final assembly ("jq: Argument list too long") with an EMPTY
+# fleet, since backlog size alone drives the payload. The snapshot and the view
+# must survive a backlog well past that cap.
+test_large_backlog_survives_argv_limit() {
+  local home out view
+  home=$(make_home large-backlog)
+  {
+    printf '## Queued\n'
+    printf -- '- [ ] big-task - Big Task (repo: alpha) (kind: ship) (since 2026-08-05)\n'
+    awk 'BEGIN { for (i = 1; i <= 4000; i++)
+      printf "  body line %d: 0123456789012345678901234567890123456789012345678901234567890123456789\n", i }'
+  } > "$home/data/backlog.md"
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot must survive a backlog past the kernel argv limit"
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-fleet-snapshot.v1"
+      and ((.backlog.records[] | select(.id == "big-task") | .body_lines | length) == 4000)
+  ' >/dev/null || fail "large-backlog snapshot must stay valid and complete"
+  view=$(FM_HOME="$home" "$VIEW") \
+    || fail "fleet view must survive a backlog past the kernel argv limit"
+  assert_contains "$view" "| big-task | Big Task | alpha | ship |" \
+    "view should render the large-bodied queued row"
+  pass "snapshot and view survive a backlog past the kernel argv limit"
+}
+
 test_empty_fleet_json
 test_fixture_snapshot_json
+test_large_backlog_survives_argv_limit
 test_event_hints_follow_reconciled_current_state
 test_open_decision_survives_later_unrelated_event
 test_secondmate_open_decision_survives_live_endpoint
