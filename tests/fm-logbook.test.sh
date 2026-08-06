@@ -2053,6 +2053,77 @@ test_push_strips_merge_read_from_the_url_when_the_item_names_no_project() {
   pass "fm-logbook-push strips a forbidden Merge from the PR url when the item names no project"
 }
 
+test_push_leaves_no_temp_file_behind_on_any_path() {
+  local home tmp rc
+  home="$TMP_ROOT/push-policy-tmpfiles"; write_merge_policy_fixture "$home" " +captain-merge"
+  tmp="$home/tmpdir"; mkdir -p "$tmp"
+  # Rewriting a gated body needs a SECOND temp file, and the temp dir is shared, so it is
+  # allocated by mktemp - unpredictable, and 0600 from the moment it holds the composed
+  # card text - rather than by suffixing the first file's name, which a local process could
+  # pre-create as a symlink and have the write clobber. The observable half of that
+  # contract is that the cleanup trap knows the name: no path through the script may leave
+  # a temp file behind. A private TMPDIR makes "no path" checkable rather than asserted.
+  push_policy_body guarded | PATH="$BASE_PATH" FM_HOME="$home" TMPDIR="$tmp" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  expect_code 0 "$rc" "a gated push under a private TMPDIR must still be delivered"
+  jq -e '[.options[].value] | index("merge") == null' "$home/state/logbook-outbox/items.json" >/dev/null \
+    || fail "the gated push must still strip the Merge option"
+  [ -z "$(ls -A "$tmp")" ] || fail "the strip path left a temp file behind: $(ls -A "$tmp")"
+  # The ungated path never allocates the second file, and an unparseable body exits before
+  # the gate is reached; neither may leave the first one behind either.
+  push_policy_body open | PATH="$BASE_PATH" FM_HOME="$home" TMPDIR="$tmp" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null \
+    || fail "an ungated push must succeed"
+  [ -z "$(ls -A "$tmp")" ] || fail "the ungated path left a temp file behind: $(ls -A "$tmp")"
+  printf 'not json at all' | PATH="$BASE_PATH" FM_HOME="$home" TMPDIR="$tmp" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  [ "$rc" -ne 0 ] || fail "an unparseable body must still be rejected"
+  [ -z "$(ls -A "$tmp")" ] || fail "the rejected-body path left a temp file behind: $(ls -A "$tmp")"
+  pass "fm-logbook-push cleans up every temp file it allocates, on every path"
+}
+
+test_push_never_writes_the_gated_body_through_a_derived_temp_name() {
+  local home fakebin tmp victim rc
+  home="$TMP_ROOT/push-policy-tmpname"; write_merge_policy_fixture "$home" " +captain-merge"
+  fakebin=$(fm_fakebin "$home")
+  tmp="$home/tmpdir"; mkdir -p "$tmp"
+  # A deterministic `mktemp` is what makes the attack reproducible instead of a race: it
+  # hands out numbered names, so the test knows the FIRST temp path the script gets and can
+  # plant the derived name in advance. A real mktemp name is unguessable, but a name built
+  # by suffixing one is not, and this temp dir is shared with every other local process.
+  cat > "$fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+set -u
+n=$(( $(cat "$FAKE_MKTEMP_DIR/.n" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "$n" > "$FAKE_MKTEMP_DIR/.n"
+p="$FAKE_MKTEMP_DIR/fm-fake-tmp.$n"
+case " $* " in
+  *" -d "*) mkdir -p "$p" ;;
+  *) : > "$p"; chmod 600 "$p" ;;
+esac
+printf '%s\n' "$p"
+SH
+  chmod +x "$fakebin/mktemp"
+  victim="$home/victim.txt"
+  printf 'the captain considers this file his\n' > "$victim"
+  # The body file is the script's first temp allocation, so this is the name a
+  # "$BODY_FILE.gated" would resolve to - pre-created here as a symlink, exactly as a local
+  # process could. A plain redirect onto it follows the link and truncates the target as
+  # the invoking user, and the mv that follows renames the link away, leaving the damage.
+  ln -s "$victim" "$tmp/fm-fake-tmp.1.gated"
+  push_policy_body guarded | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" TMPDIR="$tmp" \
+    FAKE_MKTEMP_DIR="$tmp" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  expect_code 0 "$rc" "the gated push must still be delivered"
+  # Proof the gate really ran, so the untouched victim below cannot pass vacuously.
+  jq -e '.options == [{"label":"Done / dismiss","value":"dismiss"},{"label":"Hold","value":"hold"}]' \
+    "$home/state/logbook-outbox/items.json" >/dev/null \
+    || fail "the gate must still strip the forbidden Merge"$'\n'"$(cat "$home/state/logbook-outbox/items.json")"
+  [ "$(cat "$victim" 2>/dev/null)" = "the captain considers this file his" ] \
+    || fail "the gated body was written through a predictable derived name and clobbered another file"
+  pass "fm-logbook-push allocates the gated body its own mktemp, not a name derived from another"
+}
+
 # slug_agreement_rows: the shared input table that pins bin/fm-merge-policy-lib.sh's
 # owner/repo parse (fm_merge_slug, fm_merge_same_part, fm_merge_forbidden_url's origin
 # scan) to bin/fm-logbook-compose.sh's (pr_slug, same_repo_part, project_remote_repo).
@@ -2764,6 +2835,8 @@ test_push_strips_merge_for_a_captain_merge_project
 test_push_merge_policy_leaves_other_projects_byte_identical
 test_push_gates_every_item_of_a_mixed_array
 test_push_strips_merge_read_from_the_url_when_the_item_names_no_project
+test_push_leaves_no_temp_file_behind_on_any_path
+test_push_never_writes_the_gated_body_through_a_derived_temp_name
 test_merge_policy_slug_agrees_with_compose
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge

@@ -70,7 +70,10 @@ command -v jq >/dev/null 2>&1 || { echo "fm-logbook-push: jq not found" >&2; exi
 
 # Slurp the body so we can validate it parses as JSON before posting.
 BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-push.XXXXXX") || { echo "fm-logbook-push: cannot create temp file" >&2; exit 1; }
-trap 'rm -f "$BODY_FILE" "$BODY_FILE.gated"' EXIT
+# Allocated lazily by the gate below, and cleaned up here on every exit path whether the
+# gate reached it or not.
+GATED_FILE=
+trap 'rm -f "$BODY_FILE" ${GATED_FILE:+"$GATED_FILE"}' EXIT
 if [ "$SRC" = "-" ]; then
   cat > "$BODY_FILE" || { echo "fm-logbook-push: cannot read body from stdin" >&2; exit 1; }
 else
@@ -149,9 +152,17 @@ fi
 # Rewritten only when there is something to strip, so every other push reaches the board
 # as exactly the bytes it was handed.
 if [ -n "$FORBIDDEN" ] || [ -n "$FORBIDDEN_URLS" ]; then
+  # The gated body gets its own mktemp rather than a name derived from $BODY_FILE's. A
+  # derived name is predictable the moment the first file exists, and this temp dir is
+  # shared, so a plain redirect onto it can be aimed at another file by a symlink planted
+  # there ahead of the write - and it would be created at the ambient umask rather than
+  # mktemp's 0600, leaving the composed card text world-readable while it sits there.
+  GATED_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-push-gated.XXXXXX") || GATED_FILE=
+  if [ -z "$GATED_FILE" ]; then
+    echo "fm-logbook-push: cannot create a temp file for the gated body; pushing the item as composed" >&2
   # The acknowledgement leads, the way compose orders it, and an item that already carries
   # one keeps just the one; every other option, and every other field, is left as it was.
-  if jq --argjson forbidden "$FORBIDDEN_JSON" --argjson forbidden_urls "$FORBIDDEN_URLS_JSON" '
+  elif jq --argjson forbidden "$FORBIDDEN_JSON" --argjson forbidden_urls "$FORBIDDEN_URLS_JSON" '
       def gate_options:
         if ([ .[] | select((type=="object") and (.value? == "merge")) ] | length) == 0 then .
         else
@@ -175,8 +186,8 @@ if [ -n "$FORBIDDEN" ] || [ -n "$FORBIDDEN_URLS" ]; then
               or (($u != "") and (($forbidden_urls | index($u)) != null)) ) as $forbid
           | if $forbid then .options |= gate_options else . end
         else . end;
-      if type=="array" then map(gate) else gate end' "$BODY_FILE" > "$BODY_FILE.gated"; then
-    mv -f "$BODY_FILE.gated" "$BODY_FILE"
+      if type=="array" then map(gate) else gate end' "$BODY_FILE" > "$GATED_FILE"; then
+    mv -f "$GATED_FILE" "$BODY_FILE"
   else
     echo "fm-logbook-push: could not remove the forbidden Merge option; pushing the item as composed" >&2
   fi
