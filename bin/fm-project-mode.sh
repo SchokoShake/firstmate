@@ -34,6 +34,13 @@
 # way round from the gate's perspective - to "firstmate", the behavior every project had
 # before the flag existed - so adding the flag changes nothing for a project that does not
 # carry it, and no project becomes unmergeable by accident.
+#
+# A bracket token starting with "+" that is neither posture flag warns to stderr too. A
+# typo in the FIRST position is already caught as an unknown mode, but "[direct-PR
+# +captainmerge]" parses cleanly as an unflagged project - so the one flag whose whole
+# point is a prohibition would be the one that goes silently missing. stdout stays exactly
+# as it was: an unrecognized token is a diagnostic, not a failure, and callers that
+# interpolate or string-compare this output must not see it.
 # Usage: fm-project-mode.sh <project-name> [--merge-policy]
 set -eu
 
@@ -70,22 +77,34 @@ if [ ! -f "$REG" ]; then
   emit
 fi
 
-# awk emits "<mode> <yolo> <merge>" (one line) or nothing if the project is absent.
+# awk emits "<mode> <yolo> <merge>" (one line) or nothing if the project is absent, plus
+# an optional second "+unknown <tokens>" line naming the "+" tokens it did not recognize.
+# The diagnostic travels back as a second LINE rather than a fourth field because the
+# first line's three-word shape is what the shell parses below and what this script's
+# stdout contract is built on; a warning is written where nothing parses it as data. It
+# cannot go straight to stderr from awk: nothing else in bin/ writes to "/dev/stderr" from
+# an awk program, and the shell is where every other warning here is emitted.
 parsed=$(awk -v n="$NAME" '
   $1=="-" && $2==n {
-    mode="no-mistakes"; yolo="off"; merge="firstmate";
+    mode="no-mistakes"; yolo="off"; merge="firstmate"; modetok=""; bad="";
     if ($3 ~ /^\[/) {
       s="";
       for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
       gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
       k = split(s, a, " ");
-      if (a[1] != "" && a[1] != "+yolo" && a[1] != "+captain-merge") mode = a[1];
+      if (a[1] != "" && a[1] != "+yolo" && a[1] != "+captain-merge") { mode = a[1]; modetok = a[1] }
       for (j=1; j<=k; j++) {
-        if (a[j]=="+yolo") yolo="on";
-        if (a[j]=="+captain-merge") merge="captain";
+        if (a[j]=="+yolo") { yolo="on"; continue }
+        if (a[j]=="+captain-merge") { merge="captain"; continue }
+        # The first token was read as the mode, so a "+" typo there is already reported
+        # as an unknown mode; reporting it twice would say nothing more.
+        if (j==1 && a[j]==modetok) continue;
+        if (a[j] ~ /^\+/) bad = bad (bad==""?"":" ") a[j];
       }
     }
-    print mode, yolo, merge; exit
+    print mode, yolo, merge;
+    if (bad != "") print "+unknown " bad;
+    exit
   }
 ' "$REG")
 
@@ -93,6 +112,17 @@ if [ -z "$parsed" ]; then
   echo "warn: project \"$NAME\" not in registry; defaulting to no-mistakes off" >&2
   emit
 fi
+
+NL='
+'
+case "$parsed" in
+  *"$NL+unknown "*)
+    unknown=${parsed#*"$NL+unknown "}
+    unknown=${unknown%%"$NL"*}
+    echo "warn: unrecognized posture flag for $NAME: $unknown; only +yolo and +captain-merge are recognized" >&2
+    ;;
+esac
+parsed=${parsed%%"$NL"*}
 
 mode=${parsed%% *}
 rest=${parsed#* }

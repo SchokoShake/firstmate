@@ -10,13 +10,17 @@
 # That posture is declared per project as a "+captain-merge" flag on the data/projects.md
 # registry line, which bin/fm-project-mode.sh parses (and whose header says why it needs a
 # flag of its own rather than a reading of "mode" or "+yolo"). This library owns what the
-# flag MEANS, and is sourced by both sides of it:
+# flag MEANS, and is sourced by every write path that could act on it:
 #
 #   bin/fm-logbook-compose.sh  withholds the one-click Merge option from the project's
 #                              attention-board cards, offering an acknowledgement instead.
+#   bin/fm-logbook-push.sh     strips that option back out of the rich card firstmate
+#                              composes on top, since the upsert would otherwise restore
+#                              exactly what compose withheld.
 #   bin/fm-pr-merge.sh         REFUSES the merge outright.
+#   bin/fm-merge-local.sh      refuses the local-only merge, firstmate's other merge path.
 #
-# Both, because a button the board no longer draws is not a safety property. A card
+# All of them, because a button the board no longer draws is not a safety property. A card
 # composed before the flag was set, an answer replayed off a stale board, or a request
 # hand-typed at the shell all reach fm-pr-merge.sh with the option gone and the merge
 # still one call away. The refusal is what makes the rule hold; withholding the option is
@@ -67,6 +71,9 @@ FM_MERGE_FORBIDDEN_PROJECT=""
 FM_MERGE_POLICY_SEP=$'\t'
 FM_MERGE_POLICY_EOR=$'\n'
 FM_MERGE_POLICY_CACHE=$FM_MERGE_POLICY_EOR
+# Set once the process has reported a lookup it could not perform, so a composer asking
+# about fifty cards does not repeat one broken-sibling diagnostic fifty times.
+FM_MERGE_POLICY_LOOKUP_WARNED=""
 
 # fm_merge_policy_project <fm-root> <fm-home> <project>: sets FM_MERGE_POLICY_OUT to the
 # project's merge policy, memoized so a composer asking once per card pays for the lookup
@@ -80,9 +87,15 @@ FM_MERGE_POLICY_CACHE=$FM_MERGE_POLICY_EOR
 #
 # stderr is dropped because fm-project-mode.sh warns on a project it does not know, and
 # asking about one is routine here: a card can carry a project the registry never listed
-# (compose composes a minimal row for it), and that project is simply not flagged.
+# (compose composes a minimal row for it), and that project is simply not flagged. Its
+# EXIT STATUS and its answer are read separately, though, because "could not ask" is not
+# the same fact as "asked, and the project is not flagged". Both stay permissive - a
+# missing or unexecutable sibling must never refuse merges fleet-wide, and the permissive
+# default is exactly what makes this whole axis a no-op for a fleet that declares none -
+# but a failed lookup warns once and is NOT memoized, so it stays visible and is retried
+# rather than cached as a verdict for the rest of the process.
 fm_merge_policy_project() {
-  local fm_root=${1-} fm_home=${2-} project=${3-} rest policy
+  local fm_root=${1-} fm_home=${2-} project=${3-} rest policy asked
   FM_MERGE_POLICY_OUT=firstmate
   [ -n "$project" ] || return 0
   case "$project" in
@@ -98,11 +111,22 @@ fm_merge_policy_project() {
   # FM_HOME is passed explicitly rather than left to inheritance: a caller that derived it
   # from FM_ROOT_OVERRIDE (or from its own location) holds it in a shell variable the child
   # would never see, and the child would then read a DIFFERENT home's registry.
-  policy=$(FM_HOME="$fm_home" "$fm_root/bin/fm-project-mode.sh" "$project" --merge-policy 2>/dev/null) || policy=""
+  asked=yes
+  policy=$(FM_HOME="$fm_home" "$fm_root/bin/fm-project-mode.sh" "$project" --merge-policy 2>/dev/null) || asked=no
+  # An answer that is neither word is no answer either: this script's stdout contract says
+  # the policy query prints one of exactly two words, so anything else means the child did
+  # not answer the question that was put to it.
   case "$policy" in
-    captain) ;;
-    *) policy=firstmate ;;
+    firstmate|captain) ;;
+    *) asked=no ;;
   esac
+  if [ "$asked" != yes ]; then
+    if [ -z "$FM_MERGE_POLICY_LOOKUP_WARNED" ]; then
+      FM_MERGE_POLICY_LOOKUP_WARNED=yes
+      echo "warn: could not read the merge policy for \"$project\" from $fm_root/bin/fm-project-mode.sh; treating projects as mergeable until it answers" >&2
+    fi
+    return 0
+  fi
   FM_MERGE_POLICY_CACHE=$FM_MERGE_POLICY_CACHE$project$FM_MERGE_POLICY_SEP$policy$FM_MERGE_POLICY_EOR
   FM_MERGE_POLICY_OUT=$policy
   return 0

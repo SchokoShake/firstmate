@@ -1941,6 +1941,89 @@ test_compose_captain_merge_is_not_relaxed_by_yolo() {
   pass "fm-logbook-compose keeps +captain-merge binding under +yolo"
 }
 
+# push_policy_body <project>: a rich action card of the shape firstmate composes by hand
+# on top of the mechanical baseline - the upsert is keyed by id, so this REPLACES whatever
+# compose put there, Merge option and all.
+push_policy_body() {
+  printf '{"id":"guard-b2","project":"%s","kind":"action","title":"Schema work is ready","body":"Review and merge when you are happy.","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}],"source":{"task":"guard-b2","pr":"https://github.com/acme/%s/pull/7"}}' \
+    "$1" "$1"
+}
+
+test_push_strips_merge_for_a_captain_merge_project() {
+  local home out rc recorded
+  home="$TMP_ROOT/push-policy-strip"; write_merge_policy_fixture "$home" " +captain-merge"
+  out=$(push_policy_body guarded | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err"); rc=$?
+  expect_code 0 "$rc" "push must still deliver the item, never refuse it over the policy"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "a gated push must still reach the board"
+  # The rich push is the other write path onto the board, so it is gated at the write
+  # itself: a hand-composed Merge here would put back exactly the option compose withheld.
+  jq -e '([.options[].value] | index("merge") == null)' "$recorded" >/dev/null \
+    || fail "push must remove the Merge option for a +captain-merge project"$'\n'"$(cat "$recorded")"
+  # Same acknowledgement compose offers, so the two write paths speak one vocabulary.
+  jq -e '.options == [{"label":"Done / dismiss","value":"dismiss"},{"label":"Hold","value":"hold"}]' "$recorded" >/dev/null \
+    || fail "push must substitute compose's own acknowledgement"$'\n'"$(cat "$recorded")"
+  # Every other field is the captain-facing composition firstmate wrote; the gate touches
+  # the forbidden option and nothing else.
+  jq -e '(.id=="guard-b2") and (.project=="guarded") and (.kind=="action")
+      and (.title=="Schema work is ready")
+      and (.body=="Review and merge when you are happy.")
+      and (.source.pr=="https://github.com/acme/guarded/pull/7")' "$recorded" >/dev/null \
+    || fail "push must leave every other field of the item untouched"$'\n'"$(cat "$recorded")"
+  assert_grep "captain-merge" "$home/err" "push must warn on stderr that it stripped the option"
+  pass "fm-logbook-push strips a forbidden Merge option and warns instead of refusing"
+}
+
+test_push_merge_policy_leaves_other_projects_byte_identical() {
+  local flagged plain a b
+  flagged="$TMP_ROOT/push-policy-flagged"; write_merge_policy_fixture "$flagged" " +captain-merge"
+  plain="$TMP_ROOT/push-policy-plain";     write_merge_policy_fixture "$plain" ""
+  # Proof, not assertion: two fleets differing ONLY in that one registry line's flag push
+  # the same unflagged project's card, so the delivered body must come out byte-identical
+  # on both sides. A gate that reserialized every push, reordered options, or stripped
+  # Merge fleet-wide fails here rather than in review.
+  push_policy_body open | PATH="$BASE_PATH" FM_HOME="$flagged" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$flagged/err" >/dev/null \
+    || fail "pushing an unflagged project's card must succeed"
+  push_policy_body open | PATH="$BASE_PATH" FM_HOME="$plain" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null \
+    || fail "pushing the same card from an unflagged fleet must succeed"
+  a=$(cat "$flagged/state/logbook-outbox/items.json")
+  b=$(cat "$plain/state/logbook-outbox/items.json")
+  [ "$a" = "$b" ] \
+    || fail "flagging one project changed another project's pushed card"$'\n'"flagged: $a"$'\n'"plain:   $b"
+  printf '%s' "$a" | jq -e '[.options[].value] | index("merge") != null' >/dev/null \
+    || fail "the control project must still be pushed with its Merge option"$'\n'"$a"
+  assert_no_grep "captain-merge" "$flagged/err" "an untouched push must not warn"
+  # And the flagged project's own card from the SAME registry line without the flag is an
+  # ordinary Merge card, so the difference is the flag itself and nothing else.
+  push_policy_body guarded | PATH="$BASE_PATH" FM_HOME="$plain" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null \
+    || fail "pushing an unflagged guarded card must succeed"
+  jq -e '[.options[].value] | index("merge") != null' "$plain/state/logbook-outbox/items.json" >/dev/null \
+    || fail "an unflagged project must push the Merge option exactly as before"
+  pass "fm-logbook-push leaves every project without the flag byte-identical"
+}
+
+test_push_gates_every_item_of_a_mixed_array() {
+  local home rc recorded
+  home="$TMP_ROOT/push-policy-array"; write_merge_policy_fixture "$home" " +yolo +captain-merge"
+  printf '[%s,%s,{"id":"note","project":"guarded","kind":"fyi","title":"n","body":"b","options":[]}]' \
+    "$(push_policy_body guarded)" "$(push_policy_body open)" \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  expect_code 0 "$rc" "an array push must be delivered"
+  recorded="$home/state/logbook-outbox/items.json"
+  # An array body is the documented upsert shape, so the gate must reach every item of it
+  # and only the forbidden ones - and +yolo, a relaxation, must not restore the option.
+  jq -e '(.[0].options == [{"label":"Done / dismiss","value":"dismiss"},{"label":"Hold","value":"hold"}])
+      and ([.[1].options[].value] | index("merge") != null)
+      and (.[2].options == [])' "$recorded" >/dev/null \
+    || fail "an array push must gate only the forbidden items"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push gates each item of an array body independently"
+}
+
 test_compose_never_writes_to_a_project_clone() {
   local home out before after
   home="$TMP_ROOT/compose-remote-readonly"; write_remote_fixture "$home"
@@ -2574,6 +2657,9 @@ test_compose_merge_falls_back_when_no_remote_resolves
 test_compose_captain_merge_project_offers_no_merge_option
 test_compose_merge_policy_leaves_other_projects_byte_identical
 test_compose_captain_merge_is_not_relaxed_by_yolo
+test_push_strips_merge_for_a_captain_merge_project
+test_push_merge_policy_leaves_other_projects_byte_identical
+test_push_gates_every_item_of_a_mixed_array
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge
 test_compose_blocked_by_is_not_a_merge

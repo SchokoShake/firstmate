@@ -45,6 +45,10 @@
 #       project carries it
 #   (p) the same flag refuses bin/fm-merge-local.sh's local-only merge - firstmate's OTHER
 #       merge path - and leaves an unflagged local-only merge landing as before
+#   (q) a MISSPELLED posture flag is reported on stderr rather than silently ignored,
+#       without disturbing either stdout contract callers string-compare
+#   (r) a merge policy that could not be READ stays permissive, warns once, and is
+#       retried rather than cached as a verdict
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -1142,6 +1146,80 @@ test_merge_policy_leaves_an_unflagged_local_merge_working() {
   pass "fm-merge-local leaves a project without the flag merging exactly as before"
 }
 
+test_unknown_posture_flag_warns_without_changing_stdout() {
+  local case_dir out
+  case_dir="$TMP_ROOT/policy-flag-typo"
+  mkdir -p "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- open [direct-PR] - no posture flag at all (added 2026-07-01)
+- typo [direct-PR +captainmerge] - the flag the captain meant to set (added 2026-07-02)
+- real [direct-PR +captain-merge] - the flag as it is actually spelled (added 2026-07-03)
+EOF
+  # A misspelled flag past the first bracket position parses as a perfectly clean
+  # unflagged line, so the ONE flag whose whole point is a prohibition is the one that
+  # would go missing in silence. It stays permissive - guessing a prohibition from a typo
+  # would be its own failure - but it must be said out loud.
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" typo 2>"$case_dir/typo.err")
+  [ "$out" = "direct-PR off" ] \
+    || fail "flag-typo: the two-word stdout contract must not change, got \"$out\""
+  assert_grep '+captainmerge' "$case_dir/typo.err" \
+    "flag-typo: an unrecognized posture flag must be reported on stderr"
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" typo --merge-policy 2>/dev/null)
+  [ "$out" = "firstmate" ] \
+    || fail "flag-typo: the one-word policy contract must not change, got \"$out\""
+
+  # Controls: a correctly spelled line is silent and binding, and a line with no posture
+  # flag at all is silent too - the diagnostic must fire on the typo and nothing else.
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" real --merge-policy 2>"$case_dir/real.err")
+  [ "$out" = "captain" ] || fail "flag-typo control: the real flag must still bind, got \"$out\""
+  assert_no_grep "unrecognized" "$case_dir/real.err" \
+    "flag-typo control: a correctly spelled flag must warn about nothing"
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" open 2>"$case_dir/open.err")
+  [ "$out" = "direct-PR off" ] || fail "flag-typo control: an unflagged line must be unchanged"
+  assert_no_grep "unrecognized" "$case_dir/open.err" \
+    "flag-typo control: a line with no posture flag must warn about nothing"
+  pass "fm-project-mode warns about an unrecognized posture flag without changing stdout"
+}
+
+test_merge_policy_lookup_failure_warns_once_and_is_not_cached() {
+  local case_dir out warns
+  case_dir="$TMP_ROOT/policy-lookup-failure"
+  mkdir -p "$case_dir/data" "$case_dir/broken/bin"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  # "Could not ask" is not the same fact as "asked, and the project is not flagged". Both
+  # stay permissive - a missing sibling must never refuse merges fleet-wide - but a failed
+  # lookup must be visible and must be RETRIED, not cached as a verdict for the rest of
+  # the process, or one unreadable moment silently permits every later merge.
+  cat > "$case_dir/drive.sh" <<'SH'
+set -eu
+real_root=$1 broken_root=$2 home=$3
+. "$real_root/bin/fm-merge-policy-lib.sh"
+fm_merge_policy_project "$broken_root" "$home" guarded
+echo "first=$FM_MERGE_POLICY_OUT"
+fm_merge_policy_project "$broken_root" "$home" guarded
+echo "second=$FM_MERGE_POLICY_OUT"
+fm_merge_policy_project "$real_root" "$home" guarded
+echo "retried=$FM_MERGE_POLICY_OUT"
+SH
+  out=$(bash "$case_dir/drive.sh" "$ROOT" "$case_dir/broken" "$case_dir" 2>"$case_dir/err")
+  case "$out" in
+    *"first=firstmate"*) ;;
+    *) fail "lookup-failure: an unreadable policy must stay permissive"$'\n'"$out" ;;
+  esac
+  case "$out" in
+    *"retried=captain"*) ;;
+    *) fail "lookup-failure: the failed lookup must not be cached as a verdict"$'\n'"$out" ;;
+  esac
+  assert_grep "could not read the merge policy" "$case_dir/err" \
+    "lookup-failure: a lookup that could not be performed must warn"
+  warns=$(grep -c "could not read the merge policy" "$case_dir/err")
+  [ "$warns" = 1 ] \
+    || fail "lookup-failure: the diagnostic must be reported once, not once per card (got $warns)"
+  pass "fm-merge-policy-lib warns once on an unreadable policy and retries it"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -1170,3 +1248,5 @@ test_captain_merge_project_is_refused_from_the_pr_url_alone
 test_merge_policy_leaves_an_unflagged_project_merging
 test_captain_merge_refuses_the_local_merge_too
 test_merge_policy_leaves_an_unflagged_local_merge_working
+test_unknown_posture_flag_warns_without_changing_stdout
+test_merge_policy_lookup_failure_warns_once_and_is_not_cached

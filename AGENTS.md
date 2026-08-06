@@ -280,7 +280,7 @@ Every project in the fleet has one line:
 - <name> [<mode>] - <one-line description> (added <date>)
 ```
 
-The registry line records the project name, delivery mode, optional `+yolo` posture, and one-line description.
+The registry line records the project name, delivery mode, optional `+yolo` and `+captain-merge` postures, and one-line description.
 Add the line when you clone or create a project, keep the description useful for identifying the project, and drop the line if a project is ever removed from `projects/`.
 Do not turn the registry into a knowledge dump.
 Durable descriptive detail belongs in the project's own `AGENTS.md`.
