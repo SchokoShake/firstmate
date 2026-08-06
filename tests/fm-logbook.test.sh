@@ -2031,6 +2031,43 @@ test_push_gates_every_item_of_a_mixed_array() {
   pass "fm-logbook-push gates each item of an array body independently"
 }
 
+test_push_never_reads_one_project_name_as_two() {
+  local home rc recorded
+  home="$TMP_ROOT/push-policy-split-name"; write_merge_policy_fixture "$home" " +captain-merge"
+  # A project name carrying a newline is one bin/fm-merge-policy-lib.sh deliberately
+  # answers "firstmate" for without a lookup, precisely because it cannot key the memo.
+  # Read as LINES it becomes two names instead - "open", and the flagged "guarded" - so the
+  # gate announces dropping the Merge of a project this card does not name, and then finds
+  # nothing to strip, since the item's own project is neither fragment. The card carries no
+  # source.pr, so signal 2 cannot cover for it: what this run says about the card is the
+  # whole truth about it.
+  printf '{"id":"guard-b2","project":"open\\nguarded","kind":"action","title":"t","body":"b","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}]}' \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a card whose project cannot be read as a line must still be delivered"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "the card must still reach the board"
+  # Permissive, which is the library's own answer for such a name - and SILENT about it,
+  # because the only thing worse than not stripping is claiming that it did.
+  jq -e '(.project == "open\nguarded") and ([.options[].value] | index("merge") != null)' \
+    "$recorded" >/dev/null \
+    || fail "an unsplittable project name must be left whole and permitted"$'\n'"$(cat "$recorded")"
+  assert_no_grep "captain-merge" "$home/err" \
+    "the gate must not announce dropping a Merge that it cannot drop"
+  # Control, so the permissive answer above cannot pass on a fixture where nothing is
+  # forbidden at all: the same card, still with no source.pr, naming just the flagged
+  # fragment loses its Merge and says so.
+  printf '{"id":"guard-b2","project":"guarded","kind":"action","title":"t","body":"b","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}]}' \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/control.err" >/dev/null \
+    || fail "the control push must be delivered too"
+  jq -e '[.options[].value] | index("merge") == null' "$recorded" >/dev/null \
+    || fail "the control card must lose its Merge"$'\n'"$(cat "$recorded")"
+  assert_grep "captain-merge" "$home/control.err" \
+    "the control strip must still be announced"
+  pass "fm-logbook-push never reads one project name as two forbiddable ones"
+}
+
 test_push_strips_merge_read_from_the_url_when_the_item_names_no_project() {
   local home rc recorded
   home="$TMP_ROOT/push-policy-url"; write_merge_policy_fixture "$home" " +captain-merge"
@@ -2227,7 +2264,7 @@ test_push_says_so_when_a_gate_selector_cannot_run() {
     FAKE_JQ_FAIL='.project? ]' \
     "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/project.err" >/dev/null; rc=$?
   expect_code 0 "$rc" "a dead gate selector must still deliver the item, never fail the push"
-  assert_grep "pushing the item as composed" "$home/project.err" \
+  assert_grep "the project signal is unavailable" "$home/project.err" \
     "a project selector that will not run must say so, like every other fall-open here"
   recorded="$home/state/logbook-outbox/items.json"
   assert_present "$recorded" "the card must still reach the board"
@@ -2235,6 +2272,12 @@ test_push_says_so_when_a_gate_selector_cannot_run() {
   # the PR url still speaks for the card signal 1 can no longer name.
   jq -e '[.options[].value] | index("merge") == null' "$recorded" >/dev/null \
     || fail "the url signal must still strip the Merge signal 1 could not name"$'\n'"$(cat "$recorded")"
+  # Which is precisely why the diagnostic above may not claim the outcome: the option WAS
+  # removed, so a run that also said "pushing the item as composed" would be describing a
+  # push that did not happen. A false statement pinned by a test is worse than no test, so
+  # what this fall-open may say is bounded here rather than only worded carefully upstream.
+  assert_no_grep "pushing the item as composed" "$home/project.err" \
+    "a dead project selector must not claim an outcome the url signal went on to change"
 
   # Signal 2's selector dies on a card that carries NO project, so signal 1 has nothing to
   # say either and the forbidden Merge really does reach the board. That is the fall-open
@@ -2243,7 +2286,7 @@ test_push_says_so_when_a_gate_selector_cannot_run() {
     LOGBOOK_DRY_RUN=1 FAKE_JQ_FAIL='pr_of ]' \
     "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/url.err" >/dev/null; rc=$?
   expect_code 0 "$rc" "a dead url selector must still deliver the item"
-  assert_grep "pushing the item as composed" "$home/url.err" \
+  assert_grep "the PR url signal is unavailable" "$home/url.err" \
     "a url selector that will not run must say so rather than pass a live Merge in silence"
   jq -e '[.options[].value] | index("merge") != null' "$recorded" >/dev/null \
     || fail "the fall-open under test must actually have happened"$'\n'"$(cat "$recorded")"
@@ -2268,7 +2311,7 @@ test_push_never_claims_a_strip_it_did_not_perform() {
   assert_present "$recorded" "the card must still reach the board"
   assert_grep "dropping the Merge option" "$home/err" \
     "the per-project finding is what makes the contradiction possible; it must still be there"
-  assert_grep "pushing the item as composed" "$home/err" \
+  assert_grep "removed nothing it announced above" "$home/err" \
     "the run must correct its own claim out loud when the strip could not be performed"
   # The claim really was wrong - proof the correction is not a warning about nothing.
   jq -e '[.options[].value] | index("merge") != null' "$recorded" >/dev/null \
@@ -3007,9 +3050,30 @@ LOGBOOK_TOKEN=boottok
 EOF
 }
 
+# add_action_card <home> <id> <project> <pr>: one more in-flight task shaped like
+# write_fleet_fixture's ship-pr-a1, so it composes as an ACTION card - the only kind
+# bin/fm-logbook-compose.sh consults the merge policy for, and therefore the only kind that
+# makes the policy library speak at all. The line is INSERTED into "## In flight" rather
+# than appended, because the section it lands in is what decides whether it is carded.
+add_action_card() {
+  local home=$1 id=$2 project=$3 pr=$4
+  awk -v line="- [ ] $id - Ship it (repo: $project) (kind: ship) (since 2026-07-10)" \
+    '{ print } /^## In flight$/ { print line }' \
+    "$home/data/backlog.md" > "$home/data/backlog.md.new"
+  mv "$home/data/backlog.md.new" "$home/data/backlog.md"
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" "project=$home/projects/$project" \
+    "harness=claude" "kind=ship" "mode=direct-PR" "yolo=off" "pr=$pr"
+}
+
 test_bootstrap_surfaces_a_policy_diagnostic_no_caller_was_taught() {
   local home stage fakebin out
   home="$TMP_ROOT/boot-policy-unheard"; write_fleet_fixture "$home"; write_logbook_optin "$home"
+  # An action card for a project the registry never listed, so the filter's SUPPRESSED arm
+  # is actually reached: without one, nothing in this fixture would ever write the routine
+  # not-in-registry line, and the assertion against it below would hold no matter what the
+  # filter did.
+  add_action_card "$home" ship-pr-z9 unlisted https://github.com/acme/unlisted/pull/9
   fakebin=$(make_fake_curl "$home")
   stage=$(stage_fm_root "$TMP_ROOT/boot-policy-unheard-root" fm-project-mode.sh)
   # A diagnostic no caller has ever seen, written by the script the policy library asks.
@@ -3040,8 +3104,14 @@ SH
 }
 
 test_bootstrap_surfaces_a_merge_policy_lookup_it_could_not_perform() {
-  local home stage fakebin out lines
+  local home stage fakebin out lines synced
   home="$TMP_ROOT/boot-policy-unreadable"; write_fleet_fixture "$home"; write_logbook_optin "$home"
+  # A SECOND action card in the SAME project, because the once-per-process bound below is
+  # only evidence if the fixture can produce more than one lookup: write_fleet_fixture's
+  # three in-flight tasks compose exactly one action card, and a count of 1 over one lookup
+  # holds against an implementation with no bound at all. A failed lookup is deliberately
+  # not memoized, so these two cards ask twice however identical they are.
+  add_action_card "$home" ship-pr-a2 alpha https://github.com/acme/alpha/pull/43
   fakebin=$(make_fake_curl "$home")
   # The home's fm-project-mode.sh cannot be run at all - a partial update, or an FM_ROOT
   # that resolved somewhere else in a seeded secondmate home. This is the WORST of the
@@ -3055,6 +3125,12 @@ test_bootstrap_surfaces_a_merge_policy_lookup_it_could_not_perform() {
     "a policy lookup that could not be performed must reach the captain at session start"
   assert_contains "$out" "$stage/bin/fm-project-mode.sh" \
     "the diagnostic must name the script that would not answer"
+  # The premise of the count below, pinned rather than assumed: two action cards in one
+  # project really did reach the composer, so two lookups really were asked for.
+  synced="$home/state/logbook-outbox/sync.json"
+  assert_present "$synced" "an unreadable merge policy must not stop the session-start sync"
+  [ "$(jq '[.items[] | select(.kind=="action") | select(.project=="alpha")] | length' "$synced")" = 2 ] \
+    || fail "the fixture must compose two action cards in one project, or the count below proves nothing"$'\n'"$(cat "$synced")"
   # Once per process, not once per card: the failed lookup is deliberately not memoized so
   # it is retried, and the report is bounded by its own flag instead.
   lines=$(printf '%s\n' "$out" | grep -c "LOGBOOK: merge policy - could not read the merge policy" || true)
@@ -3154,6 +3230,7 @@ test_compose_captain_merge_is_not_relaxed_by_yolo
 test_push_strips_merge_for_a_captain_merge_project
 test_push_merge_policy_leaves_other_projects_byte_identical
 test_push_gates_every_item_of_a_mixed_array
+test_push_never_reads_one_project_name_as_two
 test_push_strips_merge_read_from_the_url_when_the_item_names_no_project
 test_push_scans_each_clone_origin_once_however_many_urls
 test_push_leaves_no_temp_file_behind_on_any_path

@@ -41,10 +41,17 @@
 # flag is passed through untouched, byte for byte.
 # Every step of this gate that can FAIL therefore falls open - a selector jq that will not
 # run, a list that cannot be built, a temp file that cannot be allocated, a gated body that
-# cannot be written or installed - and every one of them SAYS SO, on stderr, before pushing
-# the item as composed. Falling open in silence would be worse than having no gate at all:
-# the run reads exactly like one that held, so a live Merge on a "+captain-merge" card
-# looks like a card the policy had nothing to say about.
+# cannot be written or installed - and every one of them SAYS SO, on stderr. Falling open
+# in silence would be worse than having no gate at all: the run reads exactly like one that
+# held, so a live Merge on a "+captain-merge" card looks like a card the policy had nothing
+# to say about.
+# Each of those diagnostics reports only what it KNOWS where it fires, which for the steps
+# before the rewrite is the signal that went dark and nothing more. The two signals are
+# independent and the strip runs after both, so a dead project signal leaves the url still
+# able to remove the option and vice versa: a step that announced the OUTCOME - "pushing
+# the item as composed" - would be claiming something not yet decided, and would be flatly
+# wrong whenever the surviving signal went on to strip. Only the rewrite's own branches,
+# which install the gated body or fail to, are in a position to say that.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,8 +72,10 @@ usage() { echo "usage: fm-logbook-push.sh --json-file <path> | -" >&2; }
 #
 # That fall-open is the loudest of the three, because it is the one that CONTRADICTS what
 # the run already said: the per-item warnings above have announced the projects and urls
-# whose Merge is being dropped, and an empty array here hands the gate nothing to drop, so
-# the body is installed unchanged. Silent, the run claimed a strip it did not perform.
+# whose Merge is being dropped, and an empty array here hands the strip nothing to drop for
+# this signal. Silent, the run claimed a strip it did not perform. It says only that much -
+# the OTHER signal's list is unaffected and may still strip the very option this one
+# announced, so this is not the place to say how the item reached the board.
 # jq's output is captured rather than streamed, so a jq that died halfway cannot leave a
 # partial array with "[]" appended to it either.
 json_array_of() {
@@ -76,7 +85,7 @@ json_array_of() {
     printf '%s' "$out"
     return 0
   fi
-  echo "fm-logbook-push: could not build the forbidden-$what list, so nothing was removed; pushing the item as composed" >&2
+  echo "fm-logbook-push: could not build the forbidden-$what list, so the $what signal removed nothing it announced above; the other signal still applies" >&2
   printf '[]'
 }
 
@@ -109,6 +118,25 @@ else
 fi
 jq -e . "$BODY_FILE" >/dev/null 2>&1 || { echo "fm-logbook-push: body is not valid JSON" >&2; exit 1; }
 
+# JQ_USABLE_LINES: the ONE definition of "a value this gate can carry", read by BOTH
+# selectors below so the project list and the url list can never be built by two rules that
+# drifted apart. It is what json_array_of is, one step earlier: every list here is
+# newline-delimited end to end - jq writes lines, "read -r" reads them back, json_array_of
+# splits on them again - so a value that cannot survive that round trip has to be dropped
+# before it enters rather than read as something it is not.
+#
+# A value carrying whitespace is exactly that value, and an embedded NEWLINE is the
+# damaging half: read as lines, ONE name arrives at the lookup as two DIFFERENT names,
+# either of which may be flagged, and the strip below then looks the whole original up and
+# finds neither - so the run announces a drop it did not perform, which is the failure this
+# file works hardest to avoid. Skipping such a value forbids nothing that was ever
+# forbiddable: bin/fm-merge-policy-lib.sh already answers a name it cannot key "firstmate"
+# without a lookup, a registry project name is a single whitespace-free field (it is an awk
+# field to bin/fm-project-mode.sh, so no registry line can declare one), and a url whose
+# owner or repo carries whitespace is blanked by fm_merge_slug and matches no clone.
+JQ_USABLE_LINES='def usable_lines:
+  map(select((type == "string") and (. != "") and ((test("\\s")) | not))) | unique;'
+
 # Both signals are asked only about the items that actually stand to lose something: an
 # item carrying no merge option has nothing to strip, so the body is left alone and the
 # lookups are never paid for.
@@ -119,18 +147,19 @@ jq -e . "$BODY_FILE" >/dev/null 2>&1 || { echo "fm-logbook-push: body is not val
 # A selector that will not RUN is not the same fact as a body with nothing to gate, and the
 # two are indistinguishable in an empty result: the body already parsed as JSON at the check
 # above, so a failure here is jq itself (killed, out of memory, a build without any/2), and
-# it leaves both gates with nothing to forbid and the hand-composed Merge intact. Said out
-# loud, the way every other fall-open in this file is, rather than left to a board that
-# quietly grew back the button compose withheld.
-MERGE_PROJECTS=$(jq -r '
+# it leaves THIS signal with nothing to forbid. Said out loud, the way every other fall-open
+# in this file is, rather than left to a board that quietly grew back the button compose
+# withheld - and said as exactly that, since signal 2 still runs and may still strip the
+# option on a card carrying a url.
+MERGE_PROJECTS=$(jq -r "$JQ_USABLE_LINES"'
   [ (if type=="array" then .[] else . end)
     | select(type=="object")
     | select((.options? | type) == "array")
     | select(any(.options[]?; (type=="object") and (.value? == "merge")))
     | .project? ]
-  | map(select((type=="string") and (. != ""))) | unique | .[]' "$BODY_FILE" 2>/dev/null) || {
+  | usable_lines | .[]' "$BODY_FILE" 2>/dev/null) || {
   MERGE_PROJECTS=""
-  echo "fm-logbook-push: could not read the items' projects for the merge-policy gate; pushing the item as composed" >&2
+  echo "fm-logbook-push: could not read the items' projects for the merge-policy gate; the project signal is unavailable and only the PR url signal applies" >&2
 }
 
 FORBIDDEN=""
@@ -150,10 +179,9 @@ FORBIDDEN_JSON=$(json_array_of "$FORBIDDEN" project)
 
 # Signal 2, the item's PR url, asked only of the items signal 1 did not already settle -
 # an item whose project is flagged is stripped either way, and the scan across projects/
-# is the expensive half. A url carrying whitespace is skipped rather than read as a line:
-# the library blanks a whitespace-bearing owner or repo, so such a url can match no clone
-# anyway, and skipping it keeps this line-oriented read honest about what it forbade.
-MERGE_URLS=$(jq -r --argjson forbidden "$FORBIDDEN_JSON" '
+# is the expensive half. Its values are held to the same usable_lines contract signal 1's
+# are, for the same reason and out of the same definition.
+MERGE_URLS=$(jq -r --argjson forbidden "$FORBIDDEN_JSON" "$JQ_USABLE_LINES"'
   def pr_of:
     if ((.source? | type) == "object") and ((.source.pr? | type) == "string")
     then .source.pr else "" end;
@@ -164,9 +192,9 @@ MERGE_URLS=$(jq -r --argjson forbidden "$FORBIDDEN_JSON" '
     | . as $item
     | select((($item.project? | type) != "string") or (($forbidden | index($item.project)) == null))
     | pr_of ]
-  | map(select((. != "") and ((test("\\s")) | not))) | unique | .[]' "$BODY_FILE" 2>/dev/null) || {
+  | usable_lines | .[]' "$BODY_FILE" 2>/dev/null) || {
   MERGE_URLS=""
-  echo "fm-logbook-push: could not read the items' PR urls for the merge-policy gate; pushing the item as composed" >&2
+  echo "fm-logbook-push: could not read the items' PR urls for the merge-policy gate; the PR url signal is unavailable and only the project signal applies" >&2
 }
 
 FORBIDDEN_URLS=""
