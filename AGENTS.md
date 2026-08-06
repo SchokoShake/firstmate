@@ -352,7 +352,7 @@ It sweeps the current session for uncaptured durable knowledge, routes findings 
 Orthogonal to mode is an optional `+yolo` flag (`[direct-PR +yolo]`), default off and **not recommended**: with `yolo` on, firstmate makes the approval decisions itself instead of asking the captain (section 7). When the captain adds a project without saying, default to `no-mistakes` with yolo off; only set a faster mode or `+yolo` on the captain's explicit say-so.
 
 Orthogonal to both is an optional `+captain-merge` flag (`[direct-PR +captain-merge]`), default off: firstmate must **never** merge that project's work, and `+yolo` never relaxes it.
-Set it when the captain says they merge a project themselves; `bin/fm-merge-policy-lib.sh` owns what it means and enforces it in `bin/fm-pr-merge.sh` and on the attention board.
+Set it when the captain says they merge a project themselves; `bin/fm-merge-policy-lib.sh` owns what it means and enforces it on both of firstmate's merge paths (section 7) and on the attention board.
 
 **Clone existing:** `git clone <url> projects/<name>`, add its registry line with the chosen mode, then initialize only if the mode is `no-mistakes`.
 

@@ -36,6 +36,7 @@ Act on it autonomously through the normal lifecycle; never route it back to chat
 
 The one standing guardrail is unchanged (AGENTS.md sections 1 and 7): if *executing* the answer entails a further **destructive, irreversible, or security-sensitive** step beyond what the card offered, confirm through the trusted channel first and act only on the captain's word.
 Merging a PR the captain answered "merge" on, or responding to an ask-user finding with the captain's chosen option, is exactly the decision they made - that is authorized, not an escalation.
+The standing exception is a `+captain-merge` project: that prohibition is set on the registry line and not per answer, so no board answer - a stale card's `merge` option or a free-text "merge it" - authorizes firstmate to merge it (`AGENTS.md` sections 6 and 7; the ready-action card below).
 
 ## Resolving the target task
 
