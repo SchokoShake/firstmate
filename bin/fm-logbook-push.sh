@@ -22,8 +22,18 @@
 # merge option REMOVED before the upsert and the acknowledgement compose uses offered in
 # its place, so both write paths onto the board speak one vocabulary and neither can offer
 # the captain the one thing firstmate would then refuse to do.
-# bin/fm-merge-policy-lib.sh owns the contract; the project is read from the item's own
-# "project" field, the same field compose sets.
+# bin/fm-merge-policy-lib.sh owns the contract, and it is read through the SAME two
+# independent signals bin/fm-pr-merge.sh reads, either of which strips:
+#
+#   1. The item's own "project" field, the field compose sets.
+#   2. The item's "source.pr", matched against the origin of every clone under projects/.
+#
+# Signal 2 is not redundant. The board's item schema treats "project" as OPTIONAL, and
+# this is the HAND-composed path, so a rich card written without one - or with a display
+# name the registry never listed - would walk straight past a project-only gate carrying
+# the very Merge button compose withheld. A guard with a bypass is not a guard, so the
+# url, which is the thing the button would act on and is present on any card that has a
+# Merge to offer, gets its own say.
 # The push itself is never refused over it: an attention item the captain never sees at
 # all is worse than one with a button removed, and AGENTS.md section 15 requires that
 # everything reaching the captain also reaches the board. It warns to stderr instead, so
@@ -34,6 +44,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-logbook-lib.sh
 . "$SCRIPT_DIR/fm-logbook-lib.sh"
 # shellcheck source=bin/fm-merge-policy-lib.sh disable=SC1091
@@ -67,10 +78,12 @@ else
 fi
 jq -e . "$BODY_FILE" >/dev/null 2>&1 || { echo "fm-logbook-push: body is not valid JSON" >&2; exit 1; }
 
-# Ask the policy only about the projects that actually stand to lose something: an item
-# carrying no merge option has nothing to strip, so the body is left alone and the lookup
-# is never paid for. Names are read as whole lines, and one that cannot key a registry
-# lookup is answered permissively by the library rather than here.
+# Both signals are asked only about the items that actually stand to lose something: an
+# item carrying no merge option has nothing to strip, so the body is left alone and the
+# lookups are never paid for.
+#
+# Signal 1, the item's project. Names are read as whole lines, and one that cannot key a
+# registry lookup is answered permissively by the library rather than here.
 MERGE_PROJECTS=$(jq -r '
   [ (if type=="array" then .[] else . end)
     | select(type=="object")
@@ -92,13 +105,53 @@ $MERGE_PROJECTS
 EOF
 fi
 
+FORBIDDEN_JSON='[]'
+if [ -n "$FORBIDDEN" ]; then
+  FORBIDDEN_JSON=$(printf '%s' "$FORBIDDEN" | jq -R -s 'split("\n") | map(select(length > 0))') || FORBIDDEN_JSON='[]'
+fi
+
+# Signal 2, the item's PR url, asked only of the items signal 1 did not already settle -
+# an item whose project is flagged is stripped either way, and the scan across projects/
+# is the expensive half. A url carrying whitespace is skipped rather than read as a line:
+# the library blanks a whitespace-bearing owner or repo, so such a url can match no clone
+# anyway, and skipping it keeps this line-oriented read honest about what it forbade.
+MERGE_URLS=$(jq -r --argjson forbidden "$FORBIDDEN_JSON" '
+  def pr_of:
+    if ((.source? | type) == "object") and ((.source.pr? | type) == "string")
+    then .source.pr else "" end;
+  [ (if type=="array" then .[] else . end)
+    | select(type=="object")
+    | select((.options? | type) == "array")
+    | select(any(.options[]?; (type=="object") and (.value? == "merge")))
+    | . as $item
+    | select((($item.project? | type) != "string") or (($forbidden | index($item.project)) == null))
+    | pr_of ]
+  | map(select((. != "") and ((test("\\s")) | not))) | unique | .[]' "$BODY_FILE" 2>/dev/null) || MERGE_URLS=""
+
+FORBIDDEN_URLS=""
+if [ -n "$MERGE_URLS" ]; then
+  while IFS= read -r policy_url; do
+    [ -n "$policy_url" ] || continue
+    if fm_merge_forbidden_url "$FM_ROOT" "$FM_HOME" "$PROJECTS" "$policy_url"; then
+      FORBIDDEN_URLS=$FORBIDDEN_URLS$policy_url$'\n'
+      echo "fm-logbook-push: $policy_url is the PR of project \"$FM_MERGE_FORBIDDEN_PROJECT\", which is +captain-merge; dropping the Merge option and offering \"Done / dismiss\" instead" >&2
+    fi
+  done <<EOF
+$MERGE_URLS
+EOF
+fi
+
+FORBIDDEN_URLS_JSON='[]'
+if [ -n "$FORBIDDEN_URLS" ]; then
+  FORBIDDEN_URLS_JSON=$(printf '%s' "$FORBIDDEN_URLS" | jq -R -s 'split("\n") | map(select(length > 0))') || FORBIDDEN_URLS_JSON='[]'
+fi
+
 # Rewritten only when there is something to strip, so every other push reaches the board
 # as exactly the bytes it was handed.
-if [ -n "$FORBIDDEN" ]; then
-  FORBIDDEN_JSON=$(printf '%s' "$FORBIDDEN" | jq -R -s 'split("\n") | map(select(length > 0))') || FORBIDDEN_JSON=""
+if [ -n "$FORBIDDEN" ] || [ -n "$FORBIDDEN_URLS" ]; then
   # The acknowledgement leads, the way compose orders it, and an item that already carries
   # one keeps just the one; every other option, and every other field, is left as it was.
-  if [ -n "$FORBIDDEN_JSON" ] && jq --argjson forbidden "$FORBIDDEN_JSON" '
+  if jq --argjson forbidden "$FORBIDDEN_JSON" --argjson forbidden_urls "$FORBIDDEN_URLS_JSON" '
       def gate_options:
         if ([ .[] | select((type=="object") and (.value? == "merge")) ] | length) == 0 then .
         else
@@ -108,12 +161,19 @@ if [ -n "$FORBIDDEN" ]; then
             else [{label: "Done / dismiss", value: "dismiss"}] + $rest
             end
         end;
+      def pr_of:
+        if ((.source? | type) == "object") and ((.source.pr? | type) == "string")
+        then .source.pr else "" end;
       def gate:
-        if (type=="object")
-          and ((.project? | type) == "string")
-          and ((.options? | type) == "array")
-        then .project as $p
-          | if ($forbidden | index($p)) != null then .options |= gate_options else . end
+        if (type=="object") and ((.options? | type) == "array")
+        then
+          # Both names are bound BEFORE index(), whose argument is evaluated against the
+          # array being searched rather than against the item.
+          (if ((.project? | type) == "string") then .project else null end) as $p
+          | pr_of as $u
+          | ( (($p != null) and (($forbidden | index($p)) != null))
+              or (($u != "") and (($forbidden_urls | index($u)) != null)) ) as $forbid
+          | if $forbid then .options |= gate_options else . end
         else . end;
       if type=="array" then map(gate) else gate end' "$BODY_FILE" > "$BODY_FILE.gated"; then
     mv -f "$BODY_FILE.gated" "$BODY_FILE"

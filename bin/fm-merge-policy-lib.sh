@@ -85,17 +85,27 @@ FM_MERGE_POLICY_LOOKUP_WARNED=""
 # cannot address a registry line either, so there is no policy to find; refusing to cache
 # it is what keeps a crafted name from writing a record another name would then read.
 #
-# stderr is dropped because fm-project-mode.sh warns on a project it does not know, and
-# asking about one is routine here: a card can carry a project the registry never listed
-# (compose composes a minimal row for it), and that project is simply not flagged. Its
-# EXIT STATUS and its answer are read separately, though, because "could not ask" is not
-# the same fact as "asked, and the project is not flagged". Both stay permissive - a
+# The child's stderr is FILTERED, not dropped. Most of it is routine here:
+# fm-project-mode.sh warns on a project it does not know, and asking about one is normal
+# (a card can carry a project the registry never listed - compose composes a minimal row
+# for it - and that project is simply not flagged). But one line it writes is the whole
+# reason this axis is machine-read at all: its warning that a bracket token starting with
+# "+" is none of the posture flags it recognizes. Every path where the flag MATTERS
+# reaches the registry through this function, so dropping that line wholesale would let a
+# "[direct-PR +captainmerge]" typo merge in silence - the exact failure the warning was
+# added to catch, and worse than no warning at all, because it manufactures confidence
+# that the typo would have been caught. It is re-emitted; everything else stays
+# suppressed. The memo below buys one lookup per PROJECT, so the re-emission is bounded
+# per project rather than repeated once per card.
+#
+# The child's EXIT STATUS and its answer are read separately, because "could not ask" is
+# not the same fact as "asked, and the project is not flagged". Both stay permissive - a
 # missing or unexecutable sibling must never refuse merges fleet-wide, and the permissive
 # default is exactly what makes this whole axis a no-op for a fleet that declares none -
 # but a failed lookup warns once and is NOT memoized, so it stays visible and is retried
 # rather than cached as a verdict for the rest of the process.
 fm_merge_policy_project() {
-  local fm_root=${1-} fm_home=${2-} project=${3-} rest policy asked
+  local fm_root=${1-} fm_home=${2-} project=${3-} rest policy asked err_file line
   FM_MERGE_POLICY_OUT=firstmate
   [ -n "$project" ] || return 0
   case "$project" in
@@ -112,7 +122,18 @@ fm_merge_policy_project() {
   # from FM_ROOT_OVERRIDE (or from its own location) holds it in a shell variable the child
   # would never see, and the child would then read a DIFFERENT home's registry.
   asked=yes
-  policy=$(FM_HOME="$fm_home" "$fm_root/bin/fm-project-mode.sh" "$project" --merge-policy 2>/dev/null) || asked=no
+  # A temp file rather than a pipeline or a process substitution: the answer and the
+  # diagnostic both have to come back to THIS shell, and a "$(...)" that carried the
+  # stderr would run the assignment in a subshell and lose the answer with it. An
+  # unavailable temp file falls back to dropping the stream, never to failing the lookup.
+  err_file=$(mktemp "${TMPDIR:-/tmp}/fm-merge-policy.XXXXXX" 2>/dev/null) || err_file=/dev/null
+  policy=$(FM_HOME="$fm_home" "$fm_root/bin/fm-project-mode.sh" "$project" --merge-policy 2>"$err_file") || asked=no
+  while IFS= read -r line; do
+    case "$line" in
+      'warn: unrecognized posture flag'*) printf '%s\n' "$line" >&2 ;;
+    esac
+  done < "$err_file"
+  [ "$err_file" = /dev/null ] || rm -f "$err_file"
   # An answer that is neither word is no answer either: this script's stdout contract says
   # the policy query prints one of exactly two words, so anything else means the child did
   # not answer the question that was put to it.
@@ -144,20 +165,46 @@ fm_merge_forbidden_project() {
 # parses that way. One parse for both sides of the match below, so the url and the origin
 # it is compared against can never be read by two rules that drifted apart.
 #
-# A PR url is ".../<owner>/<repo>/pull/<n>"; a remote is "https://host/owner/repo[.git]"
-# or "git@host:owner/repo[.git]", whose scp-style shape leaves the "host:" prefix on
-# whichever component follows no "/" (the owner here, or the repo itself in the owner-less
-# "git@host:repo.git" form, which yields no owner at all). An owner that does not resolve
-# leaves the pair unmatchable, which is the right answer: half a name identifies nothing.
+# A PR url is ".../<owner>/<repo>/pull/<n>" with a NUMERIC <n>; a remote is
+# "https://host/owner/repo[.git]" or "git@host:owner/repo[.git]", whose scp-style shape
+# leaves the "host:" prefix on whichever component follows no "/" (the owner here, or the
+# repo itself in the owner-less "git@host:repo.git" form, which yields no owner at all).
+# An owner that does not resolve leaves the pair unmatchable, which is the right answer:
+# half a name identifies nothing.
+#
+# NOT the sole owner of this parse: bin/fm-logbook-compose.sh's pr_slug, same_repo_part,
+# and project_remote_repo answer the same "do these two name one GitHub repo" question
+# for the composer, and the two live in one process because compose sources this file.
+# Consolidating them is tracked as fm-merge-slug-one-owner (blocked on the logbook v2
+# extraction, which is proving byte-parity against today's compose and so must not move).
+# Until then the two are pinned to identical OUTCOMES by a shared input table in
+# tests/fm-logbook.test.sh, and this side is the one that yields where they differ:
+#
+#   - The numeric-<n> requirement above is compose's rule, adopted here. It is a
+#     TIGHTENING, so it does loosen this guard for a malformed PR url - ".../pull/abc"
+#     now matches no clone and forbids nothing. Nothing reaches a merge through that gap:
+#     bin/fm-pr-merge.sh's own parse_pr_url hard-rejects such a url before this is
+#     consulted, and bin/fm-logbook-push.sh only ever declines to strip a board button
+#     whose merge that same parse would refuse anyway.
+#   - The whitespace blanking below has no counterpart in compose's pr_slug, but it is
+#     mechanical rather than behavioural: compose blanks whitespace on the REMOTE side
+#     instead (project_remote_repo), and same_repo_part needs both halves, so a
+#     whitespace-bearing name matches nothing on either side.
 FM_MERGE_SLUG_OWNER=""
 FM_MERGE_SLUG_REPO=""
 fm_merge_slug() {
-  local s=${1-} rest owner_rest
+  local s=${1-} rest owner_rest num
   FM_MERGE_SLUG_OWNER=""
   FM_MERGE_SLUG_REPO=""
   [ -n "$s" ] || return 0
   case "$s" in
-    *'/pull/'*) rest=${s%'/pull/'*} ;;
+    *'/pull/'*)
+      num=${s##*'/pull/'}
+      case "$num" in
+        ''|*[!0-9]*) return 0 ;;
+      esac
+      rest=${s%'/pull/'*}
+      ;;
     *) rest=${s%.git}; rest=${rest%/} ;;
   esac
   FM_MERGE_SLUG_REPO=${rest##*/}
@@ -181,7 +228,8 @@ fm_merge_slug() {
 # case-only difference as a mismatch and let a forbidden merge through. Folding cannot
 # loosen it the other way: case-folded owner/repo names are unique on GitHub, so two that
 # fold alike ARE the same repo. An empty half never matches - it is unresolved, which
-# proves nothing.
+# proves nothing. The counterpart of bin/fm-logbook-compose.sh's same_repo_part; see
+# fm_merge_slug's header for why both still exist and what pins them together.
 fm_merge_same_part() {
   local a=${1-} b=${2-}
   [ -n "$a" ] && [ -n "$b" ] || return 1
@@ -210,6 +258,10 @@ fm_merge_same_part() {
 fm_merge_forbidden_url() {
   local fm_root=${1-} fm_home=${2-} projects_dir=${3-} url=${4-}
   local ceiling dir name origin want_owner want_repo
+  # Cleared on entry, not only on a match: the header invites callers to read this
+  # unconditionally under "set -u", and a call that matches nothing must not leave the
+  # PREVIOUS call's project name behind for a refusal message to name the wrong project.
+  FM_MERGE_FORBIDDEN_PROJECT=""
   fm_merge_slug "$url"
   want_owner=$FM_MERGE_SLUG_OWNER
   want_repo=$FM_MERGE_SLUG_REPO

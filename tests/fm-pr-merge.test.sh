@@ -1183,6 +1183,77 @@ EOF
   pass "fm-project-mode warns about an unrecognized posture flag without changing stdout"
 }
 
+test_merge_policy_surfaces_a_flag_typo_on_the_path_that_reads_it() {
+  local case_dir out
+  case_dir="$TMP_ROOT/policy-typo-surfaced"
+  mkdir -p "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- typo [direct-PR +captainmerge] - the flag the captain meant to set (added 2026-07-01)
+EOF
+  # Every path where the flag MATTERS - the board composer, the board push, both merge
+  # scripts - reaches the registry through this one function, so a diagnostic it swallows
+  # is a diagnostic that never fires where it counts. Dropping the child's stderr
+  # wholesale did exactly that, and a warning that never prints is worse than none: it
+  # manufactures confidence that a misspelled prohibition would have been caught.
+  cat > "$case_dir/drive.sh" <<'SH'
+set -eu
+root=$1 home=$2
+. "$root/bin/fm-merge-policy-lib.sh"
+fm_merge_policy_project "$root" "$home" typo
+echo "typo=$FM_MERGE_POLICY_OUT"
+fm_merge_policy_project "$root" "$home" neverlisted
+echo "absent=$FM_MERGE_POLICY_OUT"
+SH
+  out=$(bash "$case_dir/drive.sh" "$ROOT" "$case_dir" 2>"$case_dir/err")
+  case "$out" in
+    *"typo=firstmate"*) ;;
+    *) fail "typo-surfaced: a misspelled flag must stay permissive, not be guessed at"$'\n'"$out" ;;
+  esac
+  assert_grep "unrecognized posture flag" "$case_dir/err" \
+    "typo-surfaced: the misspelled posture flag must reach stderr through the policy path"
+  # And only that line: fm-project-mode.sh warns routinely about a project the registry
+  # never listed, which is normal here (a card can carry one), so the filter has to be a
+  # filter rather than a hole.
+  case "$out" in
+    *"absent=firstmate"*) ;;
+    *) fail "typo-surfaced: an unlisted project must stay permissive"$'\n'"$out" ;;
+  esac
+  assert_no_grep "not in registry" "$case_dir/err" \
+    "typo-surfaced: the routine not-in-registry noise must stay suppressed"
+  pass "fm-merge-policy-lib surfaces an unrecognized posture flag and nothing else"
+}
+
+test_forbidden_url_clears_its_project_between_calls() {
+  local case_dir out
+  case_dir="$TMP_ROOT/policy-url-global"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  # FM_MERGE_FORBIDDEN_PROJECT is documented as safe to read unconditionally, which is
+  # exactly the read that would otherwise pick up the PREVIOUS call's project and print a
+  # refusal naming the wrong one.
+  cat > "$case_dir/drive.sh" <<'SH'
+set -eu
+root=$1 home=$2
+. "$root/bin/fm-merge-policy-lib.sh"
+fm_merge_forbidden_url "$root" "$home" "$home/projects" https://github.com/acme/guarded/pull/7 \
+  && echo "matched=$FM_MERGE_FORBIDDEN_PROJECT"
+fm_merge_forbidden_url "$root" "$home" "$home/projects" https://github.com/acme/stranger/pull/9 \
+  || echo "after=[$FM_MERGE_FORBIDDEN_PROJECT]"
+SH
+  out=$(bash "$case_dir/drive.sh" "$ROOT" "$case_dir" 2>/dev/null)
+  case "$out" in
+    *"matched=guarded"*) ;;
+    *) fail "url-global: a match must still name the project it is protecting"$'\n'"$out" ;;
+  esac
+  case "$out" in
+    *"after=[]"*) ;;
+    *) fail "url-global: a non-matching call must not leave the previous project behind"$'\n'"$out" ;;
+  esac
+  pass "fm_merge_forbidden_url clears its project name on entry, never leaving a stale one"
+}
+
 test_merge_policy_lookup_failure_warns_once_and_is_not_cached() {
   local case_dir out warns
   case_dir="$TMP_ROOT/policy-lookup-failure"
@@ -1249,4 +1320,6 @@ test_merge_policy_leaves_an_unflagged_project_merging
 test_captain_merge_refuses_the_local_merge_too
 test_merge_policy_leaves_an_unflagged_local_merge_working
 test_unknown_posture_flag_warns_without_changing_stdout
+test_merge_policy_surfaces_a_flag_typo_on_the_path_that_reads_it
+test_forbidden_url_clears_its_project_between_calls
 test_merge_policy_lookup_failure_warns_once_and_is_not_cached

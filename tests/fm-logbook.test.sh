@@ -2024,6 +2024,109 @@ test_push_gates_every_item_of_a_mixed_array() {
   pass "fm-logbook-push gates each item of an array body independently"
 }
 
+test_push_strips_merge_read_from_the_url_when_the_item_names_no_project() {
+  local home rc recorded
+  home="$TMP_ROOT/push-policy-url"; write_merge_policy_fixture "$home" " +captain-merge"
+  # The board's item schema treats "project" as OPTIONAL, and this is the HAND-composed
+  # write path, so a rich card written without one would walk straight past a
+  # project-only gate carrying the very button compose withheld. The url is the thing
+  # that button would act on, so it gets its own say: either signal forbidding strips.
+  printf '{"id":"guard-b2","kind":"action","title":"Schema work is ready","body":"Yours to merge.","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}],"source":{"task":"guard-b2","pr":"https://github.com/acme/guarded/pull/7"}}' \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a project-less card must still be delivered, never refused"
+  recorded="$home/state/logbook-outbox/items.json"
+  jq -e '.options == [{"label":"Done / dismiss","value":"dismiss"},{"label":"Hold","value":"hold"}]' "$recorded" >/dev/null \
+    || fail "the PR url alone must strip a forbidden Merge"$'\n'"$(cat "$recorded")"
+  jq -e '(.id=="guard-b2") and (has("project") | not)
+      and (.source.pr=="https://github.com/acme/guarded/pull/7")' "$recorded" >/dev/null \
+    || fail "the url gate must leave every other field alone"$'\n'"$(cat "$recorded")"
+  assert_grep "captain-merge" "$home/err" "the url gate must say what it stripped and why"
+  # Control: the same shape for the unflagged project resolves through the same scan and
+  # keeps its Merge, so the url signal cannot be a fleet-wide strip wearing a url.
+  printf '{"id":"open-a1","kind":"action","title":"Widget is ready","body":"Yours to merge.","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}],"source":{"task":"open-a1","pr":"https://github.com/acme/open/pull/42"}}' \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null \
+    || fail "a project-less card for an unflagged project must succeed"
+  jq -e '[.options[].value] | index("merge") != null' "$recorded" >/dev/null \
+    || fail "a PR belonging to an unflagged project must keep its Merge"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push strips a forbidden Merge from the PR url when the item names no project"
+}
+
+# slug_agreement_rows: the shared input table that pins bin/fm-merge-policy-lib.sh's
+# owner/repo parse (fm_merge_slug, fm_merge_same_part, fm_merge_forbidden_url's origin
+# scan) to bin/fm-logbook-compose.sh's (pr_slug, same_repo_part, project_remote_repo).
+# Two implementations of one question live in one process because compose sources the
+# lib; consolidating them is tracked as fm-merge-slug-one-owner, and until then the next
+# divergence has to fail the suite rather than be found in a review. Each row is
+# "<project>|<clone origin>|<PR url>", covering the shapes the two parses have to agree
+# on: the plain form, scp-style, case folding, a foreign owner, a non-numeric PR number
+# (where they HAD diverged), an owner-less remote, and a remote with no ".git" suffix.
+slug_agreement_rows() {
+  cat <<'EOF'
+exact|https://github.com/acme/exact.git|https://github.com/acme/exact/pull/1
+scpform|git@github.com:acme/scpform.git|https://github.com/acme/scpform/pull/2
+casefold|https://github.com/schokoshake/casefold.git|https://github.com/SchokoShake/CaseFold/pull/3
+otherowner|https://github.com/acme/otherowner.git|https://github.com/notacme/otherowner/pull/4
+nonnumeric|https://github.com/acme/nonnumeric.git|https://github.com/acme/nonnumeric/pull/abc
+ownerless|git@github.com:ownerless.git|https://github.com/acme/ownerless/pull/6
+plainform|https://github.com/acme/plainform/|https://github.com/acme/plainform/pull/7
+EOF
+}
+
+# write_slug_agreement_fixture <home> <posture>: one clone and one review-ready task per
+# table row, so the SAME inputs reach both parses. The posture is what lets each side be
+# read: unflagged, compose's Merge option says whether it matched; flagged,
+# fm_merge_forbidden_url returns 0 only when the lib matched.
+write_slug_agreement_fixture() {
+  local home=$1 posture=$2
+  mkdir -p "$home/data" "$home/state" "$home/projects"
+  printf '# Fleet project registry (firstmate-private)\n\n' > "$home/data/projects.md"
+  printf '# Backlog\n\n## In flight\n' > "$home/data/backlog.md"
+  slug_agreement_rows | while IFS='|' read -r project origin url; do
+    [ -n "$project" ] || continue
+    printf -- '- %s [direct-PR%s] - one row of the slug table (added 2026-07-01)\n' \
+      "$project" "$posture" >> "$home/data/projects.md"
+    printf -- '- [ ] %s-r - Ship the %s row %s (repo: %s) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)\n' \
+      "$project" "$project" "$url" "$project" >> "$home/data/backlog.md"
+    git init -q "$home/projects/$project"
+    git -C "$home/projects/$project" remote add origin "$origin"
+  done
+}
+
+test_merge_policy_slug_agrees_with_compose() {
+  local plain flagged out project origin url compose_says lib_says matched unmatched
+  plain="$TMP_ROOT/slug-agree-plain";     write_slug_agreement_fixture "$plain" ""
+  flagged="$TMP_ROOT/slug-agree-flagged"; write_slug_agreement_fixture "$flagged" " +captain-merge"
+  out=$(PATH="$BASE_PATH" FM_HOME="$plain" LOGBOOK_ENABLE=1 "$ROOT/bin/fm-logbook-compose.sh")
+  matched=0
+  unmatched=0
+  while IFS='|' read -r project origin url; do
+    [ -n "$project" ] || continue
+    if printf '%s' "$out" | jq -e --arg id "$project-r" \
+      '.items[] | select(.id==$id) | ([.options[].value] | index("merge") != null)' >/dev/null; then
+      compose_says=match
+      matched=$((matched + 1))
+    else
+      compose_says=no-match
+      unmatched=$((unmatched + 1))
+    fi
+    if PATH="$BASE_PATH" bash -c \
+      '. "$1/bin/fm-merge-policy-lib.sh"; fm_merge_forbidden_url "$1" "$2" "$2/projects" "$3"' \
+      _ "$ROOT" "$flagged" "$url"; then
+      lib_says=match
+    else
+      lib_says=no-match
+    fi
+    [ "$compose_says" = "$lib_says" ] \
+      || fail "the two owner/repo parses disagree on $project ($origin vs $url): compose says $compose_says, the policy library says $lib_says"
+  done < <(slug_agreement_rows)
+  # A table that matched everything, or nothing, would agree vacuously.
+  [ "$matched" -gt 0 ] && [ "$unmatched" -gt 0 ] \
+    || fail "the slug table must exercise both outcomes (matched $matched, unmatched $unmatched)"
+  pass "fm-merge-policy-lib and fm-logbook-compose read one owner/repo the same way"
+}
+
 test_compose_never_writes_to_a_project_clone() {
   local home out before after
   home="$TMP_ROOT/compose-remote-readonly"; write_remote_fixture "$home"
@@ -2660,6 +2763,8 @@ test_compose_captain_merge_is_not_relaxed_by_yolo
 test_push_strips_merge_for_a_captain_merge_project
 test_push_merge_policy_leaves_other_projects_byte_identical
 test_push_gates_every_item_of_a_mixed_array
+test_push_strips_merge_read_from_the_url_when_the_item_names_no_project
+test_merge_policy_slug_agrees_with_compose
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge
 test_compose_blocked_by_is_not_a_merge

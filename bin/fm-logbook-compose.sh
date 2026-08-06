@@ -240,10 +240,17 @@ pr_url_ok() {
 
 # pr_slug <url>: sets PR_OWNER_OUT and PR_REPO_OUT to the "<owner>" and "<repo>" path
 # components of a .../<owner>/<repo>/pull/<n> url; both empty when the url does not parse
-# that way. The single owner of this parse: both the label the captain reads and the
-# owner/repo the Merge gate checks are the same two halves of one safety story, so they
-# must never drift apart. It answers through globals rather than stdout because the gate
-# needs BOTH halves and a "$(...)" reader could carry only one back out of its subshell.
+# that way. The owner of this parse WITHIN this composer: both the label the captain reads
+# and the owner/repo the Merge gate checks are the same two halves of one safety story, so
+# they must never drift apart. It answers through globals rather than stdout because the
+# gate needs BOTH halves and a "$(...)" reader could carry only one back out of its
+# subshell.
+#
+# bin/fm-merge-policy-lib.sh (sourced above) carries a second implementation of the same
+# match in fm_merge_slug/fm_merge_same_part, for the merge paths that have no composer.
+# Consolidating the two is tracked as fm-merge-slug-one-owner; until then the lib's header
+# records that it yields to THIS one wherever they differ, and a shared input table in
+# tests/fm-logbook.test.sh fails the suite if the two ever disagree again.
 #
 # The repo is set even when no owner resolves, because the two halves are owed to
 # different callers: the label needs only the repo, while the gate demands both and reads
