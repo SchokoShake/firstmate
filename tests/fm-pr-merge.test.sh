@@ -41,14 +41,16 @@
 #       merge and before any recording of it
 #   (n) the same refusal from the PR url alone, which is what a stale card, a replayed
 #       answer, or a hand-typed request still carries once the task is torn down - in
-#       EVERY url shape parse_pr_url accepts, since a shape the guard cannot read is the
-#       one that walks past it into gh-axi
+#       EVERY url shape parse_pr_url accepts, and against every clone-origin shape a
+#       "git clone" records, since a shape the guard cannot read on either side is the one
+#       that walks past it into gh-axi
 #   (o) a project WITHOUT the flag merges exactly as before, in a home where another
 #       project carries it
 #   (p) the same flag refuses bin/fm-merge-local.sh's local-only merge - firstmate's OTHER
 #       merge path - and leaves an unflagged local-only merge landing as before
-#   (q) a MALFORMED posture flag - misspelled, or missing its leading "+" - is reported on
-#       stderr rather than silently ignored and is never honored as the flag, without
+#   (q) a MALFORMED posture flag - misspelled, missing its leading "+", or written where
+#       the mode goes - is reported on stderr rather than silently ignored, survives the
+#       policy library's stderr filter, and is never honored as the flag, without
 #       disturbing either stdout contract callers string-compare
 #   (r) a merge policy that could not be READ stays permissive, warns once, and is
 #       retried rather than cached as a verdict
@@ -1327,6 +1329,91 @@ SH
   pass "fm-project-mode reports a posture flag missing its \"+\" through the path that reads it"
 }
 
+test_posture_flag_written_where_the_mode_goes_is_reported_too() {
+  local case_dir out rc warns
+  case_dir=$(make_case policy-flag-sole-token)
+  mkdir -p "$case_dir/wt" "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- guarded [captain-merge] - the flag written where the mode goes (added 2026-07-01)
+EOF
+  # The third way of writing a prohibition that never binds, and the easiest: a posture
+  # flag as the SOLE bracket token never reaches the posture-flag diagnostic at all,
+  # because the first position is the mode - so it is reported as an unknown mode
+  # instead. Both stdout contracts hold: the unknown mode resets to the default pair, and
+  # the malformed token is not honored as the flag it was meant to be.
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" guarded 2>"$case_dir/mode.err")
+  [ "$out" = "no-mistakes off" ] \
+    || fail "flag-sole-token: an unknown mode must still reset to the default pair, got \"$out\""
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" guarded --merge-policy 2>/dev/null)
+  [ "$out" = "firstmate" ] \
+    || fail "flag-sole-token: a malformed token must not be honored as the flag, got \"$out\""
+
+  # End to end through a real merge path, because that is where the diagnostic has to
+  # fire: fm_merge_policy_project FILTERS its child's stderr, and this warning was being
+  # dropped by it - so the board composer, the board push, and both merge scripts all saw
+  # "firstmate" with nothing said at all. Reported, and still never honored: the merge
+  # itself must go through exactly as the line actually reads.
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" \
+    "project=$case_dir/projects/guarded" "kind=ship" "mode=direct-PR"
+  add_gh_mocks "$case_dir" 9999999999999999999999999999999999999999
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/acme/guarded/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "flag-sole-token: a malformed token must stay permissive, not be guessed at"
+  grep -qxF 'pr merge 7 --repo acme/guarded --squash' "$case_dir/gh-axi.log" \
+    || fail "flag-sole-token: the merge the line actually permits must still reach gh-axi"
+  assert_grep "unknown mode" "$case_dir/stderr" \
+    "flag-sole-token: the diagnostic must survive the policy library's stderr filter"
+  # Both signals ask about this one project, so an unmemoized re-emission would say it
+  # twice here and once per card on a board.
+  warns=$(grep -c "unknown mode" "$case_dir/stderr")
+  [ "$warns" = 1 ] \
+    || fail "flag-sole-token: the diagnostic must stay bounded to once per project (got $warns)"
+  pass "fm-merge-policy-lib surfaces a posture flag written where the mode goes"
+}
+
+test_captain_merge_origin_shapes_are_traced_to_their_clone() {
+  local case_dir rc origin
+  # The origin side of the same rule the url shapes above cover: an origin this guard
+  # cannot resolve is a clone it cannot trace a merge to, so the merge is PERMITTED - on
+  # the torn-down, pruned task where the url is the only signal left. ".git/" is what
+  # "git clone https://github.com/acme/guarded.git/ projects/guarded" records verbatim,
+  # and stripping the ".git" before the trailing "/" never reached it, leaving the clone
+  # claiming the repo "guarded.git" and matching no PR url at all.
+  for origin in https://github.com/acme/guarded.git/ \
+                https://github.com/acme/guarded/ \
+                git@github.com:acme/guarded.git/; do
+    case_dir="$TMP_ROOT/policy-origin-shape-$(printf '%s' "$origin" | tr -c 'a-zA-Z0-9' '-')"
+    mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/fakebin"
+    write_merge_policy_registry "$case_dir" " +captain-merge"
+    clone_with_origin "$case_dir" guarded "$origin"
+    add_gh_mocks "$case_dir" 5555555555555555555555555555555555555555
+    : > "$case_dir/gh-axi.log"
+
+    set +e
+    run_pr_merge "$case_dir" ghost-z7 https://github.com/acme/guarded/pull/7 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "policy-origin-shape: the clone at $origin must still be traced"
+    assert_grep "own origin" "$case_dir/stderr" \
+      "policy-origin-shape: $origin must be refused on the clone's origin, the only signal it carries"
+    grep -q 'pr merge' "$case_dir/gh-axi.log" \
+      && fail "policy-origin-shape: $origin must never reach gh-axi pr merge"
+  done
+  pass "fm-pr-merge traces a clone whose origin carries a trailing slash, with or without \".git\""
+}
+
 test_forbidden_url_clears_its_project_between_calls() {
   local case_dir out
   case_dir="$TMP_ROOT/policy-url-global"
@@ -1425,5 +1512,7 @@ test_merge_policy_leaves_an_unflagged_local_merge_working
 test_unknown_posture_flag_warns_without_changing_stdout
 test_merge_policy_surfaces_a_flag_typo_on_the_path_that_reads_it
 test_posture_flag_missing_its_plus_is_reported_too
+test_posture_flag_written_where_the_mode_goes_is_reported_too
+test_captain_merge_origin_shapes_are_traced_to_their_clone
 test_forbidden_url_clears_its_project_between_calls
 test_merge_policy_lookup_failure_warns_once_and_is_not_cached

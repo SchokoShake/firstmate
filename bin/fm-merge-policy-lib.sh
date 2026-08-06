@@ -85,18 +85,34 @@ FM_MERGE_POLICY_LOOKUP_WARNED=""
 # cannot address a registry line either, so there is no policy to find; refusing to cache
 # it is what keeps a crafted name from writing a record another name would then read.
 #
-# The child's stderr is FILTERED, not dropped. Most of it is routine here:
-# fm-project-mode.sh warns on a project it does not know, and asking about one is normal
-# (a card can carry a project the registry never listed - compose composes a minimal row
-# for it - and that project is simply not flagged). But one line it writes is the whole
-# reason this axis is machine-read at all: its warning that a bracket token past the mode
-# is none of the posture flags it recognizes. Every path where the flag MATTERS reaches
-# the registry through this function, so dropping that line wholesale would let a
-# "[direct-PR +captainmerge]" or "[direct-PR captain-merge]" typo merge in silence - the
-# exact failure the warning was added to catch, and worse than no warning at all, because
-# it manufactures confidence that the typo would have been caught. It is re-emitted;
-# everything else stays suppressed. The memo below buys one lookup per PROJECT, so the
-# re-emission is bounded per project rather than repeated once per card.
+# The child's stderr is FILTERED, not dropped, and the two kinds of line it writes divide
+# on exactly the question this function is asking:
+#
+#   The registry line is MALFORMED. Re-emitted, both shapes of it: a bracket token past
+#   the mode that is none of the posture flags, and a mode that is none of the three
+#   delivery modes. Every path where the flag MATTERS reaches the registry through this
+#   function, so dropping those wholesale lets a mistyped prohibition merge in silence -
+#   the exact failure the warnings were added to catch, and worse than no warning at all,
+#   because it manufactures confidence that the typo would have been caught. All three
+#   ways of writing "+captain-merge" wrong land in one of the two: "[direct-PR
+#   +captainmerge]" and "[direct-PR captain-merge]" as unrecognized posture flags, and
+#   "[captain-merge]" as an unknown mode - the first bracket position is the mode, so a
+#   posture flag written as the SOLE token is read as one and never reaches the posture
+#   diagnostic at all. That last is why the mode warning belongs here too, and it is the
+#   easiest of the three to write.
+#
+#   There is NO line - the project is not in the registry, or there is no registry at
+#   all. Suppressed, because asking about such a project is routine here: a card can
+#   carry one the registry never listed (compose composes a minimal row for it), and that
+#   project is simply not flagged. That noise is the whole reason this is a filter rather
+#   than a bare passthrough.
+#
+# Neither malformed shape is ever HONORED - bin/fm-project-mode.sh reports it and leaves
+# the policy exactly as permissive as the line actually reads, because a prohibition
+# guessed at from a typo would be its own failure - so the re-emitted warning is the only
+# thing standing between a mistyped prohibition and a silent merge. The memo below buys
+# one lookup per PROJECT, so the re-emission is bounded per project rather than repeated
+# once per card.
 #
 # The child's EXIT STATUS and its answer are read separately, because "could not ask" is
 # not the same fact as "asked, and the project is not flagged". Both stay permissive - a
@@ -130,7 +146,7 @@ fm_merge_policy_project() {
   policy=$(FM_HOME="$fm_home" "$fm_root/bin/fm-project-mode.sh" "$project" --merge-policy 2>"$err_file") || asked=no
   while IFS= read -r line; do
     case "$line" in
-      'warn: unrecognized posture flag'*) printf '%s\n' "$line" >&2 ;;
+      'warn: unrecognized posture flag'*|'warn: unknown mode'*) printf '%s\n' "$line" >&2 ;;
     esac
   done < "$err_file"
   [ "$err_file" = /dev/null ] || rm -f "$err_file"
@@ -205,13 +221,24 @@ fm_merge_forbidden_project() {
 #     a flagged clone - whereas making them agree by narrowing this one is what opened the
 #     bypass above. compose is not widened to match: bin/fm-logbook-compose.sh's output is
 #     pinned byte-for-byte while the logbook v2 extraction proves parity against it, and
-#     tolerating either form there would newly offer a Merge button. The shared table in
-#     tests/fm-logbook.test.sh therefore pins the shapes both sides DO read alike, and the
-#     trailing-slash refusal is pinned end to end in tests/fm-pr-merge.test.sh instead.
+#     tolerating either form there would newly offer a Merge button.
+#   - The REMOTE side diverges the same way and for the same reason: an origin ending
+#     ".git/" resolves here to "acme/guarded" and in compose's project_remote_repo to
+#     "acme/guarded.git", which matches no PR url. Order is the whole difference - the
+#     trailing "/" has to come off before the ".git" behind it - and getting it wrong on
+#     THIS side is fail-open, because an origin the guard cannot resolve is a clone it
+#     cannot trace a merge to.
 #   - The whitespace blanking below has no counterpart in compose's pr_slug, but it is
 #     mechanical rather than behavioural: compose blanks whitespace on the REMOTE side
 #     instead (project_remote_repo), and same_repo_part needs both halves, so a
 #     whitespace-bearing name matches nothing on either side.
+#
+# The shared table carries every one of those shapes: the ones both sides read alike are
+# pinned as agreements, and each divergence is pinned as a DECLARED one that asserts its
+# direction, so narrowing this side back to compose's fails the suite rather than
+# silently reopening a bypass. The two wider url forms and the ".git/" origin are pinned
+# end to end in tests/fm-pr-merge.test.sh as well, since the refusal is the property that
+# actually matters.
 FM_MERGE_SLUG_OWNER=""
 FM_MERGE_SLUG_REPO=""
 fm_merge_slug() {
@@ -235,7 +262,12 @@ fm_merge_slug() {
       # spurious mismatch that permits the merge.
       rest=${rest%.git}
       ;;
-    *) rest=${s%.git}; rest=${rest%/} ;;
+    # The trailing "/" comes off FIRST, or a ".git" sitting behind one is never reached:
+    # an origin of "https://github.com/acme/guarded.git/" - what "git clone
+    # https://github.com/acme/guarded.git/" records verbatim - would resolve to the repo
+    # "guarded.git", which matches no PR url, leaving the clone claiming nothing and the
+    # merge permitted.
+    *) rest=${s%/}; rest=${rest%.git} ;;
   esac
   FM_MERGE_SLUG_REPO=${rest##*/}
   FM_MERGE_SLUG_REPO=${FM_MERGE_SLUG_REPO##*:}

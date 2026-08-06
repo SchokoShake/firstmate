@@ -2157,19 +2157,33 @@ SH
 # scan) to bin/fm-logbook-compose.sh's (pr_slug, same_repo_part, project_remote_repo).
 # Two implementations of one question live in one process because compose sources the
 # lib; consolidating them is tracked as fm-merge-slug-one-owner, and until then the next
-# divergence has to fail the suite rather than be found in a review. Each row is
-# "<project>|<clone origin>|<PR url>", covering the shapes the two parses have to agree
-# on: the plain form, scp-style, case folding, a foreign owner, a non-numeric PR number
-# (where they HAD diverged), an owner-less remote, and a remote with no ".git" suffix.
+# divergence has to fail the suite rather than be found in a review.
+#
+# Each row is "<project>|<clone origin>|<PR url>|<expected>", where <expected> is:
+#
+#   same       both parses must answer alike. The plain form, scp-style, case folding, a
+#              foreign owner, a non-numeric PR number (where they HAD diverged), an
+#              owner-less remote, and a remote with no ".git" suffix.
+#   lib-wider  the library resolves a shape compose does not, DELIBERATELY. Each side
+#              fails closed in its own currency - compose withholds a button it cannot
+#              verify, the library refuses a merge it can trace to a flagged clone - so
+#              only this direction is safe, and compose is not widened to match because
+#              its output is pinned byte-for-byte while the logbook v2 extraction proves
+#              parity against it. Asserting the DIRECTION is the point: the library
+#              reading less than compose is what a fail-open bypass looks like, and every
+#              one of these rows is a bypass that was once open.
 slug_agreement_rows() {
   cat <<'EOF'
-exact|https://github.com/acme/exact.git|https://github.com/acme/exact/pull/1
-scpform|git@github.com:acme/scpform.git|https://github.com/acme/scpform/pull/2
-casefold|https://github.com/schokoshake/casefold.git|https://github.com/SchokoShake/CaseFold/pull/3
-otherowner|https://github.com/acme/otherowner.git|https://github.com/notacme/otherowner/pull/4
-nonnumeric|https://github.com/acme/nonnumeric.git|https://github.com/acme/nonnumeric/pull/abc
-ownerless|git@github.com:ownerless.git|https://github.com/acme/ownerless/pull/6
-plainform|https://github.com/acme/plainform/|https://github.com/acme/plainform/pull/7
+exact|https://github.com/acme/exact.git|https://github.com/acme/exact/pull/1|same
+scpform|git@github.com:acme/scpform.git|https://github.com/acme/scpform/pull/2|same
+casefold|https://github.com/schokoshake/casefold.git|https://github.com/SchokoShake/CaseFold/pull/3|same
+otherowner|https://github.com/acme/otherowner.git|https://github.com/notacme/otherowner/pull/4|same
+nonnumeric|https://github.com/acme/nonnumeric.git|https://github.com/acme/nonnumeric/pull/abc|same
+ownerless|git@github.com:ownerless.git|https://github.com/acme/ownerless/pull/6|same
+plainform|https://github.com/acme/plainform/|https://github.com/acme/plainform/pull/7|same
+urlslash|https://github.com/acme/urlslash.git|https://github.com/acme/urlslash/pull/8/|lib-wider
+urldotgit|https://github.com/acme/urldotgit.git|https://github.com/acme/urldotgit.git/pull/9|lib-wider
+origindotgitslash|https://github.com/acme/origindotgitslash.git/|https://github.com/acme/origindotgitslash/pull/10|lib-wider
 EOF
 }
 
@@ -2182,7 +2196,7 @@ write_slug_agreement_fixture() {
   mkdir -p "$home/data" "$home/state" "$home/projects"
   printf '# Fleet project registry (firstmate-private)\n\n' > "$home/data/projects.md"
   printf '# Backlog\n\n## In flight\n' > "$home/data/backlog.md"
-  slug_agreement_rows | while IFS='|' read -r project origin url; do
+  slug_agreement_rows | while IFS='|' read -r project origin url expected; do
     [ -n "$project" ] || continue
     printf -- '- %s [direct-PR%s] - one row of the slug table (added 2026-07-01)\n' \
       "$project" "$posture" >> "$home/data/projects.md"
@@ -2194,21 +2208,21 @@ write_slug_agreement_fixture() {
 }
 
 test_merge_policy_slug_agrees_with_compose() {
-  local plain flagged out project origin url compose_says lib_says matched unmatched
+  local plain flagged out project origin url expected compose_says lib_says
+  local matched unmatched declared
   plain="$TMP_ROOT/slug-agree-plain";     write_slug_agreement_fixture "$plain" ""
   flagged="$TMP_ROOT/slug-agree-flagged"; write_slug_agreement_fixture "$flagged" " +captain-merge"
   out=$(PATH="$BASE_PATH" FM_HOME="$plain" LOGBOOK_ENABLE=1 "$ROOT/bin/fm-logbook-compose.sh")
   matched=0
   unmatched=0
-  while IFS='|' read -r project origin url; do
+  declared=0
+  while IFS='|' read -r project origin url expected; do
     [ -n "$project" ] || continue
     if printf '%s' "$out" | jq -e --arg id "$project-r" \
       '.items[] | select(.id==$id) | ([.options[].value] | index("merge") != null)' >/dev/null; then
       compose_says=match
-      matched=$((matched + 1))
     else
       compose_says=no-match
-      unmatched=$((unmatched + 1))
     fi
     if PATH="$BASE_PATH" bash -c \
       '. "$1/bin/fm-merge-policy-lib.sh"; fm_merge_forbidden_url "$1" "$2" "$2/projects" "$3"' \
@@ -2217,12 +2231,33 @@ test_merge_policy_slug_agrees_with_compose() {
     else
       lib_says=no-match
     fi
-    [ "$compose_says" = "$lib_says" ] \
-      || fail "the two owner/repo parses disagree on $project ($origin vs $url): compose says $compose_says, the policy library says $lib_says"
+    case "$expected" in
+      same)
+        [ "$compose_says" = "$lib_says" ] \
+          || fail "the two owner/repo parses disagree on $project ($origin vs $url): compose says $compose_says, the policy library says $lib_says"
+        if [ "$compose_says" = match ]; then matched=$((matched + 1)); else unmatched=$((unmatched + 1)); fi
+        ;;
+      lib-wider)
+        declared=$((declared + 1))
+        # The library must resolve it: this row's shape is a merge the guard has to be
+        # able to trace, and each of them has walked past it before.
+        [ "$lib_says" = match ] \
+          || fail "the policy library no longer resolves $project ($origin vs $url), which permits the merge it exists to refuse"
+        # And compose must still not: a row that has stopped diverging is one that belongs
+        # in the agreement half of the table, not one to keep asserting a divergence for.
+        [ "$compose_says" = no-match ] \
+          || fail "compose now resolves $project ($origin vs $url) too; move that row to \"same\""
+        ;;
+      *)
+        fail "the slug table row for $project declares an unknown expectation \"$expected\""
+        ;;
+    esac
   done < <(slug_agreement_rows)
-  # A table that matched everything, or nothing, would agree vacuously.
+  # A table that matched everything, or nothing, would agree vacuously - and one carrying
+  # no declared divergence would stop guarding the direction they are allowed to take.
   [ "$matched" -gt 0 ] && [ "$unmatched" -gt 0 ] \
     || fail "the slug table must exercise both outcomes (matched $matched, unmatched $unmatched)"
+  [ "$declared" -gt 0 ] || fail "the slug table must still carry its declared divergences"
   pass "fm-merge-policy-lib and fm-logbook-compose read one owner/repo the same way"
 }
 
