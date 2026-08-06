@@ -300,26 +300,72 @@ fm_merge_same_part() {
     "$(printf '%s' "$b" | tr '[:upper:]' '[:lower:]')" ]
 }
 
+# The scanned clones, as newline-terminated "<project>\t<owner>\t<repo>" records, and the
+# resolved projects/ they were read from. A process asking about several urls - the array
+# upsert in bin/fm-logbook-push.sh loops over every unsettled merge url it carries - asked
+# git for the same origins once per URL before this, when what an origin names cannot
+# change under it mid-run. Memoized for the same reason fm_merge_policy_project is, in the
+# same shape and for the same bash 3.2 reason: no "declare -A", which would abort a
+# sourcing script under "set -e". The ceiling doubles as the cache key, so a caller passing
+# a different projects/ rescans rather than reading another directory's answers; empty
+# means nothing has been scanned yet, which no resolved ceiling ever is.
+FM_MERGE_ORIGIN_SEP=$'\t'
+FM_MERGE_ORIGIN_EOR=$'\n'
+FM_MERGE_ORIGIN_CEILING=""
+FM_MERGE_ORIGIN_CACHE=""
+
+# fm_merge_origin_scan <projects-dir> <ceiling>: fill FM_MERGE_ORIGIN_CACHE with one record
+# per clone under <projects-dir> whose "origin" resolves, unless it already holds that
+# directory's scan.
+#
+# Discovery is BOUNDED at the ceiling, because git otherwise walks UP from its "-C"
+# directory until it finds a repo: a projects/<name> that is not a clone would answer with
+# the ENCLOSING repo's origin, and in the shipped layout that enclosure is firstmate's own
+# checkout (FM_HOME is a git repo; gitignoring projects/ does not stop discovery). Every
+# non-clone directory would then answer with firstmate's own repo - so were firstmate
+# itself flagged, one stray directory would refuse every merge in the fleet. Strictly
+# READ-ONLY inside projects/ (prime directive 1): "remote get-url" reads config and touches
+# no ref, index, or worktree.
+#
+# A directory name carrying the record separators cannot be stored unambiguously and is
+# skipped. That loses nothing: such a name is one fm_merge_policy_project already answers
+# "firstmate" without a lookup, precisely because it cannot key the memo either, so a
+# record for it could never have forbidden anything.
+fm_merge_origin_scan() {
+  local projects_dir=${1-} ceiling=${2-} dir name origin
+  [ "$FM_MERGE_ORIGIN_CEILING" != "$ceiling" ] || return 0
+  FM_MERGE_ORIGIN_CACHE=""
+  for dir in "$projects_dir"/*; do
+    [ -d "$dir" ] || continue
+    name=$(basename "$dir")
+    case "$name" in
+      ''|*"$FM_MERGE_ORIGIN_SEP"*|*"$FM_MERGE_ORIGIN_EOR"*) continue ;;
+    esac
+    origin=$(GIT_CEILING_DIRECTORIES="$ceiling" git -C "$dir" remote get-url origin 2>/dev/null) || continue
+    [ -n "$origin" ] || continue
+    # Parsed once here rather than per lookup: fm_merge_slug blanks any owner or repo
+    # carrying whitespace, and the separators are whitespace, so the stored fields can
+    # never break the record shape they are written into.
+    fm_merge_slug "$origin"
+    FM_MERGE_ORIGIN_CACHE=$FM_MERGE_ORIGIN_CACHE$name$FM_MERGE_ORIGIN_SEP$FM_MERGE_SLUG_OWNER$FM_MERGE_ORIGIN_SEP$FM_MERGE_SLUG_REPO$FM_MERGE_ORIGIN_EOR
+  done
+  FM_MERGE_ORIGIN_CEILING=$ceiling
+  return 0
+}
+
 # fm_merge_forbidden_url <fm-root> <fm-home> <projects-dir> <pr-url>: succeed when the url
 # names the repo a clone under <projects-dir> pushes to AND that clone's project is one
 # firstmate must not merge. Fails (permits) when the url parses to no owner/repo, when no
 # clone claims it, or when the clone that does is not flagged - an unmatched url is simply
 # a repo this home cannot speak for, not a licence, and signal 1 has already had its say.
 #
-# Discovery is BOUNDED at <projects-dir>, because git otherwise walks UP from its "-C"
-# directory until it finds a repo: a projects/<name> that is not a clone would answer with
-# the ENCLOSING repo's origin, and in the shipped layout that enclosure is firstmate's own
-# checkout (FM_HOME is a git repo; gitignoring projects/ does not stop discovery). Every
-# non-clone directory would then answer with firstmate's own repo - so were firstmate
-# itself flagged, one stray directory would refuse every merge in the fleet. The ceiling
-# must be the PHYSICAL path (git compares it against its own getcwd, which resolves
-# symlinks) and must be absolute (git ignores a relative entry); an unresolvable
+# The ceiling must be the PHYSICAL path (git compares it against its own getcwd, which
+# resolves symlinks) and must be absolute (git ignores a relative entry); an unresolvable
 # projects/ leaves it empty and skips the scan, since no clone can live under a dir that
-# will not open. Strictly READ-ONLY inside projects/ (prime directive 1): "remote get-url"
-# reads config and touches no ref, index, or worktree.
+# will not open.
 fm_merge_forbidden_url() {
   local fm_root=${1-} fm_home=${2-} projects_dir=${3-} url=${4-}
-  local ceiling dir name origin want_owner want_repo
+  local ceiling rest record fields name owner repo want_owner want_repo
   # Cleared on entry, not only on a match: the header invites callers to read this
   # unconditionally under "set -u", and a call that matches nothing must not leave the
   # PREVIOUS call's project name behind for a refusal message to name the wrong project.
@@ -331,14 +377,24 @@ fm_merge_forbidden_url() {
   [ -n "$projects_dir" ] && [ -d "$projects_dir" ] || return 1
   ceiling=$(cd "$projects_dir" 2>/dev/null && pwd -P) || return 1
   [ -n "$ceiling" ] || return 1
-  for dir in "$projects_dir"/*; do
-    [ -d "$dir" ] || continue
-    name=$(basename "$dir")
-    origin=$(GIT_CEILING_DIRECTORIES="$ceiling" git -C "$dir" remote get-url origin 2>/dev/null) || continue
-    [ -n "$origin" ] || continue
-    fm_merge_slug "$origin"
-    fm_merge_same_part "$want_owner" "$FM_MERGE_SLUG_OWNER" || continue
-    fm_merge_same_part "$want_repo" "$FM_MERGE_SLUG_REPO" || continue
+  fm_merge_origin_scan "$projects_dir" "$ceiling"
+  rest=$FM_MERGE_ORIGIN_CACHE
+  while [ -n "$rest" ]; do
+    # Every record the scan writes is terminated, so an unterminated tail is not a record
+    # at all; stopping keeps a malformed cache from spinning here forever.
+    case "$rest" in
+      *"$FM_MERGE_ORIGIN_EOR"*) ;;
+      *) break ;;
+    esac
+    record=${rest%%"$FM_MERGE_ORIGIN_EOR"*}
+    rest=${rest#*"$FM_MERGE_ORIGIN_EOR"}
+    [ -n "$record" ] || continue
+    name=${record%%"$FM_MERGE_ORIGIN_SEP"*}
+    fields=${record#*"$FM_MERGE_ORIGIN_SEP"}
+    owner=${fields%%"$FM_MERGE_ORIGIN_SEP"*}
+    repo=${fields##*"$FM_MERGE_ORIGIN_SEP"}
+    fm_merge_same_part "$want_owner" "$owner" || continue
+    fm_merge_same_part "$want_repo" "$repo" || continue
     if fm_merge_forbidden_project "$fm_root" "$fm_home" "$name"; then
       FM_MERGE_POLICY_OUT=captain
       # shellcheck disable=SC2034 # Read by callers (fm-pr-merge.sh) after this returns.

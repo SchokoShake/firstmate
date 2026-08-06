@@ -53,3 +53,8 @@ The inline rules in `AGENTS.md` section 3 still bind: detect, then consent, then
   A following `LOGBOOK: board-response poll armed ...` line means the inbound answer-loop is wired; apply its cadence transition to a running watcher exactly as for `FMX:` above.
   That same line reports `board-liveness reap armed ...`, which keeps the detached board alive between session starts (`docs/configuration.md` "Board liveness"); it is quiet by design, so a board it revives never reaches you, and only a board it gives up relaunching does, once, as a `logbook-error` wake.
 - `LOGBOOK: off - removed board-response poll shim ...` - bootstrap cleared the inbound artifacts after an opt-out, so the home reverts to the default watcher cadence; steady-state off prints nothing.
+- `LOGBOOK: registry line malformed - <detail>` - composing the board read a `data/projects.md` line it could not parse: an unrecognized posture flag, or a mode that is none of the three delivery modes.
+  Treat it as a merge-authority problem, not cosmetic noise.
+  The malformed token is reported and never honored, so a `+captain-merge` prohibition written wrong (`[direct-PR captain-merge]`, `[direct-PR +captainmerge]`, or `[captain-merge]`) binds nothing: the board offers a one-click Merge for a project the captain reserved to themselves, and `bin/fm-pr-merge.sh` would perform it.
+  Read the named project's registry line, fix it to `- <name> [<mode> +captain-merge] - ...` if the captain meant the prohibition, and re-sync the board with `bin/fm-logbook-refresh.sh`.
+  Do not merge that project's work until the line reads the way the captain intended; ask them which they meant when the typo leaves it ambiguous.

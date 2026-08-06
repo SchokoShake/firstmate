@@ -1949,6 +1949,13 @@ push_policy_body() {
     "$1" "$1"
 }
 
+# push_url_only_body <id> <repo> <pr-number>: the hand-composed shape that carries a Merge
+# and no "project" field, so only the PR url can speak for it.
+push_url_only_body() {
+  printf '{"id":"%s","kind":"action","title":"t","body":"b","options":[{"label":"Merge","value":"merge"}],"source":{"pr":"https://github.com/acme/%s/pull/%s"}}' \
+    "$1" "$2" "$3"
+}
+
 test_push_strips_merge_for_a_captain_merge_project() {
   local home out rc recorded
   home="$TMP_ROOT/push-policy-strip"; write_merge_policy_fixture "$home" " +captain-merge"
@@ -2051,6 +2058,40 @@ test_push_strips_merge_read_from_the_url_when_the_item_names_no_project() {
   jq -e '[.options[].value] | index("merge") != null' "$recorded" >/dev/null \
     || fail "a PR belonging to an unflagged project must keep its Merge"$'\n'"$(cat "$recorded")"
   pass "fm-logbook-push strips a forbidden Merge from the PR url when the item names no project"
+}
+
+test_push_scans_each_clone_origin_once_however_many_urls() {
+  local home rc log shim recorded
+  home="$TMP_ROOT/push-policy-origin-memo"; write_merge_policy_fixture "$home" " +captain-merge"
+  git init -q "$home/projects/third"
+  git -C "$home/projects/third" remote add origin https://github.com/acme/third.git
+  # Count the gate's real git calls by shimming git ahead of it on PATH, after the
+  # fixture's own clones are built so only the scan is counted.
+  log="$home/git-calls.log"; shim="$home/shim"; mkdir -p "$shim"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "$*" >> %s\n' "$(printf '%q' "$log")"
+    printf 'exec %s "$@"\n' "$(printf '%q' "$(command -v git)")"
+  } > "$shim/git"
+  chmod +x "$shim/git"
+  : > "$log"
+  # Three project-less cards, so signal 1 settles nothing and every url reaches the scan.
+  printf '[%s,%s,%s]' "$(push_url_only_body guard-b2 guarded 7)" \
+    "$(push_url_only_body open-a1 open 42)" "$(push_url_only_body third-c3 third 3)" \
+    | PATH="$shim:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  expect_code 0 "$rc" "a multi-url push must be delivered"
+  # What an origin names cannot change under the process, so one scan answers every url:
+  # three clones, three lookups, not three per url.
+  [ "$(wc -l < "$log")" -eq 3 ] \
+    || fail "each clone's origin must be read exactly once per process, got:"$'\n'"$(cat "$log")"
+  # And the memo answers exactly what the repeated scan did: the flagged project's card
+  # loses its Merge, the other two keep theirs.
+  recorded="$home/state/logbook-outbox/items.json"
+  jq -e '([.[0].options[].value] | index("merge") == null)
+      and ([.[1].options[].value] | index("merge") != null)
+      and ([.[2].options[].value] | index("merge") != null)' "$recorded" >/dev/null \
+    || fail "a memoized scan must forbid exactly what the repeated one did"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push reads each clone's origin once however many urls it carries"
 }
 
 test_push_leaves_no_temp_file_behind_on_any_path() {
@@ -2808,6 +2849,54 @@ EOF
   pass "bootstrap opt-in surfaces the captain link and auto-syncs the board (reachable)"
 }
 
+test_bootstrap_autosync_surfaces_a_malformed_registry_posture() {
+  local home fakebin out synced
+  home="$TMP_ROOT/boot-registry-typo"; write_fleet_fixture "$home"; mkdir -p "$home/config"
+  fakebin=$(make_fake_curl "$home")
+  cat > "$home/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+EOF
+  # The prohibition, mistyped: the leading "+" dropped off "+captain-merge". The token
+  # binds nothing, so alpha stays mergeable and the board composes a live Merge for a
+  # project the captain reserved to themselves.
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes captain-merge] - First project (added 2026-07-01)
+- beta [direct-PR +yolo] - Second project (added 2026-07-02)
+- gamma [local-only] - Idle project with no work (added 2026-07-03)
+EOF
+  # Driven through the AUTOMATIC caller - bootstrap's own logbook setup - because that is
+  # the only read of the merge policy that runs unattended, and it composed the board with
+  # its stderr thrown away. A warning discarded there is a warning that never existed:
+  # every other path that re-emits it (a merge, a push) is one the captain has already
+  # reached by tapping the button this typo should have withheld.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "LOGBOOK: registry line malformed - unrecognized posture flag for alpha: captain-merge" \
+    "the session-start board sync must surface a malformed registry posture to the captain"
+  # On bootstrap's own prefixed channel, which .agents/skills/bootstrap-diagnostics parses,
+  # rather than as the raw "warn:" text of a script the captain never invoked.
+  assert_not_contains "$out" "warn: unrecognized posture flag" \
+    "the diagnostic must be re-shaped onto the LOGBOOK channel, not passed through raw"
+  # The routine "not in registry" noise stays suppressed - that is the whole reason the
+  # policy library filters rather than passes its child's stderr through.
+  assert_not_contains "$out" "not in registry" \
+    "a project the registry never listed must not become a bootstrap diagnostic"
+  # Warned, never HONORED: a prohibition guessed at from a typo would be its own failure,
+  # so the board the same run composed still carries the Merge the line does not forbid.
+  synced="$home/state/logbook-outbox/sync.json"
+  assert_present "$synced" "the malformed line must not stop the session-start sync"
+  jq -e '.items[] | select(.id=="ship-pr-a1")
+      | ([.options[].value] | index("merge") != null)' "$synced" >/dev/null \
+    || fail "the malformed token must not be honored as a prohibition"$'\n'"$(cat "$synced")"
+  assert_not_contains "$out" "board not auto-synced" \
+    "a malformed registry line must not fail the auto-sync"
+  pass "bootstrap surfaces a malformed registry posture read by the session-start board sync"
+}
+
 test_bootstrap_unreachable_omits_link_and_autosync() {
   local home fakebin out
   home="$TMP_ROOT/boot-link-down"; mkdir -p "$home/config"
@@ -2898,6 +2987,7 @@ test_push_strips_merge_for_a_captain_merge_project
 test_push_merge_policy_leaves_other_projects_byte_identical
 test_push_gates_every_item_of_a_mixed_array
 test_push_strips_merge_read_from_the_url_when_the_item_names_no_project
+test_push_scans_each_clone_origin_once_however_many_urls
 test_push_leaves_no_temp_file_behind_on_any_path
 test_push_never_writes_the_gated_body_through_a_derived_temp_name
 test_push_still_delivers_the_card_when_the_gated_body_cannot_be_installed
@@ -2925,6 +3015,7 @@ test_refresh_hard_noop_when_disabled
 test_refresh_dry_run_records_sync
 test_refresh_live_posts_sync
 test_bootstrap_opt_in_surfaces_link_and_autosyncs
+test_bootstrap_autosync_surfaces_a_malformed_registry_posture
 test_bootstrap_unreachable_omits_link_and_autosync
 test_xmode_and_logbook_cadences_coexist
 test_logbook_off_leaves_supervision_block_inert
