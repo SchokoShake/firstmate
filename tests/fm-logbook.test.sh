@@ -2124,6 +2124,34 @@ SH
   pass "fm-logbook-push allocates the gated body its own mktemp, not a name derived from another"
 }
 
+test_push_still_delivers_the_card_when_the_gated_body_cannot_be_installed() {
+  local home fakebin rc recorded
+  home="$TMP_ROOT/push-policy-mv-fails"; write_merge_policy_fixture "$home" " +captain-merge"
+  fakebin=$(fm_fakebin "$home")
+  # The gate's every OTHER failure branch falls open with a warning and pushes the item as
+  # composed, because an attention item the captain never sees at all is worse than one
+  # with a button too many - the refusal in bin/fm-pr-merge.sh is what makes the rule hold,
+  # not the button. Installing the gated body is the one step where falling open is not
+  # automatic: under "set -eu" it is the last command of its branch, so an unguarded
+  # failure exits before the push and drops the card off the board entirely.
+  cat > "$fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+echo "mv: simulated failure" >&2
+exit 1
+SH
+  chmod +x "$fakebin/mv"
+  push_policy_body guarded | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a gated body that cannot be installed must not fail the push"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "the card must still reach the board when the gate cannot rewrite it"
+  jq -e '(.id=="guard-b2") and (.title=="Schema work is ready")' "$recorded" >/dev/null \
+    || fail "the item must be pushed as composed"$'\n'"$(cat "$recorded")"
+  assert_grep "pushing the item as composed" "$home/err" \
+    "falling open must be said out loud, the way the neighbouring branches say it"
+  pass "fm-logbook-push still delivers the card when the gated body cannot be installed"
+}
+
 # slug_agreement_rows: the shared input table that pins bin/fm-merge-policy-lib.sh's
 # owner/repo parse (fm_merge_slug, fm_merge_same_part, fm_merge_forbidden_url's origin
 # scan) to bin/fm-logbook-compose.sh's (pr_slug, same_repo_part, project_remote_repo).
@@ -2837,6 +2865,7 @@ test_push_gates_every_item_of_a_mixed_array
 test_push_strips_merge_read_from_the_url_when_the_item_names_no_project
 test_push_leaves_no_temp_file_behind_on_any_path
 test_push_never_writes_the_gated_body_through_a_derived_temp_name
+test_push_still_delivers_the_card_when_the_gated_body_cannot_be_installed
 test_merge_policy_slug_agrees_with_compose
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge

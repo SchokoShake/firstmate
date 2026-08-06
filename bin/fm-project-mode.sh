@@ -35,12 +35,17 @@
 # before the flag existed - so adding the flag changes nothing for a project that does not
 # carry it, and no project becomes unmergeable by accident.
 #
-# A bracket token starting with "+" that is neither posture flag warns to stderr too. A
-# typo in the FIRST position is already caught as an unknown mode, but "[direct-PR
+# A bracket token past the first position that is neither posture flag warns to stderr
+# too. A typo in the FIRST position is already caught as an unknown mode, but "[direct-PR
 # +captainmerge]" parses cleanly as an unflagged project - so the one flag whose whole
-# point is a prohibition would be the one that goes silently missing. stdout stays exactly
-# as it was: an unrecognized token is a diagnostic, not a failure, and callers that
-# interpolate or string-compare this output must not see it.
+# point is a prohibition would be the one that goes silently missing. The check is not
+# limited to "+"-prefixed tokens, because dropping the "+" entirely ("[direct-PR
+# captain-merge]") reaches the same silent-prohibition failure by an easier route: the
+# first position is the mode and every later one is a posture flag, so there is no other
+# legal token there to mistake a malformed one for. A malformed token is REPORTED and
+# never honored - a prohibition guessed at from a typo would be its own failure - so
+# stdout stays exactly as it was: an unrecognized token is a diagnostic, not a failure,
+# and callers that interpolate or string-compare this output must not see it.
 # Usage: fm-project-mode.sh <project-name> [--merge-policy]
 set -eu
 
@@ -78,7 +83,8 @@ if [ ! -f "$REG" ]; then
 fi
 
 # awk emits "<mode> <yolo> <merge>" (one line) or nothing if the project is absent, plus
-# an optional second "+unknown <tokens>" line naming the "+" tokens it did not recognize.
+# an optional second "+unknown <tokens>" line naming the posture tokens it did not
+# recognize.
 # The diagnostic travels back as a second LINE rather than a fourth field because the
 # first line's three-word shape is what the shell parses below and what this script's
 # stdout contract is built on; a warning is written where nothing parses it as data. It
@@ -96,10 +102,13 @@ parsed=$(awk -v n="$NAME" '
       for (j=1; j<=k; j++) {
         if (a[j]=="+yolo") { yolo="on"; continue }
         if (a[j]=="+captain-merge") { merge="captain"; continue }
-        # The first token was read as the mode, so a "+" typo there is already reported
-        # as an unknown mode; reporting it twice would say nothing more.
+        # The first token was read as the mode, so a typo there is already reported as an
+        # unknown mode; reporting it twice would say nothing more. Every token that
+        # reaches here is in a position where only a posture flag is legal, so it is
+        # reported whether or not it carries the leading "+" - a dropped "+" is the
+        # easiest way to write a prohibition that never binds.
         if (j==1 && a[j]==modetok) continue;
-        if (a[j] ~ /^\+/) bad = bad (bad==""?"":" ") a[j];
+        bad = bad (bad==""?"":" ") a[j];
       }
     }
     print mode, yolo, merge;

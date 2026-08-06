@@ -40,13 +40,16 @@
 #   (m) a "+captain-merge" project the task's own record names is REFUSED, before the
 #       merge and before any recording of it
 #   (n) the same refusal from the PR url alone, which is what a stale card, a replayed
-#       answer, or a hand-typed request still carries once the task is torn down
+#       answer, or a hand-typed request still carries once the task is torn down - in
+#       EVERY url shape parse_pr_url accepts, since a shape the guard cannot read is the
+#       one that walks past it into gh-axi
 #   (o) a project WITHOUT the flag merges exactly as before, in a home where another
 #       project carries it
 #   (p) the same flag refuses bin/fm-merge-local.sh's local-only merge - firstmate's OTHER
 #       merge path - and leaves an unflagged local-only merge landing as before
-#   (q) a MISSPELLED posture flag is reported on stderr rather than silently ignored,
-#       without disturbing either stdout contract callers string-compare
+#   (q) a MALFORMED posture flag - misspelled, or missing its leading "+" - is reported on
+#       stderr rather than silently ignored and is never honored as the flag, without
+#       disturbing either stdout contract callers string-compare
 #   (r) a merge policy that could not be READ stays permissive, warns once, and is
 #       retried rather than cached as a verdict
 set -u
@@ -1037,6 +1040,60 @@ test_captain_merge_project_is_refused_from_the_pr_url_alone() {
   pass "fm-pr-merge refuses a +captain-merge project reached through the PR url alone"
 }
 
+test_captain_merge_url_variants_parse_pr_url_accepts_are_refused() {
+  local case_dir fakebin rc url
+  # Every url shape parse_pr_url accepts is a url this script will HAND TO gh-axi, so the
+  # guard has to resolve every one of them: the shape it cannot read is exactly the one
+  # that walks past it. Two forms the guard's own slug parse used to miss - the trailing
+  # slash parse_pr_url has always accepted, and a ".git" repo component - are driven here
+  # in the no-meta, no-backlog shape a stale card or a hand-typed request arrives in,
+  # where the url is the ONLY signal left to refuse on.
+  for url in https://github.com/acme/guarded/pull/7/ \
+             https://github.com/acme/guarded.git/pull/7; do
+    case_dir="$TMP_ROOT/policy-url-shape-$(printf '%s' "$url" | tr -c 'a-zA-Z0-9' '-')"
+    fakebin="$case_dir/fakebin"
+    mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+    write_merge_policy_registry "$case_dir" " +captain-merge"
+    clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+    add_gh_mocks "$case_dir" 7777777777777777777777777777777777777777
+    : > "$case_dir/gh-axi.log"
+
+    set +e
+    run_pr_merge "$case_dir" ghost-z9 "$url" > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "policy-url-shape: $url must be refused for a +captain-merge project"
+    assert_grep "own origin" "$case_dir/stderr" \
+      "policy-url-shape: $url must be refused on the clone's origin, the only signal it carries"
+    grep -q 'pr merge' "$case_dir/gh-axi.log" \
+      && fail "policy-url-shape: $url must never reach gh-axi pr merge"
+  done
+
+  # The control that keeps the tolerance from becoming over-tightening: the same shape
+  # against an UNFLAGGED project still merges, and reaches gh-axi with the number and repo
+  # parse_pr_url read out of it.
+  case_dir="$TMP_ROOT/policy-url-shape-control"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  clone_with_origin "$case_dir" open https://github.com/acme/open.git
+  add_gh_mocks "$case_dir" 8888888888888888888888888888888888888888
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" ghost-z8 https://github.com/acme/open/pull/42/ \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "policy-url-shape control: an unflagged project's trailing-slash url must still merge"
+  grep -qxF 'pr merge 42 --repo acme/open --squash' "$case_dir/gh-axi.log" \
+    || fail "policy-url-shape control: the unflagged merge must reach gh-axi unchanged"
+  pass "fm-pr-merge refuses every +captain-merge url shape its own PR-url parse accepts"
+}
+
 test_merge_policy_leaves_an_unflagged_project_merging() {
   local case_dir rc
   case_dir=$(make_case policy-control)
@@ -1225,6 +1282,51 @@ SH
   pass "fm-merge-policy-lib surfaces an unrecognized posture flag and nothing else"
 }
 
+test_posture_flag_missing_its_plus_is_reported_too() {
+  local case_dir out
+  case_dir="$TMP_ROOT/policy-flag-no-plus"
+  mkdir -p "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- noplus [direct-PR captain-merge] - the flag with its leading "+" dropped (added 2026-07-01)
+EOF
+  # Dropping the "+" is an easier way to reach the same silent-prohibition failure than
+  # misspelling the word: the line parses as a perfectly clean unflagged project, so the
+  # captain believes the project is protected while every merge path permits it. Only a
+  # posture flag is legal past the mode, so a token that is neither is reported there
+  # whether or not it carries the "+".
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" noplus 2>"$case_dir/noplus.err")
+  [ "$out" = "direct-PR off" ] \
+    || fail "flag-no-plus: the two-word stdout contract must not change, got \"$out\""
+  assert_grep 'captain-merge' "$case_dir/noplus.err" \
+    "flag-no-plus: a posture flag missing its \"+\" must be reported on stderr"
+  # Reported, never HONORED: guessing a prohibition out of a malformed token would be its
+  # own failure, so the policy stays exactly as permissive as the line actually reads.
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" noplus --merge-policy 2>/dev/null)
+  [ "$out" = "firstmate" ] \
+    || fail "flag-no-plus: a malformed token must not be honored as the flag, got \"$out\""
+
+  # And end to end, through the one function every path that cares about the flag reads
+  # the registry with: fm_merge_policy_project FILTERS its child's stderr, so a warning
+  # whose text stops matching that filter is a warning that never fires where it counts.
+  cat > "$case_dir/drive.sh" <<'SH'
+set -eu
+root=$1 home=$2
+. "$root/bin/fm-merge-policy-lib.sh"
+fm_merge_policy_project "$root" "$home" noplus
+echo "noplus=$FM_MERGE_POLICY_OUT"
+SH
+  out=$(bash "$case_dir/drive.sh" "$ROOT" "$case_dir" 2>"$case_dir/lib.err")
+  case "$out" in
+    *"noplus=firstmate"*) ;;
+    *) fail "flag-no-plus: a malformed token must stay permissive through the policy path"$'\n'"$out" ;;
+  esac
+  assert_grep "unrecognized posture flag" "$case_dir/lib.err" \
+    "flag-no-plus: the diagnostic must survive the policy library's stderr filter"
+  pass "fm-project-mode reports a posture flag missing its \"+\" through the path that reads it"
+}
+
 test_forbidden_url_clears_its_project_between_calls() {
   local case_dir out
   case_dir="$TMP_ROOT/policy-url-global"
@@ -1316,10 +1418,12 @@ test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
 test_captain_merge_project_is_refused_from_the_tasks_own_record
 test_captain_merge_project_is_refused_from_the_pr_url_alone
+test_captain_merge_url_variants_parse_pr_url_accepts_are_refused
 test_merge_policy_leaves_an_unflagged_project_merging
 test_captain_merge_refuses_the_local_merge_too
 test_merge_policy_leaves_an_unflagged_local_merge_working
 test_unknown_posture_flag_warns_without_changing_stdout
 test_merge_policy_surfaces_a_flag_typo_on_the_path_that_reads_it
+test_posture_flag_missing_its_plus_is_reported_too
 test_forbidden_url_clears_its_project_between_calls
 test_merge_policy_lookup_failure_warns_once_and_is_not_cached

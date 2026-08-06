@@ -34,9 +34,11 @@ MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 
 # shellcheck source=bin/fm-merge-policy-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-merge-policy-lib.sh"
-# The meta's project= is a worktree PATH; its last component is the projects/<name> the
-# registry lists. There is no url signal to fall back on here - a local-only project has
-# no remote by definition - so the task's own record is the whole check.
+# The meta's project= is the PROJECT CLONE's path, recorded by bin/fm-spawn.sh beside the
+# separate worktree= the crew actually works in (and it is the path this script merges
+# into below); its last component is the projects/<name> the registry lists. There is no
+# url signal to fall back on here - a local-only project has no remote by definition - so
+# the task's own record is the whole check.
 POLICY_PROJECT=${PROJ%/}
 POLICY_PROJECT=${POLICY_PROJECT##*/}
 if [ -n "$POLICY_PROJECT" ] &&

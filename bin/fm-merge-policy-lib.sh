@@ -89,14 +89,14 @@ FM_MERGE_POLICY_LOOKUP_WARNED=""
 # fm-project-mode.sh warns on a project it does not know, and asking about one is normal
 # (a card can carry a project the registry never listed - compose composes a minimal row
 # for it - and that project is simply not flagged). But one line it writes is the whole
-# reason this axis is machine-read at all: its warning that a bracket token starting with
-# "+" is none of the posture flags it recognizes. Every path where the flag MATTERS
-# reaches the registry through this function, so dropping that line wholesale would let a
-# "[direct-PR +captainmerge]" typo merge in silence - the exact failure the warning was
-# added to catch, and worse than no warning at all, because it manufactures confidence
-# that the typo would have been caught. It is re-emitted; everything else stays
-# suppressed. The memo below buys one lookup per PROJECT, so the re-emission is bounded
-# per project rather than repeated once per card.
+# reason this axis is machine-read at all: its warning that a bracket token past the mode
+# is none of the posture flags it recognizes. Every path where the flag MATTERS reaches
+# the registry through this function, so dropping that line wholesale would let a
+# "[direct-PR +captainmerge]" or "[direct-PR captain-merge]" typo merge in silence - the
+# exact failure the warning was added to catch, and worse than no warning at all, because
+# it manufactures confidence that the typo would have been caught. It is re-emitted;
+# everything else stays suppressed. The memo below buys one lookup per PROJECT, so the
+# re-emission is bounded per project rather than repeated once per card.
 #
 # The child's EXIT STATUS and its answer are read separately, because "could not ask" is
 # not the same fact as "asked, and the project is not flagged". Both stay permissive - a
@@ -165,12 +165,24 @@ fm_merge_forbidden_project() {
 # parses that way. One parse for both sides of the match below, so the url and the origin
 # it is compared against can never be read by two rules that drifted apart.
 #
-# A PR url is ".../<owner>/<repo>/pull/<n>" with a NUMERIC <n>; a remote is
+# A PR url is ".../<owner>/<repo>/pull/<n>" with a NUMERIC <n>, optionally followed by one
+# trailing "/" and optionally naming its repo with a ".git" suffix; a remote is
 # "https://host/owner/repo[.git]" or "git@host:owner/repo[.git]", whose scp-style shape
 # leaves the "host:" prefix on whichever component follows no "/" (the owner here, or the
 # repo itself in the owner-less "git@host:repo.git" form, which yields no owner at all).
 # An owner that does not resolve leaves the pair unmatchable, which is the right answer:
 # half a name identifies nothing.
+#
+# Those two url tolerances are not cosmetic. This guard must resolve EVERY url the thing it
+# guards would act on, or the url it cannot read is exactly the one that walks past it:
+# bin/fm-pr-merge.sh's parse_pr_url accepts a trailing "/" (".../pull/7/") and a ".git"
+# repo component, and hands the parsed owner/repo straight to "gh-axi pr merge". A slug
+# parse that read ".../pull/7/" as a non-numeric PR number returned no owner/repo at all,
+# so signal 2 matched no clone and PERMITTED the merge of a "+captain-merge" project - on
+# the torn-down, pruned task that is the very case signal 2 exists for, since signal 1 then
+# has no meta and no backlog item to read. bin/fm-logbook-push.sh runs no such parse at
+# ALL: its urls come off hand-composed cards. So the tolerances live here, in the guard,
+# rather than resting on a caller-side parse this library does not run.
 #
 # NOT the sole owner of this parse: bin/fm-logbook-compose.sh's pr_slug, same_repo_part,
 # and project_remote_repo answer the same "do these two name one GitHub repo" question
@@ -183,9 +195,19 @@ fm_merge_forbidden_project() {
 #   - The numeric-<n> requirement above is compose's rule, adopted here. It is a
 #     TIGHTENING, so it does loosen this guard for a malformed PR url - ".../pull/abc"
 #     now matches no clone and forbids nothing. Nothing reaches a merge through that gap:
-#     bin/fm-pr-merge.sh's own parse_pr_url hard-rejects such a url before this is
+#     bin/fm-pr-merge.sh's own parse_pr_url hard-rejects a non-numeric <n> before this is
 #     consulted, and bin/fm-logbook-push.sh only ever declines to strip a board button
 #     whose merge that same parse would refuse anyway.
+#   - The trailing "/" and ".git" tolerances go the OTHER way: this side is deliberately
+#     WIDER than compose's pr_slug, which reads either url as unparseable. That divergence
+#     is safe in both directions because each side fails CLOSED in its own currency -
+#     compose withholds a button it cannot verify, and this refuses a merge it can trace to
+#     a flagged clone - whereas making them agree by narrowing this one is what opened the
+#     bypass above. compose is not widened to match: bin/fm-logbook-compose.sh's output is
+#     pinned byte-for-byte while the logbook v2 extraction proves parity against it, and
+#     tolerating either form there would newly offer a Merge button. The shared table in
+#     tests/fm-logbook.test.sh therefore pins the shapes both sides DO read alike, and the
+#     trailing-slash refusal is pinned end to end in tests/fm-pr-merge.test.sh instead.
 #   - The whitespace blanking below has no counterpart in compose's pr_slug, but it is
 #     mechanical rather than behavioural: compose blanks whitespace on the REMOTE side
 #     instead (project_remote_repo), and same_repo_part needs both halves, so a
@@ -200,10 +222,18 @@ fm_merge_slug() {
   case "$s" in
     *'/pull/'*)
       num=${s##*'/pull/'}
+      # Exactly the one optional trailing "/" parse_pr_url accepts, and no more, so this
+      # reads every url that reaches a merge and no url that does not.
+      num=${num%/}
       case "$num" in
         ''|*[!0-9]*) return 0 ;;
       esac
       rest=${s%'/pull/'*}
+      # The repo half of a PR url, normalized the way the remote branch below already
+      # normalizes its own, so ".../acme/guarded.git/pull/7" and the clone origin
+      # "https://github.com/acme/guarded.git" resolve to ONE repo rather than to a
+      # spurious mismatch that permits the merge.
+      rest=${rest%.git}
       ;;
     *) rest=${s%.git}; rest=${rest%/} ;;
   esac

@@ -168,8 +168,9 @@ merge_policy_refuse() {
   exit 1
 }
 
-# The meta's project= is a worktree PATH; its last component is the projects/<name> the
-# registry lists. "tail -n1" because last-key-wins is how every other reader of a meta
+# The meta's project= is the PROJECT CLONE's path, recorded by bin/fm-spawn.sh beside the
+# separate worktree= the crew actually works in; its last component is the projects/<name>
+# the registry lists. "tail -n1" because last-key-wins is how every other reader of a meta
 # reads it (bin/fm-logbook-compose.sh's meta_get).
 POLICY_PROJECT=""
 if [ -f "$META" ]; then

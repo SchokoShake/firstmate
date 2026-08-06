@@ -52,6 +52,16 @@ PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 
 usage() { echo "usage: fm-logbook-push.sh --json-file <path> | -" >&2; }
 
+# json_array_of <newline-accumulated-list>: that list as a JSON array of its non-empty
+# lines, "[]" when it is empty or cannot be converted. One owner for both gates below, so
+# the project list and the url list can never be built by two rules that drifted apart -
+# and so the fall-open on a jq that will not run is the same fall-open for both.
+json_array_of() {
+  local list=${1-}
+  [ -n "$list" ] || { printf '[]'; return 0; }
+  printf '%s' "$list" | jq -R -s 'split("\n") | map(select(length > 0))' || printf '[]'
+}
+
 case "${1:-}" in
   --help|-h) echo "Upsert attention item(s) via POST /api/items. Body from --json-file <path> or stdin."; exit 0 ;;
 esac
@@ -108,10 +118,7 @@ $MERGE_PROJECTS
 EOF
 fi
 
-FORBIDDEN_JSON='[]'
-if [ -n "$FORBIDDEN" ]; then
-  FORBIDDEN_JSON=$(printf '%s' "$FORBIDDEN" | jq -R -s 'split("\n") | map(select(length > 0))') || FORBIDDEN_JSON='[]'
-fi
+FORBIDDEN_JSON=$(json_array_of "$FORBIDDEN")
 
 # Signal 2, the item's PR url, asked only of the items signal 1 did not already settle -
 # an item whose project is flagged is stripped either way, and the scan across projects/
@@ -144,10 +151,7 @@ $MERGE_URLS
 EOF
 fi
 
-FORBIDDEN_URLS_JSON='[]'
-if [ -n "$FORBIDDEN_URLS" ]; then
-  FORBIDDEN_URLS_JSON=$(printf '%s' "$FORBIDDEN_URLS" | jq -R -s 'split("\n") | map(select(length > 0))') || FORBIDDEN_URLS_JSON='[]'
-fi
+FORBIDDEN_URLS_JSON=$(json_array_of "$FORBIDDEN_URLS")
 
 # Rewritten only when there is something to strip, so every other push reaches the board
 # as exactly the bytes it was handed.
@@ -187,7 +191,14 @@ if [ -n "$FORBIDDEN" ] || [ -n "$FORBIDDEN_URLS" ]; then
           | if $forbid then .options |= gate_options else . end
         else . end;
       if type=="array" then map(gate) else gate end' "$BODY_FILE" > "$GATED_FILE"; then
-    mv -f "$GATED_FILE" "$BODY_FILE"
+    # Falls open like both branches around it, and for the reason the header gives: under
+    # "set -eu" an unguarded "mv" that fails is the LAST command of this branch, so it
+    # would exit before the push and drop the card off the board entirely - strictly worse
+    # than a card with one button too many, which is at least still in front of the
+    # captain. The gate that matters is bin/fm-pr-merge.sh's refusal, which holds whatever
+    # this button says.
+    mv -f "$GATED_FILE" "$BODY_FILE" ||
+      echo "fm-logbook-push: could not install the gated body; pushing the item as composed" >&2
   else
     echo "fm-logbook-push: could not remove the forbidden Merge option; pushing the item as composed" >&2
   fi
