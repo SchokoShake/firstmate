@@ -15,9 +15,10 @@
 #                 "FMX: X mode on ..." or "FMX: X mode off ...",
 #                 "LOGBOOK: on - board at <url>" plus a "board-response poll armed"
 #                 line, or "LOGBOOK: off - removed ..." on opt-out,
-#                 "LOGBOOK: registry line malformed - <detail>" when the
-#                 session-start board sync read a data/projects.md line it could
-#                 not parse.
+#                 "LOGBOOK: merge policy - <detail>" for every diagnostic
+#                 bin/fm-merge-policy-lib.sh wrote while the session-start board
+#                 sync read the fleet's merge policy (a data/projects.md line it
+#                 could not parse, or a policy lookup it could not perform).
 #          A NUDGE_SECONDMATES line lists the RUNNING secondmate task selectors
 #          (fm-<id>) whose worktree was fast-forwarded to firstmate's own
 #          current default-branch commit (a purely LOCAL fast-forward, never an
@@ -112,6 +113,11 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-logbook-lib.sh"
 # shellcheck source=bin/fm-backend.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backend.sh"
+# Sourced for FM_MERGE_POLICY_DIAG_MARKER alone: the board-sync filter below has to pick
+# that library's diagnostics out of the refresh's stderr, and reading the marker from its
+# owner is what keeps this caller from holding a copy of anything that can drift.
+# shellcheck source=bin/fm-merge-policy-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-merge-policy-lib.sh"
 
 # How many clones the sweep below will actually work on, used only to size its
 # timeout - so this must count what fm-fleet-sync.sh counts. Its repo test is
@@ -580,20 +586,28 @@ logbook_setup() {
     # prohibition it was meant to be, so the board composes a live Merge option
     # for a project the captain reserved to themselves; the diagnostic the policy
     # library re-emits is the only thing standing between that typo and the tap.
-    # Discarded here, it would be a warning that never existed. The rest of the
-    # stream stays dropped: it is compose/sync plumbing noise, already summarized
-    # by the not-auto-synced line below.
+    # A policy lookup that could not be performed AT ALL is worse still - every
+    # project falls open to mergeable - and it reaches the captain the same way.
+    # Discarded here, either would be a warning that never existed. The rest of
+    # the stream stays dropped: it is compose/sync plumbing noise, already
+    # summarized by the not-auto-synced line below.
     refresh_err=$(mktemp "${TMPDIR:-/tmp}/fm-bootstrap-logbook.XXXXXX" 2>/dev/null) || refresh_err=/dev/null
     if ! "$FM_ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>"$refresh_err"; then
       echo "LOGBOOK: board not auto-synced at session start (compose/sync failed); it may be stale until the next update"
     fi
     while IFS= read -r refresh_line; do
       case "$refresh_line" in
-        # Re-shaped onto this channel rather than passed through raw, because
-        # bootstrap's prefixed lines are the contract .agents/skills/bootstrap-diagnostics
-        # reads; a bare "warn:" line here belongs to no diagnostic firstmate handles.
-        'warn: unrecognized posture flag'*|'warn: unknown mode'*)
-          echo "LOGBOOK: registry line malformed - ${refresh_line#warn: }"
+        # Selected on the ONE marker bin/fm-merge-policy-lib.sh stamps on every
+        # diagnostic it writes, never on a copy of their message texts. That copy
+        # is the bug this replaces: it had to be re-edited whenever the library
+        # gained or reworded a line, and the one it silently lost was the worst
+        # of them. Whatever that library reports next arrives here already
+        # selected, with nothing to remember to update.
+        "$FM_MERGE_POLICY_DIAG_MARKER "*)
+          # Re-shaped onto this channel rather than passed through raw, because
+          # bootstrap's prefixed lines are the contract .agents/skills/bootstrap-diagnostics
+          # reads; a bare library line here belongs to no diagnostic firstmate handles.
+          echo "LOGBOOK: merge policy - ${refresh_line#"$FM_MERGE_POLICY_DIAG_MARKER "}"
           ;;
       esac
     done < "$refresh_err"

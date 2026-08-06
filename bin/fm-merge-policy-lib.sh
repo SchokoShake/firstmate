@@ -56,6 +56,28 @@
 #       -> 0 when firstmate must NOT merge that project, 1 otherwise
 #   fm_merge_forbidden_url <fm-root> <fm-home> <projects-dir> <pr-url>
 #       -> 0 when the url names a clone whose project firstmate must NOT merge, 1 otherwise
+#   fm_merge_policy_warn <text>
+#       -> writes one policy diagnostic to stderr, marked with FM_MERGE_POLICY_DIAG_MARKER
+
+# The marker every diagnostic this library writes carries, and the ONE thing a caller has
+# to know to pick those diagnostics out of a stream it otherwise drops. Only
+# bin/fm-bootstrap.sh's session-start board sync needs that today - the other callers let
+# this stderr through untouched - and it needs it badly, because that sync is the only read
+# of the policy that runs unattended.
+#
+# It exists because the caller-side alternative failed exactly once and in the worst way: a
+# filter that enumerated the message TEXTS worth keeping had to be re-edited every time a
+# diagnostic was added or reworded, and the one it silently lost was the failed-lookup line
+# below - the one that means the policy could not be read at ALL, so every project in the
+# fleet fell open to mergeable. Selecting on the marker instead means a diagnostic added
+# here later reaches the captain with no caller-side edit at all.
+FM_MERGE_POLICY_DIAG_MARKER='fm-merge-policy:'
+
+# fm_merge_policy_warn <text>: the single writer of this library's stderr, so the marker
+# cannot be forgotten on a line added later. Everything below reports through it.
+fm_merge_policy_warn() {
+  printf '%s %s\n' "$FM_MERGE_POLICY_DIAG_MARKER" "${1-}" >&2
+}
 
 FM_MERGE_POLICY_OUT=""
 # The project fm_merge_forbidden_url matched, so a refusal can name what it is protecting.
@@ -85,34 +107,41 @@ FM_MERGE_POLICY_LOOKUP_WARNED=""
 # cannot address a registry line either, so there is no policy to find; refusing to cache
 # it is what keeps a crafted name from writing a record another name would then read.
 #
-# The child's stderr is FILTERED, not dropped, and the two kinds of line it writes divide
-# on exactly the question this function is asking:
+# The child's stderr is FILTERED, not dropped, and the filter defaults to KEEPING: it
+# names the lines it drops and re-emits everything else through fm_merge_policy_warn.
 #
-#   The registry line is MALFORMED. Re-emitted, both shapes of it: a bracket token past
-#   the mode that is none of the posture flags, and a mode that is none of the three
-#   delivery modes. Every path where the flag MATTERS reaches the registry through this
-#   function, so dropping those wholesale lets a mistyped prohibition merge in silence -
-#   the exact failure the warnings were added to catch, and worse than no warning at all,
-#   because it manufactures confidence that the typo would have been caught. All three
-#   ways of writing "+captain-merge" wrong land in one of the two: "[direct-PR
-#   +captainmerge]" and "[direct-PR captain-merge]" as unrecognized posture flags, and
-#   "[captain-merge]" as an unknown mode - the first bracket position is the mode, so a
-#   posture flag written as the SOLE token is read as one and never reaches the posture
-#   diagnostic at all. That last is why the mode warning belongs here too, and it is the
-#   easiest of the three to write.
+#   SUPPRESSED, and only these two: there is no registry line for the project, or no
+#   registry at all. Asking about such a project is routine here - a card can carry one
+#   the registry never listed (compose composes a minimal row for it), and that project is
+#   simply not flagged. That noise is the whole reason this is a filter rather than a bare
+#   passthrough.
 #
-#   There is NO line - the project is not in the registry, or there is no registry at
-#   all. Suppressed, because asking about such a project is routine here: a card can
-#   carry one the registry never listed (compose composes a minimal row for it), and that
-#   project is simply not flagged. That noise is the whole reason this is a filter rather
-#   than a bare passthrough.
+#   RE-EMITTED: everything else bin/fm-project-mode.sh says, including a shape this
+#   library has never seen. The two that matter today both mean the registry line is
+#   MALFORMED - a bracket token past the mode that is none of the posture flags, and a
+#   mode that is none of the three delivery modes. Every path where the flag MATTERS
+#   reaches the registry through this function, so dropping those lets a mistyped
+#   prohibition merge in silence - the exact failure the warnings were added to catch, and
+#   worse than no warning at all, because it manufactures confidence that the typo would
+#   have been caught. All three ways of writing "+captain-merge" wrong land in one of the
+#   two: "[direct-PR +captainmerge]" and "[direct-PR captain-merge]" as unrecognized
+#   posture flags, and "[captain-merge]" as an unknown mode - the first bracket position
+#   is the mode, so a posture flag written as the SOLE token is read as one and never
+#   reaches the posture diagnostic at all. That last is why the mode warning belongs here
+#   too, and it is the easiest of the three to write.
+#
+# The filter names its drops rather than its keeps for the same reason the caller selects
+# on a marker rather than on message texts: a keep-list silently loses every diagnostic
+# the child GAINS, and the loss is invisible until a prohibition has already been merged
+# past. Naming the drops fails the other way - an unfamiliar line is surfaced, not eaten.
 #
 # Neither malformed shape is ever HONORED - bin/fm-project-mode.sh reports it and leaves
 # the policy exactly as permissive as the line actually reads, because a prohibition
 # guessed at from a typo would be its own failure - so the re-emitted warning is the only
 # thing standing between a mistyped prohibition and a silent merge. The memo below buys
 # one lookup per PROJECT, so the re-emission is bounded per project rather than repeated
-# once per card.
+# once per card; a lookup that FAILED is not memoized, so its stderr is bounded instead by
+# the same once-per-process flag its own warning uses.
 #
 # The child's EXIT STATUS and its answer are read separately, because "could not ask" is
 # not the same fact as "asked, and the project is not flagged". Both stay permissive - a
@@ -144,23 +173,31 @@ fm_merge_policy_project() {
   # unavailable temp file falls back to dropping the stream, never to failing the lookup.
   err_file=$(mktemp "${TMPDIR:-/tmp}/fm-merge-policy.XXXXXX" 2>/dev/null) || err_file=/dev/null
   policy=$(FM_HOME="$fm_home" "$fm_root/bin/fm-project-mode.sh" "$project" --merge-policy 2>"$err_file") || asked=no
-  while IFS= read -r line; do
-    case "$line" in
-      'warn: unrecognized posture flag'*|'warn: unknown mode'*) printf '%s\n' "$line" >&2 ;;
-    esac
-  done < "$err_file"
-  [ "$err_file" = /dev/null ] || rm -f "$err_file"
   # An answer that is neither word is no answer either: this script's stdout contract says
   # the policy query prints one of exactly two words, so anything else means the child did
-  # not answer the question that was put to it.
+  # not answer the question that was put to it. Read BEFORE the stderr is re-emitted, so
+  # the re-emission can be bounded by which of the two cases this is.
   case "$policy" in
     firstmate|captain) ;;
     *) asked=no ;;
   esac
+  # An answered lookup is memoized below, so its diagnostics cost one re-emission per
+  # PROJECT. A failed one deliberately is not, so what it wrote - an exec error rather than
+  # a registry diagnostic - is bounded by the same once-per-process flag its own warning
+  # uses, instead of repeating that error once per card on a board.
+  if [ "$asked" = yes ] || [ -z "$FM_MERGE_POLICY_LOOKUP_WARNED" ]; then
+    while IFS= read -r line; do
+      case "$line" in
+        ''|'warn: no registry at '*|'warn: project "'*'" not in registry'*) ;;
+        *) fm_merge_policy_warn "${line#warn: }" ;;
+      esac
+    done < "$err_file"
+  fi
+  [ "$err_file" = /dev/null ] || rm -f "$err_file"
   if [ "$asked" != yes ]; then
     if [ -z "$FM_MERGE_POLICY_LOOKUP_WARNED" ]; then
       FM_MERGE_POLICY_LOOKUP_WARNED=yes
-      echo "warn: could not read the merge policy for \"$project\" from $fm_root/bin/fm-project-mode.sh; treating projects as mergeable until it answers" >&2
+      fm_merge_policy_warn "could not read the merge policy for \"$project\" from $fm_root/bin/fm-project-mode.sh; treating projects as mergeable until it answers"
     fi
     return 0
   fi

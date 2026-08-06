@@ -53,8 +53,14 @@ The inline rules in `AGENTS.md` section 3 still bind: detect, then consent, then
   A following `LOGBOOK: board-response poll armed ...` line means the inbound answer-loop is wired; apply its cadence transition to a running watcher exactly as for `FMX:` above.
   That same line reports `board-liveness reap armed ...`, which keeps the detached board alive between session starts (`docs/configuration.md` "Board liveness"); it is quiet by design, so a board it revives never reaches you, and only a board it gives up relaunching does, once, as a `logbook-error` wake.
 - `LOGBOOK: off - removed board-response poll shim ...` - bootstrap cleared the inbound artifacts after an opt-out, so the home reverts to the default watcher cadence; steady-state off prints nothing.
-- `LOGBOOK: registry line malformed - <detail>` - composing the board read a `data/projects.md` line it could not parse: an unrecognized posture flag, or a mode that is none of the three delivery modes.
-  Treat it as a merge-authority problem, not cosmetic noise.
-  The malformed token is reported and never honored, so a `+captain-merge` prohibition written wrong (`[direct-PR captain-merge]`, `[direct-PR +captainmerge]`, or `[captain-merge]`) binds nothing: the board offers a one-click Merge for a project the captain reserved to themselves, and `bin/fm-pr-merge.sh` would perform it.
-  Read the named project's registry line, fix it to `- <name> [<mode> +captain-merge] - ...` if the captain meant the prohibition, and re-sync the board with `bin/fm-logbook-refresh.sh`.
-  Do not merge that project's work until the line reads the way the captain intended; ask them which they meant when the typo leaves it ambiguous.
+- `LOGBOOK: merge policy - <detail>` - composing the session-start board read the fleet's merge policy through `bin/fm-merge-policy-lib.sh` and that library reported something.
+  Treat every one of these as a merge-authority problem, not cosmetic noise: the policy is what decides whether a project's card may offer a one-click Merge, and the permissive default means anything the policy could not read or could not honor leaves that Merge live.
+  Bootstrap relays whatever that library says, so a `<detail>` not listed below is a diagnostic this playbook has not caught up with; read it as a merge-authority problem too, say so to the captain, and do not merge the named project's work until you understand it.
+  The two shapes to expect today:
+  - `unrecognized posture flag ...` or `unknown mode ...` - a `data/projects.md` line the parser could not read.
+    The malformed token is reported and never honored, so a `+captain-merge` prohibition written wrong (`[direct-PR captain-merge]`, `[direct-PR +captainmerge]`, or `[captain-merge]`) binds nothing: the board offers a one-click Merge for a project the captain reserved to themselves, and `bin/fm-pr-merge.sh` would perform it.
+    Read the named project's registry line, fix it to `- <name> [<mode> +captain-merge] - ...` if the captain meant the prohibition, and re-sync the board with `bin/fm-logbook-refresh.sh`.
+    Do not merge that project's work until the line reads the way the captain intended; ask them which they meant when the typo leaves it ambiguous.
+  - `could not read the merge policy for "<project>" from <path>/bin/fm-project-mode.sh ...` - the lookup could not be performed at all, so EVERY project fell open to mergeable, not just the one named.
+    This is the more serious of the two: the home's `bin/fm-project-mode.sh` is missing, unexecutable, or broken, which usually means a partial update or a badly resolved `FM_ROOT` in a seeded secondmate home.
+    Repair or re-seed that home before merging anything, and do not tap a board Merge in the meantime - `bin/fm-pr-merge.sh` reads the policy through the same broken lookup and falls open the same way.

@@ -2193,6 +2193,89 @@ SH
   pass "fm-logbook-push still delivers the card when the gated body cannot be installed"
 }
 
+# fake_failing_jq <fakebin>: a jq that fails whenever one of its arguments contains
+# $FAKE_JQ_FAIL and is the real jq otherwise, so a test can kill exactly ONE of the gate's
+# several jq calls. That is the real shape of this failure: the body has already passed the
+# script's "jq -e ." parse check, so what breaks is jq itself on one program (killed, out
+# of memory, a build without any/2), not the input.
+fake_failing_jq() {
+  local fakebin=$1
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+set -u
+if [ -n "\${FAKE_JQ_FAIL:-}" ]; then
+  for a in "\$@"; do
+    case "\$a" in
+      *"\$FAKE_JQ_FAIL"*) echo "jq: simulated failure" >&2; exit 1 ;;
+    esac
+  done
+fi
+exec $(printf '%q' "$(command -v jq)") "\$@"
+SH
+  chmod +x "$fakebin/jq"
+}
+
+test_push_says_so_when_a_gate_selector_cannot_run() {
+  local home fakebin rc recorded
+  home="$TMP_ROOT/push-policy-selector-dies"; write_merge_policy_fixture "$home" " +captain-merge"
+  fakebin=$(fm_fakebin "$home")
+  fake_failing_jq "$fakebin"
+
+  # Signal 1's selector dies. Its empty result is indistinguishable from "this body has
+  # nothing to gate", so the run would otherwise read exactly like a clean push.
+  push_policy_body guarded | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    FAKE_JQ_FAIL='.project? ]' \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/project.err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a dead gate selector must still deliver the item, never fail the push"
+  assert_grep "pushing the item as composed" "$home/project.err" \
+    "a project selector that will not run must say so, like every other fall-open here"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "the card must still reach the board"
+  # And the gate does not open on one dead selector: the two signals are independent, so
+  # the PR url still speaks for the card signal 1 can no longer name.
+  jq -e '[.options[].value] | index("merge") == null' "$recorded" >/dev/null \
+    || fail "the url signal must still strip the Merge signal 1 could not name"$'\n'"$(cat "$recorded")"
+
+  # Signal 2's selector dies on a card that carries NO project, so signal 1 has nothing to
+  # say either and the forbidden Merge really does reach the board. That is the fall-open
+  # the warning exists for: it must be loud, and the card must still be delivered.
+  push_url_only_body guard-b2 guarded 7 | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    LOGBOOK_DRY_RUN=1 FAKE_JQ_FAIL='pr_of ]' \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/url.err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a dead url selector must still deliver the item"
+  assert_grep "pushing the item as composed" "$home/url.err" \
+    "a url selector that will not run must say so rather than pass a live Merge in silence"
+  jq -e '[.options[].value] | index("merge") != null' "$recorded" >/dev/null \
+    || fail "the fall-open under test must actually have happened"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push announces a merge-policy gate selector that will not run"
+}
+
+test_push_never_claims_a_strip_it_did_not_perform() {
+  local home fakebin rc recorded
+  home="$TMP_ROOT/push-policy-list-dies"; write_merge_policy_fixture "$home" " +captain-merge"
+  fakebin=$(fm_fakebin "$home")
+  fake_failing_jq "$fakebin"
+  # The forbidden list is found, announced per project - "dropping the Merge option" - and
+  # then cannot be turned into the JSON array the strip needs. The strip runs against an
+  # empty array, removes nothing, and installs an unchanged body: the run CLAIMED a strip
+  # it did not perform, which is worse than never having gated at all. Whatever else it
+  # does, it must not leave that claim standing alone on stderr.
+  push_policy_body guarded | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    FAKE_JQ_FAIL='split("\n")' \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a list that cannot be built must still deliver the item"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "the card must still reach the board"
+  assert_grep "dropping the Merge option" "$home/err" \
+    "the per-project finding is what makes the contradiction possible; it must still be there"
+  assert_grep "pushing the item as composed" "$home/err" \
+    "the run must correct its own claim out loud when the strip could not be performed"
+  # The claim really was wrong - proof the correction is not a warning about nothing.
+  jq -e '[.options[].value] | index("merge") != null' "$recorded" >/dev/null \
+    || fail "the strip under test must actually have been skipped"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push corrects itself out loud when the forbidden list cannot be built"
+}
+
 # slug_agreement_rows: the shared input table that pins bin/fm-merge-policy-lib.sh's
 # owner/repo parse (fm_merge_slug, fm_merge_same_part, fm_merge_forbidden_url's origin
 # scan) to bin/fm-logbook-compose.sh's (pr_slug, same_repo_part, project_remote_repo).
@@ -2875,11 +2958,11 @@ EOF
   # reached by tapping the button this typo should have withheld.
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 LOGBOOK_DRY_RUN=1 \
     "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
-  assert_contains "$out" "LOGBOOK: registry line malformed - unrecognized posture flag for alpha: captain-merge" \
+  assert_contains "$out" "LOGBOOK: merge policy - unrecognized posture flag for alpha: captain-merge" \
     "the session-start board sync must surface a malformed registry posture to the captain"
   # On bootstrap's own prefixed channel, which .agents/skills/bootstrap-diagnostics parses,
-  # rather than as the raw "warn:" text of a script the captain never invoked.
-  assert_not_contains "$out" "warn: unrecognized posture flag" \
+  # rather than as the raw marked line of a library the captain never invoked.
+  assert_not_contains "$out" "fm-merge-policy:" \
     "the diagnostic must be re-shaped onto the LOGBOOK channel, not passed through raw"
   # The routine "not in registry" noise stays suppressed - that is the whole reason the
   # policy library filters rather than passes its child's stderr through.
@@ -2895,6 +2978,91 @@ EOF
   assert_not_contains "$out" "board not auto-synced" \
     "a malformed registry line must not fail the auto-sync"
   pass "bootstrap surfaces a malformed registry posture read by the session-start board sync"
+}
+
+# stage_fm_root <dir> [<script left out>...]: an FM_ROOT whose bin/ is a symlink farm over
+# the real one, minus the named scripts. Every script under bin/ resolves its own
+# SCRIPT_DIR and FM_ROOT from where it was invoked, so the farm is the whole staging - and
+# leaving a script OUT rather than overwriting its link is what keeps a test that writes a
+# stand-in from writing through the link into the repo's own bin/.
+stage_fm_root() {
+  local dir=$1 f base
+  shift
+  mkdir -p "$dir/bin"
+  for f in "$ROOT"/bin/*; do
+    base=$(basename "$f")
+    case " $* " in *" $base "*) continue ;; esac
+    ln -sf "$f" "$dir/bin/$base"
+  done
+  printf '%s\n' "$dir"
+}
+
+# write_logbook_optin <home>: the reachable-board opt-in the bootstrap sync tests share.
+write_logbook_optin() {
+  mkdir -p "$1/config"
+  cat > "$1/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+EOF
+}
+
+test_bootstrap_surfaces_a_policy_diagnostic_no_caller_was_taught() {
+  local home stage fakebin out
+  home="$TMP_ROOT/boot-policy-unheard"; write_fleet_fixture "$home"; write_logbook_optin "$home"
+  fakebin=$(make_fake_curl "$home")
+  stage=$(stage_fm_root "$TMP_ROOT/boot-policy-unheard-root" fm-project-mode.sh)
+  # A diagnostic no caller has ever seen, written by the script the policy library asks.
+  # The property under test is NOT this text - it is that a line the library reports
+  # reaches the captain without bootstrap having been taught the text first. The
+  # enumerated filter this replaced would have dropped it in silence, which is exactly how
+  # it dropped the failed-lookup diagnostic for two rounds: each round added the one arm it
+  # had been told about, and the next line out fell through the same hole.
+  cat > "$stage/bin/fm-project-mode.sh" <<SH
+#!/usr/bin/env bash
+echo 'warn: the registry rack is on fire; a shape no caller enumerated' >&2
+exec $(printf '%q' "$ROOT/bin/fm-project-mode.sh") "\$@"
+SH
+  chmod +x "$stage/bin/fm-project-mode.sh"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 LOGBOOK_DRY_RUN=1 \
+    "$stage/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "LOGBOOK: merge policy - the registry rack is on fire; a shape no caller enumerated" \
+    "a policy diagnostic no caller was taught must still reach the captain, on the LOGBOOK channel"
+  assert_not_contains "$out" "fm-merge-policy:" \
+    "the unfamiliar diagnostic must be re-shaped like every other, not passed through raw"
+  # Still a filter, not a hole: the routine "not in registry" noise the same child writes
+  # for a project the registry never listed stays suppressed.
+  assert_not_contains "$out" "not in registry" \
+    "surfacing unfamiliar lines must not also surface the routine noise"
+  assert_not_contains "$out" "board not auto-synced" \
+    "an unfamiliar policy diagnostic must not fail the auto-sync"
+  pass "bootstrap relays a policy diagnostic its filter has never been taught"
+}
+
+test_bootstrap_surfaces_a_merge_policy_lookup_it_could_not_perform() {
+  local home stage fakebin out lines
+  home="$TMP_ROOT/boot-policy-unreadable"; write_fleet_fixture "$home"; write_logbook_optin "$home"
+  fakebin=$(make_fake_curl "$home")
+  # The home's fm-project-mode.sh cannot be run at all - a partial update, or an FM_ROOT
+  # that resolved somewhere else in a seeded secondmate home. This is the WORST of the
+  # three current diagnostics and the one the enumerated filter lost: the lookup could not
+  # be performed, so the permissive default answered for EVERY project, not just a
+  # mistyped one, and the board composed a live Merge on every +captain-merge card.
+  stage=$(stage_fm_root "$TMP_ROOT/boot-policy-unreadable-root" fm-project-mode.sh)
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 LOGBOOK_DRY_RUN=1 \
+    "$stage/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "LOGBOOK: merge policy - could not read the merge policy" \
+    "a policy lookup that could not be performed must reach the captain at session start"
+  assert_contains "$out" "$stage/bin/fm-project-mode.sh" \
+    "the diagnostic must name the script that would not answer"
+  # Once per process, not once per card: the failed lookup is deliberately not memoized so
+  # it is retried, and the report is bounded by its own flag instead.
+  lines=$(printf '%s\n' "$out" | grep -c "LOGBOOK: merge policy - could not read the merge policy" || true)
+  [ "$lines" = 1 ] \
+    || fail "the failed-lookup diagnostic must be reported once, not once per card (got $lines)"
+  assert_not_contains "$out" "board not auto-synced" \
+    "an unreadable merge policy must not fail the auto-sync"
+  pass "bootstrap surfaces a merge-policy lookup the session-start sync could not perform"
 }
 
 test_bootstrap_unreachable_omits_link_and_autosync() {
@@ -2991,6 +3159,8 @@ test_push_scans_each_clone_origin_once_however_many_urls
 test_push_leaves_no_temp_file_behind_on_any_path
 test_push_never_writes_the_gated_body_through_a_derived_temp_name
 test_push_still_delivers_the_card_when_the_gated_body_cannot_be_installed
+test_push_says_so_when_a_gate_selector_cannot_run
+test_push_never_claims_a_strip_it_did_not_perform
 test_merge_policy_slug_agrees_with_compose
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge
@@ -3016,6 +3186,8 @@ test_refresh_dry_run_records_sync
 test_refresh_live_posts_sync
 test_bootstrap_opt_in_surfaces_link_and_autosyncs
 test_bootstrap_autosync_surfaces_a_malformed_registry_posture
+test_bootstrap_surfaces_a_policy_diagnostic_no_caller_was_taught
+test_bootstrap_surfaces_a_merge_policy_lookup_it_could_not_perform
 test_bootstrap_unreachable_omits_link_and_autosync
 test_xmode_and_logbook_cadences_coexist
 test_logbook_off_leaves_supervision_block_inert

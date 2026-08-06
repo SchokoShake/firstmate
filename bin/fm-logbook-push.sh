@@ -39,6 +39,12 @@
 # everything reaching the captain also reaches the board. It warns to stderr instead, so
 # the authoring mistake is visible rather than silent. An item for a project without the
 # flag is passed through untouched, byte for byte.
+# Every step of this gate that can FAIL therefore falls open - a selector jq that will not
+# run, a list that cannot be built, a temp file that cannot be allocated, a gated body that
+# cannot be written or installed - and every one of them SAYS SO, on stderr, before pushing
+# the item as composed. Falling open in silence would be worse than having no gate at all:
+# the run reads exactly like one that held, so a live Merge on a "+captain-merge" card
+# looks like a card the policy had nothing to say about.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,14 +58,26 @@ PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 
 usage() { echo "usage: fm-logbook-push.sh --json-file <path> | -" >&2; }
 
-# json_array_of <newline-accumulated-list>: that list as a JSON array of its non-empty
-# lines, "[]" when it is empty or cannot be converted. One owner for both gates below, so
-# the project list and the url list can never be built by two rules that drifted apart -
-# and so the fall-open on a jq that will not run is the same fall-open for both.
+# json_array_of <newline-accumulated-list> <what>: that list as a JSON array of its
+# non-empty lines, "[]" when it is empty or cannot be converted. One owner for both gates
+# below, so the project list and the url list can never be built by two rules that drifted
+# apart - and so the fall-open on a jq that will not run is the same fall-open for both.
+#
+# That fall-open is the loudest of the three, because it is the one that CONTRADICTS what
+# the run already said: the per-item warnings above have announced the projects and urls
+# whose Merge is being dropped, and an empty array here hands the gate nothing to drop, so
+# the body is installed unchanged. Silent, the run claimed a strip it did not perform.
+# jq's output is captured rather than streamed, so a jq that died halfway cannot leave a
+# partial array with "[]" appended to it either.
 json_array_of() {
-  local list=${1-}
+  local list=${1-} what=${2-gate} out
   [ -n "$list" ] || { printf '[]'; return 0; }
-  printf '%s' "$list" | jq -R -s 'split("\n") | map(select(length > 0))' || printf '[]'
+  if out=$(printf '%s' "$list" | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null); then
+    printf '%s' "$out"
+    return 0
+  fi
+  echo "fm-logbook-push: could not build the forbidden-$what list, so nothing was removed; pushing the item as composed" >&2
+  printf '[]'
 }
 
 case "${1:-}" in
@@ -97,13 +115,23 @@ jq -e . "$BODY_FILE" >/dev/null 2>&1 || { echo "fm-logbook-push: body is not val
 #
 # Signal 1, the item's project. Names are read as whole lines, and one that cannot key a
 # registry lookup is answered permissively by the library rather than here.
+#
+# A selector that will not RUN is not the same fact as a body with nothing to gate, and the
+# two are indistinguishable in an empty result: the body already parsed as JSON at the check
+# above, so a failure here is jq itself (killed, out of memory, a build without any/2), and
+# it leaves both gates with nothing to forbid and the hand-composed Merge intact. Said out
+# loud, the way every other fall-open in this file is, rather than left to a board that
+# quietly grew back the button compose withheld.
 MERGE_PROJECTS=$(jq -r '
   [ (if type=="array" then .[] else . end)
     | select(type=="object")
     | select((.options? | type) == "array")
     | select(any(.options[]?; (type=="object") and (.value? == "merge")))
     | .project? ]
-  | map(select((type=="string") and (. != ""))) | unique | .[]' "$BODY_FILE" 2>/dev/null) || MERGE_PROJECTS=""
+  | map(select((type=="string") and (. != ""))) | unique | .[]' "$BODY_FILE" 2>/dev/null) || {
+  MERGE_PROJECTS=""
+  echo "fm-logbook-push: could not read the items' projects for the merge-policy gate; pushing the item as composed" >&2
+}
 
 FORBIDDEN=""
 if [ -n "$MERGE_PROJECTS" ]; then
@@ -118,7 +146,7 @@ $MERGE_PROJECTS
 EOF
 fi
 
-FORBIDDEN_JSON=$(json_array_of "$FORBIDDEN")
+FORBIDDEN_JSON=$(json_array_of "$FORBIDDEN" project)
 
 # Signal 2, the item's PR url, asked only of the items signal 1 did not already settle -
 # an item whose project is flagged is stripped either way, and the scan across projects/
@@ -136,7 +164,10 @@ MERGE_URLS=$(jq -r --argjson forbidden "$FORBIDDEN_JSON" '
     | . as $item
     | select((($item.project? | type) != "string") or (($forbidden | index($item.project)) == null))
     | pr_of ]
-  | map(select((. != "") and ((test("\\s")) | not))) | unique | .[]' "$BODY_FILE" 2>/dev/null) || MERGE_URLS=""
+  | map(select((. != "") and ((test("\\s")) | not))) | unique | .[]' "$BODY_FILE" 2>/dev/null) || {
+  MERGE_URLS=""
+  echo "fm-logbook-push: could not read the items' PR urls for the merge-policy gate; pushing the item as composed" >&2
+}
 
 FORBIDDEN_URLS=""
 if [ -n "$MERGE_URLS" ]; then
@@ -151,7 +182,7 @@ $MERGE_URLS
 EOF
 fi
 
-FORBIDDEN_URLS_JSON=$(json_array_of "$FORBIDDEN_URLS")
+FORBIDDEN_URLS_JSON=$(json_array_of "$FORBIDDEN_URLS" "PR url")
 
 # Rewritten only when there is something to strip, so every other push reaches the board
 # as exactly the bytes it was handed.
