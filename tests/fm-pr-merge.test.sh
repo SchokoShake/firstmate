@@ -37,6 +37,14 @@
 #       terms - it is equally an item left open, and there is no teardown left to prompt
 #       the hand-edit - while an untracked or already-Done item stays quiet, because
 #       neither leaves a card to recompose
+#   (m) a "+captain-merge" project the task's own record names is REFUSED, before the
+#       merge and before any recording of it
+#   (n) the same refusal from the PR url alone, which is what a stale card, a replayed
+#       answer, or a hand-typed request still carries once the task is torn down
+#   (o) a project WITHOUT the flag merges exactly as before, in a home where another
+#       project carries it
+#   (p) the same flag refuses bin/fm-merge-local.sh's local-only merge - firstmate's OTHER
+#       merge path - and leaves an unflagged local-only merge landing as before
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -936,6 +944,204 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+# --- merge policy: projects the captain merges personally ---------------------
+# bin/fm-merge-policy-lib.sh: a "+captain-merge" project is one firstmate must NEVER
+# merge. The attention board withholding the Merge option is not what makes that hold -
+# a card composed before the flag was set, a replayed answer, or a request typed at the
+# shell all reach this script with the option gone and the merge one call away. These
+# cases pin the refusal, and pin just as hard that an unflagged project is untouched.
+
+# write_merge_policy_registry <case_dir> <guarded-posture>: two registry lines differing
+# ONLY in the posture flag under test, so a control merge is available in the same home.
+write_merge_policy_registry() {
+  local case_dir=$1 posture=$2
+  mkdir -p "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<EOF
+# Fleet project registry (firstmate-private)
+
+- open [direct-PR] - firstmate merges this one on the captain's word (added 2026-07-01)
+- guarded [direct-PR$posture] - the captain merges this one personally (added 2026-07-02)
+EOF
+}
+
+# clone_with_origin <case_dir> <name> <url>: a projects/<name> whose only interesting
+# property is its "origin" - which is all the url signal reads, so a bare "git init" plus
+# a remote is a complete fixture (the precedent tests/fm-logbook.test.sh sets).
+clone_with_origin() {
+  local case_dir=$1 name=$2 url=$3
+  mkdir -p "$case_dir/projects"
+  git init -q "$case_dir/projects/$name"
+  git -C "$case_dir/projects/$name" remote add origin "$url"
+}
+
+test_captain_merge_project_is_refused_from_the_tasks_own_record() {
+  local case_dir rc
+  case_dir=$(make_case policy-task-record)
+  mkdir -p "$case_dir/wt"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" \
+    "project=$case_dir/projects/guarded" "kind=ship" "mode=direct-PR"
+  add_gh_mocks "$case_dir" 4444444444444444444444444444444444444444
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/acme/guarded/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "policy-task-record: a +captain-merge project must be refused"
+  assert_grep '+captain-merge' "$case_dir/stderr" \
+    "policy-task-record: the refusal must name the flag that caused it"
+  assert_grep 'guarded' "$case_dir/stderr" \
+    "policy-task-record: the refusal must name the project it is protecting"
+  # Refused BEFORE anything happened: no merge call, and no half-performed recording
+  # left in the meta for a later teardown to read as a landed PR.
+  grep -q 'pr merge' "$case_dir/gh-axi.log" \
+    && fail "policy-task-record: a refused merge must never call gh-axi pr merge"
+  grep -q '^pr=' "$case_dir/state/task-x1.meta" \
+    && fail "policy-task-record: a refused merge must record nothing into the meta"
+  pass "fm-pr-merge refuses a +captain-merge project the task's own record names"
+}
+
+test_captain_merge_project_is_refused_from_the_pr_url_alone() {
+  local case_dir fakebin rc
+  case_dir="$TMP_ROOT/policy-url-only"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  add_gh_mocks "$case_dir" 5555555555555555555555555555555555555555
+  : > "$case_dir/gh-axi.log"
+
+  # No meta and no backlog item: the shape a stale card, a replayed answer, or a
+  # hand-typed request arrives in once the task has been torn down and pruned. The
+  # project-name signal has nothing to read here, so only the url can refuse this - and
+  # it must, because the url is the one thing a merge request always carries.
+  set +e
+  run_pr_merge "$case_dir" ghost-z9 https://github.com/acme/guarded/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "policy-url-only: a PR whose repo is a +captain-merge project's own must be refused"
+  assert_grep "own origin" "$case_dir/stderr" \
+    "policy-url-only: the refusal must say it matched the clone's origin, not a task record"
+  grep -q 'pr merge' "$case_dir/gh-axi.log" \
+    && fail "policy-url-only: a refused merge must never call gh-axi pr merge"
+  pass "fm-pr-merge refuses a +captain-merge project reached through the PR url alone"
+}
+
+test_merge_policy_leaves_an_unflagged_project_merging() {
+  local case_dir rc
+  case_dir=$(make_case policy-control)
+  mkdir -p "$case_dir/wt"
+  # The SAME home, carrying the same flagged line: a project without the flag must be
+  # completely unaffected by another project having it, through both signals at once -
+  # its own record names "open", and its clone's origin is the url being merged.
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  clone_with_origin "$case_dir" open https://github.com/acme/open.git
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" \
+    "project=$case_dir/projects/open" "kind=ship" "mode=direct-PR"
+  add_gh_mocks "$case_dir" 6666666666666666666666666666666666666666
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/acme/open/pull/42 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "policy-control: an unflagged project must still merge"
+  grep -qxF 'pr merge 42 --repo acme/open --squash' "$case_dir/gh-axi.log" \
+    || fail "policy-control: the unflagged merge must reach gh-axi unchanged"
+  assert_grep 'pr=https://github.com/acme/open/pull/42' "$case_dir/state/task-x1.meta" \
+    "policy-control: the unflagged merge must still record pr= before merging"
+  pass "fm-pr-merge leaves a project without the flag merging exactly as before"
+}
+
+# build_local_only_project <case_dir> <name> <id>: a local-only project (no remote at all)
+# whose fm/<id> branch sits one clean fast-forward ahead of main - the exact state
+# bin/fm-merge-local.sh is asked to land.
+build_local_only_project() {
+  local case_dir=$1 name=$2 id=$3
+  local proj="$case_dir/projects/$name"
+  mkdir -p "$case_dir/projects"
+  git init -q "$proj"
+  git -C "$proj" symbolic-ref HEAD refs/heads/main
+  printf 'v0\n' > "$proj/file.txt"
+  git -C "$proj" add file.txt
+  git -C "$proj" commit -qm C0
+  git -C "$proj" checkout -q -b "fm/$id"
+  printf 'v1\n' > "$proj/file.txt"
+  git -C "$proj" add file.txt
+  git -C "$proj" commit -qm C1
+  git -C "$proj" checkout -q main
+}
+
+test_captain_merge_refuses_the_local_merge_too() {
+  local case_dir proj rc head_before head_after
+  case_dir="$TMP_ROOT/policy-local-only"
+  mkdir -p "$case_dir/state" "$case_dir/data"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  build_local_only_project "$case_dir" guarded guard-l1
+  proj="$case_dir/projects/guarded"
+  fm_write_meta "$case_dir/state/guard-l1.meta" \
+    "window=fm-guard-l1" "worktree=$case_dir/wt" \
+    "project=$proj" "kind=ship" "mode=local-only"
+  head_before=$(git -C "$proj" rev-parse main)
+
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_DATA_OVERRIDE="$case_dir/data" FM_PROJECTS_OVERRIDE="$case_dir/projects" \
+    "$ROOT/bin/fm-merge-local.sh" guard-l1 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  # The flag says "never merge this project's work", not "never merge its PRs": a
+  # prohibition that held on one of firstmate's two merge paths and not the other would
+  # quietly stop being true for exactly the projects it was set on.
+  expect_code 1 "$rc" "policy-local-only: a +captain-merge project's local merge must be refused"
+  assert_grep '+captain-merge' "$case_dir/stderr" \
+    "policy-local-only: the refusal must name the flag that caused it"
+  head_after=$(git -C "$proj" rev-parse main)
+  [ "$head_before" = "$head_after" ] \
+    || fail "policy-local-only: a refused local merge must not move the default branch"
+  pass "fm-merge-local refuses a +captain-merge project's local merge"
+}
+
+test_merge_policy_leaves_an_unflagged_local_merge_working() {
+  local case_dir proj rc head_before head_after branch_head
+  case_dir="$TMP_ROOT/policy-local-control"
+  mkdir -p "$case_dir/state" "$case_dir/data"
+  # The same home carrying the same flagged line - the flag must not spill onto a project
+  # that does not have it.
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  build_local_only_project "$case_dir" open open-l2
+  proj="$case_dir/projects/open"
+  fm_write_meta "$case_dir/state/open-l2.meta" \
+    "window=fm-open-l2" "worktree=$case_dir/wt" \
+    "project=$proj" "kind=ship" "mode=local-only"
+  head_before=$(git -C "$proj" rev-parse main)
+  branch_head=$(git -C "$proj" rev-parse "fm/open-l2")
+
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_DATA_OVERRIDE="$case_dir/data" FM_PROJECTS_OVERRIDE="$case_dir/projects" \
+    "$ROOT/bin/fm-merge-local.sh" open-l2 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "policy-local-control: an unflagged local-only merge must still land"
+  head_after=$(git -C "$proj" rev-parse main)
+  [ "$head_after" = "$branch_head" ] \
+    || fail "policy-local-control: main should have fast-forwarded to the branch"$'\n'"was $head_before, now $head_after"
+  pass "fm-merge-local leaves a project without the flag merging exactly as before"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -959,3 +1165,8 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_captain_merge_project_is_refused_from_the_tasks_own_record
+test_captain_merge_project_is_refused_from_the_pr_url_alone
+test_merge_policy_leaves_an_unflagged_project_merging
+test_captain_merge_refuses_the_local_merge_too
+test_merge_policy_leaves_an_unflagged_local_merge_working

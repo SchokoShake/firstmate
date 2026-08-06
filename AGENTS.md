@@ -351,6 +351,9 @@ It sweeps the current session for uncaptured durable knowledge, routes findings 
 
 Orthogonal to mode is an optional `+yolo` flag (`[direct-PR +yolo]`), default off and **not recommended**: with `yolo` on, firstmate makes the approval decisions itself instead of asking the captain (section 7). When the captain adds a project without saying, default to `no-mistakes` with yolo off; only set a faster mode or `+yolo` on the captain's explicit say-so.
 
+Orthogonal to both is an optional `+captain-merge` flag (`[direct-PR +captain-merge]`), default off: firstmate must **never** merge that project's work, and `+yolo` never relaxes it.
+Set it when the captain says they merge a project themselves; `bin/fm-merge-policy-lib.sh` owns what it means and enforces it in `bin/fm-pr-merge.sh` and on the attention board.
+
 **Clone existing:** `git clone <url> projects/<name>`, add its registry line with the chosen mode, then initialize only if the mode is `no-mistakes`.
 
 **Create new:** for `no-mistakes` and `direct-PR` modes a new project needs a GitHub repo first (they push to an `origin` remote); a `local-only` project needs no remote at all - a purely local git repo is fine.
@@ -472,6 +475,7 @@ This do-not-fight rule does not license evidence commits in firstmate's own repo
 **yolo (orthogonal).** With `yolo=off` (default) every approval is the captain's: ask-user findings, PR merges, the local-only merge.
 With `yolo=on`, firstmate makes those calls itself without asking - resolve ask-user findings on your judgment, and run `bin/fm-pr-merge.sh <id> <full GitHub PR URL>` / `bin/fm-merge-local.sh` once the work is green/approved - EXCEPT anything destructive, irreversible, or security-sensitive, which still escalates to the captain.
 Never merge a red PR even under yolo.
+Never merge a `+captain-merge` project at all (section 6), under yolo or on the captain's own "merge it": that flag is a standing rule they set, so it changes by changing the registry line, not by a one-off instruction, and `bin/fm-pr-merge.sh` and `bin/fm-merge-local.sh` both refuse it either way.
 `bin/fm-pr-merge.sh` records `pr=` and records `pr_head=` when available before merging, parses the full `https://github.com/<owner>/<repo>/pull/<n>` URL into `gh-axi pr merge <n> --repo <owner>/<repo>`, and defaults to `--squash` unless an explicit merge method is forwarded after `--`; this holds even on a repo with no PR CI where the "checks green" signal that normally triggers `bin/fm-pr-check.sh` never fires - do not call `gh-axi pr merge` directly for a task's PR, or the recording step can be silently skipped and a later `fm-teardown.sh` has nothing to verify a squash merge against.
 It also merges a torn-down task's PR from the URL alone, which is what the board's Merge option drives (section 15), so a review-ready task that outlived its crew still lands; that recording serves a later teardown, so with the meta already swept there is nothing left to record or verify, and it does the absent teardown's own bookkeeping in its place: closing the backlog item so the board cannot recompose the card, and refreshing that project's clone.
 It never fails a landed merge on that bookkeeping, but it never hides it either: heed any warning it prints about a close it could not perform, because an item left open is one the board will re-offer the merge for.

@@ -1841,6 +1841,106 @@ test_compose_merge_falls_back_when_no_remote_resolves() {
   pass "fm-logbook-compose falls back to the repo marker when no remote resolves"
 }
 
+# write_merge_policy_fixture <home> <guarded-posture>: two projects whose registry lines
+# differ ONLY in the posture flag under test, each with a review-ready PR of its own. The
+# "+captain-merge" project is one firstmate must never merge (bin/fm-merge-policy-lib.sh):
+# the captain converts its drafts and merges them personally. The unflagged project is the
+# control - every assertion about the flag is paired with one that it changed nothing for
+# a project that does not carry it.
+write_merge_policy_fixture() {
+  local home=$1 posture=$2
+  mkdir -p "$home/data" "$home/state" "$home/projects"
+  cat > "$home/data/projects.md" <<EOF
+# Fleet project registry (firstmate-private)
+
+- open [direct-PR] - firstmate merges this one on the captain's word (added 2026-07-01)
+- guarded [direct-PR$posture] - the captain merges this one personally (added 2026-07-02)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] open-a1 - Ship the widget https://github.com/acme/open/pull/42 (repo: open) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] guard-b2 - Ship the schema https://github.com/acme/guarded/pull/7 (repo: guarded) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] guard-c3 - Still building it (repo: guarded) (kind: ship) (since 2026-07-10)
+EOF
+  git init -q "$home/projects/open"
+  git -C "$home/projects/open" remote add origin https://github.com/acme/open.git
+  git init -q "$home/projects/guarded"
+  git -C "$home/projects/guarded" remote add origin https://github.com/acme/guarded.git
+}
+
+test_compose_captain_merge_project_offers_no_merge_option() {
+  local home out
+  home="$TMP_ROOT/compose-captain-merge"; write_merge_policy_fixture "$home" " +captain-merge"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The option offered follows from whether firstmate may merge the project, not from the
+  # card's kind. A Merge here would be a one-click instruction to do the one thing
+  # firstmate is forbidden to do - and it survived no hand-correction, because compose
+  # regenerates the options on every sync.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-b2")
+      | ([.options[].value] | index("merge") == null)' >/dev/null \
+    || fail "a +captain-merge project must NOT be offered Merge"$'\n'"$out"
+  # Still an ACTION card: there IS something for the captain to do, and the captain's rule
+  # is that anything needing them to act is an action card. The fix removes the forbidden
+  # option, it does not demote the card to an FYI they would scroll past.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-b2")
+      | (.kind=="action") and ([.options[].value] | index("dismiss") != null)' >/dev/null \
+    || fail "a +captain-merge card must stay an action card with an acknowledgement"$'\n'"$out"
+  # And the PR is withheld from the BUTTON only, never from the captain: they merge it
+  # themselves, so the link they merge from has to be right there.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-b2")
+      | (.source.pr=="https://github.com/acme/guarded/pull/7")
+      and (.body | test("\\[guarded #7\\]\\(https://github\\.com/acme/guarded/pull/7\\)"))' >/dev/null \
+    || fail "a +captain-merge card must still carry its PR as a clickable link"$'\n'"$out"
+  # A card with no action to take was never offered an option; the flag must not invent one.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-c3")
+      | (.kind=="fyi") and (.options == [])' >/dev/null \
+    || fail "the flag must not add options to a card that had none"$'\n'"$out"
+  pass "fm-logbook-compose withholds Merge from a +captain-merge project, keeping an action card"
+}
+
+test_compose_merge_policy_leaves_other_projects_byte_identical() {
+  local flagged plain out_flagged out_plain a b
+  flagged="$TMP_ROOT/compose-policy-flagged"; write_merge_policy_fixture "$flagged" " +captain-merge"
+  plain="$TMP_ROOT/compose-policy-plain";     write_merge_policy_fixture "$plain" ""
+  out_flagged=$(PATH="$BASE_PATH" FM_HOME="$flagged" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  out_plain=$(PATH="$BASE_PATH" FM_HOME="$plain" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # Proof, not assertion: the two fleets differ ONLY in that one registry line's flag, so
+  # the unflagged project's card must come out byte-identical on both sides - same kind,
+  # same options, same body, same source. A regression that dropped Merge fleet-wide, or
+  # that reworded an option label, fails here rather than in review.
+  a=$(printf '%s' "$out_flagged" | jq -S -c '.items[] | select(.id=="open-a1")')
+  b=$(printf '%s' "$out_plain"   | jq -S -c '.items[] | select(.id=="open-a1")')
+  [ "$a" = "$b" ] \
+    || fail "flagging one project changed another project's card"$'\n'"flagged: $a"$'\n'"plain:   $b"
+  printf '%s' "$a" | jq -e '(.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "the control project must still be an action card offering Merge"$'\n'"$a"
+  # The same registry line WITHOUT the flag is an ordinary Merge card, so the difference
+  # is the flag itself and not anything else about that project.
+  printf '%s' "$out_plain" | jq -e '.items[] | select(.id=="guard-b2")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "an unflagged project must compose the Merge option exactly as before"$'\n'"$out_plain"
+  pass "fm-logbook-compose leaves every project without the flag byte-identical"
+}
+
+test_compose_captain_merge_is_not_relaxed_by_yolo() {
+  local home out
+  home="$TMP_ROOT/compose-policy-yolo"; write_merge_policy_fixture "$home" " +yolo +captain-merge"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # yolo is a RELAXATION - it lets firstmate make approval calls itself - so it must never
+  # read as permission to merge a project the captain merges personally. The two flags are
+  # orthogonal, and the prohibition wins.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-b2")
+      | (.kind=="action") and ([.options[].value] | index("merge") == null)' >/dev/null \
+    || fail "+yolo must not restore Merge on a +captain-merge project"$'\n'"$out"
+  pass "fm-logbook-compose keeps +captain-merge binding under +yolo"
+}
+
 test_compose_never_writes_to_a_project_clone() {
   local home out before after
   home="$TMP_ROOT/compose-remote-readonly"; write_remote_fixture "$home"
@@ -2471,6 +2571,9 @@ test_compose_merge_follows_the_clone_to_its_real_repo
 test_compose_merge_requires_the_prs_owner_to_match_too
 test_compose_merge_folds_the_case_of_owner_and_repo
 test_compose_merge_falls_back_when_no_remote_resolves
+test_compose_captain_merge_project_offers_no_merge_option
+test_compose_merge_policy_leaves_other_projects_byte_identical
+test_compose_captain_merge_is_not_relaxed_by_yolo
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge
 test_compose_blocked_by_is_not_a_merge

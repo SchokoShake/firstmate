@@ -9,6 +9,13 @@
 # auto-approves), and only as a clean fast-forward - it refuses a diverged branch
 # and tells you to have the crewmate rebase. See AGENTS.md prime directives,
 # project management, and task lifecycle.
+#
+# MERGE POLICY: a "+captain-merge" project is one firstmate must never merge, so this
+# refuses it exactly as bin/fm-pr-merge.sh does (bin/fm-merge-policy-lib.sh owns the
+# contract). The flag says "never merge this project's work", not "never merge its PRs",
+# and a prohibition that held on one of firstmate's two merge paths and not the other
+# would be the kind of rule that quietly stops being true. A project without the flag is
+# unaffected.
 # Usage: fm-merge-local.sh <task-id>
 set -eu
 
@@ -24,6 +31,20 @@ META="$STATE/$ID.meta"
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }
+
+# shellcheck source=bin/fm-merge-policy-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-merge-policy-lib.sh"
+# The meta's project= is a worktree PATH; its last component is the projects/<name> the
+# registry lists. There is no url signal to fall back on here - a local-only project has
+# no remote by definition - so the task's own record is the whole check.
+POLICY_PROJECT=${PROJ%/}
+POLICY_PROJECT=${POLICY_PROJECT##*/}
+if [ -n "$POLICY_PROJECT" ] &&
+  fm_merge_forbidden_project "$FM_ROOT" "$FM_HOME" "$POLICY_PROJECT"; then
+  echo "error: refusing to merge fm/$ID: project \"$POLICY_PROJECT\" is +captain-merge in data/projects.md" >&2
+  echo "       The captain merges this project's work personally; firstmate must not." >&2
+  exit 1
+fi
 
 default_branch() {
   local ref branch
