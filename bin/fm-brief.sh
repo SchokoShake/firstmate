@@ -117,8 +117,9 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 
 # Standing rule 2 of both crewmate scaffolds, defined once so ship and scout cannot drift.
 # It lives in the Rules block rather than the Setup step because the Setup step is the part
-# firstmate rewrites per repo (git identity, credential setup), and a rule written there is
-# lost with that rewrite.
+# firstmate rewrites per repo (branch and credential setup), and a rule written there is
+# lost with that rewrite. Git identity was rewritten there too when this rule landed; rule 3
+# below ended that, so it is no longer among the per-repo Setup concerns named here.
 COAUTHOR_RULE=$(cat <<'EOF'
 2. Never add an agent name as a commit co-author. No commit you make may carry a
    `Co-Authored-By:` trailer naming an agent, model, or tool - not your first commit, not a
