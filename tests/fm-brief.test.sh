@@ -226,8 +226,8 @@ test_coauthor_ban_is_in_the_standing_rules_block() {
 # overrode the configured identity with its own harness's notion of the user's email authored
 # commits a Vercel deployment then refused, while every commit GitHub itself authored was
 # clean. Assert both halves (the prohibition AND the use-what-is-configured instruction), the
-# named forbidden source, the deliverable scoping with its named fixture carve-out, and
-# placement below the Setup step, for every crewmate scaffold.
+# named forbidden source, the unconditional prohibition with its single named test-fixture
+# carve-out, and placement below the Setup step, for every crewmate scaffold.
 test_git_identity_rule_is_in_the_standing_rules_block() {
   local home id brief rules_line identity_line status
   home="$TMP_ROOT/identity-home"

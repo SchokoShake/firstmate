@@ -145,7 +145,8 @@ EOF
 # worktree writes to the shared $GIT_COMMON_DIR/config, and nothing here enables
 # extensions.worktreeConfig, so a scratch override silently authors every later crewmate's
 # commits in that clone. The one exemption is a repo a test creates for itself in a temp dir,
-# which has no configured identity to use; naming those helpers keeps it explicit, not inferred.
+# which has no configured identity to use; the rule names `fm_git_identity` and
+# `fm_git_init_commit` so that exemption is explicit rather than inferred.
 IDENTITY_RULE=$(cat <<'EOF'
 3. Never set or override the git author or committer identity. Not with `git config`, not with
    `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, not with `git commit --author`. The identity this
