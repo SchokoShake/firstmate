@@ -226,7 +226,8 @@ test_coauthor_ban_is_in_the_standing_rules_block() {
 # overrode the configured identity with its own harness's notion of the user's email authored
 # commits a Vercel deployment then refused, while every commit GitHub itself authored was
 # clean. Assert both halves (the prohibition AND the use-what-is-configured instruction), the
-# named forbidden source, and placement below the Setup step, for every crewmate scaffold.
+# named forbidden source, the deliverable scoping with its named fixture carve-out, and
+# placement below the Setup step, for every crewmate scaffold.
 test_git_identity_rule_is_in_the_standing_rules_block() {
   local home id brief rules_line identity_line status
   home="$TMP_ROOT/identity-home"
@@ -248,10 +249,13 @@ test_git_identity_rule_is_in_the_standing_rules_block() {
     assert_present "$brief" "$id: brief was not scaffolded"
     assert_grep "Never set or override the git author or committer identity" "$brief" \
       "$id: brief lost the git-identity ban"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
     assert_grep '`GIT_AUTHOR_*` / `GIT_COMMITTER_*`' "$brief" \
       "$id: git-identity ban stopped naming the environment-variable route"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
     assert_grep '`git commit --author`' "$brief" \
       "$id: git-identity ban stopped naming the --author route"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
     assert_grep '`git config`' "$brief" \
       "$id: git-identity ban stopped naming the git config route"
 
@@ -261,6 +265,17 @@ test_git_identity_rule_is_in_the_standing_rules_block() {
       "$id: git-identity rule lost the use-what-is-configured half"
     assert_grep "Your own context or memory is NOT a source for this value" "$brief" \
       "$id: git-identity rule stopped naming the agent's own context as a forbidden source"
+
+    # The ban governs deliverable authorship only. A throwaway fixture repo has no configured
+    # identity for the positive half to point at, so the exemption covering firstmate's own
+    # fixture helpers must be named in the brief, not left for a crewmate to infer.
+    assert_grep "as your task deliverable in the repository you were given" "$brief" \
+      "$id: git-identity ban stopped scoping itself to deliverable commits"
+    assert_grep "does not reach a throwaway git repo a test creates" "$brief" \
+      "$id: git-identity rule lost the test-fixture carve-out"
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep '`fm_git_identity` and `fm_git_init_commit` helpers in' "$brief" \
+      "$id: git-identity carve-out stopped naming the fixture helpers it exempts"
 
     # Placement, not just presence: same reasoning as the co-author ban - a rule written into
     # the Setup step is lost when firstmate rewrites that step for another repo.
