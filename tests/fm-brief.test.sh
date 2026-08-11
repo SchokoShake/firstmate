@@ -168,6 +168,81 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
   pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
 }
 
+# The no-agent-co-author ban must be mechanism, not a line firstmate remembers to hand-add:
+# a brief that dropped the hand-written line shipped 2 of 2 commits carrying an agent
+# Co-Authored-By trailer. It lives in the standing Rules block precisely so a per-repo
+# rewrite of the Setup/branch step cannot take it with it, so assert both the rule and its
+# placement relative to that step, for every crewmate scaffold and delivery mode.
+test_coauthor_ban_is_in_the_standing_rules_block() {
+  local home id brief rules_line setup_line
+  home="$TMP_ROOT/coauthor-home"
+  write_registry "$home"
+
+  for id_args in \
+    "coauthor-nomistakes-e1:no-registry-proj" \
+    "coauthor-directpr-e2:direct-proj" \
+    "coauthor-localonly-e3:local-proj" \
+    "coauthor-scout-e4:no-registry-proj:--scout"; do
+    id=${id_args%%:*}
+    rest=${id_args#*:}
+    proj=${rest%%:*}
+    scout=""
+    [ "$rest" != "$proj" ] && scout=${rest#*:}
+    # shellcheck disable=SC2086 # $scout is a deliberate optional single flag, not a path.
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" $scout >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+    assert_grep "Never add an agent name as a commit co-author" "$brief" \
+      "$id: brief lost the no-agent-co-author ban"
+    assert_grep "not a commit made in a later fix or validation round" "$brief" \
+      "$id: co-author ban stopped covering later fix and validation rounds"
+
+    # Placement, not just presence: the ban must sit under `# Rules`, below the `# Setup`
+    # section whose branch/identity step firstmate rewrites per repo.
+    rules_line=$(grep -n '^# Rules$' "$brief" | head -1 | cut -d: -f1)
+    setup_line=$(grep -n 'Never add an agent name as a commit co-author' "$brief" | head -1 | cut -d: -f1)
+    [ -n "$rules_line" ] || fail "$id: brief has no Rules section"
+    [ "$setup_line" -gt "$rules_line" ] || \
+      fail "$id: co-author ban sits above the Rules block, where a Setup rewrite can drop it"
+  done
+
+  # The charter deliberately omits it: a secondmate commits nothing itself, and its own
+  # crewmates get the rule from these same scaffolds.
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='ops' \
+    "$ROOT/bin/fm-brief.sh" coauthor-secondmate-e5 --secondmate --no-projects >/dev/null 2>&1
+  assert_no_grep "Never add an agent name as a commit co-author" \
+    "$home/data/coauthor-secondmate-e5/brief.md" \
+    "secondmate charter picked up a crewmate commit rule it has no use for"
+
+  pass "fm-brief.sh: ship and scout scaffolds carry the co-author ban in the Rules block"
+}
+
+# The Rules list is numbered and the no-mistakes DOD points back into it by number, so a
+# renumbering must not leave that pointer aimed at the wrong rule.
+test_rules_are_numbered_consecutively() {
+  local home id brief numbers expected
+  home="$TMP_ROOT/rule-numbering-home"
+  mkdir -p "$home/data"
+
+  for id_args in "numbering-ship-f1:" "numbering-scout-f2:--scout"; do
+    id=${id_args%%:*}
+    scout=${id_args#*:}
+    # shellcheck disable=SC2086 # $scout is a deliberate optional single flag, not a path.
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj $scout >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    numbers=$(sed -n '/^# Rules$/,/^$/p' "$brief" | grep -cE '^[0-9]+\. ')
+    expected=$(sed -n '/^# Rules$/,/^$/p' "$brief" | grep -oE '^[0-9]+\. ' | sed 's/\. //' | tr '\n' ' ')
+    [ "$numbers" -eq 8 ] || fail "$id: expected 8 numbered rules, found $numbers"
+    [ "$expected" = "1 2 3 4 5 6 7 8 " ] || \
+      fail "$id: rules are not numbered consecutively (got: $expected)"
+  done
+
+  brief="$home/data/numbering-ship-f1/brief.md"
+  assert_grep "escalate to firstmate (rule 7) and stop" "$brief" \
+    "no-mistakes DOD points at the wrong rule number for needs-decision escalation"
+  pass "fm-brief.sh: Rules stay consecutively numbered and the DOD pointer matches"
+}
+
 test_secondmate_no_projects_charter() {
   local home brief status
   home="$TMP_ROOT/no-projects-home"
@@ -269,5 +344,7 @@ test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
+test_coauthor_ban_is_in_the_standing_rules_block
+test_rules_are_numbered_consecutively
 test_secondmate_no_projects_charter
 test_pause_verb_override_renders_all_brief_scaffolds
