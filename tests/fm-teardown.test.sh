@@ -4,10 +4,11 @@
 # The check refuses to tear down a worktree whose work has not LANDED, because
 # treehouse return hard-resets the worktree. "Landed" means reachable from a remote
 # OR - for a normal ship task whose commits are not so reachable - its PR is merged
-# and GitHub reports a PR head that contains the current local work, or its content
-# is already in the up-to-date default branch.
+# and GitHub reports a PR head that contains the current local work, its PR merged into
+# the default branch, or its content is already in the up-to-date default branch.
+# bin/fm-teardown.sh's header owns the full per-clause definition.
 #
-# Covers three fixes:
+# Covers four fixes:
 #   - local-only fork-remote: a fork IS a remote, so fork-pushed upstream-
 #     contribution PRs are teardown-eligible (the pre-fix code false-refused them).
 #   - squash-merge-then-delete-branch: the branch's own commits live nowhere on a
@@ -15,6 +16,13 @@
 #     main. Reachability alone false-refused this common GitHub flow; the check now
 #     recognizes a merged PR head containing the local work (or the content already
 #     in main) as landed.
+#   - pipeline-rebased post-merge teardown: the no-mistakes pipeline rebases the branch
+#     server-side and pushes its own fix commits, so after the merge the recorded PR head
+#     is a superset the local worktree never had, the gate remote's ref is pruned, and
+#     the local branch's stale base makes the content check inconclusive - all three
+#     clauses failing at once on the normal, safest moment to tear down. A PR merged into
+#     the DEFAULT branch is now landed work on its own, so --force stays reserved for
+#     deliberately discarding work.
 #   - teardown-lock-race: a killed crew process can leave a transient worktree
 #     git index.lock that blocks teardown. The return path retries on the lock
 #     error signature (even if the lock self-clears mid-check), then only removes a
@@ -38,6 +46,14 @@
 #   (o) fm-pr-check rerun after HEAD moved                      -> no stale pr_head
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
+#   (z) no-mistakes + pipeline-rebased PR merged into main      -> ALLOW  (rebase fix)
+#   (aa) merged PR whose base ref is not the default branch     -> REFUSE (safety)
+#   (ab) merged PR whose merge commit is not on origin/main     -> REFUSE (safety)
+#   (ac) merged-into-main PR + local commit stacked on its head -> REFUSE (safety)
+#   (ad) open PR + content not in default                       -> REFUSE (safety)
+#   (ae) merged-into-main PR + dirty worktree                   -> REFUSE (dirty wins)
+#   (af) merged-into-main PR reporting no merge commit          -> REFUSE (safety)
+#   (ag) failed origin fetch + content in local main            -> REFUSE (safety)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -234,6 +250,93 @@ echo "error: pull request not found" >&2
 exit 1
 SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# Override GitHub lookups to report PR 7 as merged into <base> with <head> as its final
+# (post-rebase) head and <merge_commit> as the commit carrying it onto <base>. Answers
+# the merged-into-default query as well as the older state/headRefOid one, so both
+# landed-work PR clauses see a consistent PR. Args: case_dir base head merge_commit
+add_gh_pr_merged_into_base() {
+  local case_dir=$1 base=$2 head=$3 merge_commit=$4
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *"state,baseRefName,mergeCommit,headRefOid"*)
+        printf '%s\n%s\n%s\n%s\n' 'MERGED' '$base' '$merge_commit' '$head' ; exit 0 ;;
+      *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
+      *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
+    esac
+    ;;
+esac
+echo "error: pull request not found" >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/gh"
+}
+
+# Override GitHub lookups to report PR 7 as still OPEN, answering both PR queries.
+add_gh_pr_open() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "pr view")
+    case " $* " in
+      *"state,baseRefName,mergeCommit,headRefOid"*)
+        printf '%s\n%s\n%s\n%s\n' 'OPEN' 'main' '' 'deadbeef' ; exit 0 ;;
+      *"state,headRefOid"*) printf '%s\t%s\n' 'OPEN' 'deadbeef' ; exit 0 ;;
+    esac
+    ;;
+esac
+echo "error: pull request not found" >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/gh"
+}
+
+# Simulate the no-mistakes pipeline's server-side rebase and the squash merge that
+# follows it - the shape behind the live 2026-07-18 false refusal. Lands an intervening
+# PR on origin/main (so the task branch's spawn-time base goes stale), builds the PR head
+# on top of that carrying the task's change AS THE PIPELINE'S FIX ROUNDS LEFT IT plus its
+# own document fix commit, squash-merges that onto origin/main, and prunes the head
+# branch the way the merge does. The local branch is then neither an ancestor of the PR
+# head nor content-equal to the default branch, while the work is demonstrably on main.
+# Echoes "<pr-head-sha>\t<merge-commit-sha>". Args: case_dir file merged_content
+simulate_pipeline_rebase_and_merge() {
+  local case_dir=$1 file=$2 merged_content=$3 tmp pr_head merge_commit
+  tmp="$case_dir/_pipeline"
+  # The whole build is stdout-silenced, because this function's stdout IS its return
+  # value and `git merge --squash` prints an unsuppressable note there.
+  {
+    git clone -q "$case_dir/origin.git" "$tmp"
+    printf '%s\n' intervening > "$tmp/other.txt"
+    git -C "$tmp" add -- other.txt
+    git -C "$tmp" commit -q -m "intervening PR that merged first"
+    git -C "$tmp" push -q origin HEAD:main
+    git -C "$tmp" checkout -q -b pr-head
+    printf '%s\n' "$merged_content" > "$tmp/$file"
+    git -C "$tmp" add -- "$file"
+    git -C "$tmp" commit -q -m "rebased task work"
+    printf '%s\n' documented > "$tmp/docs.txt"
+    git -C "$tmp" add -- docs.txt
+    git -C "$tmp" commit -q -m "no-mistakes document fix"
+    git -C "$tmp" push -q origin HEAD:refs/heads/pr-head
+    git -C "$tmp" checkout -q main
+    git -C "$tmp" merge -q --squash pr-head
+    git -C "$tmp" commit -q -m "squash merge PR #7"
+    git -C "$tmp" push -q origin HEAD:main
+    # Pull the PR head object into the clone, then drop the head branch everywhere, so
+    # nothing local becomes remote-reachable through it and the object still resolves.
+    git -C "$case_dir/project" fetch -q origin
+    git -C "$case_dir/project" update-ref -d refs/remotes/origin/pr-head
+    git -C "$tmp" push -q origin --delete pr-head
+  } >/dev/null
+  pr_head=$(git -C "$tmp" rev-parse pr-head)
+  merge_commit=$(git -C "$tmp" rev-parse main)
+  rm -rf "$tmp"
+  printf '%s\t%s\n' "$pr_head" "$merge_commit"
 }
 
 append_pr_meta_for_current_head() {
@@ -483,6 +586,24 @@ if [ -n "$dir" ] && [ "${args[2]:-}" = status ] && [ "${args[3]:-}" = --porcelai
   fi
 fi
 exec "$real" "${args[@]}"
+SH
+  chmod +x "$case_dir/fakebin/git"
+}
+
+# Log every default-branch fetch teardown issues, then delegate to the real git. Each
+# landed-work clause that trusts origin/<default> fetches it first, so the number of
+# logged refspecs shows how far the clauses got before refusing. Args: case_dir log_path
+add_git_default_fetch_recorder() {
+  local case_dir=$1 log=$2
+  cat > "$case_dir/fakebin/git" <<SH
+#!/usr/bin/env bash
+real=\${REAL_GIT_FOR_TEST:?}
+for arg in "\$@"; do
+  case "\$arg" in
+    '+refs/heads/main:refs/remotes/origin/main') printf '%s\n' "\$arg" >> '$log' ;;
+  esac
+done
+exec "\$real" "\$@"
 SH
   chmod +x "$case_dir/fakebin/git"
 }
@@ -745,6 +866,188 @@ test_merged_pr_with_later_local_commit_refuses() {
   pass "merged PR does not allow teardown after a later local commit"
 }
 
+# The pre-rebase local branch every merged-into-default case starts from: real content,
+# a recorded pr=, never pushed to origin (the pipeline pushes to the gate remote, whose
+# ref the merge prunes). Echoes "<pr-head>\t<merge-commit>". Args: case_dir
+seed_pipeline_rebased_task() {
+  local case_dir=$1
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_url "$case_dir"
+  simulate_pipeline_rebase_and_merge "$case_dir" feature.txt "hello, reviewed"
+}
+
+test_pipeline_rebased_pr_merged_into_default_allows() {
+  local case_dir rc facts pr_head merge_commit
+  case_dir=$(make_case rebased-merged)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  merge_commit=${facts#*$'\t'}
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" "$merge_commit"
+
+  # Fixture guard: the branch really is a diverged sibling of the merged head, which is
+  # what makes every pre-existing clause fail and is the whole point of the case.
+  ! git -C "$case_dir/wt" merge-base --is-ancestor HEAD "$pr_head" 2>/dev/null \
+    || fail "rebased-merged: fixture bug, local HEAD is contained in the PR head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "rebased-merged: teardown should succeed after the PR merged into the default branch"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "rebased-merged: teardown printed a REFUSED line"
+  # Proves the merged-into-default clause is what allowed it, not PR-head containment
+  # or the content fallback (both of which this fixture defeats).
+  grep -q "merged into main" "$case_dir/stderr" \
+    || fail "rebased-merged: teardown did not report the merged-into-default path: $(cat "$case_dir/stderr")"
+  grep -q "pre-rebase branch as landed" "$case_dir/stderr" \
+    || fail "rebased-merged: teardown did not name the pre-rebase branch as landed"
+  pass "post-merge teardown of a server-side-rebased no-mistakes task succeeds without --force (the fix)"
+}
+
+test_pr_merged_into_non_default_base_refuses() {
+  local case_dir rc facts pr_head merge_commit
+  case_dir=$(make_case merged-non-default-base)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  merge_commit=${facts#*$'\t'}
+  # Deliberately generous on every other axis - the merge commit really is on
+  # origin/main - so the reported base ref is the only thing that can decide. A PR
+  # merged into an integration branch nobody cuts from is not landed work.
+  add_gh_pr_merged_into_base "$case_dir" integration "$pr_head" "$merge_commit"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merged-non-default-base: teardown should refuse a PR merged into a non-default base"
+  grep -q REFUSED "$case_dir/stderr" || fail "merged-non-default-base: no REFUSED line in stderr"
+  pass "a merged PR whose base is not the default branch never counts as landed"
+}
+
+test_merge_commit_absent_from_default_branch_refuses() {
+  local case_dir rc facts pr_head
+  case_dir=$(make_case merge-commit-off-default)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  # A real commit object that the squash merge left unreachable from origin/main. The
+  # PR claims MERGED into main, but nothing proves that merge reached this clone's
+  # default branch, so teardown must not take GitHub's word for it.
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" "$pr_head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merge-commit-off-default: teardown should refuse when the merge commit is not on origin/main"
+  grep -q REFUSED "$case_dir/stderr" || fail "merge-commit-off-default: no REFUSED line in stderr"
+  pass "a merge commit absent from the default branch never counts as landed"
+}
+
+test_local_commit_stacked_on_merged_pr_head_refuses() {
+  local case_dir rc pr_head merge_commit
+  case_dir=$(make_case stacked-on-merged-head)
+  write_meta "$case_dir" no-mistakes ship
+  append_pr_meta_url "$case_dir"
+  # The merged head, then a local commit ON TOP of it: work no PR ever carried. A
+  # rebased head is a diverged sibling of the local branch, so it never looks like
+  # this - which is exactly what separates the two cases.
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  pr_head=$(commit_tree_from_wt_head "$case_dir" "$(git -C "$case_dir/wt" rev-parse HEAD)" "no-mistakes review fix")
+  git -C "$case_dir/wt" reset --hard -q "$pr_head"
+  wt_commit_file "$case_dir" later.txt local-only "local follow-up"
+  land_on_origin_main "$case_dir" other.txt intervening
+  merge_commit=$(git -C "$case_dir/project" rev-parse refs/remotes/origin/main)
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" "$merge_commit"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "stacked-on-merged-head: teardown should refuse local commits stacked on the merged PR head"
+  grep -q REFUSED "$case_dir/stderr" || fail "stacked-on-merged-head: no REFUSED line in stderr"
+  pass "local commits stacked on a merged PR head still refuse (the guard stays meaningful)"
+}
+
+test_merged_pr_without_merge_commit_refuses_at_the_merge_commit_guard() {
+  local case_dir rc facts pr_head fetch_log fetches
+  case_dir=$(make_case merged-no-merge-commit)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  # GitHub reports the PR MERGED into the default branch but hands back NO merge commit,
+  # so nothing proves the merge reached this clone and teardown must refuse. The empty
+  # field has to stay in its own position: if it collapses, the head OID slides into
+  # merge_commit and the clause runs its ancestry check - and its fetch - against the
+  # wrong OID, refusing only incidentally at the later head guard.
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" ""
+  fetch_log="$case_dir/default-branch-fetches"
+  : > "$fetch_log"
+  add_git_default_fetch_recorder "$case_dir" "$fetch_log"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merged-no-merge-commit: teardown should refuse when the PR reports no merge commit"
+  grep -q REFUSED "$case_dir/stderr" || fail "merged-no-merge-commit: no REFUSED line in stderr"
+  # The missing merge commit is what decided: the clause bailed at its merge-commit guard
+  # without ever fetching, leaving the content fallback as the only default-branch fetch.
+  fetches=$(grep -c . "$fetch_log" || true)
+  [ "$fetches" = 1 ] \
+    || fail "merged-no-merge-commit: expected only the content fallback to fetch the default branch, got $fetches fetches"
+  pass "a merged PR reporting no merge commit refuses at the merge-commit guard"
+}
+
+test_open_pr_with_content_absent_refuses() {
+  local case_dir rc
+  case_dir=$(make_case open-pr-unlanded)
+  write_meta "$case_dir" no-mistakes ship
+  append_pr_meta_url "$case_dir"
+  # A PR that exists but has not merged anywhere, and content that never reached the
+  # default branch: unchanged from today's behavior, no merged PR means no teardown.
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  add_gh_pr_open "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "open-pr-unlanded: teardown should refuse while the PR is still open"
+  grep -q REFUSED "$case_dir/stderr" || fail "open-pr-unlanded: no REFUSED line in stderr"
+  pass "an unmerged PR still refuses exactly as before"
+}
+
+test_dirty_worktree_refuses_even_when_pr_merged_into_default() {
+  local case_dir rc facts pr_head merge_commit
+  case_dir=$(make_case dirty-rebased-merged)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  merge_commit=${facts#*$'\t'}
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" "$merge_commit"
+  printf '%s\n' "uncommitted edit" > "$case_dir/wt/feature.txt"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "dirty-rebased-merged: teardown should refuse a dirty worktree even after the PR merged into main"
+  grep -q REFUSED "$case_dir/stderr" || fail "dirty-rebased-merged: no REFUSED line in stderr"
+  grep -q "uncommitted changes" "$case_dir/stderr" \
+    || fail "dirty-rebased-merged: refusal did not cite uncommitted changes"
+  pass "uncommitted changes are never landed, merged-into-default PR or not"
+}
+
 test_pr_check_does_not_refresh_stale_pr_head() {
   local case_dir rc pr_head new_head count
   case_dir=$(make_case pr-check-stale)
@@ -839,6 +1142,30 @@ test_content_fallback_refreshes_stale_origin_ref() {
   expect_code 0 "$rc" "content-stale-ref: teardown should use the freshly fetched default branch"
   ! grep -q REFUSED "$case_dir/stderr" || fail "content-stale-ref: teardown printed a REFUSED line"
   pass "content fallback refreshes origin default before comparing trees"
+}
+
+test_failed_origin_fetch_never_falls_back_to_local_default() {
+  local case_dir rc wt_head
+  case_dir=$(make_case origin-fetch-failure)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  # The LOCAL refs/heads/main already carries this exact work, so falling back to it
+  # would allow the teardown. It must not: the clone has an origin, so an unreachable
+  # one means the up-to-date default branch is unknown, not "use the stale local copy".
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  git -C "$case_dir/project" remote set-url origin "$case_dir/no-such-origin.git"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "origin-fetch-failure: teardown should refuse when the default branch cannot be fetched"
+  grep -q REFUSED "$case_dir/stderr" || fail "origin-fetch-failure: no REFUSED line in stderr"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "origin-fetch-failure: teardown completed despite an unfetchable default branch"
+  pass "a failed origin fetch never falls back to the local default branch"
 }
 
 test_dirty_worktree_refuses() {
@@ -1277,10 +1604,18 @@ test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows
 test_squash_merged_pr_allows_replayed_unpushed_patch
 test_merged_pr_with_later_local_commit_refuses
+test_pipeline_rebased_pr_merged_into_default_allows
+test_pr_merged_into_non_default_base_refuses
+test_merge_commit_absent_from_default_branch_refuses
+test_local_commit_stacked_on_merged_pr_head_refuses
+test_merged_pr_without_merge_commit_refuses_at_the_merge_commit_guard
+test_open_pr_with_content_absent_refuses
+test_dirty_worktree_refuses_even_when_pr_merged_into_default
 test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
 test_content_fallback_refreshes_stale_origin_ref
+test_failed_origin_fetch_never_falls_back_to_local_default
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses
 test_stale_index_lock_cleared_and_teardown_succeeds
