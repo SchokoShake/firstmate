@@ -11,26 +11,48 @@
 # the same durable-lease contract secondmate homes already had, now true of every
 # pool-backed task worktree too.
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
-# hard-resets/removes the worktree and kills its processes. Work has landed when it is
-# reachable from any remote-tracking branch (a fork counts as a remote, so
-# upstream-contribution PRs pushed to a fork satisfy this in any mode), OR - for a
-# normal ship task whose commits are not so reachable - when its PR is merged and
-# GitHub reports a PR head that contains the current local work, or its content is
-# already present in the up-to-date default branch. This recognizes the common
-# squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
-# on a remote yet the change is fully in main.
+# hard-resets/removes the worktree and kills its processes. Work has landed when any
+# one of these holds:
+#   1. Remote-reachable. HEAD is reachable from any remote-tracking branch (a fork
+#      counts as a remote, so upstream-contribution PRs pushed to a fork satisfy this
+#      in any mode).
+#   2. Merged PR that CONTAINS the local work. For a normal ship task whose commits are
+#      not remote-reachable: its PR is merged and GitHub reports a PR head containing
+#      the current local work, by SHA ancestry or by patch-id for the unpushed commits.
+#      This recognizes the common squash-merge-then-delete-branch flow, where the
+#      branch's own commits live nowhere on a remote yet the change is fully in main.
+#   3. Merged PR INTO THE DEFAULT BRANCH, whose head the local work is not contained in.
+#      This is the normal post-merge teardown of a no-mistakes ship task, and clauses 1,
+#      2, and 4 all fail there at once: the pipeline pushes to the gate remote, whose ref
+#      is pruned on merge (1); it rebases the branch server-side and pushes its own
+#      review/document fix commits, so the merged head is a rebased superset the local
+#      worktree never had and local ancestry cannot hold for any task that took a fix
+#      round (2); and the local branch still sits on its spawn-time base, so everything
+#      that merged in between reads as branch-only divergence (4). Once the pipeline owns
+#      the branch, local ancestry is the wrong question - the PR having merged into the
+#      default branch is the authoritative signal. Requires ALL of:
+#        - GitHub reports the PR MERGED;
+#        - its base ref is this clone's default branch, so a PR merged into an
+#          integration branch nobody cuts from never counts as landed;
+#        - its merge commit is an ancestor of the freshly fetched origin/<default>;
+#        - the merged PR head is not a strict ancestor of the local HEAD, because
+#          commits stacked on top of the merged head are local work no PR carried.
+#      `git cherry <pr head> HEAD` is reported as corroboration only, never as the
+#      decider: a server-side rebase can move patch context enough to mark a landed
+#      commit '+', so a '+' is printed for the operator rather than refused on.
+#   4. Content already present in the up-to-date default branch.
+#   5. local-only projects additionally accept work merged into the local default
+#      branch (firstmate performs that merge on the captain's approval) as a fallback
+#      for the common case where there is no remote at all.
 # The PR itself is resolved from the task's recorded pr= when present, or - when
 # no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
 # where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
 # up a merged PR whose head branch matches the worktree's branch, fetching its head
 # via refs/pull/<n>/head when the branch itself was deleted. So a missing pr= never
 # by itself causes a false refusal of landed work.
-# A gh lookup error falls back to the content check; if that is also inconclusive,
-# teardown refuses rather than risk discarding unlanded work.
+# A gh lookup error, an unresolvable fact, or an unfetchable object falls through to
+# the next clause and finally to a refusal, rather than risk discarding unlanded work.
 # Uncommitted changes are never landed.
-# local-only projects additionally accept work merged into the local default
-# branch (firstmate performs that merge on the captain's approval) as a fallback
-# for the common case where there is no remote at all.
 # Scout tasks (kind=scout in meta) carve out of that check: their worktree is
 # declared scratch and the report at data/<task-id>/report.md is the work
 # product - teardown proceeds once the report exists, and refuses without it.
@@ -252,19 +274,26 @@ $unpushed
 EOF
 }
 
-# Is the worktree's PR merged for local work contained in that PR? Resolves the
-# PR from the recorded pr= URL first, then from the branch name, and asks GitHub
-# for both the PR state and head. Returns non-zero when the PR is not merged, the
-# current work is not contained in the PR head, no PR is found, or any gh error
-# occurs - the caller then falls back to the content check.
-pr_is_merged() {
-  local branch=$1 target view state head current
+# The task's PR, as the recorded pr= URL when present and otherwise the number
+# discovered from the branch name. Returns non-zero when neither resolves.
+resolve_pr_target() {
+  local branch=$1 target
   if [ -n "$PR_URL" ]; then
     target=$PR_URL
   else
     target=$(pr_number_from_branch "$branch") || return 1
   fi
   [ -n "$target" ] || return 1
+  printf '%s' "$target"
+}
+
+# Is the worktree's PR merged for local work contained in that PR? Asks GitHub for
+# both the PR state and head. Returns non-zero when the PR is not merged, the
+# current work is not contained in the PR head, no PR is found, or any gh error
+# occurs - the caller then falls back to the merged-into-default and content checks.
+pr_is_merged() {
+  local branch=$1 target view state head current
+  target=$(resolve_pr_target "$branch") || return 1
   view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 1
   state=${view%%$'\t'*}
   head=${view#*$'\t'}
@@ -278,6 +307,63 @@ pr_is_merged() {
   current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
   git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null && return 0
   unpushed_patches_are_in_pr_head "$head"
+}
+
+# Corroborating evidence for the operator on the merged-into-default path, printed and
+# never gated on: patch-id equivalence confirms the local commits are the ones the PR
+# carried, but a server-side rebase can move patch context enough to mark a commit that
+# did land '+', so refusing on one would false-refuse the very flow clause 3 exists for.
+report_local_patches_not_in_pr_head() {
+  local pr_head=$1 extra
+  extra=$(git -C "$WT" cherry "$pr_head" HEAD 2>/dev/null | sed -n 's/^+ //p') || return 0
+  [ -n "$extra" ] || return 0
+  echo "teardown: these local commits have no patch-equivalent in the merged PR head (a server-side rebase moving patch context is the benign cause):" >&2
+  printf '%s\n' "$extra" | sed 's/^/  /' >&2
+}
+
+# Did the worktree's PR merge INTO THE DEFAULT BRANCH? This is landed-work clause 3 (see
+# the script header): the authoritative post-merge signal for a no-mistakes ship task
+# whose branch the pipeline rebased server-side, where local ancestry can never hold.
+# Returns non-zero when any required fact is missing or unprovable, so the caller falls
+# back to the content check and then refuses.
+pr_merged_into_default() {
+  local branch=$1 target view state base merge_commit head name ref current
+  target=$(resolve_pr_target "$branch") || return 1
+  view=$(cd "$WT" && gh pr view "$target" \
+    --json state,baseRefName,mergeCommit,headRefOid \
+    -q '[.state, .baseRefName, (.mergeCommit.oid // ""), .headRefOid] | @tsv' 2>/dev/null) || return 1
+  IFS=$'\t' read -r state base merge_commit head <<EOF || return 1
+$(printf '%s\n' "$view" | head -1)
+EOF
+  case "$state" in
+    MERGED|merged) ;;
+    *) return 1 ;;
+  esac
+
+  # A PR merged into an integration branch nobody cuts from is not landed work.
+  name=$(default_branch) || return 1
+  [ -n "$base" ] && [ "$base" = "$name" ] || return 1
+
+  # The merge itself must be provably present on this clone's default branch.
+  [ -n "$merge_commit" ] || return 1
+  git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
+  git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
+  ref="refs/remotes/origin/$name"
+  git -C "$WT" merge-base --is-ancestor "$merge_commit" "$ref" 2>/dev/null || return 1
+
+  # Local commits STACKED ON the merged head are work no PR carried, so they still
+  # refuse. A rebased head is a diverged sibling of the local branch and never trips
+  # this, which is exactly what separates the two cases.
+  [ -n "$head" ] || return 1
+  ensure_commit_object "$target" "$head" || return 1
+  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  if [ "$head" != "$current" ] && git -C "$WT" merge-base --is-ancestor "$head" "$current" 2>/dev/null; then
+    return 1
+  fi
+
+  report_local_patches_not_in_pr_head "$head"
+  echo "teardown: PR $target merged into $name (merge commit ${merge_commit:0:7}); treating the worktree's pre-rebase branch as landed" >&2
+  return 0
 }
 
 # Is the branch's content already present in the up-to-date default branch? Fetches
@@ -306,13 +392,15 @@ content_in_default() {
 }
 
 # Has the worktree's committed work actually LANDED, though its commits are not
-# reachable from any remote-tracking branch? True when a merged PR proves the
-# current local work is contained in the PR head, OR the content is already in the
-# default branch (fallback, which also covers the no-PR and gh-error paths). False
-# only for genuinely unlanded work.
+# reachable from any remote-tracking branch? True when a merged PR proves the current
+# local work is contained in the PR head, OR that PR merged into the default branch
+# (the post-rebase path), OR the content is already in the default branch (fallback,
+# which also covers the no-PR and gh-error paths). False only for genuinely unlanded
+# work. The script header owns the full definition of each clause.
 work_is_landed() {
   local branch=$1
   pr_is_merged "$branch" && return 0
+  pr_merged_into_default "$branch" && return 0
   content_in_default
 }
 
