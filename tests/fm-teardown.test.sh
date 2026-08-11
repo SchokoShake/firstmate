@@ -52,6 +52,8 @@
 #   (ac) merged-into-main PR + local commit stacked on its head -> REFUSE (safety)
 #   (ad) open PR + content not in default                       -> REFUSE (safety)
 #   (ae) merged-into-main PR + dirty worktree                   -> REFUSE (dirty wins)
+#   (af) merged-into-main PR reporting no merge commit          -> REFUSE (safety)
+#   (ag) failed origin fetch + content in local main            -> REFUSE (safety)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -262,7 +264,7 @@ case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *"state,baseRefName,mergeCommit,headRefOid"*)
-        printf '%s\t%s\t%s\t%s\n' 'MERGED' '$base' '$merge_commit' '$head' ; exit 0 ;;
+        printf '%s\n%s\n%s\n%s\n' 'MERGED' '$base' '$merge_commit' '$head' ; exit 0 ;;
       *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
     esac
@@ -283,7 +285,7 @@ case "${1:-} ${2:-}" in
   "pr view")
     case " $* " in
       *"state,baseRefName,mergeCommit,headRefOid"*)
-        printf '%s\t%s\t%s\t%s\n' 'OPEN' 'main' '' 'deadbeef' ; exit 0 ;;
+        printf '%s\n%s\n%s\n%s\n' 'OPEN' 'main' '' 'deadbeef' ; exit 0 ;;
       *"state,headRefOid"*) printf '%s\t%s\n' 'OPEN' 'deadbeef' ; exit 0 ;;
     esac
     ;;
@@ -584,6 +586,24 @@ if [ -n "$dir" ] && [ "${args[2]:-}" = status ] && [ "${args[3]:-}" = --porcelai
   fi
 fi
 exec "$real" "${args[@]}"
+SH
+  chmod +x "$case_dir/fakebin/git"
+}
+
+# Log every default-branch fetch teardown issues, then delegate to the real git. Each
+# landed-work clause that trusts origin/<default> fetches it first, so the number of
+# logged refspecs shows how far the clauses got before refusing. Args: case_dir log_path
+add_git_default_fetch_recorder() {
+  local case_dir=$1 log=$2
+  cat > "$case_dir/fakebin/git" <<SH
+#!/usr/bin/env bash
+real=\${REAL_GIT_FOR_TEST:?}
+for arg in "\$@"; do
+  case "\$arg" in
+    '+refs/heads/main:refs/remotes/origin/main') printf '%s\n' "\$arg" >> '$log' ;;
+  esac
+done
+exec "\$real" "\$@"
 SH
   chmod +x "$case_dir/fakebin/git"
 }
@@ -955,6 +975,37 @@ test_local_commit_stacked_on_merged_pr_head_refuses() {
   pass "local commits stacked on a merged PR head still refuse (the guard stays meaningful)"
 }
 
+test_merged_pr_without_merge_commit_refuses_at_the_merge_commit_guard() {
+  local case_dir rc facts pr_head fetch_log fetches
+  case_dir=$(make_case merged-no-merge-commit)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  # GitHub reports the PR MERGED into the default branch but hands back NO merge commit,
+  # so nothing proves the merge reached this clone and teardown must refuse. The empty
+  # field has to stay in its own position: if it collapses, the head OID slides into
+  # merge_commit and the clause runs its ancestry check - and its fetch - against the
+  # wrong OID, refusing only incidentally at the later head guard.
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" ""
+  fetch_log="$case_dir/default-branch-fetches"
+  : > "$fetch_log"
+  add_git_default_fetch_recorder "$case_dir" "$fetch_log"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merged-no-merge-commit: teardown should refuse when the PR reports no merge commit"
+  grep -q REFUSED "$case_dir/stderr" || fail "merged-no-merge-commit: no REFUSED line in stderr"
+  # The missing merge commit is what decided: the clause bailed at its merge-commit guard
+  # without ever fetching, leaving the content fallback as the only default-branch fetch.
+  fetches=$(grep -c . "$fetch_log" || true)
+  [ "$fetches" = 1 ] \
+    || fail "merged-no-merge-commit: expected only the content fallback to fetch the default branch, got $fetches fetches"
+  pass "a merged PR reporting no merge commit refuses at the merge-commit guard"
+}
+
 test_open_pr_with_content_absent_refuses() {
   local case_dir rc
   case_dir=$(make_case open-pr-unlanded)
@@ -1091,6 +1142,30 @@ test_content_fallback_refreshes_stale_origin_ref() {
   expect_code 0 "$rc" "content-stale-ref: teardown should use the freshly fetched default branch"
   ! grep -q REFUSED "$case_dir/stderr" || fail "content-stale-ref: teardown printed a REFUSED line"
   pass "content fallback refreshes origin default before comparing trees"
+}
+
+test_failed_origin_fetch_never_falls_back_to_local_default() {
+  local case_dir rc wt_head
+  case_dir=$(make_case origin-fetch-failure)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  # The LOCAL refs/heads/main already carries this exact work, so falling back to it
+  # would allow the teardown. It must not: the clone has an origin, so an unreachable
+  # one means the up-to-date default branch is unknown, not "use the stale local copy".
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+  git -C "$case_dir/project" remote set-url origin "$case_dir/no-such-origin.git"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "origin-fetch-failure: teardown should refuse when the default branch cannot be fetched"
+  grep -q REFUSED "$case_dir/stderr" || fail "origin-fetch-failure: no REFUSED line in stderr"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "origin-fetch-failure: teardown completed despite an unfetchable default branch"
+  pass "a failed origin fetch never falls back to the local default branch"
 }
 
 test_dirty_worktree_refuses() {
@@ -1533,12 +1608,14 @@ test_pipeline_rebased_pr_merged_into_default_allows
 test_pr_merged_into_non_default_base_refuses
 test_merge_commit_absent_from_default_branch_refuses
 test_local_commit_stacked_on_merged_pr_head_refuses
+test_merged_pr_without_merge_commit_refuses_at_the_merge_commit_guard
 test_open_pr_with_content_absent_refuses
 test_dirty_worktree_refuses_even_when_pr_merged_into_default
 test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
 test_content_fallback_refreshes_stale_origin_ref
+test_failed_origin_fetch_never_falls_back_to_local_default
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses
 test_stale_index_lock_cleared_and_teardown_succeeds

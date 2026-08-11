@@ -40,6 +40,12 @@
 #      `git cherry <pr head> HEAD` is reported as corroboration only, never as the
 #      decider: a server-side rebase can move patch context enough to mark a landed
 #      commit '+', so a '+' is printed for the operator rather than refused on.
+#      KNOWN AND ACCEPTED LIMIT, not an oversight: a local commit made AFTER the
+#      server-side rebase is neither stacked on the merged head nor patch-contained in
+#      it, so it passes the stacked-commit guard above and teardown's hard reset
+#      destroys it. Closing that hole would mean refusing on a cherry '+', which
+#      re-breaks the very flow this clause exists for, so do not "fix" it later by
+#      tightening this guard.
 #   4. Content already present in the up-to-date default branch.
 #   5. local-only projects additionally accept work merged into the local default
 #      branch (firstmate performs that merge on the captain's approval) as a fallback
@@ -321,6 +327,24 @@ report_local_patches_not_in_pr_head() {
   printf '%s\n' "$extra" | sed 's/^/  /' >&2
 }
 
+# The clone's default-branch ref to compare against, freshly fetched from origin so no
+# clause trusts a stale ref. Echoes the ref name. When the clone HAS an origin the fetch
+# must succeed: a fetch failure returns non-zero rather than falling back to anything
+# older. Passing "local-fallback" additionally accepts a local refs/heads/<name>, but
+# ONLY when the clone has no origin at all. Args: default-branch-name [local-fallback]
+fetched_default_ref() {
+  local name=$1 allow_local=${2:-}
+  [ -n "$name" ] || return 1
+  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
+    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
+    printf '%s\n' "refs/remotes/origin/$name"
+    return 0
+  fi
+  [ "$allow_local" = local-fallback ] || return 1
+  git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1 || return 1
+  printf '%s\n' "refs/heads/$name"
+}
+
 # Did the worktree's PR merge INTO THE DEFAULT BRANCH? This is landed-work clause 3 (see
 # the script header): the authoritative post-merge signal for a no-mistakes ship task
 # whose branch the pipeline rebased server-side, where local ancestry can never hold.
@@ -331,9 +355,16 @@ pr_merged_into_default() {
   target=$(resolve_pr_target "$branch") || return 1
   view=$(cd "$WT" && gh pr view "$target" \
     --json state,baseRefName,mergeCommit,headRefOid \
-    -q '[.state, .baseRefName, (.mergeCommit.oid // ""), .headRefOid] | @tsv' 2>/dev/null) || return 1
-  IFS=$'\t' read -r state base merge_commit head <<EOF || return 1
-$(printf '%s\n' "$view" | head -1)
+    -q '.state, .baseRefName, (.mergeCommit.oid // ""), .headRefOid' 2>/dev/null) || return 1
+  # One value per line, each read on its own, so an absent mergeCommit stays an empty
+  # value in its own position instead of shifting every later field left.
+  {
+    IFS= read -r state || true
+    IFS= read -r base || true
+    IFS= read -r merge_commit || true
+    IFS= read -r head || true
+  } <<EOF
+$view
 EOF
   case "$state" in
     MERGED|merged) ;;
@@ -346,9 +377,7 @@ EOF
 
   # The merge itself must be provably present on this clone's default branch.
   [ -n "$merge_commit" ] || return 1
-  git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
-  git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
-  ref="refs/remotes/origin/$name"
+  ref=$(fetched_default_ref "$name") || return 1
   git -C "$WT" merge-base --is-ancestor "$merge_commit" "$ref" 2>/dev/null || return 1
 
   # Local commits STACKED ON the merged head are work no PR carried, so they still
@@ -376,14 +405,7 @@ EOF
 content_in_default() {
   local name ref default_tree merged_tree
   name=$(default_branch) || return 1
-  if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
-    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
-    ref="refs/remotes/origin/$name"
-  elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
-    ref="refs/heads/$name"
-  else
-    return 1
-  fi
+  ref=$(fetched_default_ref "$name" local-fallback) || return 1
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
   merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
