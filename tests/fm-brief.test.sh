@@ -268,10 +268,11 @@ test_git_identity_rule_is_in_the_standing_rules_block() {
 
     # The prohibition must stay unqualified: a scout is bound exactly as a ship task is, since
     # a `git config` override from a linked worktree lands in the clone's shared config and
-    # outlives teardown. Pinning the sentence through its terminating period catches a scoping
-    # clause being reintroduced, which would void the rule wherever commits are called scratch.
+    # outlives teardown. assert_grep is unanchored grep -F, so the literal carries the `3. `
+    # list marker through to the terminating period: that rejects a scoping clause whether it
+    # is prepended as a lead-in or inserted mid-sentence, and pins the rule at position 3.
     # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
-    assert_grep 'Never set or override the git author or committer identity. Not with `git config`' \
+    assert_grep '3. Never set or override the git author or committer identity. Not with `git config`' \
       "$brief" "$id: git-identity ban picked up a qualifier instead of staying unconditional"
 
     # A throwaway fixture repo is one the test creates itself and has no configured identity to
