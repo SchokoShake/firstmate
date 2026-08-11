@@ -174,7 +174,7 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
 # rewrite of the Setup/branch step cannot take it with it, so assert both the rule and its
 # placement relative to that step, for every crewmate scaffold and delivery mode.
 test_coauthor_ban_is_in_the_standing_rules_block() {
-  local home id brief rules_line setup_line
+  local home id brief rules_line setup_line status
   home="$TMP_ROOT/coauthor-home"
   write_registry "$home"
 
@@ -209,9 +209,12 @@ test_coauthor_ban_is_in_the_standing_rules_block() {
   # The charter deliberately omits it: a secondmate commits nothing itself, and its own
   # crewmates get the rule from these same scaffolds.
   FM_HOME="$home" FM_SECONDMATE_CHARTER='ops' \
-    "$ROOT/bin/fm-brief.sh" coauthor-secondmate-e5 --secondmate --no-projects >/dev/null 2>&1
+    "$ROOT/bin/fm-brief.sh" coauthor-secondmate-e5 --secondmate --no-projects >/dev/null 2>&1; status=$?
+  expect_code 0 "$status" "secondmate charter scaffold should exit 0"
+  brief="$home/data/coauthor-secondmate-e5/brief.md"
+  assert_present "$brief" "secondmate charter was not scaffolded"
   assert_no_grep "Never add an agent name as a commit co-author" \
-    "$home/data/coauthor-secondmate-e5/brief.md" \
+    "$brief" \
     "secondmate charter picked up a crewmate commit rule it has no use for"
 
   pass "fm-brief.sh: ship and scout scaffolds carry the co-author ban in the Rules block"
