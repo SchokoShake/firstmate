@@ -139,25 +139,25 @@ EOF
 # configured" is universal, so it belongs in Rules beside rule 2 rather than in the Setup step
 # firstmate rewrites per repo. The rule states both halves deliberately: a bare prohibition
 # sends a crew hunting for the "right" value, and naming the agent's own context as a
-# forbidden source is what closes the hole the wrong email actually came through. It is scoped
-# to deliverable authorship because firstmate's own test suite has to give throwaway fixture
-# repos a deterministic identity, and a repo made by `git init` in a temp dir has no configured
-# identity for the positive half to point at; the carve-out names those helpers rather than
-# leaving a crewmate to infer that a fixture is not a deliverable.
+# forbidden source is what closes the hole the wrong email actually came through. The ban stays
+# unconditional, and a scout is bound exactly as a ship task is: the contamination path is not
+# the commit but the clone config, which outlives the worktree - `git config` from a linked
+# worktree writes to the shared $GIT_COMMON_DIR/config, and nothing here enables
+# extensions.worktreeConfig, so a scratch override silently authors every later crewmate's
+# commits in that clone. The one exemption is a repo a test creates for itself in a temp dir,
+# which has no configured identity to use; naming those helpers keeps it explicit, not inferred.
 IDENTITY_RULE=$(cat <<'EOF'
-3. Never set or override the git author or committer identity carried by the commits you make
-   as your task deliverable in the repository you were given. Not with `git config`, not with
+3. Never set or override the git author or committer identity. Not with `git config`, not with
    `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, not with `git commit --author`. The identity this
    repository is already configured with is the correct one: it is set globally and
    deliberately, and it is the identity the captain's GitHub account and their deployment
    integrations recognize. Your own context or memory is NOT a source for this value - the user
    email an agent carries in its context is exactly the value that has broken a deployment
    here. This rule is unconditional in the same way rule 2 is: it still applies when the Setup
-   section above has been rewritten for another repo. It is scoped to deliverable authorship,
-   so it does not reach a throwaway git repo a test creates: such a fixture has no configured
-   identity for the half above to point at, and giving it a deterministic one is not authoring
-   a deliverable - firstmate's own `fm_git_identity` and `fm_git_init_commit` helpers in
-   `tests/lib.sh` do exactly that and stay correct.
+   section above has been rewritten for another repo. The one exemption is a throwaway git repo
+   a test creates for itself in a temp dir: that is never a repository you were given, and it
+   has no configured identity to use, so the `fm_git_identity` and `fm_git_init_commit` helpers
+   in `tests/lib.sh` set a deterministic one deliberately and stay correct.
 EOF
 )
 

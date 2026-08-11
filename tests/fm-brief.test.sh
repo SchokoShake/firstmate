@@ -266,15 +266,20 @@ test_git_identity_rule_is_in_the_standing_rules_block() {
     assert_grep "Your own context or memory is NOT a source for this value" "$brief" \
       "$id: git-identity rule stopped naming the agent's own context as a forbidden source"
 
-    # The ban governs deliverable authorship only. A throwaway fixture repo has no configured
-    # identity for the positive half to point at, so the exemption covering firstmate's own
-    # fixture helpers must be named in the brief, not left for a crewmate to infer.
-    assert_grep "as your task deliverable in the repository you were given" "$brief" \
-      "$id: git-identity ban stopped scoping itself to deliverable commits"
-    assert_grep "does not reach a throwaway git repo a test creates" "$brief" \
+    # The prohibition must stay unqualified: a scout is bound exactly as a ship task is, since
+    # a `git config` override from a linked worktree lands in the clone's shared config and
+    # outlives teardown. Pinning the sentence through its terminating period catches a scoping
+    # clause being reintroduced, which would void the rule wherever commits are called scratch.
+    # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
+    assert_grep 'Never set or override the git author or committer identity. Not with `git config`' \
+      "$brief" "$id: git-identity ban picked up a qualifier instead of staying unconditional"
+
+    # A throwaway fixture repo is one the test creates itself and has no configured identity to
+    # use, so it is the single exemption - named in the brief, not left for a crewmate to infer.
+    assert_grep "The one exemption is a throwaway git repo" "$brief" \
       "$id: git-identity rule lost the test-fixture carve-out"
     # shellcheck disable=SC2016 # Literal backticks must remain unexpanded.
-    assert_grep '`fm_git_identity` and `fm_git_init_commit` helpers in' "$brief" \
+    assert_grep '`fm_git_identity` and `fm_git_init_commit` helpers' "$brief" \
       "$id: git-identity carve-out stopped naming the fixture helpers it exempts"
 
     # Placement, not just presence: same reasoning as the co-author ban - a rule written into
