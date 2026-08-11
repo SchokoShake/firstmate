@@ -220,6 +220,71 @@ test_coauthor_ban_is_in_the_standing_rules_block() {
   pass "fm-brief.sh: ship and scout scaffolds carry the co-author ban in the Rules block"
 }
 
+# The git-identity ban is rule 2's twin and rides in the same standing block for the same
+# reason. Crews used to set the identity explicitly because there was no global one; once the
+# captain set one and removed every per-repo override, that habit became the bug - a crew that
+# overrode the configured identity with its own harness's notion of the user's email authored
+# commits a Vercel deployment then refused, while every commit GitHub itself authored was
+# clean. Assert both halves (the prohibition AND the use-what-is-configured instruction), the
+# named forbidden source, and placement below the Setup step, for every crewmate scaffold.
+test_git_identity_rule_is_in_the_standing_rules_block() {
+  local home id brief rules_line identity_line status
+  home="$TMP_ROOT/identity-home"
+  write_registry "$home"
+
+  for id_args in \
+    "identity-nomistakes-g1:no-registry-proj" \
+    "identity-directpr-g2:direct-proj" \
+    "identity-localonly-g3:local-proj" \
+    "identity-scout-g4:no-registry-proj:--scout"; do
+    id=${id_args%%:*}
+    rest=${id_args#*:}
+    proj=${rest%%:*}
+    scout=""
+    [ "$rest" != "$proj" ] && scout=${rest#*:}
+    # shellcheck disable=SC2086 # $scout is a deliberate optional single flag, not a path.
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$proj" $scout >/dev/null 2>&1
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$id: brief was not scaffolded"
+    assert_grep "Never set or override the git author or committer identity" "$brief" \
+      "$id: brief lost the git-identity ban"
+    assert_grep '`GIT_AUTHOR_*` / `GIT_COMMITTER_*`' "$brief" \
+      "$id: git-identity ban stopped naming the environment-variable route"
+    assert_grep '`git commit --author`' "$brief" \
+      "$id: git-identity ban stopped naming the --author route"
+    assert_grep '`git config`' "$brief" \
+      "$id: git-identity ban stopped naming the git config route"
+
+    # A bare prohibition sends a crew hunting for the "right" value, so the positive half
+    # must survive alongside it, including the clause that rules out the agent's own context.
+    assert_grep "already configured with is the correct one" "$brief" \
+      "$id: git-identity rule lost the use-what-is-configured half"
+    assert_grep "Your own context or memory is NOT a source for this value" "$brief" \
+      "$id: git-identity rule stopped naming the agent's own context as a forbidden source"
+
+    # Placement, not just presence: same reasoning as the co-author ban - a rule written into
+    # the Setup step is lost when firstmate rewrites that step for another repo.
+    rules_line=$(grep -n '^# Rules$' "$brief" | head -1 | cut -d: -f1)
+    identity_line=$(grep -n 'Never set or override the git author or committer identity' "$brief" | head -1 | cut -d: -f1)
+    [ -n "$rules_line" ] || fail "$id: brief has no Rules section"
+    [ "$identity_line" -gt "$rules_line" ] || \
+      fail "$id: git-identity ban sits above the Rules block, where a Setup rewrite can drop it"
+  done
+
+  # Omitted from the charter for the same reason rule 2 is: a secondmate commits nothing
+  # itself, and its own crewmates get the rule from these same scaffolds.
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='ops' \
+    "$ROOT/bin/fm-brief.sh" identity-secondmate-g5 --secondmate --no-projects >/dev/null 2>&1; status=$?
+  expect_code 0 "$status" "secondmate charter scaffold should exit 0"
+  brief="$home/data/identity-secondmate-g5/brief.md"
+  assert_present "$brief" "secondmate charter was not scaffolded"
+  assert_no_grep "Never set or override the git author or committer identity" \
+    "$brief" \
+    "secondmate charter picked up a crewmate commit rule it has no use for"
+
+  pass "fm-brief.sh: ship and scout scaffolds carry the git-identity ban in the Rules block"
+}
+
 # The Rules list is numbered and the no-mistakes DOD points back into it by number, so a
 # renumbering must not leave that pointer aimed at the wrong rule.
 test_rules_are_numbered_consecutively() {
@@ -235,13 +300,13 @@ test_rules_are_numbered_consecutively() {
     brief="$home/data/$id/brief.md"
     numbers=$(sed -n '/^# Rules$/,/^$/p' "$brief" | grep -cE '^[0-9]+\. ')
     expected=$(sed -n '/^# Rules$/,/^$/p' "$brief" | grep -oE '^[0-9]+\. ' | sed 's/\. //' | tr '\n' ' ')
-    [ "$numbers" -eq 8 ] || fail "$id: expected 8 numbered rules, found $numbers"
-    [ "$expected" = "1 2 3 4 5 6 7 8 " ] || \
+    [ "$numbers" -eq 9 ] || fail "$id: expected 9 numbered rules, found $numbers"
+    [ "$expected" = "1 2 3 4 5 6 7 8 9 " ] || \
       fail "$id: rules are not numbered consecutively (got: $expected)"
   done
 
   brief="$home/data/numbering-ship-f1/brief.md"
-  assert_grep "escalate to firstmate (rule 7) and stop" "$brief" \
+  assert_grep "escalate to firstmate (rule 8) and stop" "$brief" \
     "no-mistakes DOD points at the wrong rule number for needs-decision escalation"
   pass "fm-brief.sh: Rules stay consecutively numbered and the DOD pointer matches"
 }
@@ -348,6 +413,7 @@ test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_coauthor_ban_is_in_the_standing_rules_block
+test_git_identity_rule_is_in_the_standing_rules_block
 test_rules_are_numbered_consecutively
 test_secondmate_no_projects_charter
 test_pause_verb_override_renders_all_brief_scaffolds
