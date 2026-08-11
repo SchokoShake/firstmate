@@ -37,6 +37,23 @@
 #       terms - it is equally an item left open, and there is no teardown left to prompt
 #       the hand-edit - while an untracked or already-Done item stays quiet, because
 #       neither leaves a card to recompose
+#   (m) a "+captain-merge" project the task's own record names is REFUSED, before the
+#       merge and before any recording of it
+#   (n) the same refusal from the PR url alone, which is what a stale card, a replayed
+#       answer, or a hand-typed request still carries once the task is torn down - in
+#       EVERY url shape parse_pr_url accepts, and against every clone-origin shape a
+#       "git clone" records, since a shape the guard cannot read on either side is the one
+#       that walks past it into gh-axi
+#   (o) a project WITHOUT the flag merges exactly as before, in a home where another
+#       project carries it
+#   (p) the same flag refuses bin/fm-merge-local.sh's local-only merge - firstmate's OTHER
+#       merge path - and leaves an unflagged local-only merge landing as before
+#   (q) a MALFORMED posture flag - misspelled, missing its leading "+", or written where
+#       the mode goes - is reported on stderr rather than silently ignored, survives the
+#       policy library's stderr filter, and is never honored as the flag, without
+#       disturbing either stdout contract callers string-compare
+#   (r) a merge policy that could not be READ stays permissive, warns once, and is
+#       retried rather than cached as a verdict
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -936,6 +953,533 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+# --- merge policy: projects the captain merges personally ---------------------
+# bin/fm-merge-policy-lib.sh: a "+captain-merge" project is one firstmate must NEVER
+# merge. The attention board withholding the Merge option is not what makes that hold -
+# a card composed before the flag was set, a replayed answer, or a request typed at the
+# shell all reach this script with the option gone and the merge one call away. These
+# cases pin the refusal, and pin just as hard that an unflagged project is untouched.
+
+# write_merge_policy_registry <case_dir> <guarded-posture>: two registry lines differing
+# ONLY in the posture flag under test, so a control merge is available in the same home.
+write_merge_policy_registry() {
+  local case_dir=$1 posture=$2
+  mkdir -p "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<EOF
+# Fleet project registry (firstmate-private)
+
+- open [direct-PR] - firstmate merges this one on the captain's word (added 2026-07-01)
+- guarded [direct-PR$posture] - the captain merges this one personally (added 2026-07-02)
+EOF
+}
+
+# clone_with_origin <case_dir> <name> <url>: a projects/<name> whose only interesting
+# property is its "origin" - which is all the url signal reads, so a bare "git init" plus
+# a remote is a complete fixture (the precedent tests/fm-logbook.test.sh sets).
+clone_with_origin() {
+  local case_dir=$1 name=$2 url=$3
+  mkdir -p "$case_dir/projects"
+  git init -q "$case_dir/projects/$name"
+  git -C "$case_dir/projects/$name" remote add origin "$url"
+}
+
+test_captain_merge_project_is_refused_from_the_tasks_own_record() {
+  local case_dir rc
+  case_dir=$(make_case policy-task-record)
+  mkdir -p "$case_dir/wt"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" \
+    "project=$case_dir/projects/guarded" "kind=ship" "mode=direct-PR"
+  add_gh_mocks "$case_dir" 4444444444444444444444444444444444444444
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/acme/guarded/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "policy-task-record: a +captain-merge project must be refused"
+  assert_grep '+captain-merge' "$case_dir/stderr" \
+    "policy-task-record: the refusal must name the flag that caused it"
+  assert_grep 'guarded' "$case_dir/stderr" \
+    "policy-task-record: the refusal must name the project it is protecting"
+  # Refused BEFORE anything happened: no merge call, and no half-performed recording
+  # left in the meta for a later teardown to read as a landed PR.
+  grep -q 'pr merge' "$case_dir/gh-axi.log" \
+    && fail "policy-task-record: a refused merge must never call gh-axi pr merge"
+  grep -q '^pr=' "$case_dir/state/task-x1.meta" \
+    && fail "policy-task-record: a refused merge must record nothing into the meta"
+  pass "fm-pr-merge refuses a +captain-merge project the task's own record names"
+}
+
+test_captain_merge_project_is_refused_from_the_pr_url_alone() {
+  local case_dir fakebin rc
+  case_dir="$TMP_ROOT/policy-url-only"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  add_gh_mocks "$case_dir" 5555555555555555555555555555555555555555
+  : > "$case_dir/gh-axi.log"
+
+  # No meta and no backlog item: the shape a stale card, a replayed answer, or a
+  # hand-typed request arrives in once the task has been torn down and pruned. The
+  # project-name signal has nothing to read here, so only the url can refuse this - and
+  # it must, because the url is the one thing a merge request always carries.
+  set +e
+  run_pr_merge "$case_dir" ghost-z9 https://github.com/acme/guarded/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "policy-url-only: a PR whose repo is a +captain-merge project's own must be refused"
+  assert_grep "own origin" "$case_dir/stderr" \
+    "policy-url-only: the refusal must say it matched the clone's origin, not a task record"
+  grep -q 'pr merge' "$case_dir/gh-axi.log" \
+    && fail "policy-url-only: a refused merge must never call gh-axi pr merge"
+  pass "fm-pr-merge refuses a +captain-merge project reached through the PR url alone"
+}
+
+test_captain_merge_url_variants_parse_pr_url_accepts_are_refused() {
+  local case_dir fakebin rc url
+  # Every url shape parse_pr_url accepts is a url this script will HAND TO gh-axi, so the
+  # guard has to resolve every one of them: the shape it cannot read is exactly the one
+  # that walks past it. Two forms the guard's own slug parse used to miss - the trailing
+  # slash parse_pr_url has always accepted, and a ".git" repo component - are driven here
+  # in the no-meta, no-backlog shape a stale card or a hand-typed request arrives in,
+  # where the url is the ONLY signal left to refuse on.
+  for url in https://github.com/acme/guarded/pull/7/ \
+             https://github.com/acme/guarded.git/pull/7; do
+    case_dir="$TMP_ROOT/policy-url-shape-$(printf '%s' "$url" | tr -c 'a-zA-Z0-9' '-')"
+    fakebin="$case_dir/fakebin"
+    mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+    write_merge_policy_registry "$case_dir" " +captain-merge"
+    clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+    add_gh_mocks "$case_dir" 7777777777777777777777777777777777777777
+    : > "$case_dir/gh-axi.log"
+
+    set +e
+    run_pr_merge "$case_dir" ghost-z9 "$url" > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "policy-url-shape: $url must be refused for a +captain-merge project"
+    assert_grep "own origin" "$case_dir/stderr" \
+      "policy-url-shape: $url must be refused on the clone's origin, the only signal it carries"
+    grep -q 'pr merge' "$case_dir/gh-axi.log" \
+      && fail "policy-url-shape: $url must never reach gh-axi pr merge"
+  done
+
+  # The control that keeps the tolerance from becoming over-tightening: the same shape
+  # against an UNFLAGGED project still merges, and reaches gh-axi with the number and repo
+  # parse_pr_url read out of it.
+  case_dir="$TMP_ROOT/policy-url-shape-control"
+  fakebin="$case_dir/fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$fakebin"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  clone_with_origin "$case_dir" open https://github.com/acme/open.git
+  add_gh_mocks "$case_dir" 8888888888888888888888888888888888888888
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" ghost-z8 https://github.com/acme/open/pull/42/ \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "policy-url-shape control: an unflagged project's trailing-slash url must still merge"
+  grep -qxF 'pr merge 42 --repo acme/open --squash' "$case_dir/gh-axi.log" \
+    || fail "policy-url-shape control: the unflagged merge must reach gh-axi unchanged"
+  pass "fm-pr-merge refuses every +captain-merge url shape its own PR-url parse accepts"
+}
+
+test_merge_policy_leaves_an_unflagged_project_merging() {
+  local case_dir rc
+  case_dir=$(make_case policy-control)
+  mkdir -p "$case_dir/wt"
+  # The SAME home, carrying the same flagged line: a project without the flag must be
+  # completely unaffected by another project having it, through both signals at once -
+  # its own record names "open", and its clone's origin is the url being merged.
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  clone_with_origin "$case_dir" open https://github.com/acme/open.git
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" \
+    "project=$case_dir/projects/open" "kind=ship" "mode=direct-PR"
+  add_gh_mocks "$case_dir" 6666666666666666666666666666666666666666
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/acme/open/pull/42 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "policy-control: an unflagged project must still merge"
+  grep -qxF 'pr merge 42 --repo acme/open --squash' "$case_dir/gh-axi.log" \
+    || fail "policy-control: the unflagged merge must reach gh-axi unchanged"
+  assert_grep 'pr=https://github.com/acme/open/pull/42' "$case_dir/state/task-x1.meta" \
+    "policy-control: the unflagged merge must still record pr= before merging"
+  pass "fm-pr-merge leaves a project without the flag merging exactly as before"
+}
+
+# build_local_only_project <case_dir> <name> <id>: a local-only project (no remote at all)
+# whose fm/<id> branch sits one clean fast-forward ahead of main - the exact state
+# bin/fm-merge-local.sh is asked to land.
+build_local_only_project() {
+  local case_dir=$1 name=$2 id=$3
+  local proj="$case_dir/projects/$name"
+  mkdir -p "$case_dir/projects"
+  git init -q "$proj"
+  git -C "$proj" symbolic-ref HEAD refs/heads/main
+  printf 'v0\n' > "$proj/file.txt"
+  git -C "$proj" add file.txt
+  git -C "$proj" commit -qm C0
+  git -C "$proj" checkout -q -b "fm/$id"
+  printf 'v1\n' > "$proj/file.txt"
+  git -C "$proj" add file.txt
+  git -C "$proj" commit -qm C1
+  git -C "$proj" checkout -q main
+}
+
+test_captain_merge_refuses_the_local_merge_too() {
+  local case_dir proj rc head_before head_after
+  case_dir="$TMP_ROOT/policy-local-only"
+  mkdir -p "$case_dir/state" "$case_dir/data"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  build_local_only_project "$case_dir" guarded guard-l1
+  proj="$case_dir/projects/guarded"
+  fm_write_meta "$case_dir/state/guard-l1.meta" \
+    "window=fm-guard-l1" "worktree=$case_dir/wt" \
+    "project=$proj" "kind=ship" "mode=local-only"
+  head_before=$(git -C "$proj" rev-parse main)
+
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_DATA_OVERRIDE="$case_dir/data" FM_PROJECTS_OVERRIDE="$case_dir/projects" \
+    "$ROOT/bin/fm-merge-local.sh" guard-l1 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  # The flag says "never merge this project's work", not "never merge its PRs": a
+  # prohibition that held on one of firstmate's two merge paths and not the other would
+  # quietly stop being true for exactly the projects it was set on.
+  expect_code 1 "$rc" "policy-local-only: a +captain-merge project's local merge must be refused"
+  assert_grep '+captain-merge' "$case_dir/stderr" \
+    "policy-local-only: the refusal must name the flag that caused it"
+  head_after=$(git -C "$proj" rev-parse main)
+  [ "$head_before" = "$head_after" ] \
+    || fail "policy-local-only: a refused local merge must not move the default branch"
+  pass "fm-merge-local refuses a +captain-merge project's local merge"
+}
+
+test_merge_policy_leaves_an_unflagged_local_merge_working() {
+  local case_dir proj rc head_before head_after branch_head
+  case_dir="$TMP_ROOT/policy-local-control"
+  mkdir -p "$case_dir/state" "$case_dir/data"
+  # The same home carrying the same flagged line - the flag must not spill onto a project
+  # that does not have it.
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  build_local_only_project "$case_dir" open open-l2
+  proj="$case_dir/projects/open"
+  fm_write_meta "$case_dir/state/open-l2.meta" \
+    "window=fm-open-l2" "worktree=$case_dir/wt" \
+    "project=$proj" "kind=ship" "mode=local-only"
+  head_before=$(git -C "$proj" rev-parse main)
+  branch_head=$(git -C "$proj" rev-parse "fm/open-l2")
+
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_DATA_OVERRIDE="$case_dir/data" FM_PROJECTS_OVERRIDE="$case_dir/projects" \
+    "$ROOT/bin/fm-merge-local.sh" open-l2 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "policy-local-control: an unflagged local-only merge must still land"
+  head_after=$(git -C "$proj" rev-parse main)
+  [ "$head_after" = "$branch_head" ] \
+    || fail "policy-local-control: main should have fast-forwarded to the branch"$'\n'"was $head_before, now $head_after"
+  pass "fm-merge-local leaves a project without the flag merging exactly as before"
+}
+
+test_unknown_posture_flag_warns_without_changing_stdout() {
+  local case_dir out
+  case_dir="$TMP_ROOT/policy-flag-typo"
+  mkdir -p "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- open [direct-PR] - no posture flag at all (added 2026-07-01)
+- typo [direct-PR +captainmerge] - the flag the captain meant to set (added 2026-07-02)
+- real [direct-PR +captain-merge] - the flag as it is actually spelled (added 2026-07-03)
+EOF
+  # A misspelled flag past the first bracket position parses as a perfectly clean
+  # unflagged line, so the ONE flag whose whole point is a prohibition is the one that
+  # would go missing in silence. It stays permissive - guessing a prohibition from a typo
+  # would be its own failure - but it must be said out loud.
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" typo 2>"$case_dir/typo.err")
+  [ "$out" = "direct-PR off" ] \
+    || fail "flag-typo: the two-word stdout contract must not change, got \"$out\""
+  assert_grep '+captainmerge' "$case_dir/typo.err" \
+    "flag-typo: an unrecognized posture flag must be reported on stderr"
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" typo --merge-policy 2>/dev/null)
+  [ "$out" = "firstmate" ] \
+    || fail "flag-typo: the one-word policy contract must not change, got \"$out\""
+
+  # Controls: a correctly spelled line is silent and binding, and a line with no posture
+  # flag at all is silent too - the diagnostic must fire on the typo and nothing else.
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" real --merge-policy 2>"$case_dir/real.err")
+  [ "$out" = "captain" ] || fail "flag-typo control: the real flag must still bind, got \"$out\""
+  assert_no_grep "unrecognized" "$case_dir/real.err" \
+    "flag-typo control: a correctly spelled flag must warn about nothing"
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" open 2>"$case_dir/open.err")
+  [ "$out" = "direct-PR off" ] || fail "flag-typo control: an unflagged line must be unchanged"
+  assert_no_grep "unrecognized" "$case_dir/open.err" \
+    "flag-typo control: a line with no posture flag must warn about nothing"
+  pass "fm-project-mode warns about an unrecognized posture flag without changing stdout"
+}
+
+test_merge_policy_surfaces_a_flag_typo_on_the_path_that_reads_it() {
+  local case_dir out
+  case_dir="$TMP_ROOT/policy-typo-surfaced"
+  mkdir -p "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- typo [direct-PR +captainmerge] - the flag the captain meant to set (added 2026-07-01)
+EOF
+  # Every path where the flag MATTERS - the board composer, the board push, both merge
+  # scripts - reaches the registry through this one function, so a diagnostic it swallows
+  # is a diagnostic that never fires where it counts. Dropping the child's stderr
+  # wholesale did exactly that, and a warning that never prints is worse than none: it
+  # manufactures confidence that a misspelled prohibition would have been caught.
+  cat > "$case_dir/drive.sh" <<'SH'
+set -eu
+root=$1 home=$2
+. "$root/bin/fm-merge-policy-lib.sh"
+fm_merge_policy_project "$root" "$home" typo
+echo "typo=$FM_MERGE_POLICY_OUT"
+fm_merge_policy_project "$root" "$home" neverlisted
+echo "absent=$FM_MERGE_POLICY_OUT"
+SH
+  out=$(bash "$case_dir/drive.sh" "$ROOT" "$case_dir" 2>"$case_dir/err")
+  case "$out" in
+    *"typo=firstmate"*) ;;
+    *) fail "typo-surfaced: a misspelled flag must stay permissive, not be guessed at"$'\n'"$out" ;;
+  esac
+  assert_grep "unrecognized posture flag" "$case_dir/err" \
+    "typo-surfaced: the misspelled posture flag must reach stderr through the policy path"
+  # And only that line: fm-project-mode.sh warns routinely about a project the registry
+  # never listed, which is normal here (a card can carry one), so the filter has to be a
+  # filter rather than a hole.
+  case "$out" in
+    *"absent=firstmate"*) ;;
+    *) fail "typo-surfaced: an unlisted project must stay permissive"$'\n'"$out" ;;
+  esac
+  assert_no_grep "not in registry" "$case_dir/err" \
+    "typo-surfaced: the routine not-in-registry noise must stay suppressed"
+  pass "fm-merge-policy-lib surfaces an unrecognized posture flag and nothing else"
+}
+
+test_posture_flag_missing_its_plus_is_reported_too() {
+  local case_dir out
+  case_dir="$TMP_ROOT/policy-flag-no-plus"
+  mkdir -p "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- noplus [direct-PR captain-merge] - the flag with its leading "+" dropped (added 2026-07-01)
+EOF
+  # Dropping the "+" is an easier way to reach the same silent-prohibition failure than
+  # misspelling the word: the line parses as a perfectly clean unflagged project, so the
+  # captain believes the project is protected while every merge path permits it. Only a
+  # posture flag is legal past the mode, so a token that is neither is reported there
+  # whether or not it carries the "+".
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" noplus 2>"$case_dir/noplus.err")
+  [ "$out" = "direct-PR off" ] \
+    || fail "flag-no-plus: the two-word stdout contract must not change, got \"$out\""
+  assert_grep 'captain-merge' "$case_dir/noplus.err" \
+    "flag-no-plus: a posture flag missing its \"+\" must be reported on stderr"
+  # Reported, never HONORED: guessing a prohibition out of a malformed token would be its
+  # own failure, so the policy stays exactly as permissive as the line actually reads.
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" noplus --merge-policy 2>/dev/null)
+  [ "$out" = "firstmate" ] \
+    || fail "flag-no-plus: a malformed token must not be honored as the flag, got \"$out\""
+
+  # And end to end, through the one function every path that cares about the flag reads
+  # the registry with: fm_merge_policy_project FILTERS its child's stderr, so a warning
+  # whose text stops matching that filter is a warning that never fires where it counts.
+  cat > "$case_dir/drive.sh" <<'SH'
+set -eu
+root=$1 home=$2
+. "$root/bin/fm-merge-policy-lib.sh"
+fm_merge_policy_project "$root" "$home" noplus
+echo "noplus=$FM_MERGE_POLICY_OUT"
+SH
+  out=$(bash "$case_dir/drive.sh" "$ROOT" "$case_dir" 2>"$case_dir/lib.err")
+  case "$out" in
+    *"noplus=firstmate"*) ;;
+    *) fail "flag-no-plus: a malformed token must stay permissive through the policy path"$'\n'"$out" ;;
+  esac
+  assert_grep "unrecognized posture flag" "$case_dir/lib.err" \
+    "flag-no-plus: the diagnostic must survive the policy library's stderr filter"
+  pass "fm-project-mode reports a posture flag missing its \"+\" through the path that reads it"
+}
+
+test_posture_flag_written_where_the_mode_goes_is_reported_too() {
+  local case_dir out rc warns
+  case_dir=$(make_case policy-flag-sole-token)
+  mkdir -p "$case_dir/wt" "$case_dir/data"
+  cat > "$case_dir/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- guarded [captain-merge] - the flag written where the mode goes (added 2026-07-01)
+EOF
+  # The third way of writing a prohibition that never binds, and the easiest: a posture
+  # flag as the SOLE bracket token never reaches the posture-flag diagnostic at all,
+  # because the first position is the mode - so it is reported as an unknown mode
+  # instead. Both stdout contracts hold: the unknown mode resets to the default pair, and
+  # the malformed token is not honored as the flag it was meant to be.
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" guarded 2>"$case_dir/mode.err")
+  [ "$out" = "no-mistakes off" ] \
+    || fail "flag-sole-token: an unknown mode must still reset to the default pair, got \"$out\""
+  out=$(FM_HOME="$case_dir" "$ROOT/bin/fm-project-mode.sh" guarded --merge-policy 2>/dev/null)
+  [ "$out" = "firstmate" ] \
+    || fail "flag-sole-token: a malformed token must not be honored as the flag, got \"$out\""
+
+  # End to end through a real merge path, because that is where the diagnostic has to
+  # fire: fm_merge_policy_project FILTERS its child's stderr, and this warning was being
+  # dropped by it - so the board composer, the board push, and both merge scripts all saw
+  # "firstmate" with nothing said at all. Reported, and still never honored: the merge
+  # itself must go through exactly as the line actually reads.
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" \
+    "project=$case_dir/projects/guarded" "kind=ship" "mode=direct-PR"
+  add_gh_mocks "$case_dir" 9999999999999999999999999999999999999999
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/acme/guarded/pull/7 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "flag-sole-token: a malformed token must stay permissive, not be guessed at"
+  grep -qxF 'pr merge 7 --repo acme/guarded --squash' "$case_dir/gh-axi.log" \
+    || fail "flag-sole-token: the merge the line actually permits must still reach gh-axi"
+  assert_grep "unknown mode" "$case_dir/stderr" \
+    "flag-sole-token: the diagnostic must survive the policy library's stderr filter"
+  # Both signals ask about this one project, so an unmemoized re-emission would say it
+  # twice here and once per card on a board.
+  warns=$(grep -c "unknown mode" "$case_dir/stderr")
+  [ "$warns" = 1 ] \
+    || fail "flag-sole-token: the diagnostic must stay bounded to once per project (got $warns)"
+  pass "fm-merge-policy-lib surfaces a posture flag written where the mode goes"
+}
+
+test_captain_merge_origin_shapes_are_traced_to_their_clone() {
+  local case_dir rc origin
+  # The origin side of the same rule the url shapes above cover: an origin this guard
+  # cannot resolve is a clone it cannot trace a merge to, so the merge is PERMITTED - on
+  # the torn-down, pruned task where the url is the only signal left. ".git/" is what
+  # "git clone https://github.com/acme/guarded.git/ projects/guarded" records verbatim,
+  # and stripping the ".git" before the trailing "/" never reached it, leaving the clone
+  # claiming the repo "guarded.git" and matching no PR url at all.
+  for origin in https://github.com/acme/guarded.git/ \
+                https://github.com/acme/guarded/ \
+                git@github.com:acme/guarded.git/; do
+    case_dir="$TMP_ROOT/policy-origin-shape-$(printf '%s' "$origin" | tr -c 'a-zA-Z0-9' '-')"
+    mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/fakebin"
+    write_merge_policy_registry "$case_dir" " +captain-merge"
+    clone_with_origin "$case_dir" guarded "$origin"
+    add_gh_mocks "$case_dir" 5555555555555555555555555555555555555555
+    : > "$case_dir/gh-axi.log"
+
+    set +e
+    run_pr_merge "$case_dir" ghost-z7 https://github.com/acme/guarded/pull/7 \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "policy-origin-shape: the clone at $origin must still be traced"
+    assert_grep "own origin" "$case_dir/stderr" \
+      "policy-origin-shape: $origin must be refused on the clone's origin, the only signal it carries"
+    grep -q 'pr merge' "$case_dir/gh-axi.log" \
+      && fail "policy-origin-shape: $origin must never reach gh-axi pr merge"
+  done
+  pass "fm-pr-merge traces a clone whose origin carries a trailing slash, with or without \".git\""
+}
+
+test_forbidden_url_clears_its_project_between_calls() {
+  local case_dir out
+  case_dir="$TMP_ROOT/policy-url-global"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  clone_with_origin "$case_dir" guarded https://github.com/acme/guarded.git
+  # FM_MERGE_FORBIDDEN_PROJECT is documented as safe to read unconditionally, which is
+  # exactly the read that would otherwise pick up the PREVIOUS call's project and print a
+  # refusal naming the wrong one.
+  cat > "$case_dir/drive.sh" <<'SH'
+set -eu
+root=$1 home=$2
+. "$root/bin/fm-merge-policy-lib.sh"
+fm_merge_forbidden_url "$root" "$home" "$home/projects" https://github.com/acme/guarded/pull/7 \
+  && echo "matched=$FM_MERGE_FORBIDDEN_PROJECT"
+fm_merge_forbidden_url "$root" "$home" "$home/projects" https://github.com/acme/stranger/pull/9 \
+  || echo "after=[$FM_MERGE_FORBIDDEN_PROJECT]"
+SH
+  out=$(bash "$case_dir/drive.sh" "$ROOT" "$case_dir" 2>/dev/null)
+  case "$out" in
+    *"matched=guarded"*) ;;
+    *) fail "url-global: a match must still name the project it is protecting"$'\n'"$out" ;;
+  esac
+  case "$out" in
+    *"after=[]"*) ;;
+    *) fail "url-global: a non-matching call must not leave the previous project behind"$'\n'"$out" ;;
+  esac
+  pass "fm_merge_forbidden_url clears its project name on entry, never leaving a stale one"
+}
+
+test_merge_policy_lookup_failure_warns_once_and_is_not_cached() {
+  local case_dir out warns
+  case_dir="$TMP_ROOT/policy-lookup-failure"
+  mkdir -p "$case_dir/data" "$case_dir/broken/bin"
+  write_merge_policy_registry "$case_dir" " +captain-merge"
+  # "Could not ask" is not the same fact as "asked, and the project is not flagged". Both
+  # stay permissive - a missing sibling must never refuse merges fleet-wide - but a failed
+  # lookup must be visible and must be RETRIED, not cached as a verdict for the rest of
+  # the process, or one unreadable moment silently permits every later merge.
+  cat > "$case_dir/drive.sh" <<'SH'
+set -eu
+real_root=$1 broken_root=$2 home=$3
+. "$real_root/bin/fm-merge-policy-lib.sh"
+fm_merge_policy_project "$broken_root" "$home" guarded
+echo "first=$FM_MERGE_POLICY_OUT"
+fm_merge_policy_project "$broken_root" "$home" guarded
+echo "second=$FM_MERGE_POLICY_OUT"
+fm_merge_policy_project "$real_root" "$home" guarded
+echo "retried=$FM_MERGE_POLICY_OUT"
+SH
+  out=$(bash "$case_dir/drive.sh" "$ROOT" "$case_dir/broken" "$case_dir" 2>"$case_dir/err")
+  case "$out" in
+    *"first=firstmate"*) ;;
+    *) fail "lookup-failure: an unreadable policy must stay permissive"$'\n'"$out" ;;
+  esac
+  case "$out" in
+    *"retried=captain"*) ;;
+    *) fail "lookup-failure: the failed lookup must not be cached as a verdict"$'\n'"$out" ;;
+  esac
+  assert_grep "could not read the merge policy" "$case_dir/err" \
+    "lookup-failure: a lookup that could not be performed must warn"
+  warns=$(grep -c "could not read the merge policy" "$case_dir/err")
+  [ "$warns" = 1 ] \
+    || fail "lookup-failure: the diagnostic must be reported once, not once per card (got $warns)"
+  pass "fm-merge-policy-lib warns once on an unreadable policy and retries it"
+}
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -959,3 +1503,16 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_captain_merge_project_is_refused_from_the_tasks_own_record
+test_captain_merge_project_is_refused_from_the_pr_url_alone
+test_captain_merge_url_variants_parse_pr_url_accepts_are_refused
+test_merge_policy_leaves_an_unflagged_project_merging
+test_captain_merge_refuses_the_local_merge_too
+test_merge_policy_leaves_an_unflagged_local_merge_working
+test_unknown_posture_flag_warns_without_changing_stdout
+test_merge_policy_surfaces_a_flag_typo_on_the_path_that_reads_it
+test_posture_flag_missing_its_plus_is_reported_too
+test_posture_flag_written_where_the_mode_goes_is_reported_too
+test_captain_merge_origin_shapes_are_traced_to_their_clone
+test_forbidden_url_clears_its_project_between_calls
+test_merge_policy_lookup_failure_warns_once_and_is_not_cached

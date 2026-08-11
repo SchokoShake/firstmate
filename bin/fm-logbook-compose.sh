@@ -12,7 +12,10 @@
 # object on stdout, ready to pipe into fm-logbook-sync.sh.
 # This mechanizes the tedious hand-composition that made the session-start sync easy
 # to skip. It is a truthful mechanical BASELINE, classed decision > action > fyi,
-# with every project from the registry flagged active when it carries a card. Rich,
+# with every project from the registry flagged active when it carries a card. An action
+# card's OPTIONS follow the project's merge policy (bin/fm-merge-policy-lib.sh): a project
+# firstmate must not merge is offered an acknowledgement in place of one-click Merge.
+# Rich,
 # captain-facing titles/bodies/options remain firstmate's own composition on top, via
 # fm-logbook-push.sh (an upsert keyed by id replaces the baseline card).
 #
@@ -76,6 +79,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 PROJECTS_DIR="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-logbook-lib.sh
 . "$SCRIPT_DIR/fm-logbook-lib.sh"
+# shellcheck source=bin/fm-merge-policy-lib.sh
+. "$SCRIPT_DIR/fm-merge-policy-lib.sh"
 
 case "${1:-}" in
   --help|-h) echo "Compose the fleet attention set into a {projects, items} board body on stdout (pipe into fm-logbook-sync.sh). No-op unless opted in."; exit 0 ;;
@@ -235,10 +240,17 @@ pr_url_ok() {
 
 # pr_slug <url>: sets PR_OWNER_OUT and PR_REPO_OUT to the "<owner>" and "<repo>" path
 # components of a .../<owner>/<repo>/pull/<n> url; both empty when the url does not parse
-# that way. The single owner of this parse: both the label the captain reads and the
-# owner/repo the Merge gate checks are the same two halves of one safety story, so they
-# must never drift apart. It answers through globals rather than stdout because the gate
-# needs BOTH halves and a "$(...)" reader could carry only one back out of its subshell.
+# that way. The owner of this parse WITHIN this composer: both the label the captain reads
+# and the owner/repo the Merge gate checks are the same two halves of one safety story, so
+# they must never drift apart. It answers through globals rather than stdout because the
+# gate needs BOTH halves and a "$(...)" reader could carry only one back out of its
+# subshell.
+#
+# bin/fm-merge-policy-lib.sh (sourced above) carries a second implementation of the same
+# match in fm_merge_slug/fm_merge_same_part, for the merge paths that have no composer.
+# Consolidating the two is tracked as fm-merge-slug-one-owner; until then the lib's header
+# records that it yields to THIS one wherever they differ, and a shared input table in
+# tests/fm-logbook.test.sh fails the suite if the two ever disagree again.
 #
 # The repo is set even when no owner resolves, because the two halves are owed to
 # different callers: the label needs only the repo, while the gate demands both and reads
@@ -859,7 +871,18 @@ compose_item() {
     action)
       title=${title:-Work is ready for your review}
       body=${hold_reason:-Ready for your review.}
-      options='[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}]'
+      # The action a card offers follows from whether firstmate is PERMITTED to merge
+      # this project, not from the card's kind. A "+captain-merge" project is the
+      # captain's to merge personally (bin/fm-merge-policy-lib.sh), so offering Merge
+      # there would put a one-click instruction on the board for the one thing firstmate
+      # would then refuse to do. It stays an action card - there IS something for the
+      # captain to do, and AGENTS.md section 9 puts that on the board - so the option
+      # becomes the acknowledgement that clears it once they have merged it themselves.
+      if fm_merge_forbidden_project "$FM_ROOT" "$FM_HOME" "$project"; then
+        options='[{"label":"Done / dismiss","value":"dismiss"},{"label":"Hold","value":"hold"}]'
+      else
+        options='[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}]'
+      fi
       ;;
     *)
       title=${title:-Work in progress}

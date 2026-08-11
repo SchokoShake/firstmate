@@ -1841,6 +1841,593 @@ test_compose_merge_falls_back_when_no_remote_resolves() {
   pass "fm-logbook-compose falls back to the repo marker when no remote resolves"
 }
 
+# write_merge_policy_fixture <home> <guarded-posture>: two projects whose registry lines
+# differ ONLY in the posture flag under test, each with a review-ready PR of its own. The
+# "+captain-merge" project is one firstmate must never merge (bin/fm-merge-policy-lib.sh):
+# the captain converts its drafts and merges them personally. The unflagged project is the
+# control - every assertion about the flag is paired with one that it changed nothing for
+# a project that does not carry it.
+write_merge_policy_fixture() {
+  local home=$1 posture=$2
+  mkdir -p "$home/data" "$home/state" "$home/projects"
+  cat > "$home/data/projects.md" <<EOF
+# Fleet project registry (firstmate-private)
+
+- open [direct-PR] - firstmate merges this one on the captain's word (added 2026-07-01)
+- guarded [direct-PR$posture] - the captain merges this one personally (added 2026-07-02)
+EOF
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] open-a1 - Ship the widget https://github.com/acme/open/pull/42 (repo: open) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] guard-b2 - Ship the schema https://github.com/acme/guarded/pull/7 (repo: guarded) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)
+- [ ] guard-c3 - Still building it (repo: guarded) (kind: ship) (since 2026-07-10)
+EOF
+  git init -q "$home/projects/open"
+  git -C "$home/projects/open" remote add origin https://github.com/acme/open.git
+  git init -q "$home/projects/guarded"
+  git -C "$home/projects/guarded" remote add origin https://github.com/acme/guarded.git
+}
+
+test_compose_captain_merge_project_offers_no_merge_option() {
+  local home out
+  home="$TMP_ROOT/compose-captain-merge"; write_merge_policy_fixture "$home" " +captain-merge"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # The option offered follows from whether firstmate may merge the project, not from the
+  # card's kind. A Merge here would be a one-click instruction to do the one thing
+  # firstmate is forbidden to do - and it survived no hand-correction, because compose
+  # regenerates the options on every sync.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-b2")
+      | ([.options[].value] | index("merge") == null)' >/dev/null \
+    || fail "a +captain-merge project must NOT be offered Merge"$'\n'"$out"
+  # Still an ACTION card: there IS something for the captain to do, and the captain's rule
+  # is that anything needing them to act is an action card. The fix removes the forbidden
+  # option, it does not demote the card to an FYI they would scroll past.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-b2")
+      | (.kind=="action") and ([.options[].value] | index("dismiss") != null)' >/dev/null \
+    || fail "a +captain-merge card must stay an action card with an acknowledgement"$'\n'"$out"
+  # And the PR is withheld from the BUTTON only, never from the captain: they merge it
+  # themselves, so the link they merge from has to be right there.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-b2")
+      | (.source.pr=="https://github.com/acme/guarded/pull/7")
+      and (.body | test("\\[guarded #7\\]\\(https://github\\.com/acme/guarded/pull/7\\)"))' >/dev/null \
+    || fail "a +captain-merge card must still carry its PR as a clickable link"$'\n'"$out"
+  # A card with no action to take was never offered an option; the flag must not invent one.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-c3")
+      | (.kind=="fyi") and (.options == [])' >/dev/null \
+    || fail "the flag must not add options to a card that had none"$'\n'"$out"
+  pass "fm-logbook-compose withholds Merge from a +captain-merge project, keeping an action card"
+}
+
+test_compose_merge_policy_leaves_other_projects_byte_identical() {
+  local flagged plain out_flagged out_plain a b
+  flagged="$TMP_ROOT/compose-policy-flagged"; write_merge_policy_fixture "$flagged" " +captain-merge"
+  plain="$TMP_ROOT/compose-policy-plain";     write_merge_policy_fixture "$plain" ""
+  out_flagged=$(PATH="$BASE_PATH" FM_HOME="$flagged" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  out_plain=$(PATH="$BASE_PATH" FM_HOME="$plain" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # Proof, not assertion: the two fleets differ ONLY in that one registry line's flag, so
+  # the unflagged project's card must come out byte-identical on both sides - same kind,
+  # same options, same body, same source. A regression that dropped Merge fleet-wide, or
+  # that reworded an option label, fails here rather than in review.
+  a=$(printf '%s' "$out_flagged" | jq -S -c '.items[] | select(.id=="open-a1")')
+  b=$(printf '%s' "$out_plain"   | jq -S -c '.items[] | select(.id=="open-a1")')
+  [ "$a" = "$b" ] \
+    || fail "flagging one project changed another project's card"$'\n'"flagged: $a"$'\n'"plain:   $b"
+  printf '%s' "$a" | jq -e '(.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "the control project must still be an action card offering Merge"$'\n'"$a"
+  # The same registry line WITHOUT the flag is an ordinary Merge card, so the difference
+  # is the flag itself and not anything else about that project.
+  printf '%s' "$out_plain" | jq -e '.items[] | select(.id=="guard-b2")
+      | (.kind=="action") and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "an unflagged project must compose the Merge option exactly as before"$'\n'"$out_plain"
+  pass "fm-logbook-compose leaves every project without the flag byte-identical"
+}
+
+test_compose_captain_merge_is_not_relaxed_by_yolo() {
+  local home out
+  home="$TMP_ROOT/compose-policy-yolo"; write_merge_policy_fixture "$home" " +yolo +captain-merge"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
+    "$ROOT/bin/fm-logbook-compose.sh")
+  # yolo is a RELAXATION - it lets firstmate make approval calls itself - so it must never
+  # read as permission to merge a project the captain merges personally. The two flags are
+  # orthogonal, and the prohibition wins.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="guard-b2")
+      | (.kind=="action") and ([.options[].value] | index("merge") == null)' >/dev/null \
+    || fail "+yolo must not restore Merge on a +captain-merge project"$'\n'"$out"
+  pass "fm-logbook-compose keeps +captain-merge binding under +yolo"
+}
+
+# push_policy_body <project>: a rich action card of the shape firstmate composes by hand
+# on top of the mechanical baseline - the upsert is keyed by id, so this REPLACES whatever
+# compose put there, Merge option and all.
+push_policy_body() {
+  printf '{"id":"guard-b2","project":"%s","kind":"action","title":"Schema work is ready","body":"Review and merge when you are happy.","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}],"source":{"task":"guard-b2","pr":"https://github.com/acme/%s/pull/7"}}' \
+    "$1" "$1"
+}
+
+# push_url_only_body <id> <repo> <pr-number>: the hand-composed shape that carries a Merge
+# and no "project" field, so only the PR url can speak for it.
+push_url_only_body() {
+  printf '{"id":"%s","kind":"action","title":"t","body":"b","options":[{"label":"Merge","value":"merge"}],"source":{"pr":"https://github.com/acme/%s/pull/%s"}}' \
+    "$1" "$2" "$3"
+}
+
+test_push_strips_merge_for_a_captain_merge_project() {
+  local home out rc recorded
+  home="$TMP_ROOT/push-policy-strip"; write_merge_policy_fixture "$home" " +captain-merge"
+  out=$(push_policy_body guarded | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err"); rc=$?
+  expect_code 0 "$rc" "push must still deliver the item, never refuse it over the policy"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "a gated push must still reach the board"
+  # The rich push is the other write path onto the board, so it is gated at the write
+  # itself: a hand-composed Merge here would put back exactly the option compose withheld.
+  jq -e '([.options[].value] | index("merge") == null)' "$recorded" >/dev/null \
+    || fail "push must remove the Merge option for a +captain-merge project"$'\n'"$(cat "$recorded")"
+  # Same acknowledgement compose offers, so the two write paths speak one vocabulary.
+  jq -e '.options == [{"label":"Done / dismiss","value":"dismiss"},{"label":"Hold","value":"hold"}]' "$recorded" >/dev/null \
+    || fail "push must substitute compose's own acknowledgement"$'\n'"$(cat "$recorded")"
+  # Every other field is the captain-facing composition firstmate wrote; the gate touches
+  # the forbidden option and nothing else.
+  jq -e '(.id=="guard-b2") and (.project=="guarded") and (.kind=="action")
+      and (.title=="Schema work is ready")
+      and (.body=="Review and merge when you are happy.")
+      and (.source.pr=="https://github.com/acme/guarded/pull/7")' "$recorded" >/dev/null \
+    || fail "push must leave every other field of the item untouched"$'\n'"$(cat "$recorded")"
+  assert_grep "captain-merge" "$home/err" "push must warn on stderr that it stripped the option"
+  pass "fm-logbook-push strips a forbidden Merge option and warns instead of refusing"
+}
+
+test_push_merge_policy_leaves_other_projects_byte_identical() {
+  local flagged plain a b
+  flagged="$TMP_ROOT/push-policy-flagged"; write_merge_policy_fixture "$flagged" " +captain-merge"
+  plain="$TMP_ROOT/push-policy-plain";     write_merge_policy_fixture "$plain" ""
+  # Proof, not assertion: two fleets differing ONLY in that one registry line's flag push
+  # the same unflagged project's card, so the delivered body must come out byte-identical
+  # on both sides. A gate that reserialized every push, reordered options, or stripped
+  # Merge fleet-wide fails here rather than in review.
+  push_policy_body open | PATH="$BASE_PATH" FM_HOME="$flagged" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$flagged/err" >/dev/null \
+    || fail "pushing an unflagged project's card must succeed"
+  push_policy_body open | PATH="$BASE_PATH" FM_HOME="$plain" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null \
+    || fail "pushing the same card from an unflagged fleet must succeed"
+  a=$(cat "$flagged/state/logbook-outbox/items.json")
+  b=$(cat "$plain/state/logbook-outbox/items.json")
+  [ "$a" = "$b" ] \
+    || fail "flagging one project changed another project's pushed card"$'\n'"flagged: $a"$'\n'"plain:   $b"
+  printf '%s' "$a" | jq -e '[.options[].value] | index("merge") != null' >/dev/null \
+    || fail "the control project must still be pushed with its Merge option"$'\n'"$a"
+  assert_no_grep "captain-merge" "$flagged/err" "an untouched push must not warn"
+  # And the flagged project's own card from the SAME registry line without the flag is an
+  # ordinary Merge card, so the difference is the flag itself and nothing else.
+  push_policy_body guarded | PATH="$BASE_PATH" FM_HOME="$plain" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null \
+    || fail "pushing an unflagged guarded card must succeed"
+  jq -e '[.options[].value] | index("merge") != null' "$plain/state/logbook-outbox/items.json" >/dev/null \
+    || fail "an unflagged project must push the Merge option exactly as before"
+  pass "fm-logbook-push leaves every project without the flag byte-identical"
+}
+
+test_push_gates_every_item_of_a_mixed_array() {
+  local home rc recorded
+  home="$TMP_ROOT/push-policy-array"; write_merge_policy_fixture "$home" " +yolo +captain-merge"
+  printf '[%s,%s,{"id":"note","project":"guarded","kind":"fyi","title":"n","body":"b","options":[]}]' \
+    "$(push_policy_body guarded)" "$(push_policy_body open)" \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  expect_code 0 "$rc" "an array push must be delivered"
+  recorded="$home/state/logbook-outbox/items.json"
+  # An array body is the documented upsert shape, so the gate must reach every item of it
+  # and only the forbidden ones - and +yolo, a relaxation, must not restore the option.
+  jq -e '(.[0].options == [{"label":"Done / dismiss","value":"dismiss"},{"label":"Hold","value":"hold"}])
+      and ([.[1].options[].value] | index("merge") != null)
+      and (.[2].options == [])' "$recorded" >/dev/null \
+    || fail "an array push must gate only the forbidden items"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push gates each item of an array body independently"
+}
+
+test_push_never_reads_one_project_name_as_two() {
+  local home rc recorded
+  home="$TMP_ROOT/push-policy-split-name"; write_merge_policy_fixture "$home" " +captain-merge"
+  # A project name carrying a newline is one bin/fm-merge-policy-lib.sh deliberately
+  # answers "firstmate" for without a lookup, precisely because it cannot key the memo.
+  # Read as LINES it becomes two names instead - "open", and the flagged "guarded" - so the
+  # gate announces dropping the Merge of a project this card does not name, and then finds
+  # nothing to strip, since the item's own project is neither fragment. The card carries no
+  # source.pr, so signal 2 cannot cover for it: what this run says about the card is the
+  # whole truth about it.
+  printf '{"id":"guard-b2","project":"open\\nguarded","kind":"action","title":"t","body":"b","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}]}' \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a card whose project cannot be read as a line must still be delivered"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "the card must still reach the board"
+  # Permissive, which is the library's own answer for such a name - and SILENT about it,
+  # because the only thing worse than not stripping is claiming that it did.
+  jq -e '(.project == "open\nguarded") and ([.options[].value] | index("merge") != null)' \
+    "$recorded" >/dev/null \
+    || fail "an unsplittable project name must be left whole and permitted"$'\n'"$(cat "$recorded")"
+  assert_no_grep "captain-merge" "$home/err" \
+    "the gate must not announce dropping a Merge that it cannot drop"
+  # Control, so the permissive answer above cannot pass on a fixture where nothing is
+  # forbidden at all: the same card, still with no source.pr, naming just the flagged
+  # fragment loses its Merge and says so.
+  printf '{"id":"guard-b2","project":"guarded","kind":"action","title":"t","body":"b","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}]}' \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/control.err" >/dev/null \
+    || fail "the control push must be delivered too"
+  jq -e '[.options[].value] | index("merge") == null' "$recorded" >/dev/null \
+    || fail "the control card must lose its Merge"$'\n'"$(cat "$recorded")"
+  assert_grep "captain-merge" "$home/control.err" \
+    "the control strip must still be announced"
+  pass "fm-logbook-push never reads one project name as two forbiddable ones"
+}
+
+test_push_strips_merge_read_from_the_url_when_the_item_names_no_project() {
+  local home rc recorded
+  home="$TMP_ROOT/push-policy-url"; write_merge_policy_fixture "$home" " +captain-merge"
+  # The board's item schema treats "project" as OPTIONAL, and this is the HAND-composed
+  # write path, so a rich card written without one would walk straight past a
+  # project-only gate carrying the very button compose withheld. The url is the thing
+  # that button would act on, so it gets its own say: either signal forbidding strips.
+  printf '{"id":"guard-b2","kind":"action","title":"Schema work is ready","body":"Yours to merge.","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}],"source":{"task":"guard-b2","pr":"https://github.com/acme/guarded/pull/7"}}' \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a project-less card must still be delivered, never refused"
+  recorded="$home/state/logbook-outbox/items.json"
+  jq -e '.options == [{"label":"Done / dismiss","value":"dismiss"},{"label":"Hold","value":"hold"}]' "$recorded" >/dev/null \
+    || fail "the PR url alone must strip a forbidden Merge"$'\n'"$(cat "$recorded")"
+  jq -e '(.id=="guard-b2") and (has("project") | not)
+      and (.source.pr=="https://github.com/acme/guarded/pull/7")' "$recorded" >/dev/null \
+    || fail "the url gate must leave every other field alone"$'\n'"$(cat "$recorded")"
+  assert_grep "captain-merge" "$home/err" "the url gate must say what it stripped and why"
+  # Control: the same shape for the unflagged project resolves through the same scan and
+  # keeps its Merge, so the url signal cannot be a fleet-wide strip wearing a url.
+  printf '{"id":"open-a1","kind":"action","title":"Widget is ready","body":"Yours to merge.","options":[{"label":"Merge","value":"merge"},{"label":"Hold","value":"hold"}],"source":{"task":"open-a1","pr":"https://github.com/acme/open/pull/42"}}' \
+    | PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null \
+    || fail "a project-less card for an unflagged project must succeed"
+  jq -e '[.options[].value] | index("merge") != null' "$recorded" >/dev/null \
+    || fail "a PR belonging to an unflagged project must keep its Merge"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push strips a forbidden Merge from the PR url when the item names no project"
+}
+
+test_push_scans_each_clone_origin_once_however_many_urls() {
+  local home rc log shim recorded
+  home="$TMP_ROOT/push-policy-origin-memo"; write_merge_policy_fixture "$home" " +captain-merge"
+  git init -q "$home/projects/third"
+  git -C "$home/projects/third" remote add origin https://github.com/acme/third.git
+  # Count the gate's real git calls by shimming git ahead of it on PATH, after the
+  # fixture's own clones are built so only the scan is counted.
+  log="$home/git-calls.log"; shim="$home/shim"; mkdir -p "$shim"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "$*" >> %s\n' "$(printf '%q' "$log")"
+    printf 'exec %s "$@"\n' "$(printf '%q' "$(command -v git)")"
+  } > "$shim/git"
+  chmod +x "$shim/git"
+  : > "$log"
+  # Three project-less cards, so signal 1 settles nothing and every url reaches the scan.
+  printf '[%s,%s,%s]' "$(push_url_only_body guard-b2 guarded 7)" \
+    "$(push_url_only_body open-a1 open 42)" "$(push_url_only_body third-c3 third 3)" \
+    | PATH="$shim:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  expect_code 0 "$rc" "a multi-url push must be delivered"
+  # What an origin names cannot change under the process, so one scan answers every url:
+  # three clones, three lookups, not three per url.
+  [ "$(wc -l < "$log")" -eq 3 ] \
+    || fail "each clone's origin must be read exactly once per process, got:"$'\n'"$(cat "$log")"
+  # And the memo answers exactly what the repeated scan did: the flagged project's card
+  # loses its Merge, the other two keep theirs.
+  recorded="$home/state/logbook-outbox/items.json"
+  jq -e '([.[0].options[].value] | index("merge") == null)
+      and ([.[1].options[].value] | index("merge") != null)
+      and ([.[2].options[].value] | index("merge") != null)' "$recorded" >/dev/null \
+    || fail "a memoized scan must forbid exactly what the repeated one did"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push reads each clone's origin once however many urls it carries"
+}
+
+test_push_leaves_no_temp_file_behind_on_any_path() {
+  local home tmp rc
+  home="$TMP_ROOT/push-policy-tmpfiles"; write_merge_policy_fixture "$home" " +captain-merge"
+  tmp="$home/tmpdir"; mkdir -p "$tmp"
+  # Rewriting a gated body needs a SECOND temp file, and the temp dir is shared, so it is
+  # allocated by mktemp - unpredictable, and 0600 from the moment it holds the composed
+  # card text - rather than by suffixing the first file's name, which a local process could
+  # pre-create as a symlink and have the write clobber. The observable half of that
+  # contract is that the cleanup trap knows the name: no path through the script may leave
+  # a temp file behind. A private TMPDIR makes "no path" checkable rather than asserted.
+  push_policy_body guarded | PATH="$BASE_PATH" FM_HOME="$home" TMPDIR="$tmp" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  expect_code 0 "$rc" "a gated push under a private TMPDIR must still be delivered"
+  jq -e '[.options[].value] | index("merge") == null' "$home/state/logbook-outbox/items.json" >/dev/null \
+    || fail "the gated push must still strip the Merge option"
+  [ -z "$(ls -A "$tmp")" ] || fail "the strip path left a temp file behind: $(ls -A "$tmp")"
+  # The ungated path never allocates the second file, and an unparseable body exits before
+  # the gate is reached; neither may leave the first one behind either.
+  push_policy_body open | PATH="$BASE_PATH" FM_HOME="$home" TMPDIR="$tmp" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null \
+    || fail "an ungated push must succeed"
+  [ -z "$(ls -A "$tmp")" ] || fail "the ungated path left a temp file behind: $(ls -A "$tmp")"
+  printf 'not json at all' | PATH="$BASE_PATH" FM_HOME="$home" TMPDIR="$tmp" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  [ "$rc" -ne 0 ] || fail "an unparseable body must still be rejected"
+  [ -z "$(ls -A "$tmp")" ] || fail "the rejected-body path left a temp file behind: $(ls -A "$tmp")"
+  pass "fm-logbook-push cleans up every temp file it allocates, on every path"
+}
+
+test_push_never_writes_the_gated_body_through_a_derived_temp_name() {
+  local home fakebin tmp victim rc
+  home="$TMP_ROOT/push-policy-tmpname"; write_merge_policy_fixture "$home" " +captain-merge"
+  fakebin=$(fm_fakebin "$home")
+  tmp="$home/tmpdir"; mkdir -p "$tmp"
+  # A deterministic `mktemp` is what makes the attack reproducible instead of a race: it
+  # hands out numbered names, so the test knows the FIRST temp path the script gets and can
+  # plant the derived name in advance. A real mktemp name is unguessable, but a name built
+  # by suffixing one is not, and this temp dir is shared with every other local process.
+  cat > "$fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+set -u
+n=$(( $(cat "$FAKE_MKTEMP_DIR/.n" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "$n" > "$FAKE_MKTEMP_DIR/.n"
+p="$FAKE_MKTEMP_DIR/fm-fake-tmp.$n"
+case " $* " in
+  *" -d "*) mkdir -p "$p" ;;
+  *) : > "$p"; chmod 600 "$p" ;;
+esac
+printf '%s\n' "$p"
+SH
+  chmod +x "$fakebin/mktemp"
+  victim="$home/victim.txt"
+  printf 'the captain considers this file his\n' > "$victim"
+  # The body file is the script's first temp allocation, so this is the name a
+  # "$BODY_FILE.gated" would resolve to - pre-created here as a symlink, exactly as a local
+  # process could. A plain redirect onto it follows the link and truncates the target as
+  # the invoking user, and the mv that follows renames the link away, leaving the damage.
+  ln -s "$victim" "$tmp/fm-fake-tmp.1.gated"
+  push_policy_body guarded | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" TMPDIR="$tmp" \
+    FAKE_MKTEMP_DIR="$tmp" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>/dev/null >/dev/null; rc=$?
+  expect_code 0 "$rc" "the gated push must still be delivered"
+  # Proof the gate really ran, so the untouched victim below cannot pass vacuously.
+  jq -e '.options == [{"label":"Done / dismiss","value":"dismiss"},{"label":"Hold","value":"hold"}]' \
+    "$home/state/logbook-outbox/items.json" >/dev/null \
+    || fail "the gate must still strip the forbidden Merge"$'\n'"$(cat "$home/state/logbook-outbox/items.json")"
+  [ "$(cat "$victim" 2>/dev/null)" = "the captain considers this file his" ] \
+    || fail "the gated body was written through a predictable derived name and clobbered another file"
+  pass "fm-logbook-push allocates the gated body its own mktemp, not a name derived from another"
+}
+
+test_push_still_delivers_the_card_when_the_gated_body_cannot_be_installed() {
+  local home fakebin rc recorded
+  home="$TMP_ROOT/push-policy-mv-fails"; write_merge_policy_fixture "$home" " +captain-merge"
+  fakebin=$(fm_fakebin "$home")
+  # The gate's every OTHER failure branch falls open with a warning and pushes the item as
+  # composed, because an attention item the captain never sees at all is worse than one
+  # with a button too many - the refusal in bin/fm-pr-merge.sh is what makes the rule hold,
+  # not the button. Installing the gated body is the one step where falling open is not
+  # automatic: under "set -eu" it is the last command of its branch, so an unguarded
+  # failure exits before the push and drops the card off the board entirely.
+  cat > "$fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+echo "mv: simulated failure" >&2
+exit 1
+SH
+  chmod +x "$fakebin/mv"
+  push_policy_body guarded | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a gated body that cannot be installed must not fail the push"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "the card must still reach the board when the gate cannot rewrite it"
+  jq -e '(.id=="guard-b2") and (.title=="Schema work is ready")' "$recorded" >/dev/null \
+    || fail "the item must be pushed as composed"$'\n'"$(cat "$recorded")"
+  assert_grep "pushing the item as composed" "$home/err" \
+    "falling open must be said out loud, the way the neighbouring branches say it"
+  pass "fm-logbook-push still delivers the card when the gated body cannot be installed"
+}
+
+# fake_failing_jq <fakebin>: a jq that fails whenever one of its arguments contains
+# $FAKE_JQ_FAIL and is the real jq otherwise, so a test can kill exactly ONE of the gate's
+# several jq calls. That is the real shape of this failure: the body has already passed the
+# script's "jq -e ." parse check, so what breaks is jq itself on one program (killed, out
+# of memory, a build without any/2), not the input.
+fake_failing_jq() {
+  local fakebin=$1
+  cat > "$fakebin/jq" <<SH
+#!/usr/bin/env bash
+set -u
+if [ -n "\${FAKE_JQ_FAIL:-}" ]; then
+  for a in "\$@"; do
+    case "\$a" in
+      *"\$FAKE_JQ_FAIL"*) echo "jq: simulated failure" >&2; exit 1 ;;
+    esac
+  done
+fi
+exec $(printf '%q' "$(command -v jq)") "\$@"
+SH
+  chmod +x "$fakebin/jq"
+}
+
+test_push_says_so_when_a_gate_selector_cannot_run() {
+  local home fakebin rc recorded
+  home="$TMP_ROOT/push-policy-selector-dies"; write_merge_policy_fixture "$home" " +captain-merge"
+  fakebin=$(fm_fakebin "$home")
+  fake_failing_jq "$fakebin"
+
+  # Signal 1's selector dies. Its empty result is indistinguishable from "this body has
+  # nothing to gate", so the run would otherwise read exactly like a clean push.
+  push_policy_body guarded | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    FAKE_JQ_FAIL='.project? ]' \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/project.err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a dead gate selector must still deliver the item, never fail the push"
+  assert_grep "the project signal is unavailable" "$home/project.err" \
+    "a project selector that will not run must say so, like every other fall-open here"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "the card must still reach the board"
+  # And the gate does not open on one dead selector: the two signals are independent, so
+  # the PR url still speaks for the card signal 1 can no longer name.
+  jq -e '[.options[].value] | index("merge") == null' "$recorded" >/dev/null \
+    || fail "the url signal must still strip the Merge signal 1 could not name"$'\n'"$(cat "$recorded")"
+  # Which is precisely why the diagnostic above may not claim the outcome: the option WAS
+  # removed, so a run that also said "pushing the item as composed" would be describing a
+  # push that did not happen. A false statement pinned by a test is worse than no test, so
+  # what this fall-open may say is bounded here rather than only worded carefully upstream.
+  assert_no_grep "pushing the item as composed" "$home/project.err" \
+    "a dead project selector must not claim an outcome the url signal went on to change"
+
+  # Signal 2's selector dies on a card that carries NO project, so signal 1 has nothing to
+  # say either and the forbidden Merge really does reach the board. That is the fall-open
+  # the warning exists for: it must be loud, and the card must still be delivered.
+  push_url_only_body guard-b2 guarded 7 | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" \
+    LOGBOOK_DRY_RUN=1 FAKE_JQ_FAIL='pr_of ]' \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/url.err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a dead url selector must still deliver the item"
+  assert_grep "the PR url signal is unavailable" "$home/url.err" \
+    "a url selector that will not run must say so rather than pass a live Merge in silence"
+  jq -e '[.options[].value] | index("merge") != null' "$recorded" >/dev/null \
+    || fail "the fall-open under test must actually have happened"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push announces a merge-policy gate selector that will not run"
+}
+
+test_push_never_claims_a_strip_it_did_not_perform() {
+  local home fakebin rc recorded
+  home="$TMP_ROOT/push-policy-list-dies"; write_merge_policy_fixture "$home" " +captain-merge"
+  fakebin=$(fm_fakebin "$home")
+  fake_failing_jq "$fakebin"
+  # The forbidden list is found, announced per project - "dropping the Merge option" - and
+  # then cannot be turned into the JSON array the strip needs. The strip runs against an
+  # empty array, removes nothing, and installs an unchanged body: the run CLAIMED a strip
+  # it did not perform, which is worse than never having gated at all. Whatever else it
+  # does, it must not leave that claim standing alone on stderr.
+  push_policy_body guarded | PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 \
+    FAKE_JQ_FAIL='split("\n")' \
+    "$ROOT/bin/fm-logbook-push.sh" - 2>"$home/err" >/dev/null; rc=$?
+  expect_code 0 "$rc" "a list that cannot be built must still deliver the item"
+  recorded="$home/state/logbook-outbox/items.json"
+  assert_present "$recorded" "the card must still reach the board"
+  assert_grep "dropping the Merge option" "$home/err" \
+    "the per-project finding is what makes the contradiction possible; it must still be there"
+  assert_grep "removed nothing it announced above" "$home/err" \
+    "the run must correct its own claim out loud when the strip could not be performed"
+  # The claim really was wrong - proof the correction is not a warning about nothing.
+  jq -e '[.options[].value] | index("merge") != null' "$recorded" >/dev/null \
+    || fail "the strip under test must actually have been skipped"$'\n'"$(cat "$recorded")"
+  pass "fm-logbook-push corrects itself out loud when the forbidden list cannot be built"
+}
+
+# slug_agreement_rows: the shared input table that pins bin/fm-merge-policy-lib.sh's
+# owner/repo parse (fm_merge_slug, fm_merge_same_part, fm_merge_forbidden_url's origin
+# scan) to bin/fm-logbook-compose.sh's (pr_slug, same_repo_part, project_remote_repo).
+# Two implementations of one question live in one process because compose sources the
+# lib; consolidating them is tracked as fm-merge-slug-one-owner, and until then the next
+# divergence has to fail the suite rather than be found in a review.
+#
+# Each row is "<project>|<clone origin>|<PR url>|<expected>", where <expected> is:
+#
+#   same       both parses must answer alike. The plain form, scp-style, case folding, a
+#              foreign owner, a non-numeric PR number (where they HAD diverged), an
+#              owner-less remote, and a remote with no ".git" suffix.
+#   lib-wider  the library resolves a shape compose does not, DELIBERATELY. Each side
+#              fails closed in its own currency - compose withholds a button it cannot
+#              verify, the library refuses a merge it can trace to a flagged clone - so
+#              only this direction is safe, and compose is not widened to match because
+#              its output is pinned byte-for-byte while the logbook v2 extraction proves
+#              parity against it. Asserting the DIRECTION is the point: the library
+#              reading less than compose is what a fail-open bypass looks like, and every
+#              one of these rows is a bypass that was once open.
+slug_agreement_rows() {
+  cat <<'EOF'
+exact|https://github.com/acme/exact.git|https://github.com/acme/exact/pull/1|same
+scpform|git@github.com:acme/scpform.git|https://github.com/acme/scpform/pull/2|same
+casefold|https://github.com/schokoshake/casefold.git|https://github.com/SchokoShake/CaseFold/pull/3|same
+otherowner|https://github.com/acme/otherowner.git|https://github.com/notacme/otherowner/pull/4|same
+nonnumeric|https://github.com/acme/nonnumeric.git|https://github.com/acme/nonnumeric/pull/abc|same
+ownerless|git@github.com:ownerless.git|https://github.com/acme/ownerless/pull/6|same
+plainform|https://github.com/acme/plainform/|https://github.com/acme/plainform/pull/7|same
+urlslash|https://github.com/acme/urlslash.git|https://github.com/acme/urlslash/pull/8/|lib-wider
+urldotgit|https://github.com/acme/urldotgit.git|https://github.com/acme/urldotgit.git/pull/9|lib-wider
+origindotgitslash|https://github.com/acme/origindotgitslash.git/|https://github.com/acme/origindotgitslash/pull/10|lib-wider
+EOF
+}
+
+# write_slug_agreement_fixture <home> <posture>: one clone and one review-ready task per
+# table row, so the SAME inputs reach both parses. The posture is what lets each side be
+# read: unflagged, compose's Merge option says whether it matched; flagged,
+# fm_merge_forbidden_url returns 0 only when the lib matched.
+write_slug_agreement_fixture() {
+  local home=$1 posture=$2
+  mkdir -p "$home/data" "$home/state" "$home/projects"
+  printf '# Fleet project registry (firstmate-private)\n\n' > "$home/data/projects.md"
+  printf '# Backlog\n\n## In flight\n' > "$home/data/backlog.md"
+  slug_agreement_rows | while IFS='|' read -r project origin url expected; do
+    [ -n "$project" ] || continue
+    printf -- '- %s [direct-PR%s] - one row of the slug table (added 2026-07-01)\n' \
+      "$project" "$posture" >> "$home/data/projects.md"
+    printf -- '- [ ] %s-r - Ship the %s row %s (repo: %s) (kind: ship) (hold: review-ready - captain reviews then merges) (hold-kind: captain)\n' \
+      "$project" "$project" "$url" "$project" >> "$home/data/backlog.md"
+    git init -q "$home/projects/$project"
+    git -C "$home/projects/$project" remote add origin "$origin"
+  done
+}
+
+test_merge_policy_slug_agrees_with_compose() {
+  local plain flagged out project origin url expected compose_says lib_says
+  local matched unmatched declared
+  plain="$TMP_ROOT/slug-agree-plain";     write_slug_agreement_fixture "$plain" ""
+  flagged="$TMP_ROOT/slug-agree-flagged"; write_slug_agreement_fixture "$flagged" " +captain-merge"
+  out=$(PATH="$BASE_PATH" FM_HOME="$plain" LOGBOOK_ENABLE=1 "$ROOT/bin/fm-logbook-compose.sh")
+  matched=0
+  unmatched=0
+  declared=0
+  while IFS='|' read -r project origin url expected; do
+    [ -n "$project" ] || continue
+    if printf '%s' "$out" | jq -e --arg id "$project-r" \
+      '.items[] | select(.id==$id) | ([.options[].value] | index("merge") != null)' >/dev/null; then
+      compose_says=match
+    else
+      compose_says=no-match
+    fi
+    if PATH="$BASE_PATH" bash -c \
+      '. "$1/bin/fm-merge-policy-lib.sh"; fm_merge_forbidden_url "$1" "$2" "$2/projects" "$3"' \
+      _ "$ROOT" "$flagged" "$url"; then
+      lib_says=match
+    else
+      lib_says=no-match
+    fi
+    case "$expected" in
+      same)
+        [ "$compose_says" = "$lib_says" ] \
+          || fail "the two owner/repo parses disagree on $project ($origin vs $url): compose says $compose_says, the policy library says $lib_says"
+        if [ "$compose_says" = match ]; then matched=$((matched + 1)); else unmatched=$((unmatched + 1)); fi
+        ;;
+      lib-wider)
+        declared=$((declared + 1))
+        # The library must resolve it: this row's shape is a merge the guard has to be
+        # able to trace, and each of them has walked past it before.
+        [ "$lib_says" = match ] \
+          || fail "the policy library no longer resolves $project ($origin vs $url), which permits the merge it exists to refuse"
+        # And compose must still not: a row that has stopped diverging is one that belongs
+        # in the agreement half of the table, not one to keep asserting a divergence for.
+        [ "$compose_says" = no-match ] \
+          || fail "compose now resolves $project ($origin vs $url) too; move that row to \"same\""
+        ;;
+      *)
+        fail "the slug table row for $project declares an unknown expectation \"$expected\""
+        ;;
+    esac
+  done < <(slug_agreement_rows)
+  # A table that matched everything, or nothing, would agree vacuously - and one carrying
+  # no declared divergence would stop guarding the direction they are allowed to take.
+  [ "$matched" -gt 0 ] && [ "$unmatched" -gt 0 ] \
+    || fail "the slug table must exercise both outcomes (matched $matched, unmatched $unmatched)"
+  [ "$declared" -gt 0 ] || fail "the slug table must still carry its declared divergences"
+  pass "fm-merge-policy-lib and fm-logbook-compose read one owner/repo the same way"
+}
+
 test_compose_never_writes_to_a_project_clone() {
   local home out before after
   home="$TMP_ROOT/compose-remote-readonly"; write_remote_fixture "$home"
@@ -2388,6 +2975,172 @@ EOF
   pass "bootstrap opt-in surfaces the captain link and auto-syncs the board (reachable)"
 }
 
+test_bootstrap_autosync_surfaces_a_malformed_registry_posture() {
+  local home fakebin out synced
+  home="$TMP_ROOT/boot-registry-typo"; write_fleet_fixture "$home"; mkdir -p "$home/config"
+  fakebin=$(make_fake_curl "$home")
+  cat > "$home/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+EOF
+  # The prohibition, mistyped: the leading "+" dropped off "+captain-merge". The token
+  # binds nothing, so alpha stays mergeable and the board composes a live Merge for a
+  # project the captain reserved to themselves.
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes captain-merge] - First project (added 2026-07-01)
+- beta [direct-PR +yolo] - Second project (added 2026-07-02)
+- gamma [local-only] - Idle project with no work (added 2026-07-03)
+EOF
+  # Driven through the AUTOMATIC caller - bootstrap's own logbook setup - because that is
+  # the only read of the merge policy that runs unattended, and it composed the board with
+  # its stderr thrown away. A warning discarded there is a warning that never existed:
+  # every other path that re-emits it (a merge, a push) is one the captain has already
+  # reached by tapping the button this typo should have withheld.
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "LOGBOOK: merge policy - unrecognized posture flag for alpha: captain-merge" \
+    "the session-start board sync must surface a malformed registry posture to the captain"
+  # On bootstrap's own prefixed channel, which .agents/skills/bootstrap-diagnostics parses,
+  # rather than as the raw marked line of a library the captain never invoked.
+  assert_not_contains "$out" "fm-merge-policy:" \
+    "the diagnostic must be re-shaped onto the LOGBOOK channel, not passed through raw"
+  # The routine "not in registry" noise stays suppressed - that is the whole reason the
+  # policy library filters rather than passes its child's stderr through.
+  assert_not_contains "$out" "not in registry" \
+    "a project the registry never listed must not become a bootstrap diagnostic"
+  # Warned, never HONORED: a prohibition guessed at from a typo would be its own failure,
+  # so the board the same run composed still carries the Merge the line does not forbid.
+  synced="$home/state/logbook-outbox/sync.json"
+  assert_present "$synced" "the malformed line must not stop the session-start sync"
+  jq -e '.items[] | select(.id=="ship-pr-a1")
+      | ([.options[].value] | index("merge") != null)' "$synced" >/dev/null \
+    || fail "the malformed token must not be honored as a prohibition"$'\n'"$(cat "$synced")"
+  assert_not_contains "$out" "board not auto-synced" \
+    "a malformed registry line must not fail the auto-sync"
+  pass "bootstrap surfaces a malformed registry posture read by the session-start board sync"
+}
+
+# stage_fm_root <dir> [<script left out>...]: an FM_ROOT whose bin/ is a symlink farm over
+# the real one, minus the named scripts. Every script under bin/ resolves its own
+# SCRIPT_DIR and FM_ROOT from where it was invoked, so the farm is the whole staging - and
+# leaving a script OUT rather than overwriting its link is what keeps a test that writes a
+# stand-in from writing through the link into the repo's own bin/.
+stage_fm_root() {
+  local dir=$1 f base
+  shift
+  mkdir -p "$dir/bin"
+  for f in "$ROOT"/bin/*; do
+    base=$(basename "$f")
+    case " $* " in *" $base "*) continue ;; esac
+    ln -sf "$f" "$dir/bin/$base"
+  done
+  printf '%s\n' "$dir"
+}
+
+# write_logbook_optin <home>: the reachable-board opt-in the bootstrap sync tests share.
+write_logbook_optin() {
+  mkdir -p "$1/config"
+  cat > "$1/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+EOF
+}
+
+# add_action_card <home> <id> <project> <pr>: one more in-flight task shaped like
+# write_fleet_fixture's ship-pr-a1, so it composes as an ACTION card - the only kind
+# bin/fm-logbook-compose.sh consults the merge policy for, and therefore the only kind that
+# makes the policy library speak at all. The line is INSERTED into "## In flight" rather
+# than appended, because the section it lands in is what decides whether it is carded.
+add_action_card() {
+  local home=$1 id=$2 project=$3 pr=$4
+  awk -v line="- [ ] $id - Ship it (repo: $project) (kind: ship) (since 2026-07-10)" \
+    '{ print } /^## In flight$/ { print line }' \
+    "$home/data/backlog.md" > "$home/data/backlog.md.new"
+  mv "$home/data/backlog.md.new" "$home/data/backlog.md"
+  fm_write_meta "$home/state/$id.meta" \
+    "window=firstmate:fm-$id" "project=$home/projects/$project" \
+    "harness=claude" "kind=ship" "mode=direct-PR" "yolo=off" "pr=$pr"
+}
+
+test_bootstrap_surfaces_a_policy_diagnostic_no_caller_was_taught() {
+  local home stage fakebin out
+  home="$TMP_ROOT/boot-policy-unheard"; write_fleet_fixture "$home"; write_logbook_optin "$home"
+  # An action card for a project the registry never listed, so the filter's SUPPRESSED arm
+  # is actually reached: without one, nothing in this fixture would ever write the routine
+  # not-in-registry line, and the assertion against it below would hold no matter what the
+  # filter did.
+  add_action_card "$home" ship-pr-z9 unlisted https://github.com/acme/unlisted/pull/9
+  fakebin=$(make_fake_curl "$home")
+  stage=$(stage_fm_root "$TMP_ROOT/boot-policy-unheard-root" fm-project-mode.sh)
+  # A diagnostic no caller has ever seen, written by the script the policy library asks.
+  # The property under test is NOT this text - it is that a line the library reports
+  # reaches the captain without bootstrap having been taught the text first. The
+  # enumerated filter this replaced would have dropped it in silence, which is exactly how
+  # it dropped the failed-lookup diagnostic for two rounds: each round added the one arm it
+  # had been told about, and the next line out fell through the same hole.
+  cat > "$stage/bin/fm-project-mode.sh" <<SH
+#!/usr/bin/env bash
+echo 'warn: the registry rack is on fire; a shape no caller enumerated' >&2
+exec $(printf '%q' "$ROOT/bin/fm-project-mode.sh") "\$@"
+SH
+  chmod +x "$stage/bin/fm-project-mode.sh"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 LOGBOOK_DRY_RUN=1 \
+    "$stage/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "LOGBOOK: merge policy - the registry rack is on fire; a shape no caller enumerated" \
+    "a policy diagnostic no caller was taught must still reach the captain, on the LOGBOOK channel"
+  assert_not_contains "$out" "fm-merge-policy:" \
+    "the unfamiliar diagnostic must be re-shaped like every other, not passed through raw"
+  # Still a filter, not a hole: the routine "not in registry" noise the same child writes
+  # for a project the registry never listed stays suppressed.
+  assert_not_contains "$out" "not in registry" \
+    "surfacing unfamiliar lines must not also surface the routine noise"
+  assert_not_contains "$out" "board not auto-synced" \
+    "an unfamiliar policy diagnostic must not fail the auto-sync"
+  pass "bootstrap relays a policy diagnostic its filter has never been taught"
+}
+
+test_bootstrap_surfaces_a_merge_policy_lookup_it_could_not_perform() {
+  local home stage fakebin out lines synced
+  home="$TMP_ROOT/boot-policy-unreadable"; write_fleet_fixture "$home"; write_logbook_optin "$home"
+  # A SECOND action card in the SAME project, because the once-per-process bound below is
+  # only evidence if the fixture can produce more than one lookup: write_fleet_fixture's
+  # three in-flight tasks compose exactly one action card, and a count of 1 over one lookup
+  # holds against an implementation with no bound at all. A failed lookup is deliberately
+  # not memoized, so these two cards ask twice however identical they are.
+  add_action_card "$home" ship-pr-a2 alpha https://github.com/acme/alpha/pull/43
+  fakebin=$(make_fake_curl "$home")
+  # The home's fm-project-mode.sh cannot be run at all - a partial update, or an FM_ROOT
+  # that resolved somewhere else in a seeded secondmate home. This is the WORST of the
+  # three current diagnostics and the one the enumerated filter lost: the lookup could not
+  # be performed, so the permissive default answered for EVERY project, not just a
+  # mistyped one, and the board composed a live Merge on every +captain-merge card.
+  stage=$(stage_fm_root "$TMP_ROOT/boot-policy-unreadable-root" fm-project-mode.sh)
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 LOGBOOK_DRY_RUN=1 \
+    "$stage/bin/fm-bootstrap.sh" 2>/dev/null)
+  assert_contains "$out" "LOGBOOK: merge policy - could not read the merge policy" \
+    "a policy lookup that could not be performed must reach the captain at session start"
+  assert_contains "$out" "$stage/bin/fm-project-mode.sh" \
+    "the diagnostic must name the script that would not answer"
+  # The premise of the count below, pinned rather than assumed: two action cards in one
+  # project really did reach the composer, so two lookups really were asked for.
+  synced="$home/state/logbook-outbox/sync.json"
+  assert_present "$synced" "an unreadable merge policy must not stop the session-start sync"
+  [ "$(jq '[.items[] | select(.kind=="action") | select(.project=="alpha")] | length' "$synced")" = 2 ] \
+    || fail "the fixture must compose two action cards in one project, or the count below proves nothing"$'\n'"$(cat "$synced")"
+  # Once per process, not once per card: the failed lookup is deliberately not memoized so
+  # it is retried, and the report is bounded by its own flag instead.
+  lines=$(printf '%s\n' "$out" | grep -c "LOGBOOK: merge policy - could not read the merge policy" || true)
+  [ "$lines" = 1 ] \
+    || fail "the failed-lookup diagnostic must be reported once, not once per card (got $lines)"
+  assert_not_contains "$out" "board not auto-synced" \
+    "an unreadable merge policy must not fail the auto-sync"
+  pass "bootstrap surfaces a merge-policy lookup the session-start sync could not perform"
+}
+
 test_bootstrap_unreachable_omits_link_and_autosync() {
   local home fakebin out
   home="$TMP_ROOT/boot-link-down"; mkdir -p "$home/config"
@@ -2471,6 +3224,21 @@ test_compose_merge_follows_the_clone_to_its_real_repo
 test_compose_merge_requires_the_prs_owner_to_match_too
 test_compose_merge_folds_the_case_of_owner_and_repo
 test_compose_merge_falls_back_when_no_remote_resolves
+test_compose_captain_merge_project_offers_no_merge_option
+test_compose_merge_policy_leaves_other_projects_byte_identical
+test_compose_captain_merge_is_not_relaxed_by_yolo
+test_push_strips_merge_for_a_captain_merge_project
+test_push_merge_policy_leaves_other_projects_byte_identical
+test_push_gates_every_item_of_a_mixed_array
+test_push_never_reads_one_project_name_as_two
+test_push_strips_merge_read_from_the_url_when_the_item_names_no_project
+test_push_scans_each_clone_origin_once_however_many_urls
+test_push_leaves_no_temp_file_behind_on_any_path
+test_push_never_writes_the_gated_body_through_a_derived_temp_name
+test_push_still_delivers_the_card_when_the_gated_body_cannot_be_installed
+test_push_says_so_when_a_gate_selector_cannot_run
+test_push_never_claims_a_strip_it_did_not_perform
+test_merge_policy_slug_agrees_with_compose
 test_compose_never_writes_to_a_project_clone
 test_compose_non_captain_hold_with_a_pr_is_not_a_merge
 test_compose_blocked_by_is_not_a_merge
@@ -2494,6 +3262,9 @@ test_refresh_hard_noop_when_disabled
 test_refresh_dry_run_records_sync
 test_refresh_live_posts_sync
 test_bootstrap_opt_in_surfaces_link_and_autosyncs
+test_bootstrap_autosync_surfaces_a_malformed_registry_posture
+test_bootstrap_surfaces_a_policy_diagnostic_no_caller_was_taught
+test_bootstrap_surfaces_a_merge_policy_lookup_it_could_not_perform
 test_bootstrap_unreachable_omits_link_and_autosync
 test_xmode_and_logbook_cadences_coexist
 test_logbook_off_leaves_supervision_block_inert

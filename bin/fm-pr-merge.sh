@@ -53,6 +53,13 @@
 # outlives the meta - read BEFORE the close, because "tasks-axi done" moves the item and
 # done_keep prunes it out of the file entirely once Done is full.
 #
+# MERGE POLICY: this is also the fleet's enforcement point for projects firstmate must
+# never merge - the captain merges those personally. Such a project is flagged
+# "+captain-merge" in data/projects.md, and a merge naming it is REFUSED here before
+# anything is recorded or called. bin/fm-merge-policy-lib.sh owns the contract, both
+# signals the refusal reads, and why the attention board withholding the Merge option is
+# not a substitute for it. A project without the flag is unaffected.
+#
 # gh-axi pr merge expects a PR number and --repo <owner>/<repo>; it does not
 # parse a full https://github.com/<owner>/<repo>/pull/<n> URL. This script
 # parses the URL and invokes gh-axi in the form it accepts.
@@ -94,6 +101,8 @@ case "$BACKLOG" in /*) ;; *) BACKLOG="$PWD/$BACKLOG" ;; esac
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
 # shellcheck source=bin/fm-backlog-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-backlog-lib.sh"
+# shellcheck source=bin/fm-merge-policy-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-merge-policy-lib.sh"
 
 caller_has_merge_method() {
   local arg
@@ -134,6 +143,57 @@ reject_repo_overrides() {
 
 parse_pr_url "$URL" || exit 1
 reject_repo_overrides "$@" || exit 1
+
+# MERGE POLICY: some projects are the captain's to merge and no one else's
+# (bin/fm-merge-policy-lib.sh owns the contract and the "+captain-merge" registry flag).
+# This is the enforcement point, and it comes BEFORE the recording step: a refused merge
+# must leave no trace of having been half-performed.
+#
+# It is not a duplicate of the attention board withholding the Merge option. That option
+# governs what the captain is OFFERED; this governs what firstmate DOES. A card composed
+# before the flag was set, an answer replayed off a stale board, or a request typed
+# straight at the shell all arrive here with the option long gone and the merge still one
+# call away - so the refusal, not the missing button, is what makes the rule hold.
+#
+# Two independent signals, either of which refuses. Signal 1 is the project this task
+# records - the live meta's project=, else the durable backlog item's "(repo: <name>)"
+# marker, the same two sources in the same order the rest of this fleet reads a task's
+# project in. Signal 2 is the PR URL itself, matched against the clones under projects/;
+# it exists because signal 1 rests on bookkeeping a torn-down and pruned task no longer
+# carries, while the url is the thing being merged and is always present.
+merge_policy_refuse() {
+  local project=$1 why=$2
+  echo "error: refusing to merge $URL: project \"$project\" is +captain-merge in data/projects.md" >&2
+  echo "       ($why). The captain merges this project's PRs personally; firstmate must not." >&2
+  exit 1
+}
+
+# The meta's project= is the PROJECT CLONE's path, recorded by bin/fm-spawn.sh beside the
+# separate worktree= the crew actually works in; its last component is the projects/<name>
+# the registry lists. "tail -n1" because last-key-wins is how every other reader of a meta
+# reads it (bin/fm-logbook-compose.sh's meta_get).
+POLICY_PROJECT=""
+if [ -f "$META" ]; then
+  POLICY_PATH=$(grep -E '^project=' "$META" 2>/dev/null | tail -n1) || POLICY_PATH=""
+  POLICY_PATH=${POLICY_PATH#project=}
+  POLICY_PATH=${POLICY_PATH%/}
+  if [ -n "$POLICY_PATH" ]; then POLICY_PROJECT=${POLICY_PATH##*/}; fi
+fi
+if [ -z "$POLICY_PROJECT" ]; then
+  # The backlog's own record, read exactly as the no-meta bookkeeping below reads it, and
+  # harmlessly re-read there: this is a pure scan of a file nothing has written yet.
+  POLICY_ITEM=$(fm_backlog_item_of "$BACKLOG" "$ID")
+  case "$POLICY_ITEM" in
+    *$'\t'*) POLICY_PROJECT=${POLICY_ITEM#*$'\t'} ;;
+  esac
+fi
+if [ -n "$POLICY_PROJECT" ] &&
+  fm_merge_forbidden_project "$FM_ROOT" "$FM_HOME" "$POLICY_PROJECT"; then
+  merge_policy_refuse "$POLICY_PROJECT" "the task records this project"
+fi
+if fm_merge_forbidden_url "$FM_ROOT" "$FM_HOME" "$PROJECTS" "$URL"; then
+  merge_policy_refuse "$FM_MERGE_FORBIDDEN_PROJECT" "this PR's repo is that project's own origin"
+fi
 
 # The live crew's record, kept exactly as it was: record, verify, then merge. The
 # verification stays hard - while a meta exists, a merge whose pr= did not land is
