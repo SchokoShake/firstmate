@@ -927,8 +927,8 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
       ;;
-    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-teardown.sh|bin/fm-review-diff.sh|\
-    bin/fm-x-*|bin/fm-check*)
+    bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-merge-policy-lib.sh|bin/fm-teardown.sh|\
+    bin/fm-review-diff.sh|bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
       ;;
     bin/fm-nm-run-lib.sh)

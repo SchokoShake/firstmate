@@ -301,6 +301,129 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+# --- +captain-merge merge policy ------------------------------------------------
+#
+# Some projects are the captain's to merge and no one else's. The refusal, not a
+# missing button on some surface, is what makes that rule hold, so it is pinned here
+# on both of firstmate's merge paths and on both of its independent signals.
+
+# A home whose registry declares <project> with <flags>, plus a clone of <project>
+# whose origin is <origin-url> so the URL signal has something to trace to.
+make_policy_home() {  # <case-dir> <project> <bracket-or-empty> <origin-url>
+  local case_dir=$1 project=$2 bracket=$3 origin=$4 home
+  home="$case_dir/home"
+  mkdir -p "$home/data" "$home/projects/$project"
+  if [ -n "$bracket" ]; then
+    printf -- '- %s [%s] - a project (added 2026-01-01)\n' "$project" "$bracket" > "$home/data/projects.md"
+  else
+    printf -- '- %s - a project (added 2026-01-01)\n' "$project" > "$home/data/projects.md"
+  fi
+  git init -q "$home/projects/$project"
+  git -C "$home/projects/$project" remote add origin "$origin"
+  printf '%s\n' "$home"
+}
+
+run_pr_merge_in_home() {  # <case-dir> <home> <args...>
+  local case_dir=$1 home=$2; shift 2
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_HOME="$home" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$home/data" \
+  FM_PROJECTS_OVERRIDE="$home/projects" \
+  FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$PR_MERGE" "$@"
+}
+
+test_captain_merge_refused_from_the_tasks_own_record() {
+  local case_dir home out rc
+  case_dir=$(make_case captain-merge-signal1)
+  add_gh_mocks "$case_dir" deadbeef
+  home=$(make_policy_home "$case_dir" guarded "direct-PR +captain-merge" https://github.com/acme/guarded.git)
+  # The task records the flagged project; the URL names an unrelated repo, so ONLY
+  # signal 1 can decide.
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" "project=$home/projects/guarded" \
+    "kind=ship" "mode=direct-PR"
+
+  set +e
+  out=$(run_pr_merge_in_home "$case_dir" "$home" task-x1 https://github.com/other/repo/pull/7 2>&1)
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "signal1: a +captain-merge project must not be merged"
+  assert_contains "$out" "+captain-merge" "signal1: refusal did not name the policy"
+  # BEFORE the recording step: a refused merge must leave no trace of being half-done.
+  assert_no_grep "pr=" "$case_dir/state/task-x1.meta" "signal1: refused merge still recorded pr="
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "signal1: refused merge still called gh-axi: $(cat "$case_dir/gh-axi.log")"
+  pass "a +captain-merge project is refused from the task's own record, before recording"
+}
+
+test_captain_merge_refused_from_the_pr_url_alone() {
+  local case_dir home out rc
+  case_dir=$(make_case captain-merge-signal2)
+  add_gh_mocks "$case_dir" deadbeef
+  home=$(make_policy_home "$case_dir" guarded "direct-PR +captain-merge" https://github.com/acme/guarded.git)
+  # The task records an UNFLAGGED project, so signal 1 permits; only the URL, traced to
+  # the flagged clone's own origin, can refuse. This is the backstop that survives
+  # bookkeeping a hand-typed or mistaken request names wrongly.
+  mkdir -p "$home/projects/loose"
+  printf -- '- loose - unflagged (added 2026-01-01)\n' >> "$home/data/projects.md"
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" "project=$home/projects/loose" \
+    "kind=ship" "mode=direct-PR"
+
+  set +e
+  out=$(run_pr_merge_in_home "$case_dir" "$home" task-x1 https://github.com/acme/guarded/pull/7 2>&1)
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "signal2: a PR whose repo is a flagged clone's origin must not be merged"
+  assert_contains "$out" "guarded" "signal2: refusal did not name the project the url traced to"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "signal2: refused merge still called gh-axi"
+  pass "a PR traced to a +captain-merge clone's origin is refused even when the task records another project"
+}
+
+test_unflagged_project_still_merges() {
+  local case_dir home rc
+  case_dir=$(make_case captain-merge-default-permissive)
+  add_gh_mocks "$case_dir" deadbeef
+  home=$(make_policy_home "$case_dir" loose "direct-PR" https://github.com/acme/loose.git)
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" "project=$home/projects/loose" \
+    "kind=ship" "mode=direct-PR"
+
+  set +e
+  run_pr_merge_in_home "$case_dir" "$home" task-x1 https://github.com/acme/loose/pull/7 >/dev/null 2>&1
+  rc=$?
+  set -e
+
+  [ "$rc" -eq 0 ] || fail "default-permissive: an unflagged project must merge exactly as before"
+  assert_grep "pr merge 7" "$case_dir/gh-axi.log" "default-permissive: gh-axi merge was not called"
+  pass "a project without the flag is exactly as mergeable as it was before the flag existed"
+}
+
+test_captain_merge_refuses_the_local_merge_too() {
+  local case_dir home out rc
+  case_dir=$(make_case captain-merge-local)
+  home=$(make_policy_home "$case_dir" guarded "local-only +captain-merge" https://github.com/acme/guarded.git)
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" "project=$home/projects/guarded" \
+    "kind=ship" "mode=local-only"
+
+  set +e
+  out=$(FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_DATA_OVERRIDE="$home/data" FM_PROJECTS_OVERRIDE="$home/projects" \
+    "$ROOT/bin/fm-merge-local.sh" task-x1 2>&1)
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "local-merge: a +captain-merge project must not be merged locally either"
+  assert_contains "$out" "+captain-merge" "local-merge: refusal did not name the policy"
+  pass "the prohibition holds on firstmate's local-only merge path as well as its PR path"
+}
+
+
 test_records_pr_and_head_before_merging
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
@@ -311,3 +434,7 @@ test_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_parses_pr_url_for_gh_axi
+test_captain_merge_refused_from_the_tasks_own_record
+test_captain_merge_refused_from_the_pr_url_alone
+test_unflagged_project_still_merges
+test_captain_merge_refuses_the_local_merge_too

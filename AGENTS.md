@@ -326,6 +326,9 @@ Without a current explicit captain instruction that states the concrete merge, t
 Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 After an autonomous merge, give the captain a one-line full-URL or local-main outcome.
 
+A registry line's optional `+captain-merge` flag is orthogonal to both mode and `yolo`: firstmate must never merge that project's work at all, on either merge path, and `yolo` never relaxes it.
+It is a standing rule the captain sets on the registry line, so it changes by changing that line and not by a one-off "merge it"; both merge scripts refuse either way, and `bin/fm-merge-policy-lib.sh` owns what the flag means.
+
 ### Validate
 
 For a no-mistakes ship, trigger validation on the same worker after its implementation commit, using the harness invocation owned by `harness-adapters`.
