@@ -2591,6 +2591,216 @@ EOF
   pass "the run abort and the leaked-process reap both complete before the destructive worktree return"
 }
 
+
+# Override GitHub lookups so PR 7 reports MERGED into <base>, answering BOTH PR
+# queries (clause-2's state+head form and clause-3's state/base/mergeCommit/head form).
+add_gh_pr_merged_into_base() {
+  local case_dir=$1 base=$2 head=$3 merge_commit=$4
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *"state,baseRefName,mergeCommit,headRefOid"*)
+        printf '%s\n%s\n%s\n%s\n' 'MERGED' '$base' '$merge_commit' '$head' ; exit 0 ;;
+      *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
+      *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
+    esac
+    ;;
+esac
+echo "error: pull request not found" >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/gh"
+}
+
+# Simulate the no-mistakes pipeline's server-side rebase and the squash merge that
+# follows: an unrelated PR merges into main first, the task branch is rebased onto it
+# and gains a document fix commit, and that rebased head is squash-merged. The local
+# worktree branch is left exactly where the crew had it - a diverged sibling of the
+# merged head - which is what defeats remote-reachability, PR-head containment AND the
+# content fallback all at once. Echoes "<pr head sha>\t<merge commit sha>".
+simulate_pipeline_rebase_and_merge() {
+  local case_dir=$1 file=$2 merged_content=$3 tmp pr_head merge_commit
+  tmp="$case_dir/_pipeline"
+  # The whole build is stdout-silenced, because this function's stdout IS its return
+  # value and `git merge --squash` prints an unsuppressable note there.
+  {
+    git clone -q "$case_dir/origin.git" "$tmp"
+    git -C "$tmp" config user.email t@t
+    git -C "$tmp" config user.name t
+    printf '%s\n' intervening > "$tmp/other.txt"
+    git -C "$tmp" add -- other.txt
+    git -C "$tmp" commit -q -m "intervening PR that merged first"
+    git -C "$tmp" push -q origin HEAD:main
+    git -C "$tmp" checkout -q -b pr-head
+    printf '%s\n' "$merged_content" > "$tmp/$file"
+    git -C "$tmp" add -- "$file"
+    git -C "$tmp" commit -q -m "rebased task work"
+    printf '%s\n' documented > "$tmp/docs.txt"
+    git -C "$tmp" add -- docs.txt
+    git -C "$tmp" commit -q -m "no-mistakes document fix"
+    git -C "$tmp" push -q origin HEAD:refs/heads/pr-head
+    git -C "$tmp" checkout -q main
+    git -C "$tmp" merge -q --squash pr-head
+    git -C "$tmp" commit -q -m "squash merge PR #7"
+    git -C "$tmp" push -q origin HEAD:main
+    # Pull the PR head object into the clone, then drop the head branch everywhere, so
+    # nothing local becomes remote-reachable through it and the object still resolves.
+    git -C "$case_dir/project" fetch -q origin
+    git -C "$case_dir/project" update-ref -d refs/remotes/origin/pr-head
+    git -C "$tmp" push -q origin --delete pr-head
+  } >/dev/null
+  pr_head=$(git -C "$tmp" rev-parse pr-head)
+  merge_commit=$(git -C "$tmp" rev-parse main)
+  rm -rf "$tmp"
+  printf '%s\t%s\n' "$pr_head" "$merge_commit"
+}
+
+seed_pipeline_rebased_task() {
+  local case_dir=$1
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_url "$case_dir"
+  simulate_pipeline_rebase_and_merge "$case_dir" feature.txt "hello, reviewed"
+}
+
+test_pipeline_rebased_pr_merged_into_default_allows() {
+  local case_dir rc facts pr_head merge_commit
+  case_dir=$(make_case rebased-merged)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  merge_commit=${facts#*$'\t'}
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" "$merge_commit"
+
+  # Fixture guard: the branch really is a diverged sibling of the merged head, which is
+  # what makes every pre-existing clause fail and is the whole point of the case.
+  ! git -C "$case_dir/wt" merge-base --is-ancestor HEAD "$pr_head" 2>/dev/null \
+    || fail "rebased-merged: fixture bug, local HEAD is contained in the PR head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "rebased-merged: teardown should succeed after the PR merged into the default branch"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "rebased-merged: teardown printed a REFUSED line"
+  # Proves the merged-into-default clause is what allowed it, not PR-head containment
+  # or the content fallback (both of which this fixture defeats).
+  grep -q "merged into main" "$case_dir/stderr" \
+    || fail "rebased-merged: teardown did not report the merged-into-default path: $(cat "$case_dir/stderr")"
+  grep -q "pre-rebase branch as landed" "$case_dir/stderr" \
+    || fail "rebased-merged: teardown did not name the pre-rebase branch as landed"
+  pass "post-merge teardown of a server-side-rebased pipeline task succeeds without --force"
+}
+
+test_pr_merged_into_non_default_base_refuses() {
+  local case_dir rc facts pr_head merge_commit
+  case_dir=$(make_case merged-non-default-base)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  merge_commit=${facts#*$'\t'}
+  # Deliberately generous on every other axis - the merge commit really is on
+  # origin/main - so the reported base ref is the only thing that can decide. A PR
+  # merged into an integration branch nobody cuts from is not landed work.
+  add_gh_pr_merged_into_base "$case_dir" integration "$pr_head" "$merge_commit"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merged-non-default-base: teardown should refuse a PR merged into a non-default base"
+  grep -q REFUSED "$case_dir/stderr" || fail "merged-non-default-base: no REFUSED line in stderr"
+  pass "a merged PR whose base is not the default branch never counts as landed"
+}
+
+test_merge_commit_absent_from_default_branch_refuses() {
+  local case_dir rc facts pr_head
+  case_dir=$(make_case merge-commit-off-default)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  # A real commit object the squash merge left unreachable from origin/main. The PR
+  # claims MERGED into main, but nothing proves that merge reached this clone's default
+  # branch, so teardown must not take GitHub's word for it.
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" "$pr_head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merge-commit-off-default: teardown should refuse when the merge commit is not on the default branch"
+  grep -q REFUSED "$case_dir/stderr" || fail "merge-commit-off-default: no REFUSED line in stderr"
+  pass "a merge commit unreachable from the clone's default branch never counts as landed"
+}
+
+test_merged_pr_without_merge_commit_refuses() {
+  local case_dir rc facts pr_head
+  case_dir=$(make_case merged-no-merge-commit)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  # An empty mergeCommit must stay an empty value in its OWN position rather than
+  # shifting every later field left, and must refuse rather than proceed unprovable.
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" ""
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "merged-no-merge-commit: teardown should refuse when no merge commit is reported"
+  grep -q REFUSED "$case_dir/stderr" || fail "merged-no-merge-commit: no REFUSED line in stderr"
+  pass "a merged PR reporting no merge commit refuses instead of guessing"
+}
+
+test_local_commit_stacked_on_merged_pr_head_refuses() {
+  local case_dir rc facts pr_head merge_commit
+  case_dir=$(make_case stacked-on-merged-head)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  merge_commit=${facts#*$'\t'}
+  # Move the worktree ONTO the merged head and add work on top. That commit is local
+  # work no PR carried, so the clause's stacked-commit guard must refuse it - the one
+  # case a rebased sibling branch must be told apart from.
+  git -C "$case_dir/wt" reset -q --hard "$pr_head"
+  wt_commit_file "$case_dir" extra.txt later "work stacked after the merge"
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" "$merge_commit"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "stacked-on-merged-head: teardown should refuse work stacked on the merged PR head"
+  grep -q REFUSED "$case_dir/stderr" || fail "stacked-on-merged-head: no REFUSED line in stderr"
+  pass "a local commit stacked on the merged PR head still refuses"
+}
+
+test_dirty_worktree_refuses_even_when_pr_merged_into_default() {
+  local case_dir rc facts pr_head merge_commit
+  case_dir=$(make_case dirty-merged-into-default)
+  write_meta "$case_dir" no-mistakes ship
+  facts=$(seed_pipeline_rebased_task "$case_dir")
+  pr_head=${facts%%$'\t'*}
+  merge_commit=${facts#*$'\t'}
+  add_gh_pr_merged_into_base "$case_dir" main "$pr_head" "$merge_commit"
+  printf '%s\n' "uncommitted" > "$case_dir/wt/scratch.txt"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "dirty-merged-into-default: uncommitted changes are never landed"
+  grep -q REFUSED "$case_dir/stderr" || fail "dirty-merged-into-default: no REFUSED line in stderr"
+  pass "the new clause never relaxes the uncommitted-changes refusal"
+}
+
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present
@@ -2649,3 +2859,9 @@ test_process_spawned_during_grace_is_reaped_on_later_pass
 test_persistent_scan_refuses_after_bounded_retries
 test_process_exit_during_identity_lookup_does_not_refuse
 test_run_abort_precedes_process_reap_precedes_worktree_removal
+test_pipeline_rebased_pr_merged_into_default_allows
+test_pr_merged_into_non_default_base_refuses
+test_merge_commit_absent_from_default_branch_refuses
+test_merged_pr_without_merge_commit_refuses
+test_local_commit_stacked_on_merged_pr_head_refuses
+test_dirty_worktree_refuses_even_when_pr_merged_into_default
