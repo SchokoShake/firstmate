@@ -15,6 +15,12 @@
 # submit or reports an inconclusive send. If a swallowed Enter is positively
 # confirmed, fm-send exits NON-ZERO so the caller knows the steer did not land
 # instead of silently leaving an unsubmitted instruction.
+# The empty|pending|unknown verdict this decision rests on is NOT owned here: it
+# is bin/fm-composer-lib.sh, the one fleet-wide composer classifier. Both ways of
+# accepting a steer land as 'empty' there - processed immediately, or QUEUED for
+# the end of a mid-turn - so only 'pending', text genuinely still in the composer,
+# is an error. Fix a wrong verdict in that owner, never by softening the error
+# here: a steer that silently vanished is far worse than a false alarm.
 # Submission dispatches through the target's recorded backend; the tmux adapter
 # shares its composer/submit core with the away-mode daemon via bin/fm-tmux-lib.sh.
 # Tune with FM_SEND_RETRIES (default 3) / FM_SEND_SLEEP (0.4).

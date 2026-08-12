@@ -159,6 +159,62 @@ fm_composer_strip_ghost() {
   '
 }
 
+# UNICODE SPACE PADDING is the third concern of this owner (task
+# fm-send-submit-verify): a harness pads its composer row with an INVISIBLE
+# Unicode space instead of ASCII 0x20 - claude 2.1.228 draws its empty composer
+# as `❯` + U+00A0 NO-BREAK SPACE (bytes e2 9d af c2 a0, verified live 2026-08-12).
+# Bash's [[:space:]] is ASCII-only under C.UTF-8, so every caller's trim left the
+# NBSP behind, the glyph-strip below saw a non-empty remainder, and an EMPTY
+# claude composer classified as `pending`. That single byte pair is what made
+# bin/fm-send.sh report "Enter swallowed; text left in composer" on sends that had
+# in fact been delivered, and what made every idle claude pane read as pending
+# input to the away-mode injector. The fold below is deliberately harness-generic
+# rather than an NBSP special case, for the reason this file exists: the next
+# harness to pad with U+202F must not reproduce the same incident.
+#
+# Scope of the fold: only characters that render as nothing a human could have
+# typed as meaningful content - the invisible Unicode spaces. This respects the
+# safety bias stated above (over-stripping is the dangerous direction, because the
+# injector writes into a pane it reads as empty): folding an invisible space can
+# only reclassify a row that was already visually blank, never one showing real
+# text. Visible Zs characters (e.g. U+1680 OGHAM SPACE MARK) are deliberately NOT
+# folded. The characters are built once at source time by a single printf using
+# octal escapes rather than written as invisible literals in this source, so the
+# set stays readable and survives an editor that normalises whitespace; no \u
+# escapes and no multibyte character classes, matching the bash 3.2 constraint
+# bin/fm-tmux-lib.sh states for its own border stripping.
+#   U+00A0 no-break space          U+2007 figure space
+#   U+2009 thin space              U+200A hair space
+#   U+200B zero width space        U+202F narrow no-break space
+#   U+205F medium mathematical space   U+3000 ideographic space
+#   U+FEFF zero width no-break space (BOM)
+FM_COMPOSER_SPACE_CHARS=$(printf '\302\240\n\342\200\207\n\342\200\211\n\342\200\212\n\342\200\213\n\342\200\257\n\342\201\237\n\343\200\200\n\357\273\277')
+
+# fm_composer_normalize_spaces: the ONE fleet-wide answer to "which characters
+# count as composer whitespace". Folds each invisible Unicode space in <text> to
+# an ASCII space so the ASCII [[:space:]] trims in this file and in every adapter
+# see it. Idempotent, so an adapter that has already normalized may call it again.
+fm_composer_normalize_spaces() {  # <text>
+  local text=$1 ch old_ifs=${IFS-}
+  # $'\n' (ANSI-C quoting, bash 2.0+) not $(printf '\n'): command substitution
+  # strips trailing newlines, which would leave IFS empty and disable splitting.
+  IFS=$'\n'
+  for ch in $FM_COMPOSER_SPACE_CHARS; do
+    text=${text//"$ch"/ }
+  done
+  IFS=$old_ifs
+  printf '%s' "$text"
+}
+
+# fm_composer_trim: strip leading and trailing ASCII whitespace. Callers fold
+# invisible Unicode spaces with fm_composer_normalize_spaces first.
+fm_composer_trim() {  # <text>
+  local text=$1
+  text="${text#"${text%%[![:space:]]*}"}"
+  text="${text%"${text##*[![:space:]]}"}"
+  printf '%s' "$text"
+}
+
 # fm_composer_classify_content: the single shared composer-content verdict.
 #   <bordered> 1 when <content> came from a genuine agent-composer container (a
 #              bordered composer box, or a structurally-identified bare AGENT
@@ -182,6 +238,11 @@ fm_composer_idle_matches() {
 fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [plain_content]
   local bordered=$1 content=$2 idle_re=${3:-} idle_case=${4:-sensitive} plain_content
   plain_content=${5:-$content}
+  # Fold invisible Unicode space padding, then re-trim in ASCII. Done HERE, in the
+  # one owner, so every adapter's own ASCII pre-trim is repaired at the single
+  # point all four of them delegate to, rather than in four separate copies.
+  content=$(fm_composer_trim "$(fm_composer_normalize_spaces "$content")")
+  plain_content=$(fm_composer_trim "$(fm_composer_normalize_spaces "$plain_content")")
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
       '❯'|'›') printf 'empty'; return 0 ;;

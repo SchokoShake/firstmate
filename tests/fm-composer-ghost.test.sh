@@ -250,6 +250,73 @@ test_real_text_with_trailing_ghost_is_pending() {
   pass "fm_pane_input_pending: real text plus a trailing ghost run is still pending"
 }
 
+# --- Pinned live claude composer rows (task fm-send-submit-verify) ----------
+#
+# The three rows below are byte-for-byte captures of `tmux capture-pane -e` at the
+# cursor row of a real claude 2.1.228 pane, taken 2026-08-12. They exist because
+# bin/fm-send.sh spent a session reporting "Enter swallowed; text left in composer"
+# on steers that had in fact been delivered: claude pads its composer with U+00A0
+# (bytes c2 a0), bash's [[:space:]] is ASCII-only, so an EMPTY composer classified
+# as `pending`. All three of these are SUCCESSFUL outcomes and must read `empty`;
+# only the fourth, a genuinely stranded composer, may read `pending`.
+#
+# The queued row is the shape a mid-turn send lands in - claude accepts the text,
+# shows "Press up to edit queued messages", and processes it at the end of the
+# current turn. Its hint is dim (SGR 2), so the ghost owner above already drops it;
+# the row is pinned so a future claude that stops dimming that hint is caught here
+# rather than in another session of false alarms.
+
+test_live_claude_idle_composer_row_is_empty() {
+  local dir fb capture out
+  dir="$TMP_ROOT/claude-idle"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir"); capture="$dir/styled.txt"
+  # Idle, never-typed-into claude composer: glyph + NBSP, no styling at all.
+  printf '\xe2\x9d\xaf\xc2\xa0\n' > "$capture"
+  out=$(PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 fm_tmux_composer_state "fakepane")
+  [ "$out" = empty ] || fail "the live claude idle composer row must read empty, got '$out'"
+  pass "fm_tmux_composer_state: the live claude idle composer row (glyph + U+00A0) reads empty"
+}
+
+test_live_claude_busy_composer_row_is_empty() {
+  local dir fb capture out
+  dir="$TMP_ROOT/claude-busy"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir"); capture="$dir/styled.txt"
+  # Mid-turn with an empty composer: the same glyph + NBSP, wrapped in a 256-colour
+  # foreground. 38;5;n is deliberately not luminance-tested by the ghost owner, so
+  # the glyph survives and only the space fold decides this row.
+  printf '\033[38;5;246m\xe2\x9d\xaf\xc2\xa0\033[39m\n' > "$capture"
+  out=$(PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 fm_tmux_composer_state "fakepane")
+  [ "$out" = empty ] || fail "the live claude busy composer row must read empty, got '$out'"
+  pass "fm_tmux_composer_state: the live claude busy-but-empty composer row reads empty"
+}
+
+test_live_claude_queued_message_row_is_empty() {
+  local dir fb capture out
+  dir="$TMP_ROOT/claude-queued"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir"); capture="$dir/styled.txt"
+  # A send accepted mid-turn: the text is QUEUED for the end of the current turn
+  # and the composer shows a dim "Press up to edit queued messages" hint. This is a
+  # delivered send, not a swallowed Enter.
+  printf '\033[38;5;246m\xe2\x9d\xaf\xc2\xa0\033[2m\033[39mPress up to edit queued messages\033[0m\n' > "$capture"
+  out=$(PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 fm_tmux_composer_state "fakepane")
+  [ "$out" = empty ] || fail "the live claude queued-message row must read empty (the send landed), got '$out'"
+  pass "fm_tmux_composer_state: the live claude queued-message row reads empty (a queued send is a delivered send)"
+}
+
+test_live_claude_stranded_composer_row_is_pending() {
+  local dir fb capture out
+  dir="$TMP_ROOT/claude-stranded"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir"); capture="$dir/styled.txt"
+  # The one outcome that IS an error: text typed and never submitted. Losing a
+  # steer silently would be far worse than the noise this fix removes, so this row
+  # must stay pending even though it carries the same U+00A0 padding as the three
+  # successful rows above.
+  printf '\xe2\x9d\xaf\xc2\xa0stranded steer that never got an Enter\n' > "$capture"
+  out=$(PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 fm_tmux_composer_state "fakepane")
+  [ "$out" = pending ] || fail "a genuinely stranded claude composer row must read pending, got '$out'"
+  pass "fm_tmux_composer_state: a genuinely stranded claude composer row still reads pending"
+}
+
 # --- fm-peek.sh stays escape-free (LLM-facing path) -------------------------
 
 test_peek_output_is_escape_free() {
@@ -287,4 +354,8 @@ test_colored_text_with_2_payload_still_pending
 test_dark_truecolor_ghost_only_composer_is_not_pending
 test_dark_truecolor_bare_shell_prompt_is_unknown
 test_real_text_with_trailing_ghost_is_pending
+test_live_claude_idle_composer_row_is_empty
+test_live_claude_busy_composer_row_is_empty
+test_live_claude_queued_message_row_is_empty
+test_live_claude_stranded_composer_row_is_pending
 test_peek_output_is_escape_free
