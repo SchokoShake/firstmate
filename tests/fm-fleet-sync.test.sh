@@ -434,6 +434,69 @@ test_single_project_unresolvable_name_still_skips() {
   pass "single-project form leaves a genuinely bad name unresolved"
 }
 
+# The clone gate must be BOUNDED at projects/. Git's repo discovery walks UP from
+# the directory it is given, so a projects/<name> that is not a clone answers with
+# the repository ENCLOSING projects/ - in the shipped layout, firstmate's own
+# checkout. Unbounded, the sweep then fetched, pruned and fast-forwarded THAT repo
+# once per non-clone directory, silently, at every session start. The enclosing repo
+# here is deliberately one commit behind its origin and holds a branch whose upstream
+# is gone, so both wrong-target writes are visible rather than merely possible.
+test_non_clone_project_dir_cannot_sync_the_enclosing_repo() {
+  local home enclosing_head_before enclosing_head_after out real
+  home=$(new_home)
+  # Make the home itself a clone that is one commit behind and carries a prunable
+  # branch, i.e. exactly the repository a non-clone dir under it would resolve to.
+  rm -rf "$home"
+  build_pair "$TMP_ROOT/enclosing-src" enclosing >/dev/null
+  cp -a "$TMP_ROOT/enclosing-src/projects/enclosing" "$home"
+  mkdir -p "$home/projects"
+  advance_origin "$TMP_ROOT/enclosing-src" enclosing E1
+  git -C "$home" branch feature >/dev/null 2>&1
+  git -C "$home" config branch.feature.remote origin
+  git -C "$home" config branch.feature.merge refs/heads/gone
+  mkdir -p "$home/projects/scratch"
+
+  enclosing_head_before=$(git -C "$home" rev-parse HEAD)
+  out=$(run_sync "$home")
+  enclosing_head_after=$(git -C "$home" rev-parse HEAD)
+
+  assert_contains "$out" "scratch: skipped: not a git repo" \
+    "a non-clone directory under projects/ must take the not-a-git-repo skip"
+  assert_not_contains "$out" "scratch: synced" "a non-clone directory must never report a sync"
+  assert_not_contains "$out" "scratch: pruned" "a non-clone directory must never report a prune"
+  [ "$enclosing_head_before" = "$enclosing_head_after" ] \
+    || fail "the repo merely enclosing projects/ was fast-forwarded ($enclosing_head_before -> $enclosing_head_after)"
+  real=$(git -C "$home" show-ref --verify --quiet refs/heads/feature && echo yes || echo no)
+  [ "$real" = yes ] || fail "the repo merely enclosing projects/ had a branch pruned"
+  pass "a non-clone projects/ directory cannot reach the repository enclosing projects/"
+}
+
+# The bootstrap timeout counter runs the same lookup and must be bounded the same
+# way, independently of the sweep gate above: the enclosing repo HAS an origin, so
+# unbounded, every non-clone directory counted as an origin-backed project.
+test_bootstrap_project_count_is_bounded_at_projects() {
+  local home count
+  home=$(new_home)
+  rm -rf "$home"
+  cp -a "$TMP_ROOT/enclosing-src/projects/enclosing" "$home"
+  mkdir -p "$home/projects/scratch-a" "$home/projects/scratch-b"
+
+  # Exercise the counter alone: bin/fm-bootstrap.sh is a script, not a library, so
+  # its function is lifted out rather than sourcing the whole session-start body.
+  # PROJECTS is the counter's own input, read from the environment it runs in.
+  count=$(
+    export PROJECTS="$home/projects"
+    eval "$(awk '/^fleet_sync_origin_backed_project_count\(\)/,/^}/' "$ROOT/bin/fm-bootstrap.sh")"
+    fleet_sync_origin_backed_project_count
+  )
+  case "$count" in
+    0) ;;
+    ''|*[!0-9]*) fail "could not read the origin-backed project count (got '$count')" ;;
+    *) fail "non-clone directories counted as origin-backed projects (count=$count, expected 0)" ;;
+  esac
+  pass "the bootstrap origin-backed project count is bounded at projects/"
+}
+
 test_whole_fleet_form() {
   local home behind current out
   home=$(new_home)
@@ -618,6 +681,8 @@ test_single_project_by_bare_name_ignores_cwd_shadow
 test_single_project_by_projects_relative_name_resolves
 test_single_project_by_projects_relative_name_ignores_cwd_shadow
 test_single_project_unresolvable_name_still_skips
+test_non_clone_project_dir_cannot_sync_the_enclosing_repo
+test_bootstrap_project_count_is_bounded_at_projects
 test_whole_fleet_form
 test_bootstrap_relays_recovered_and_stuck
 test_orphaned_stale_packed_refs_lock_recovers
