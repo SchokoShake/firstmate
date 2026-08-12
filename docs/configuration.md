@@ -134,6 +134,13 @@ Relay's `config/x-mode.env` (above) is the built-in one; `config/check-cadence.d
 `bin/fm-arm-command-policy.mjs` owns which paths an arm command may source, and admits exactly `config/x-mode.env` plus one `config/check-cadence.d/<name>.env` segment of the ordinary slug alphabet; a nested path, a sibling under `config/`, and a traversal back out of the directory all stay denied.
 The cadence-transition rule is the Relay section's: `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start, so installing or removing a carrier takes effect when the home-scoped watcher next restarts through the emitted harness protocol.
 
+## Locally installed skills (.agents/skills/&lt;name&gt;/)
+
+An out-of-tree feature that needs firstmate to load an agent playbook installs it as an ordinary skill directory under `.agents/skills/<name>/`, carrying its own `.gitignore` whose single line is `*`.
+That pattern matches every path in the directory including the `.gitignore` itself, so the installed skill never appears as untracked work and needs no entry in the repo's own `.gitignore`; `git status --ignored` still shows it.
+It must be a DIRECT child of `.agents/skills/`, because the harness discovery glob is `skills/*/SKILL.md` against the `.claude/skills` symlink - one level deep, so an install subdirectory would hide it.
+Firstmate ships no code for this seam and adds no per-feature ignore rule; `tests/fm-local-skills.test.sh` pins the three properties an installer depends on, so a change that quietly broke it fails here instead of in the extension.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` keeps test evidence outside the repo and pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.
