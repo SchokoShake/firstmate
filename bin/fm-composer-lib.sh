@@ -183,35 +183,38 @@ fm_composer_strip_ghost() {
 # set stays readable and survives an editor that normalises whitespace; no \u
 # escapes and no multibyte character classes, matching the bash 3.2 constraint
 # bin/fm-tmux-lib.sh states for its own border stripping.
-#   U+00A0 no-break space          U+2007 figure space
-#   U+2009 thin space              U+200A hair space
-#   U+200B zero width space        U+202F narrow no-break space
+# The General Punctuation run U+2000-U+200B is covered WHOLE: every code point in
+# it renders as nothing, so folding the block contiguously rather than picking
+# individual members is what keeps the set consistent with the scope rule above.
+#   U+00A0 no-break space              U+2000 en quad
+#   U+2001 em quad                     U+2002 en space
+#   U+2003 em space                    U+2004 three-per-em space
+#   U+2005 four-per-em space           U+2006 six-per-em space
+#   U+2007 figure space                U+2008 punctuation space
+#   U+2009 thin space                  U+200A hair space
+#   U+200B zero width space            U+202F narrow no-break space
 #   U+205F medium mathematical space   U+3000 ideographic space
 #   U+FEFF zero width no-break space (BOM)
-FM_COMPOSER_SPACE_CHARS=$(printf '\302\240\n\342\200\207\n\342\200\211\n\342\200\212\n\342\200\213\n\342\200\257\n\342\201\237\n\343\200\200\n\357\273\277')
+FM_COMPOSER_SPACE_CHARS=$(printf '\302\240\n\342\200\200\n\342\200\201\n\342\200\202\n\342\200\203\n\342\200\204\n'\
+'\342\200\205\n\342\200\206\n\342\200\207\n\342\200\210\n\342\200\211\n\342\200\212\n'\
+'\342\200\213\n\342\200\257\n\342\201\237\n\343\200\200\n\357\273\277')
 
 # fm_composer_normalize_spaces: the ONE fleet-wide answer to "which characters
 # count as composer whitespace". Folds each invisible Unicode space in <text> to
 # an ASCII space so the ASCII [[:space:]] trims in this file and in every adapter
 # see it. Idempotent, so an adapter that has already normalized may call it again.
 fm_composer_normalize_spaces() {  # <text>
-  local text=$1 ch old_ifs=${IFS-}
   # $'\n' (ANSI-C quoting, bash 2.0+) not $(printf '\n'): command substitution
   # strips trailing newlines, which would leave IFS empty and disable splitting.
-  IFS=$'\n'
+  # `local` scopes the split character to this call and restores the caller's own
+  # IFS on return - including an UNSET IFS, which a save/restore pair through a
+  # plain variable cannot tell apart from an empty one; restoring an unset IFS as
+  # empty would silently disable word splitting in the adapter that called here.
+  local text=$1 ch
+  local IFS=$'\n'
   for ch in $FM_COMPOSER_SPACE_CHARS; do
     text=${text//"$ch"/ }
   done
-  IFS=$old_ifs
-  printf '%s' "$text"
-}
-
-# fm_composer_trim: strip leading and trailing ASCII whitespace. Callers fold
-# invisible Unicode spaces with fm_composer_normalize_spaces first.
-fm_composer_trim() {  # <text>
-  local text=$1
-  text="${text#"${text%%[![:space:]]*}"}"
-  text="${text%"${text##*[![:space:]]}"}"
   printf '%s' "$text"
 }
 
@@ -241,8 +244,12 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
   # Fold invisible Unicode space padding, then re-trim in ASCII. Done HERE, in the
   # one owner, so every adapter's own ASCII pre-trim is repaired at the single
   # point all four of them delegate to, rather than in four separate copies.
-  content=$(fm_composer_trim "$(fm_composer_normalize_spaces "$content")")
-  plain_content=$(fm_composer_trim "$(fm_composer_normalize_spaces "$plain_content")")
+  content=$(fm_composer_normalize_spaces "$content")
+  content="${content#"${content%%[![:space:]]*}"}"
+  content="${content%"${content##*[![:space:]]}"}"
+  plain_content=$(fm_composer_normalize_spaces "$plain_content")
+  plain_content="${plain_content#"${plain_content%%[![:space:]]*}"}"
+  plain_content="${plain_content%"${plain_content##*[![:space:]]}"}"
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
       '❯'|'›') printf 'empty'; return 0 ;;
