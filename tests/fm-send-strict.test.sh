@@ -5,6 +5,14 @@
 # well-formed backend target must fail loudly. These tests pin the historical
 # silent-fallback failures: missing FM_HOME, unresolved selectors, prefixless
 # herdr pane ids, dead explicit endpoints, and the healthy exact/fm-id paths.
+#
+# The same loudness contract runs the other way for SUBMIT VERIFICATION (task
+# fm-send-submit-verify): fm-send must be loud when a steer is genuinely stranded
+# and silent when it landed. It was neither - a claude composer pads with U+00A0,
+# which bash's ASCII-only [[:space:]] left behind, so a DELIVERED send read as
+# "text left in composer" and exited non-zero. A warning that is usually wrong but
+# occasionally right can be neither trusted nor ignored, so both directions are
+# pinned below against real captured composer rows.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -35,19 +43,29 @@ case "${1:-}" in
     exit 0 ;;
   display-message)
     target=
+    want_cursor=0
     while [ $# -gt 0 ]; do
       case "$1" in
         -t) target=$2; shift 2 ;;
+        *cursor_y*) want_cursor=1; shift ;;
         *) shift ;;
       esac
     done
     if [ -n "${FM_FAKE_TMUX_DEAD_TARGET:-}" ] && [ "$target" = "$FM_FAKE_TMUX_DEAD_TARGET" ]; then
       exit 1
     fi
+    # A cursor_y query must answer with a ROW NUMBER: fm_tmux_composer_state
+    # rejects a non-numeric reply as an unreadable pane ('unknown'), which would
+    # make the submit verifications below vacuously succeed.
+    [ "$want_cursor" = 1 ] && { printf '0\n'; exit 0; }
     printf '%%1\n'
     exit 0 ;;
   capture-pane)
-    printf '\xe2\x94\x82 \xe2\x94\x82\n'
+    # The composer row fm-send's submit verification reads back. Defaults to an
+    # empty bordered box ("submit landed"); FM_FAKE_COMPOSER overrides it with a
+    # printf format so a test can serve a real captured pane row instead.
+    # shellcheck disable=SC2059
+    printf "${FM_FAKE_COMPOSER:-\xe2\x94\x82 \xe2\x94\x82\\n}"
     exit 0 ;;
   list-windows)
     printf 'foreign:%s\n' "${FM_FAKE_TMUX_WINDOW:-fm-lost}"
@@ -160,9 +178,56 @@ test_healthy_fm_id_send_still_works() {
   pass "fm-send strict: healthy fm-<id> sends still type once and submit"
 }
 
+# --- Submit verification: quiet when delivered, loud when stranded ----------
+
+# run_send_against_composer <name> <composer-printf-format> -> sets RC and ERR_TEXT
+# Sends to a recorded lane whose pane reads back the given composer row.
+run_send_against_composer() {  # <name> <composer-printf-format>
+  local name=$1 composer=$2 dir fb home err log
+  dir="$TMP_ROOT/$name"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home "$name"); err="$dir/send.err"; log="$dir/tmux.log"; : > "$log"
+  fm_write_meta "$home/state/lane-$name.meta" "window=sess:fm-lane-$name" "kind=ship" "harness=claude"
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" \
+    FM_FAKE_COMPOSER="$composer" FM_SEND_SETTLE=0 FM_SEND_RETRIES=2 FM_SEND_SLEEP=0 \
+    "$SEND" "fm-lane-$name" "hello captain" >/dev/null 2>"$err"; RC=$?
+  ERR_TEXT=$(cat "$err")
+}
+
+test_delivered_send_to_claude_composer_is_quiet() {
+  local RC ERR_TEXT
+  # The live claude 2.1.228 empty composer, verified 2026-08-12: `❯` + U+00A0.
+  # The send landed; fm-send must say nothing about a swallowed Enter.
+  run_send_against_composer nbsp-idle '\xe2\x9d\xaf\xc2\xa0\n'
+  expect_code 0 "$RC" "a delivered send to a claude composer must exit 0"
+  case "$ERR_TEXT" in
+    *"not submitted"*) fail "fm-send cried wolf on a delivered send: $ERR_TEXT" ;;
+  esac
+  # Mid-turn, the send is QUEUED for the end of the current turn - also delivered.
+  run_send_against_composer nbsp-queued \
+    '\033[38;5;246m\xe2\x9d\xaf\xc2\xa0\033[2m\033[39mPress up to edit queued messages\033[0m\n'
+  expect_code 0 "$RC" "a send queued mid-turn must exit 0 (the harness accepted it)"
+  case "$ERR_TEXT" in
+    *"not submitted"*) fail "fm-send cried wolf on a queued send: $ERR_TEXT" ;;
+  esac
+  pass "fm-send strict: a delivered send (idle or queued mid-turn) exits 0 without a swallowed-Enter warning"
+}
+
+test_stranded_send_still_fails_loudly() {
+  local RC ERR_TEXT
+  # The one true failure: the text is still sitting in the composer. Losing a steer
+  # silently is far worse than a false alarm, so this must stay non-zero and named.
+  run_send_against_composer nbsp-stranded '\xe2\x9d\xaf\xc2\xa0hello captain\n'
+  [ "$RC" -ne 0 ] || fail "a genuinely stranded send must exit non-zero, got $RC"
+  assert_contains "$ERR_TEXT" "not submitted" "a stranded send must name the failure"
+  assert_contains "$ERR_TEXT" "Enter swallowed" "a stranded send must say the Enter was swallowed"
+  pass "fm-send strict: a genuinely stranded send still fails loudly and non-zero"
+}
+
 test_exact_lane_id_send_still_works
 test_unset_fm_home_fails
 test_unresolvable_target_does_not_tmux_fallback
 test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
 test_healthy_fm_id_send_still_works
+test_delivered_send_to_claude_composer_is_quiet
+test_stranded_send_still_fails_loudly

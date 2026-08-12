@@ -13,6 +13,17 @@
 #      agent composer either way, bordered or bare.
 #   4. Real unsubmitted text reads `pending`; a known idle placeholder reads
 #      `empty`.
+#
+# The invisible-Unicode-space contract, task fm-send-submit-verify:
+#   5. A composer padded with an INVISIBLE Unicode space (claude 2.1.228 draws its
+#      empty composer as `❯` + U+00A0, verified live 2026-08-12) reads `empty`.
+#      Bash's [[:space:]] is ASCII-only, so every adapter's own trim left that byte
+#      pair behind and an EMPTY composer classified as `pending` - the false
+#      "Enter swallowed" bin/fm-send.sh reported on delivered sends, and the false
+#      "pending input" the away-mode injector saw on every idle claude pane.
+#   6. The fold must not weaken rules 1-4: an invisible space in front of REAL text
+#      still reads `pending`, and a bare shell glyph padded with one still reads
+#      `unknown`. Only rows that were already visually blank change verdict.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -125,6 +136,94 @@ test_real_text_is_pending() {
   pass "fm_composer_classify_content: real unsubmitted text reads pending (including a popup argument-hint fill)"
 }
 
+# --- Invisible Unicode space padding (task fm-send-submit-verify) -----------
+
+# The invisible spaces the fold covers, as literal bytes. NBSP is the one verified
+# live (claude 2.1.228); the others pin that the fold is harness-generic rather
+# than an NBSP special case, so the next harness to pad with U+202F cannot
+# reproduce the incident.
+NBSP=$(printf '\302\240')          # U+00A0 no-break space
+NNBSP=$(printf '\342\200\257')     # U+202F narrow no-break space
+ZWSP=$(printf '\342\200\213')      # U+200B zero width space
+IDSP=$(printf '\343\200\200')      # U+3000 ideographic space
+EMSP=$(printf '\342\200\203')      # U+2003 em space
+# The General Punctuation space run U+2000-U+200B, which the fold covers whole:
+# every member renders as nothing, so no member may be left behind to strand an
+# otherwise-blank composer on `pending`.
+GENPUNCT_SPACES=$(printf '\342\200\200\n\342\200\201\n\342\200\202\n\342\200\203\n\342\200\204\n\342\200\205\n'\
+'\342\200\206\n\342\200\207\n\342\200\210\n\342\200\211\n\342\200\212\n\342\200\213')
+
+test_normalize_spaces_folds_invisible_unicode_spaces() {
+  local out ch i=0
+  out=$(fm_composer_normalize_spaces "a${NBSP}b")
+  [ "$out" = 'a b' ] || fail "U+00A0 was not folded to an ASCII space, got '$out'"
+  out=$(fm_composer_normalize_spaces "${NNBSP}${ZWSP}${IDSP}")
+  [ "$out" = '   ' ] || fail "U+202F/U+200B/U+3000 were not all folded, got '$out'"
+  # Every member of the U+2000-U+200B run folds, not just the ones a harness has
+  # been caught using so far.
+  while IFS= read -r ch; do
+    i=$((i + 1))
+    out=$(fm_composer_normalize_spaces "a${ch}b")
+    [ "$out" = 'a b' ] \
+      || fail "General Punctuation space #$i was not folded to an ASCII space, got '$out'"
+  done <<EOF
+$GENPUNCT_SPACES
+EOF
+  [ "$i" = 12 ] || fail "expected the whole U+2000-U+200B run (12 code points), checked $i"
+  # Idempotent: an adapter that already normalized may call it again.
+  out=$(fm_composer_normalize_spaces "$(fm_composer_normalize_spaces "x${NBSP}y")")
+  [ "$out" = 'x y' ] || fail "the fold is not idempotent, got '$out'"
+  # Real text is untouched, including the agent glyphs and box borders.
+  out=$(fm_composer_normalize_spaces '❯ │ fix findings 1 and 3 │')
+  [ "$out" = '❯ │ fix findings 1 and 3 │' ] || fail "the fold altered real content, got '$out'"
+  pass "fm_composer_normalize_spaces: folds invisible Unicode spaces, leaves real content alone"
+}
+
+test_nbsp_padded_empty_composer_is_empty() {
+  local out
+  # The exact live claude 2.1.228 empty composer: `❯` + U+00A0, no border.
+  out=$(classify 0 "❯$NBSP" '' insensitive "❯$NBSP")
+  [ "$out" = empty ] || fail "the claude '❯'+U+00A0 empty composer must read empty, got '$out'"
+  # The same shape for codex's glyph, and inside a bordered box.
+  out=$(classify 0 "›$NBSP" '' insensitive "›$NBSP")
+  [ "$out" = empty ] || fail "'›'+U+00A0 must read empty, got '$out'"
+  out=$(classify 1 "❯$NNBSP")
+  [ "$out" = empty ] || fail "a bordered '❯'+U+202F composer must read empty, got '$out'"
+  # A harness padding with U+2003 EM SPACE is the same already-blank row and must
+  # not reproduce the incident just because no harness has been caught using it.
+  out=$(classify 0 "❯$EMSP" '' insensitive "❯$EMSP")
+  [ "$out" = empty ] || fail "a bare '❯'+U+2003 composer must read empty, got '$out'"
+  out=$(classify 1 "❯$EMSP")
+  [ "$out" = empty ] || fail "a bordered '❯'+U+2003 composer must read empty, got '$out'"
+  # A row holding nothing but invisible space is as blank as an all-ASCII one.
+  out=$(classify 1 "$NBSP")
+  [ "$out" = empty ] || fail "an invisible-space-only composer must read empty, got '$out'"
+  out=$(classify 1 "$EMSP")
+  [ "$out" = empty ] || fail "a U+2003-only composer must read empty, got '$out'"
+  pass "fm_composer_classify_content: an invisible-space-padded empty composer reads empty"
+}
+
+test_invisible_space_does_not_weaken_pending_or_unknown() {
+  local out
+  # Real typed text behind the padding is still a swallowed Enter - stay loud.
+  out=$(classify 0 "❯${NBSP}stranded steer that never submitted" '' insensitive "❯${NBSP}stranded steer that never submitted")
+  [ "$out" = pending ] || fail "real text behind U+00A0 padding must stay pending, got '$out'"
+  out=$(classify 1 "${NBSP}deploy staging now$NBSP")
+  [ "$out" = pending ] || fail "real text wrapped in invisible space must stay pending, got '$out'"
+  out=$(classify 0 "❯${EMSP}stranded steer that never submitted" '' insensitive "❯${EMSP}stranded steer that never submitted")
+  [ "$out" = pending ] || fail "real text behind U+2003 padding must stay pending, got '$out'"
+  # The dead-shell safety rule is unchanged: a BARE shell glyph is never empty.
+  for out in '>' '$' '%' '#'; do
+    [ "$(classify 0 "$out$NBSP" '' insensitive "$out$NBSP")" = unknown ] \
+      || fail "bare shell glyph '$out' padded with U+00A0 must still read unknown"
+    [ "$(classify 0 "$out$EMSP" '' insensitive "$out$EMSP")" = unknown ] \
+      || fail "bare shell glyph '$out' padded with U+2003 must still read unknown"
+  done
+  out=$(classify 0 ">${NBSP}make build" '' insensitive ">${NBSP}make build")
+  [ "$out" = pending ] || fail "a padded bare shell prompt carrying a command must stay pending, got '$out'"
+  pass "fm_composer_classify_content: the space fold weakens neither the pending nor the dead-shell rule"
+}
+
 test_bare_shell_glyphs_are_unknown
 test_stripped_unbordered_content_uses_plain_content
 test_bare_shell_prompt_with_command_is_not_empty
@@ -134,3 +233,6 @@ test_empty_content_is_empty
 test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
+test_normalize_spaces_folds_invisible_unicode_spaces
+test_nbsp_padded_empty_composer_is_empty
+test_invisible_space_does_not_weaken_pending_or_unknown

@@ -123,6 +123,16 @@ Its broader dark-TRUECOLOR placeholder handling and dark-theme tradeoff are docu
 That styled capture is internal to the boolean detector only.
 `fm-peek` and every other human or LLM-facing capture path stays plain `tmux capture-pane` with no escape codes.
 
+**Quirk (2026-08-12, claude 2.1.228): the composer is padded with U+00A0, not an ASCII space.**
+Claude draws its empty composer row as the `❯` glyph followed by a NO-BREAK SPACE (bytes `e2 9d af c2 a0`), verified live by capturing the `cursor_y` row of a real pane.
+Bash's `[[:space:]]` is ASCII-only under `C.UTF-8`, so every adapter's trim left that byte pair behind and an EMPTY claude composer classified as `pending`.
+That made `fm-send` report `Enter swallowed; text left in composer` on steers it had in fact delivered (about eight false alarms in one session), and made every idle claude pane read as pending input to the away-mode injector.
+Fixed fleet-wide in the one owner: `fm_composer_normalize_spaces` (`bin/fm-composer-lib.sh`) folds invisible Unicode spaces to ASCII before classification, so all four adapters are covered and a future harness padding with U+202F cannot repeat it.
+Three claude states all reduce to that same row and are all successful sends - idle, mid-turn with an empty composer, and a mid-turn send accepted as a QUEUED message (the composer shows a dim `Press up to edit queued messages` hint, which the ghost stripper already drops).
+Only real text left in the composer is an error, and it still fails non-zero.
+Regression coverage: `tests/fm-composer-lib.test.sh`, the pinned live pane rows in `tests/fm-composer-ghost.test.sh`, and the exit-code contract in `tests/fm-send-strict.test.sh`.
+This is unrelated to the grok `cursor_y` row-selection quirk below, which is about which ROW is read, not what is on it.
+
 **Primary-session guard fact (verified 2026-07-04, Claude Code 2.1.201; preserved 2026-07-08, Claude Code 2.1.204).**
 This is separate from the per-task crewmate turn-end hook above (that one just `touch`es a marker file in a task's own `.claude/settings.local.json`).
 The firstmate PRIMARY's own `.claude/settings.json` registers `bin/fm-turnend-guard.sh` as a Stop hook, and exiting with status 2 plus stderr reliably forces the model to continue.
