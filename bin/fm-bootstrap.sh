@@ -186,12 +186,20 @@ network_sweep_authorized() {
 }
 
 fleet_sync_origin_backed_project_count() {
-  local count proj
+  local count proj ceiling
   count=0
   [ -d "$PROJECTS" ] || { echo 0; return 0; }
+  # Bounded at projects/ for the same reason bin/fm-fleet-sync.sh bounds its clone
+  # gate (that header owns the rationale): unbounded, git's discovery walks UP out
+  # of a non-clone directory and answers with the repository ENCLOSING projects/ -
+  # firstmate's own checkout, which has an origin - so every scratch or
+  # half-finished directory counted as an origin-backed project and inflated this
+  # timeout. This only sizes the sweep and never writes, but it must count what the
+  # sweep counts.
+  ceiling=$(cd "$PROJECTS" 2>/dev/null && pwd -P) || ceiling=""
   for proj in "$PROJECTS"/*; do
     [ -d "$proj" ] || continue
-    git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || continue
+    GIT_CEILING_DIRECTORIES="$ceiling" git -C "$proj" rev-parse --git-dir >/dev/null 2>&1 || continue
     git -C "$proj" remote get-url origin >/dev/null 2>&1 || continue
     count=$((count + 1))
   done
