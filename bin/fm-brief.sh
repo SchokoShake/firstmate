@@ -35,10 +35,14 @@
 #                firstmate reviews, captain approves, firstmate merges to local main
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # Scout tasks ignore mode - their deliverable is a report, not a merge.
-# Both crewmate scaffolds carry the never-add-an-agent-co-author ban (AGENTS.md section 1)
-# as standing rule 2, so it survives the per-repo rewriting the Setup/branch step invites.
-# The secondmate charter omits it: a secondmate commits nothing itself and delegates project
-# work to crewmates whose own briefs carry the rule.
+# Both crewmate scaffolds carry two standing commit-hygiene rules that survive the per-repo
+# rewriting the Setup/branch step invites: the never-add-an-agent-co-author ban (AGENTS.md
+# section 1) as rule 2, and the never-override-the-git-identity ban as rule 3.
+# Identity was judged genuinely repo-specific when rule 2 landed and left to the hand-written
+# Setup step; that no longer holds now that the fleet has one global identity and every
+# per-repo override is removed, so "use what is configured" is universal and belongs in Rules.
+# The secondmate charter omits both: a secondmate commits nothing itself and delegates project
+# work to crewmates whose own briefs carry the rules.
 # Every scaffold's status protocol distinguishes the configured
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
@@ -113,14 +117,49 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 
 # Standing rule 2 of both crewmate scaffolds, defined once so ship and scout cannot drift.
 # It lives in the Rules block rather than the Setup step because the Setup step is the part
-# firstmate rewrites per repo (git identity, credential setup), and a rule written there is
-# lost with that rewrite.
+# firstmate rewrites per repo (branch and credential setup), and a rule written there is
+# lost with that rewrite. Git identity was rewritten there too when this rule landed; rule 3
+# below ended that, so it is no longer among the per-repo Setup concerns named here.
 COAUTHOR_RULE=$(cat <<'EOF'
 2. Never add an agent name as a commit co-author. No commit you make may carry a
    `Co-Authored-By:` trailer naming an agent, model, or tool - not your first commit, not a
    scratch commit, not a commit made in a later fix or validation round. This rule is
    unconditional: it still applies when the Setup section above has been rewritten for a repo
    with its own git identity or credential setup.
+EOF
+)
+
+# Standing rule 3, defined once beside rule 2 so ship and scout cannot drift.
+# When rule 2 landed, git identity was judged genuinely repo-specific and left to the
+# hand-written Setup step. Today's evidence overturns that: the fleet now has one global git
+# identity and every per-repo override has been removed, so there is nothing repo-specific
+# left to write. Crews that set the identity anyway authored commits with the harness's own
+# notion of the user's email, and on 2026-08-11 a Vercel deployment refused one of those
+# commits because that address matched no GitHub account - only the commits GitHub itself
+# authored were clean. With one correct identity already configured everywhere, "use what is
+# configured" is universal, so it belongs in Rules beside rule 2 rather than in the Setup step
+# firstmate rewrites per repo. The rule states both halves deliberately: a bare prohibition
+# sends a crew hunting for the "right" value, and naming the agent's own context as a
+# forbidden source is what closes the hole the wrong email actually came through. The ban stays
+# unconditional, and a scout is bound exactly as a ship task is: the contamination path is not
+# the commit but the clone config, which outlives the worktree - `git config` from a linked
+# worktree writes to the shared $GIT_COMMON_DIR/config, and nothing here enables
+# extensions.worktreeConfig, so a scratch override silently authors every later crewmate's
+# commits in that clone. The one exemption is a repo a test creates for itself in a temp dir,
+# which has no configured identity to use; the rule names `fm_git_identity` and
+# `fm_git_init_commit` so that exemption is explicit rather than inferred.
+IDENTITY_RULE=$(cat <<'EOF'
+3. Never set or override the git author or committer identity. Not with `git config`, not with
+   `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, not with `git commit --author`. The identity this
+   repository is already configured with is the correct one: it is set globally and
+   deliberately, and it is the identity the captain's GitHub account and their deployment
+   integrations recognize. Your own context or memory is NOT a source for this value - the user
+   email an agent carries in its context is exactly the value that has broken a deployment
+   here. This rule is unconditional in the same way rule 2 is: it still applies when the Setup
+   section above has been rewritten for another repo. The one exemption is a throwaway git repo
+   a test creates for itself in a temp dir: that is never a repository you were given, and it
+   has no configured identity to use, so the `fm_git_identity` and `fm_git_init_commit` helpers
+   in `tests/lib.sh` set a deterministic one deliberately and stay correct.
 EOF
 )
 
@@ -253,9 +292,10 @@ The report is the only thing that survives, so anything worth keeping must be in
 # Rules
 1. Never push to any remote and never open a PR.
 $COAUTHOR_RULE
-3. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
-4. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
-5. Report status by appending one line:
+$IDENTITY_RULE
+4. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+5. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+6. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
@@ -265,11 +305,11 @@ $COAUTHOR_RULE
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset):
    firstmate then leaves your idle pane alone and rechecks it on a long cadence instead of
    treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
-6. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
-7. If a decision belongs to a human (product choices, destructive actions),
+7. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+8. If a decision belongs to a human (product choices, destructive actions),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
-8. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
+9. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
@@ -330,7 +370,7 @@ Follow the guidance no-mistakes itself provides for the mechanics: it loads when
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:
-- ask-user findings are not yours to answer: escalate to firstmate (rule 7) and stop.
+- ask-user findings are not yours to answer: escalate to firstmate (rule 8) and stop.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: the captain, not you, owns the ask-user decisions it would silently auto-resolve.
 
@@ -360,9 +400,10 @@ If the top-level path is the primary checkout or not the worktree you were launc
 # Rules
 $RULE1
 $COAUTHOR_RULE
-3. Stay inside this worktree; modify nothing outside it.
-4. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
-5. Report status by appending one line:
+$IDENTITY_RULE
+4. Stay inside this worktree; modify nothing outside it.
+5. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+6. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.
    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
@@ -373,11 +414,11 @@ $COAUTHOR_RULE
    known external wait you expect to clear on its own (an upstream release, a rate-limit reset,
    a scheduled window): firstmate then leaves your idle pane alone and rechecks it on a long
    cadence instead of treating it as a possible wedge. Use \`blocked:\` when you are stuck and need help.
-6. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
-7. If a decision belongs to a human (product choices, destructive actions, ask-user findings),
+7. If you hit the same obstacle twice, append \`blocked: {why}\` and stop; firstmate will help.
+8. If a decision belongs to a human (product choices, destructive actions, ask-user findings),
    append \`needs-decision: {summary of options}\` and stop. Firstmate will reply with the decision.
    When firstmate replies or a blocker clears and you resume, append \`resolved: {how it was decided or unblocked}\` (add the same \`[key=<slug>]\` if you opened it with one) so the decision or blocker is durably closed and does not keep resurfacing.
-8. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
+9. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
 
