@@ -43,6 +43,12 @@ matrix_case A14 allow "[ -f 'config/x-mode.env' ] && source 'config/x-mode.env';
 matrix_case A15 allow "cd $ROOT && exec bin/fm-watch-arm.sh"
 matrix_case A16 allow "export FM_HOME=$ROOT && bin/fm-watch-checkpoint.sh --seconds 180"
 matrix_case A17 allow $'source "config/x-mode.env"\nbin/fm-watch-checkpoint.sh --seconds 180'
+# The cadence-carrier seam: config/check-cadence.d/<name>.env is admitted on the
+# same terms as config/x-mode.env, in every path form the allowlist accepts.
+matrix_case A18 allow 'source config/check-cadence.d/logbook.env; bin/fm-watch-checkpoint.sh --seconds 180'
+matrix_case A19 allow "source './config/check-cadence.d/logbook.env'; bin/fm-watch-checkpoint.sh --seconds 180"
+matrix_case A20 allow "source '$ROOT/config/check-cadence.d/logbook.env'; bin/fm-watch-checkpoint.sh --seconds 180"
+matrix_case A21 allow "[ -f 'config/x-mode.env' ] && . 'config/x-mode.env'; [ -f 'config/check-cadence.d/logbook.env' ] && . 'config/check-cadence.d/logbook.env'; exec bin/fm-watch-arm.sh"
 
 matrix_case R01 allow "pgrep -fl '/bin/fm-watch.sh' || true"
 matrix_case R02 allow "ps aux | rg '/bin/fm-watch.sh'"
@@ -130,6 +136,12 @@ matrix_case E04 allow $'# setup comment with fm-watch.sh; && >\nsource "config/x
 matrix_case E05 deny "FM_HOME=$ROOT bin/fm-watch-checkpoint.sh --seconds 180"
 matrix_case E06 deny "env FM_HOME=$ROOT bin/fm-watch-arm.sh"
 matrix_case E07 deny "source '/tmp/not-firstmate/config/x-mode.env'; bin/fm-watch-checkpoint.sh --seconds 180"
+# The cadence seam admits a bounded SHAPE, not a prefix: a sibling under config/,
+# a nested path, and a traversal back out of the directory all stay denied.
+matrix_case E07a deny "source 'config/other.env'; bin/fm-watch-checkpoint.sh --seconds 180"
+matrix_case E07b deny "source 'config/check-cadence.d/nested/logbook.env'; bin/fm-watch-checkpoint.sh --seconds 180"
+matrix_case E07c deny "source 'config/check-cadence.d/../secrets.env'; bin/fm-watch-checkpoint.sh --seconds 180"
+matrix_case E07d deny "source '$ROOT/config/check-cadence.d/../../outside.env'; bin/fm-watch-checkpoint.sh --seconds 180"
 matrix_case E08 deny "bash -lc 'bin/fm-watch-checkpoint.sh --seconds 180'"
 matrix_case E09 deny '(bin/fm-watch-checkpoint.sh --seconds 180)'
 matrix_case E10 deny "eval 'bin/fm-watch-arm.sh &'"

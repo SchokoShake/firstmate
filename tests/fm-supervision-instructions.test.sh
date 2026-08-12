@@ -176,9 +176,56 @@ test_pi_snippet_uses_effective_extension_path() {
   pass "pi supervision snippet renders the effective extension path"
 }
 
+test_cadence_carriers_order_smallest_interval_last() {
+  local home config out arm
+  home="$TMP_ROOT/cadence-home"
+  config="$TMP_ROOT/cadence-config"
+  mkdir -p "$home/state" "$config/check-cadence.d"
+  printf 'export FM_CHECK_INTERVAL=30\n' > "$config/x-mode.env"
+  printf 'export FM_CHECK_INTERVAL=15\n' > "$config/check-cadence.d/board.env"
+  printf 'export FM_CHECK_INTERVAL=60\n' > "$config/check-cadence.d/slow.env"
+
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness grok)
+  arm=$(printf '%s\n' "$out" | grep -F 'exec bin/fm-watch-arm.sh')
+  # All three are sourced, and they are sourced slowest-first so the SMALLEST
+  # interval is the last write to FM_CHECK_INTERVAL and therefore the one the
+  # watcher inherits. A 15s board answer regressing to 30s or 60s is exactly the
+  # silent failure this ordering exists to prevent.
+  assert_contains "$arm" "$config/check-cadence.d/slow.env" "arm command dropped the 60s carrier"
+  assert_contains "$arm" "$config/x-mode.env" "arm command dropped the 30s carrier"
+  assert_contains "$arm" "$config/check-cadence.d/board.env" "arm command dropped the 15s carrier"
+  case "$arm" in
+    *slow.env*x-mode.env*board.env*) ;;
+    *) fail "cadence carriers are not ordered slowest-first (smallest interval must be sourced last): $arm" ;;
+  esac
+  assert_contains "$out" "- Watcher cadence: extra carriers active" "current-state block did not report the extra cadence carriers"
+  assert_not_contains "$out" "__FM_CADENCE_PRELUDE__" "renderer leaked the cadence prelude placeholder"
+
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness grok --repair-line)
+  case "$out" in
+    *slow.env*x-mode.env*board.env*) ;;
+    *) fail "repair line did not name the cadence carriers slowest-first: $out" ;;
+  esac
+  pass "cadence carriers are all sourced, ordered so the snappiest interval wins"
+}
+
+test_cadence_absent_leaves_arm_command_bare() {
+  local home config out
+  home="$TMP_ROOT/no-cadence-home"
+  config="$TMP_ROOT/no-cadence-config"
+  mkdir -p "$home/state" "$config"
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness grok)
+  # shellcheck disable=SC2016 # A literal backtick-fenced snippet, not an expansion.
+  assert_contains "$out" '`exec bin/fm-watch-arm.sh`' "arm command should carry no cadence prelude when no carrier exists"
+  assert_not_contains "$out" "- Watcher cadence: extra carriers active" "current-state block claimed extra carriers with none installed"
+  pass "a home with no cadence carrier renders a bare arm command"
+}
+
 test_selected_harness_block_only
 test_unknown_fallback
 test_conditional_stanzas
+test_cadence_carriers_order_smallest_interval_last
+test_cadence_absent_leaves_arm_command_bare
 test_repair_lines
 test_cross_harness_ordinary_continuation_and_repair_matrix
 test_pi_signed_preserves_identity_with_pi_supervision_protocol

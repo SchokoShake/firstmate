@@ -23,6 +23,10 @@ Usage: fm-supervision-instructions.sh [--harness <name>] [--read-only 0|1] [--af
 
 Print the current primary harness's supervision operating instructions.
 With --repair-line, print one concise repair instruction for guard and hook messages.
+
+Watcher cadence is carried by config/x-mode.env plus any config/check-cadence.d/*.env
+an out-of-tree feature installed; they are sourced smallest-interval-last so the
+snappiest cadence wins.
 EOF
 }
 
@@ -91,6 +95,12 @@ checkpoint_seconds=${FM_CODEX_WATCH_CHECKPOINT:-180}
 pi_ext="$FM_ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 pi_turnend_ext="$FM_ROOT/.pi/extensions/fm-primary-turnend-guard.ts"
 x_mode_env="$CONFIG/x-mode.env"
+# The extension seam for watcher cadence: any out-of-tree feature that needs a
+# faster (or slower) poll drops its own generated `export FM_CHECK_INTERVAL=<n>`
+# file here instead of this file learning that feature's name. Local and
+# gitignored like the rest of config/, and carried into the arm command by the
+# same allowlist bin/fm-arm-command-policy.mjs applies to x-mode.env.
+cadence_dir="$CONFIG/check-cadence.d"
 
 shell_quote() {
   printf "'"
@@ -104,13 +114,67 @@ if [ "$X_MODE" -eq 0 ] && [ -f "$x_mode_env" ]; then
   X_MODE=1
 fi
 
+# The interval a carrier declares, or 0 when it declares none. Read by PATTERN,
+# never by sourcing: rendering an operating block must not execute config.
+cadence_interval() {  # <file>
+  local n
+  n=$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}FM_CHECK_INTERVAL=\([0-9]\{1,\}\).*$/\2/p' "$1" 2>/dev/null | tail -1)
+  printf '%s' "${n:-0}"
+}
+
+# Every active cadence carrier, ordered so the SMALLEST interval is sourced LAST.
+# They all export the same variable, so last-sourced wins, and the snappiest
+# cadence is the one a home running several of them must inherit - a board answer
+# that waits on a slower feature's poll is the regression this ordering prevents.
+# Ties and undeclared intervals fall back to reverse filename order, so the render
+# is deterministic. Prints one absolute path per line.
+cadence_files() {
+  local f
+  {
+    # X mode is included whenever the caller declared it active, even if bootstrap
+    # has not written the file yet: the clause is `[ -f X ] && . X`, so carrying it
+    # for a not-yet-generated carrier is a no-op, while dropping it would silently
+    # lose the cadence of a home that generates it between render and arm.
+    [ "$X_MODE" -eq 1 ] || [ -f "$x_mode_env" ] \
+      && printf '%s\t%s\n' "$(cadence_interval "$x_mode_env")" "$x_mode_env"
+    if [ -d "$cadence_dir" ]; then
+      for f in "$cadence_dir"/*.env; do
+        [ -f "$f" ] || continue
+        printf '%s\t%s\n' "$(cadence_interval "$f")" "$f"
+      done
+    fi
+    return 0
+  } | LC_ALL=C sort -t"$(printf '\t')" -k1,1nr -k2,2r | cut -f2-
+}
+
+# The shell prelude an arm command carries so the watcher process it launches
+# inherits the cadence. Each clause is the `[ -f X ] && . X;` shape
+# bin/fm-arm-command-policy.mjs recognizes; empty when no carrier is active.
+cadence_prelude() {
+  local f out=
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    out="${out}[ -f $(shell_quote "$f") ] && . $(shell_quote "$f"); "
+  done <<EOF
+$(cadence_files)
+EOF
+  printf '%s' "$out"
+}
+
+cadence_prelude_sh=$(cadence_prelude)
+
 render_snippet() {
   local line
   while IFS= read -r line || [ -n "$line" ]; do
-    line=${line//__FM_PI_EXT__/$pi_ext}
-    line=${line//__FM_PI_TURNEND_EXT__/$pi_turnend_ext}
-    line=${line//__FM_X_MODE_ENV_SH__/$x_mode_env_sh}
-    line=${line//__FM_X_MODE_ENV__/$x_mode_env}
+    # Every replacement is DOUBLE-QUOTED. Bash 5.2 enables patsub_replacement by
+    # default, which expands an unquoted `&` in the replacement to the matched
+    # text - so the `&&` in the cadence prelude would come back out as the
+    # placeholder itself and emit a corrupt arm command.
+    line=${line//__FM_PI_EXT__/"$pi_ext"}
+    line=${line//__FM_PI_TURNEND_EXT__/"$pi_turnend_ext"}
+    line=${line//__FM_CADENCE_PRELUDE__/"$cadence_prelude_sh"}
+    line=${line//__FM_X_MODE_ENV_SH__/"$x_mode_env_sh"}
+    line=${line//__FM_X_MODE_ENV__/"$x_mode_env"}
     printf '%s\n' "$line"
   done < "$SNIPPET"
 }
@@ -129,8 +193,15 @@ repair_line() {
   if [ "$QUEUE_PENDING" -eq 1 ]; then
     prefix='After draining queued wakes, '
   fi
-  if [ "$X_MODE" -eq 1 ]; then
-    prefix="${prefix}source ${x_mode_env_sh} first, then "
+  local f cadence_list=
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    cadence_list="${cadence_list:+$cadence_list then }$(shell_quote "$f")"
+  done <<EOF
+$(cadence_files)
+EOF
+  if [ -n "$cadence_list" ]; then
+    prefix="${prefix}source ${cadence_list} first, then "
   fi
 
   case "$HARNESS" in
@@ -202,6 +273,11 @@ if [ "$X_MODE" -eq 1 ]; then
   printf '%s%s%s\n' '- X mode: active; source ' "$x_mode_env" ' before launching any watcher process so the 30s cadence is inherited.'
 else
   printf '%s\n' '- X mode: inactive; use the default watcher cadence.'
+fi
+cadence_extra=$(cadence_files | grep -Fxv "$x_mode_env" || true)
+if [ -n "$cadence_extra" ]; then
+  printf '%s\n' '- Watcher cadence: extra carriers active; source them in this order before launching any watcher process, so the snappiest interval is the one inherited:'
+  printf '%s\n' "$cadence_extra" | sed 's/^/    /'
 fi
 ordinary_wake_line
 printf '\n'

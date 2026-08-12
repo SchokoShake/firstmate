@@ -126,6 +126,14 @@ A Secondmate on a remote route is covered the same way: the primary resolves and
 The presence flag is session-scoped enablement, so it transfers at launch and is left unchanged by live convergence into a running home.
 See [`trace-context.md`](trace-context.md) for carrier semantics, supported routes, the manual fleet-restart requirement, the session boundary, and safety limits; `bin/fm-trace-context-lib.sh`'s header owns the exact mechanics, and [`verification/trace-context.md`](verification/trace-context.md) records repeatable evidence.
 
+## Watcher cadence carriers (config/x-mode.env, config/check-cadence.d/*.env)
+
+A cadence carrier is a local, gitignored file whose only content is `export FM_CHECK_INTERVAL=<seconds>`, sourced into a watcher process so it polls faster than the 300s default.
+Relay's `config/x-mode.env` (above) is the built-in one; `config/check-cadence.d/<name>.env` is the extension seam an out-of-tree feature installs its own cadence into, so firstmate carries the mechanism without learning that feature's name.
+`bin/fm-supervision-instructions.sh` is the single owner of carrier discovery and ordering: it reads each carrier's declared interval by pattern (never by sourcing it to render a block), and emits them so the SMALLEST interval is sourced last and therefore wins, because a home running several carriers must inherit the snappiest one rather than whichever file happened to sort last.
+`bin/fm-arm-command-policy.mjs` owns which paths an arm command may source, and admits exactly `config/x-mode.env` plus one `config/check-cadence.d/<name>.env` segment of the ordinary slug alphabet; a nested path, a sibling under `config/`, and a traversal back out of the directory all stay denied.
+The cadence-transition rule is the Relay section's: `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start, so installing or removing a carrier takes effect when the home-scoped watcher next restarts through the emitted harness protocol.
+
 ## Gate defaults (.no-mistakes.yaml)
 
 The tracked `.no-mistakes.yaml` keeps test evidence outside the repo and pins `commands.lint` to `bin/fm-lint.sh` so local lint matches CI.
