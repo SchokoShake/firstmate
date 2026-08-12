@@ -1668,7 +1668,7 @@ real_path_or_raw() {  # <path>
 # that every downstream operation (send/capture/kill) already treats as opaque
 # per-backend routing (fm_backend_resolve_selector).
 validate_spawn_worktree() {  # <source> <inspect-target>
-  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real
+  local source=$1 inspect_target=$2 wt_real proj_real wt_top wt_top_real home_real root_real
   wt_real=
   if ! wt_real=$(cd "$WT" 2>/dev/null && pwd -P); then
     wt_real=
@@ -1681,6 +1681,20 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
   if [ -z "$wt_real" ] || [ -z "$wt_top_real" ] || [ "$wt_real" != "$wt_top_real" ] || [ "$wt_real" = "$proj_real" ]; then
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${wt_top:-none}'; primary '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
+    exit 1
+  fi
+  # The FIRSTMATE checkout is a second primary this must never resolve to, and the
+  # clauses above cannot catch it: firstmate is a git repo OF ITSELF, so $FM_HOME is a
+  # valid, self-consistent git toplevel that is not the project dir and clears every
+  # test so far. A projects/* spawn that recorded worktree=$FM_HOME therefore published
+  # a meta pointing at the primary, and later review and teardown acted on it. This
+  # backstop is loud rather than silent, because the failure it guards is one that
+  # corrupted metadata quietly and needed a manual repair each time.
+  home_real=$(cd "$FM_HOME" 2>/dev/null && pwd -P) || home_real=
+  root_real=$(cd "$FM_ROOT" 2>/dev/null && pwd -P) || root_real=
+  if { [ -n "$home_real" ] && [ "$wt_real" = "$home_real" ]; } ||
+    { [ -n "$root_real" ] && [ "$wt_real" = "$root_real" ]; }; then
+    echo "error: $source resolved to the firstmate primary checkout itself ('$WT'); refusing to launch a task there. Inspect target $inspect_target" >&2
     exit 1
   fi
 }
