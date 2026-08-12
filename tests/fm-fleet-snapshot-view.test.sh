@@ -782,6 +782,38 @@ test_parked_scout_decision_stays_pending() {
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_main_inventory_orphan_and_unstructured_disclosure
+# Every composed JSON payload must reach jq on stdin, never inlined into a shell
+# argument: one argv element is capped by the kernel (MAX_ARG_STRLEN, 128KiB on
+# Linux), and backlog size ALONE drives the payload, so a real backlog outgrew it
+# and E2BIG-killed the whole snapshot - taking bin/fm-fleet-view.sh and every other
+# consumer with it - even on an empty fleet. This composes a backlog past that cap
+# and fails against the argv path with the production error.
+test_oversized_backlog_does_not_exceed_the_argv_cap() {
+  local home i out rc records
+  home=$(make_home argvcap)
+  {
+    printf '## In flight\n'
+    i=0
+    while [ "$i" -lt 1200 ]; do
+      printf -- '- [ ] argv-task-%04d - a reasonably long one line description of queued work that mirrors real backlog prose length here (repo: alpha)\n' "$i"
+      i=$((i + 1))
+    done
+    printf '\n## Queued\n\n## Done\n'
+  } > "$home/data/backlog.md"
+  [ "$(wc -c < "$home/data/backlog.md")" -gt 131072 ] \
+    || fail "fixture backlog is under the 128KiB argv cap, so it proves nothing"
+
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json 2>&1)
+  rc=$?
+  [ "$rc" -eq 0 ] || fail "snapshot failed on a backlog past the argv cap (rc=$rc): $(printf '%s' "$out" | head -2)"
+  assert_not_contains "$out" "Argument list too long" "snapshot still passes a composed payload through argv"
+  records=$(printf '%s' "$out" | jq '.backlog.records | length')
+  [ "$records" = 1200 ] || fail "snapshot dropped records past the argv cap (got $records of 1200)"
+  pass "a backlog past the kernel argv cap still produces a complete snapshot"
+}
+
+
+test_oversized_backlog_does_not_exceed_the_argv_cap
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
 test_open_decision_survives_later_unrelated_event
