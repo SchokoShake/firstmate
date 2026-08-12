@@ -718,6 +718,48 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+# The two standing commit-hygiene rules must survive in BOTH crewmate scaffolds and
+# stay OUT of the secondmate charter, and the Rules block must stay correctly
+# numbered around them - a stale cross-reference points a crew at the wrong rule.
+test_commit_hygiene_rules_in_both_crewmate_scaffolds() {
+  local home ship scout charter kind f
+  home="$TMP_ROOT/hygiene-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" hygiene-ship sample --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" hygiene-scout sample --scout >/dev/null 2>&1
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_SECONDMATE_CHARTER='sample scope' \
+    "$ROOT/bin/fm-brief.sh" hygiene-mate --secondmate --no-projects >/dev/null 2>&1
+  ship="$home/data/hygiene-ship/brief.md"
+  scout="$home/data/hygiene-scout/brief.md"
+  charter="$home/data/hygiene-mate/brief.md"
+
+  for f in "$ship" "$scout"; do
+    kind=$(basename "$(dirname "$f")")
+    assert_grep "2. Never add an agent name as a commit co-author." "$f" \
+      "$kind brief lost the co-author ban from rule 2"
+    assert_grep "3. Never set or override the git author or committer identity." "$f" \
+      "$kind brief lost the git-identity ban from rule 3"
+    # Both halves matter: a bare prohibition sends a crew hunting for the right value,
+    # and naming the agent's own context as a forbidden source is what closes the hole.
+    assert_grep "Your own context or memory is NOT a source for this value" "$f" \
+      "$kind brief dropped the forbidden-source half of the identity rule"
+    assert_grep "fm_git_identity" "$f" \
+      "$kind brief dropped the throwaway-test-repo exemption, leaving it to be inferred"
+    assert_grep "4. Stay inside this worktree" "$f" "$kind brief Rules block is misnumbered after rule 3"
+    assert_grep "9. Never stop, restart, or update the shared" "$f" "$kind brief Rules block tail is misnumbered"
+  done
+
+  assert_grep "escalate to firstmate (rule 8) and stop" "$ship" \
+    "ship brief's ask-user cross-reference points at the pre-renumber rule"
+  assert_no_grep "Never add an agent name as a commit co-author" "$charter" \
+    "secondmate charter carries a commit rule it never commits under"
+  pass "fm-brief.sh: both crewmate scaffolds carry the standing commit-hygiene rules, the charter does not"
+}
+
+test_commit_hygiene_rules_in_both_crewmate_scaffolds
+
 test_no_mistakes_dod_wording
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
