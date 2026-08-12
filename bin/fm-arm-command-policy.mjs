@@ -854,10 +854,36 @@ function analyzeProgram(command, context, depth = 0) {
   return { error: "", protectedFound, directProtected, nestedProtected, broadKill: broadKillFound, pgrepWatcher, watcherPids: activeContext.watcherPids, program, nodeInfos };
 }
 
+// The ONLY files an arm command may source. Sourcing runs shell code, so this
+// stays an exact shape check - never a prefix or a glob escape:
+//   - config/x-mode.env, exactly, as before; and
+//   - config/check-cadence.d/<name>.env, the extension seam an out-of-tree
+//     feature drops its own generated cadence into (see
+//     bin/fm-supervision-instructions.sh).
+// Both live in the home's own gitignored config/ dir and carry nothing but
+// `export FM_CHECK_INTERVAL=<n>`, so admitting the second is the same trust
+// boundary as the first, not a widening: <name> is bounded to one path segment
+// of the ordinary slug alphabet, which cannot spell `..` or reach outside the
+// directory.
+const CADENCE_DIR = "config/check-cadence.d";
+const CADENCE_LEAF = /^[A-Za-z0-9][A-Za-z0-9._-]*\.env$/;
+
+function cadenceRelPathAllowed(rel) {
+  if (rel === "config/x-mode.env") return true;
+  const dir = path.posix.dirname(rel);
+  const leaf = path.posix.basename(rel);
+  return dir === CADENCE_DIR && leaf !== ".." && CADENCE_LEAF.test(leaf);
+}
+
 function xModePathAllowed(value, home) {
-  if (value === "config/x-mode.env" || value === "./config/x-mode.env") return true;
+  if (value.startsWith("config/") && cadenceRelPathAllowed(value)) return true;
+  if (value.startsWith("./") && cadenceRelPathAllowed(value.slice(2))) return true;
   if (!path.isAbsolute(value)) return false;
-  return path.normalize(value) === path.join(path.normalize(home), "config/x-mode.env");
+  const normalizedHome = path.normalize(home);
+  const normalized = path.normalize(value);
+  const rel = path.relative(normalizedHome, normalized);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
+  return cadenceRelPathAllowed(rel.split(path.sep).join("/"));
 }
 
 function ordinaryWordsOnly(tokens) {

@@ -3,11 +3,11 @@ Mode: Grok background-notify supervision.
 When this session owns supervision and away mode is not active:
 1. Drain first with `bin/fm-wake-drain.sh`.
    After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
-2. Source `__FM_X_MODE_ENV__` first when Relay is active.
+2. Source every active watcher-cadence carrier first (`__FM_X_MODE_ENV__` when Relay is active, plus any `config/check-cadence.d/*.env`), smallest interval last.
 3. First cycle: arm with Grok's tracked background tool, as its own call:
 
    `run_terminal_command` with `background: true` on:
-   `[ -f __FM_X_MODE_ENV_SH__ ] && . __FM_X_MODE_ENV_SH__; exec bin/fm-watch-arm.sh`
+   `__FM_CADENCE_PRELUDE__exec bin/fm-watch-arm.sh`
 
 4. Trust only the arm's one-line status.
 5. `watcher: started ...` or `watcher: attached ...` means a live cycle exists.
