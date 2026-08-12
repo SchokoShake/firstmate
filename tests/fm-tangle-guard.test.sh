@@ -207,6 +207,18 @@ test_spawn_isolation_abort() {
   expect_code 1 "$status" "spawn landing inside the primary checkout should abort"
   assert_contains "$out" "did not yield an isolated worktree" "primary-checkout spawn lacked the isolation error"
 
+  # Abort: the pane resolves to the FIRSTMATE home itself. This is the clause the
+  # others cannot catch - firstmate is a git repo of itself, so $FM_HOME is a valid,
+  # self-consistent git toplevel that is not the project dir and clears every test
+  # above. A projects/* spawn that recorded worktree=$FM_HOME published a meta pointing
+  # at the primary, and later review and teardown then acted on it.
+  git -C "$home" init -q >/dev/null 2>&1
+  git -C "$home" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base >/dev/null 2>&1
+  out=$(run_spawn "$home" abort-fmhome-gg7 "$proj" "$home" "$fakebin"); status=$?
+  expect_code 1 "$status" "spawn landing on the firstmate primary checkout should abort"
+  assert_contains "$out" "firstmate primary checkout itself" "firstmate-home spawn lacked the primary-checkout error"
+  assert_absent "$home/state/abort-fmhome-gg7.meta" "aborted spawn must not record meta"
+
   # Proceed: the pane resolves to a genuine, isolated worktree.
   out=$(run_spawn "$home" ok-isolated-ff6 "$proj" "$TMP_ROOT/spawn-wt" "$fakebin"); status=$?
   expect_code 0 "$status" "spawn into a genuine isolated worktree should succeed"
