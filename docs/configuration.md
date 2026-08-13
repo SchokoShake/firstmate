@@ -311,19 +311,20 @@ An explicit environment variable always wins over the file, mirroring X mode's r
 As of Phase 2 the loop is two-way: firstmate pushes items and reconciles the board, and the captain can answer a card on the board (or still in chat), with both paths converging on the same lifecycle action and the same card resolve.
 The inbound answer-loop rides the existing `state/*.check.sh` watcher rail exactly as X mode does, so opting in drops a poll shim (`state/logbook-watch.check.sh` -> `bin/fm-logbook-poll.sh`) and a generated cadence file (`config/logbook-mode.env`, `FM_CHECK_INTERVAL=15`), without editing the watcher backbone.
 Opting in drops a second shim on that same rail, `state/logbook-reap.check.sh` -> `bin/fm-logbook-reap.sh`, which keeps the board itself alive; see "Board liveness" below.
+It drops a third, `state/logbook-resync.check.sh` -> `bin/fm-logbook-resync.sh`, which keeps the board's CONTENTS current as fleet state moves; see "Board refresh" below.
 
 `LOGBOOK_URL` defaults to `http://127.0.0.1:8137` (loopback only; a trailing slash is trimmed), `LOGBOOK_PORT` is derived from that URL when not set explicitly and otherwise falls back to `8137`, and `LOGBOOK_TOOL_DIR` defaults to this home's `projects/logbook` clone.
 Set `LOGBOOK_TOKEN` to a private value when you opt in so firstmate's pushes can authenticate and other local processes cannot drive the board; without it the client posters cannot authenticate a live post.
 `LOGBOOK_ENV_FILE` can point direct client invocations at another `.env`-style file.
 
-On the locked session-start bootstrap step, a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up through `bin/fm-logbook-up.sh` (detached and non-blocking), print `LOGBOOK: on - board at <url>`, and drop the inbound poll shim `state/logbook-watch.check.sh` and the board-liveness reap shim `state/logbook-reap.check.sh`, plus the generated cadence `config/logbook-mode.env` (`FM_CHECK_INTERVAL=15`, a distinct file from the hand-authored `config/logbook.env`).
+On the locked session-start bootstrap step, a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up through `bin/fm-logbook-up.sh` (detached and non-blocking), print `LOGBOOK: on - board at <url>`, and drop the inbound poll shim `state/logbook-watch.check.sh`, the board-liveness reap shim `state/logbook-reap.check.sh`, and the board-refresh shim `state/logbook-resync.check.sh`, plus the generated cadence `config/logbook-mode.env` (`FM_CHECK_INTERVAL=15`, a distinct file from the hand-authored `config/logbook.env`).
 Arming those shims needs `curl` and `jq`.
 When the board is reachable, bootstrap also prints a captain-facing `LOGBOOK: attention board: <url>` link for firstmate to relay to the captain, and auto-syncs the board from fleet state via `bin/fm-logbook-refresh.sh`, best-effort and non-blocking, so the session-start reconcile no longer depends on firstmate remembering to run it.
 Composing that board reads every carded project's merge policy, so bootstrap filters the refresh's stderr and re-emits every diagnostic `bin/fm-merge-policy-lib.sh` wrote as `LOGBOOK: merge policy - <detail>`.
 The filter selects on a single marker that library stamps on its own diagnostics rather than on a copy of their message texts, so a diagnostic added there later reaches the captain with no change to bootstrap.
 That sync is the earliest, most frequent, and only unattended read of the `+captain-merge` posture, and neither a mistyped flag nor a lookup that fails outright is honored as the prohibition it was meant to be, so the board would otherwise offer a one-click Merge for a project the captain reserved to themselves with the warning discarded.
 The rest of the refresh's stderr stays dropped; the `LOGBOOK: board not auto-synced ...` line already reports a failed compose or sync.
-On opt-out it removes all three artifacts, reverting to the default 300s no-poll cadence.
+On opt-out it removes all four artifacts, plus the refresh's `state/logbook-resync.fingerprint`, reverting to the default 300s no-poll cadence.
 With no config and no leftover artifacts it is a complete no-op.
 `bin/fm-logbook-up.sh` health-checks `GET $LOGBOOK_URL/health`, and if the board is down launches `node $LOGBOOK_TOOL_DIR/server.mjs` detached with output to `state/logbook-server.log` and its runtime store under `state/logbook.data`, so nothing is ever written into `projects/`.
 
@@ -343,7 +344,7 @@ That last source is compose's only reach into `projects/`, and it is a single `g
 It touches no ref, index, or worktree, so prime directive 1 holds - firstmate still never writes to a project.
 A verified PR earns the Merge option only where firstmate is permitted to merge that project at all: a `+captain-merge` project (`AGENTS.md` section 6) composes the same action card with a `Done / dismiss` acknowledgement instead, and `bin/fm-logbook-push.sh` strips a hand-composed `merge` option back to that same acknowledgement so a rich upsert cannot put back what compose withheld.
 `bin/fm-pr-merge.sh` refuses the merge even if a stale card's `merge` answer arrives anyway - `bin/fm-merge-policy-lib.sh` owns every side of it.
-Firstmate can re-run `bin/fm-logbook-refresh.sh` by hand to re-truth the board mid-session.
+Firstmate can re-run `bin/fm-logbook-refresh.sh` by hand to re-truth the board mid-session, and the board-refresh shim keeps it current between those runs without one ("Board refresh" below).
 It then upserts richer changed items with `bin/fm-logbook-push.sh` (`POST /api/items`) and clears acted-on cards with `bin/fm-logbook-resolve.sh <id> [resolved|dismissed]`.
 The tool has no dedicated resolve endpoint and rejects a bare `{id, status}` upsert (it runs full item validation on every `POST /api/items`), so `fm-logbook-resolve.sh` fetches the card's current fields via a read-only `GET /api/board` and re-upserts the whole item with a terminal `status` that drops the card off the board; an id absent from the board is a clean no-op.
 The inbound answer-loop works like this: `bin/fm-logbook-poll.sh`, the shim body, polls `GET /api/connector/poll`, stashes each pending answer to `state/logbook-inbox/<response_id>.json`, and prints `logbook-response <id>` for a `check:` wake.
@@ -351,8 +352,60 @@ The `logbook-respond` skill then drains the inbox, applies each captain answer t
 Item bodies are composed from fleet internals and are always passed via `--json-file` or stdin, never inlined into a shell argument.
 The board binds `127.0.0.1` only and requires a bearer token on every `/api/*` call; the client keeps the token in `config/logbook.env` and sends it via a `0600` auth-header temp file, never on a command line.
 
-Set `LOGBOOK_DRY_RUN` (truthy) to make `fm-logbook-push.sh`, `fm-logbook-sync.sh`, `fm-logbook-resolve.sh`, and `fm-logbook-ack.sh` record the would-be POST body to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting; `fm-logbook-refresh.sh` inherits it through its sync step, while the read-only `fm-logbook-compose.sh` needs no such switch (it only reads fleet state and prints the body).
+Set `LOGBOOK_DRY_RUN` (truthy) to make `fm-logbook-push.sh`, `fm-logbook-sync.sh`, `fm-logbook-resolve.sh`, and `fm-logbook-ack.sh` record the would-be POST body to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting; `fm-logbook-refresh.sh` inherits it through its sync step and `fm-logbook-resync.sh` through its push and resolve steps (as `resync-items.json`, `resync-projects.json`, and `<id>.json`), while the read-only `fm-logbook-compose.sh` needs no such switch (it only reads fleet state and prints the body).
 Push, sync, and ack compose their body from their arguments, so they need neither the token nor the board; resolve must read the card's current fields via the read-only `GET /api/board` to compose its full-item body (needing the token and a reachable board) but still writes nothing.
+
+### Board refresh
+
+This subsection is the single owner of the mid-session board-refresh contract; `bin/fm-logbook-resync.sh` is its only implementation.
+
+**The gap it closes.**
+`bin/fm-logbook-compose.sh` has always derived the correct attention set at any moment, but for a long time the only thing that ever pushed that set to the board was the session-start sync above.
+The board was therefore a photograph taken when the session opened: every dispatch, completion, decision and merge afterwards stayed invisible until the next session unless firstmate remembered to hand-push a card.
+The captain found this twice before firstmate did, and a board that silently under-reports is worse than one that is obviously empty, because they use it to know what needs them.
+`bin/fm-logbook-resync.sh` is the body of the `state/logbook-resync.check.sh` shim, so the watcher runs it every check cycle (15s once logbook is on, 300s under away mode) on the same beat the answer-loop and the reap already ride.
+There is no new scheduler, daemon, or timer, and no edit to any watcher-backbone file.
+
+**It never posts `/api/sync`, and that is the whole design.**
+`POST /api/sync` is a declarative full-ITEM replace: it deletes every stored item the payload does not list, then overwrites every column of the ones it does.
+Once per session that is survivable, because firstmate re-pushes what it wants back.
+On a 15-second beat it is not: it would delete every hand-pushed card compose does not know about and flatten every rich card compose does know about back to its mechanical baseline, twice a minute, forever.
+The refresh therefore reconciles INCREMENTALLY against the live board, and scopes every write by card ownership:
+
+| Case | Action |
+| --- | --- |
+| a composed item the board does not have | upsert via `POST /api/items` |
+| a composed item whose board card is owned and whose content differs | upsert via `POST /api/items` |
+| an owned board card the composed set no longer contains, unanswered | clear via `bin/fm-logbook-resolve.sh` |
+| anything else, in particular any card it does not own | skip |
+
+Ownership is a `producer` key that `bin/fm-logbook-compose.sh` stamps into each card's opaque `source` blob; `bin/fm-logbook-lib.sh` owns the value (`LOGBOOK_COMPOSE_PRODUCER`) so the writer and the reader cannot drift.
+A rich card pushed through `bin/fm-logbook-push.sh` carries no such stamp, so the refresh neither rewrites nor clears it, and it now survives indefinitely rather than until the next session-start sync.
+An unstamped card is also never cleared here, so a card compose has stopped producing but firstmate pushed by hand is left for firstmate or the next full refresh.
+A card composed before the stamp existed reads as unowned until the next session-start sync restamps it; new cards still appear immediately, so the primary staleness is fixed at once and only content-corrections and clears of pre-existing cards wait.
+
+Three further protections each guard a way an automatic writer could be worse than the staleness it fixes.
+The captain's per-project `active` toggle survives because projects go up through the upsert-only `POST /api/projects`, never the deleting sync, and the tool's `upsertProject` treats `active` as seed-only; no project is ever deleted on this path either, which is the session-start sync's business rather than a timer's.
+The captain's set-aside ("not now") survives because a card whose content is unchanged is not re-upserted at all, so a card put down stays down; when the content does change from an fyi into an answerable claim the tool's own `isNewClaim` clears the set-aside, which is correct, because it is a different card now.
+The captain's unacted answer survives because a card at status `submitted` has been answered on the board and is waiting on firstmate, so it is never cleared here - the answer loop clears it once firstmate has acted.
+
+**Change detection.**
+Composing is not cheap (it shells out to `git` once per carded project), so the refresh never composes speculatively.
+It first fingerprints exactly what compose reads from disk - `data/projects.md`, `data/backlog.md`, and every `state/*.meta` and `state/*.status` - into `state/logbook-resync.fingerprint`, and exits without touching the network when that fingerprint is unchanged.
+Measured at 9ms on a 93KB backlog with six state files, which against a 15s cycle is a 0.06% duty cycle; a real reconcile against a stubbed board measured 0.05s end to end.
+The fingerprint hashes CONTENT rather than mtimes, so a backlog the backend rewrites byte-identically (`tasks-axi` renders the file in place on every mutation) does not trigger a pointless refresh, and it hashes the file NAMES alongside the contents so a teardown removing a meta registers as a change too.
+`cksum` is CRC32 and could in principle collide across two successive states; the cost is one skipped refresh that the next real change repairs, which is why a stronger digest is not worth a non-POSIX dependency.
+Two inputs are deliberately outside the fingerprint, so it is not mistaken for exhaustive: each clone's `origin` remote, because reading it is a `git` subprocess per project and it changes approximately never, and the BOARD's own state, because the fingerprint tracks the fleet.
+A board whose store is wiped out from under firstmate therefore reads as "nothing changed" until fleet state next moves, and is restored by the next session start or a hand-run `bin/fm-logbook-refresh.sh`.
+
+**Wake discipline.**
+Refreshing the board is housekeeping, so the refresh prints nothing on stdout ever, and therefore never wakes firstmate - the check rail defines printing nothing as "no wake".
+Every failure is quiet and non-fatal: a board that cannot be reached is not a reason to disturb the captain or interrupt supervision, and a board that is down for good is already the reap's story to tell, once.
+Diagnostics go to stderr, which the watcher discards and a hand run shows.
+A cycle that could not complete leaves the fingerprint unrecorded, so it simply retries on the next beat rather than banking a board state it never reached; the writes are independent, so one that could not land never cancels the others.
+The refresh is inert when logbook is off, exactly like the rest of the client: bootstrap drops the shim only on opt-in, and the script itself is a hard no-op without a truthy `LOGBOOK_ENABLE`.
+
+`bin/fm-logbook-refresh.sh` and `bin/fm-logbook-resync.sh` are complements, not alternatives: the former is the one-call full declarative truth-restore that bootstrap runs at session start and firstmate can run by hand, and the latter is the incremental, ownership-scoped rider that keeps it true in between.
 
 ### Sub-projects
 

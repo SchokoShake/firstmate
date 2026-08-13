@@ -7,6 +7,7 @@
 # opted in via config/logbook.env with a truthy LOGBOOK_ENABLE (section 15).
 #
 # This file is sourced, never executed. It defines:
+#   LOGBOOK_COMPOSE_PRODUCER      - the card-ownership stamp (see below)
 #   logbook_env_get <key> <file>  - read one KEY=VALUE from a .env-style file
 #   logbook_load_config           - resolve LOGBOOK_ENABLE, LOGBOOK_URL,
 #                                   LOGBOOK_TOKEN, LOGBOOK_TOOL_DIR, LOGBOOK_PORT,
@@ -32,6 +33,18 @@
 
 LOGBOOK_DEFAULT_URL="http://127.0.0.1:8137"
 LOGBOOK_DEFAULT_PORT="8137"
+
+# The CARD-OWNERSHIP STAMP, written into every card's opaque "source" blob by
+# bin/fm-logbook-compose.sh and read back off the live board by
+# bin/fm-logbook-resync.sh. It is the single fact that lets the automatic refresh
+# tell its OWN mechanical baseline apart from a rich card firstmate hand-composed
+# through bin/fm-logbook-push.sh, so the refresh can overwrite and clear the former
+# while never touching the latter. It lives here, in the file both scripts already
+# source, so the writer and the reader can never drift onto two different values.
+# A card with no stamp (pushed by hand, or composed before this existed) is NOT
+# owned, which is the safe default in both directions: it is never overwritten and
+# never cleared.
+LOGBOOK_COMPOSE_PRODUCER="fm-logbook-compose"
 
 # Read the value of KEY from a .env-style file: last assignment wins; tolerates a
 # leading "export ", surrounding whitespace, and one layer of matching single or
@@ -141,8 +154,10 @@ logbook_load_config() {
   # Mark the resolved config surface as read: LOGBOOK_TOOL_DIR/LOGBOOK_PORT are
   # consumed by fm-logbook-up.sh and LOGBOOK_ENABLE by logbook_enabled after
   # sourcing, so shellcheck must not flag them as unused within this library.
+  # LOGBOOK_COMPOSE_PRODUCER rides the same marker: it is a constant this file only
+  # declares, read by fm-logbook-compose.sh and fm-logbook-resync.sh after sourcing.
   : "$LOGBOOK_ENABLE" "$LOGBOOK_TOKEN" "$LOGBOOK_TOOL_DIR" "$LOGBOOK_PORT" \
-    "$LOGBOOK_URL" "$LOGBOOK_DRY" "$LOGBOOK_STATE"
+    "$LOGBOOK_URL" "$LOGBOOK_DRY" "$LOGBOOK_STATE" "$LOGBOOK_COMPOSE_PRODUCER"
 }
 
 # Succeed when LOGBOOK_ENABLE is truthy (anything other than unset/empty/0/false/

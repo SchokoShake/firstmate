@@ -19,6 +19,16 @@
 # captain-facing titles/bodies/options remain firstmate's own composition on top, via
 # fm-logbook-push.sh (an upsert keyed by id replaces the baseline card).
 #
+# Every card composed here carries $LOGBOOK_COMPOSE_PRODUCER in its "source" blob as
+# the card-OWNERSHIP stamp (fm-logbook-lib.sh owns the value and the contract). It
+# exists for bin/fm-logbook-resync.sh, the automatic mid-session refresh: a stamped
+# card is this script's own mechanical baseline and may be freely rewritten or
+# cleared, while an unstamped one is firstmate's hand-composed card and must be left
+# alone. Nothing else reads it, and the board treats "source" as opaque, so the extra
+# key changes no behavior here - it only makes the baseline self-identifying, which is
+# what lets a refresh run every 15s without eating the rich cards a full
+# POST /api/sync replace would.
+#
 # The item SET comes from the BACKLOG, never from live crew runtime state. A crew's
 # state/<id>.meta exists only while that crew runs, but the documented end-state for
 # review-ready work is the opposite: the crew finishes, fm-teardown.sh removes its
@@ -911,6 +921,7 @@ compose_item() {
     --argjson options "$options" \
     --arg pr "$pr" \
     --arg base_branch "$base_branch" \
+    --arg producer "$LOGBOOK_COMPOSE_PRODUCER" \
     '{
        id: $id,
        project: $project,
@@ -918,7 +929,7 @@ compose_item() {
        title: $title,
        body: $body,
        options: $options,
-       source: ({ task: $id } + (if $pr == "" then {} else { pr: $pr } end)),
+       source: ({ producer: $producer, task: $id } + (if $pr == "" then {} else { pr: $pr } end)),
        _base_branch: $base_branch
      }' >> "$ITEMS_JSONL" || { echo "fm-logbook-compose: failed to compose item $id" >&2; return 1; }
   return 0

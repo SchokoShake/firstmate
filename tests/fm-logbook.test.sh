@@ -552,6 +552,11 @@ EOF
   assert_present "$home/state/logbook-reap.check.sh" "opt-in must drop the board-liveness reap shim"
   [ -x "$home/state/logbook-reap.check.sh" ] || fail "the reap shim must be executable"
   assert_grep "fm-logbook-reap.sh" "$home/state/logbook-reap.check.sh" "the reap shim must exec the reap script"
+  # The board refresh rides it too: without this the session-start sync above is a
+  # photograph the whole session then works from.
+  assert_present "$home/state/logbook-resync.check.sh" "opt-in must drop the board-refresh shim"
+  [ -x "$home/state/logbook-resync.check.sh" ] || fail "the refresh shim must be executable"
+  assert_grep "fm-logbook-resync.sh" "$home/state/logbook-resync.check.sh" "the shim must exec the refresh script"
   assert_present "$home/config/logbook-mode.env" "opt-in must drop the cadence config"
   assert_grep "export FM_CHECK_INTERVAL=15" "$home/config/logbook-mode.env" "cadence must be 15s"
   # The generated cadence file must NOT clobber the captain's hand-authored opt-in.
@@ -563,13 +568,13 @@ EOF
   inherited=$( . "$home/config/logbook-mode.env" && bash -c 'echo "${FM_CHECK_INTERVAL:-300}"' )
   [ "$inherited" = "15" ] || fail "sourcing the cadence config must export FM_CHECK_INTERVAL=15 to a child"
   # Idempotent: re-running changes nothing and does not duplicate the shims.
-  sum1=$(cat "$home/state/logbook-watch.check.sh" "$home/state/logbook-reap.check.sh" "$home/config/logbook-mode.env" | shasum)
+  sum1=$(cat "$home/state/logbook-watch.check.sh" "$home/state/logbook-reap.check.sh" "$home/state/logbook-resync.check.sh" "$home/config/logbook-mode.env" | shasum)
   PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
-  sum2=$(cat "$home/state/logbook-watch.check.sh" "$home/state/logbook-reap.check.sh" "$home/config/logbook-mode.env" | shasum)
+  sum2=$(cat "$home/state/logbook-watch.check.sh" "$home/state/logbook-reap.check.sh" "$home/state/logbook-resync.check.sh" "$home/config/logbook-mode.env" | shasum)
   [ "$sum1" = "$sum2" ] || fail "bootstrap logbook Phase 2 setup must be idempotent"
   n=$(find "$home/state" -maxdepth 1 -name 'logbook-*.check.sh' | wc -l | tr -d ' ')
-  [ "$n" = "2" ] || fail "bootstrap must drop exactly the poll + reap shims, unduplicated (found $n)"
-  pass "bootstrap opt-in drops the board-response poll shim, board-liveness reap shim, and 15s cadence, idempotently"
+  [ "$n" = "3" ] || fail "bootstrap must drop exactly the poll + reap + refresh shims, unduplicated (found $n)"
+  pass "bootstrap opt-in drops the board-response poll shim, board-liveness reap shim, board-refresh shim, and 15s cadence, idempotently"
 }
 
 test_xmode_and_logbook_cadences_coexist() {
@@ -716,14 +721,21 @@ EOF
   PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
   assert_present "$home/state/logbook-watch.check.sh" "opt-in must create the poll shim before opt-out"
   assert_present "$home/state/logbook-reap.check.sh" "opt-in must create the reap shim before opt-out"
+  assert_present "$home/state/logbook-resync.check.sh" "opt-in must create the refresh shim before opt-out"
   assert_present "$home/config/logbook-mode.env" "opt-in must create the cadence config before opt-out"
+  # A refresh fingerprint, as a live instance would have left behind.
+  printf 'stale-fingerprint\n' > "$home/state/logbook-resync.fingerprint"
   # Opt out: falsy flag -> every artifact removed + one off line.
   printf 'LOGBOOK_ENABLE=0\n' > "$home/config/logbook.env"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
-  assert_contains "$out" "LOGBOOK: off - removed board-response poll shim, board-liveness reap shim, and 15s cadence" \
+  assert_contains "$out" "LOGBOOK: off - removed board-response poll shim, board-liveness reap shim, board-refresh shim, and 15s cadence" \
     "opt-out must announce logbook off when it removed artifacts"
   assert_absent "$home/state/logbook-watch.check.sh" "opt-out must remove the poll shim"
   assert_absent "$home/state/logbook-reap.check.sh" "opt-out must remove the reap shim"
+  assert_absent "$home/state/logbook-resync.check.sh" "opt-out must remove the refresh shim"
+  # The fingerprint means nothing without the shim, and a leftover one would make a
+  # later re-opt-in skip its first refresh.
+  assert_absent "$home/state/logbook-resync.fingerprint" "opt-out must drop the refresh fingerprint"
   assert_absent "$home/config/logbook-mode.env" "opt-out must remove the cadence config"
   # Steady-state off: another run with nothing to remove is silent.
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
@@ -2952,6 +2964,289 @@ test_refresh_live_posts_sync() {
   pass "fm-logbook-refresh live composes and POSTs the reconcile to /api/sync"
 }
 
+# --- mid-session board refresh (fm-logbook-resync.sh) ------------------------
+#
+# The refresh runs on the watcher check rail every 15s, so these tests care far more
+# about what it must NOT do than about what it does. Two properties are load-bearing
+# and every test below asserts at least one of them: it must never POST /api/sync (a
+# declarative full-ITEM replace on a 15s timer would delete every hand-pushed card and
+# flatten every rich one), and it must never write a card it does not own.
+
+# compose_as_board <home> [jq-filter]: the body GET /api/board would return if the
+# board were exactly what compose currently derives - compose's own output with the
+# per-item fields the TOOL fills in (status, priority, timestamps) added, since a real
+# board always echoes those back and the refresh must not read them as a difference.
+# An optional jq filter mutates that body, which is how a test says "the board is
+# current EXCEPT for this one thing" and then proves that one thing is all that moves.
+compose_as_board() {
+  local home=$1 filter=${2:-.}
+  PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 "$ROOT/bin/fm-logbook-compose.sh" \
+    | jq -c '{ projects: (.projects // []),
+               items: [ (.items // [])[]
+                        | { subproject: "", priority: null, status: "pending",
+                            expires_at: "", next_update_at: "" } + . ] }' \
+    | jq -c "$filter"
+}
+
+# run_resync <home> <fakebin> <log> <board-body> [extra env assignments...]: one refresh
+# cycle against a stubbed board, returning its stdout. Stdout is the thing under the
+# most scrutiny here: the watcher turns a check shim's stdout into a wake, so anything
+# printed on a routine cycle is a false wake.
+run_resync() {
+  local home=$1 fakebin=$2 log=$3 body=$4; shift 4
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=resynctok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_BOARD_BODY="$body" \
+    FAKE_BOARD_CODE=200 FAKE_POST_CODE=200 "$@" \
+    "$ROOT/bin/fm-logbook-resync.sh" 2>/dev/null
+}
+
+# posted_ids <log>: every item id the run upserted, one per line. The fake curl logs
+# each streamed POST body, and both write shapes here (the batch upsert and a resolve's
+# whole-item re-POST) are an array or a lone object, so both are walked.
+posted_ids() {
+  grep '^data=' "$1" 2>/dev/null | sed 's/^data=//' \
+    | jq -r 'if type=="array" then .[] else . end | select(type=="object") | .id? // empty' 2>/dev/null
+}
+
+# assert_no_declarative_sync <log> <what>: the wipe-hazard guard, asserted everywhere.
+assert_no_declarative_sync() {
+  grep -F 'url=http://127.0.0.1:8137/api/sync' "$1" >/dev/null 2>&1 \
+    && fail "$2: the automatic refresh must NEVER POST /api/sync (it deletes every card the payload omits)"
+  return 0
+}
+
+test_resync_hard_noop_when_disabled() {
+  local home fakebin log out rc
+  home="$TMP_ROOT/resync-off"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  out=$(env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE='' FAKE_CURL_LOG="$log" \
+    "$ROOT/bin/fm-logbook-resync.sh" 2>/dev/null); rc=$?
+  expect_code 0 "$rc" "resync disabled exit"
+  [ -z "$out" ] || fail "resync must print nothing when not opted in (got: $out)"
+  [ -s "$log" ] && fail "resync must touch no network when not opted in"
+  assert_absent "$home/state/logbook-resync.fingerprint" "a disabled resync must record no fingerprint"
+  pass "fm-logbook-resync is a hard no-op when not opted in (inert default)"
+}
+
+test_resync_adds_a_task_dispatched_mid_session() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-add"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # The board is the session-start photograph: it has every card EXCEPT scout-c3, which
+  # stands in for work dispatched after the session opened. This is the reported bug.
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing (stdout is a watcher wake): $out"
+  assert_grep "url=http://127.0.0.1:8137/api/items" "$log" "the refresh must upsert the missing card"
+  assert_no_declarative_sync "$log" "adding a mid-session dispatch"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "a task dispatched after session start must reach the board on the next refresh"
+  posted_ids "$log" | grep -qx 'ship-pr-a1' \
+    && fail "a card already current on the board must not be rewritten"
+  assert_present "$home/state/logbook-resync.fingerprint" "a successful refresh must record its fingerprint"
+  pass "fm-logbook-resync puts a mid-session dispatch on the board without a declarative sync"
+}
+
+test_resync_leaves_a_hand_pushed_card_alone() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-handpushed"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # The board carries a rich card firstmate pushed by hand. It has no ownership stamp
+  # and compose knows nothing about it, so it is exactly what a declarative sync would
+  # delete - twice a minute, forever. Also drop a card so the refresh has real work to
+  # do and cannot pass this test by doing nothing at all.
+  body=$(compose_as_board "$home" '
+    .items |= (map(select(.id != "scout-c3"))
+               + [{ id: "hand-note-x1", project: "alpha", subproject: "", kind: "decision",
+                    title: "Hand-composed: pick a rollout window", body: "firstmate wrote this",
+                    options: [{label: "Tonight", value: "tonight"}], priority: null,
+                    status: "pending", source: null, expires_at: "", next_update_at: "" }])')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  assert_no_declarative_sync "$log" "a board carrying a hand-pushed card"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "the refresh must still do its own work alongside an unowned card"
+  posted_ids "$log" | grep -qx 'hand-note-x1' \
+    && fail "the refresh must never rewrite or clear a card it does not own"
+  pass "fm-logbook-resync never touches a hand-pushed card, so the 15s beat cannot eat it"
+}
+
+test_resync_unchanged_fleet_costs_no_network() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-unchanged"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  body=$(compose_as_board "$home")
+  # First cycle: the board already matches, so there is nothing to write - but the
+  # fingerprint is now recorded.
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a no-op refresh must print nothing: $out"
+  posted_ids "$log" | grep -q . \
+    && fail "a board already matching compose must not be rewritten"
+  assert_present "$home/state/logbook-resync.fingerprint" "the first cycle must record the fingerprint"
+  # Second cycle on an unchanged fleet: not one request, not even the board read. This
+  # is what makes riding a 15s rail affordable.
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "an unchanged-fleet refresh must print nothing: $out"
+  [ -s "$log" ] && fail "an unchanged fleet must cost zero requests (not even GET /api/board)"
+  pass "fm-logbook-resync short-circuits on an unchanged fleet before it composes or reads"
+}
+
+test_resync_notices_a_teardown_that_only_removes_state_files() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-teardown"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  body=$(compose_as_board "$home")
+  run_resync "$home" "$fakebin" "$log" "$body" >/dev/null
+  assert_present "$home/state/logbook-resync.fingerprint" "the first cycle must record the fingerprint"
+  # A teardown removes a task's meta and status without editing data/. The fingerprint
+  # hashes the state file NAMES alongside their contents precisely so this registers.
+  rm -f "$home/state/scout-c3.meta" "$home/state/scout-c3.status"
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a refresh after a teardown must print nothing: $out"
+  assert_grep "url=http://127.0.0.1:8137/api/board" "$log" \
+    "removing a state file must break the fingerprint and re-read the board"
+  pass "fm-logbook-resync notices a state file that disappeared, not just one that changed"
+}
+
+test_resync_rewrites_only_its_own_changed_card() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-update"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # Two stale cards, one owned and one not. Only the owned one may be corrected: an
+  # unstamped card that merely shares an id with a composed item is still firstmate's
+  # own composition on top of the baseline, and flattening it is the wipe hazard in its
+  # quieter form.
+  body=$(compose_as_board "$home" '
+    .items |= map(if .id == "ship-pr-a1" then .title = "stale owned title"
+                  elif .id == "decide-b2" then (.title = "rich hand-composed title" | .source = null)
+                  else . end)')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  assert_no_declarative_sync "$log" "correcting a stale owned card"
+  posted_ids "$log" | grep -qx 'ship-pr-a1' \
+    || fail "an owned card whose content drifted must be corrected"
+  posted_ids "$log" | grep -qx 'decide-b2' \
+    && fail "an unowned card must not be flattened back to the mechanical baseline"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    && fail "an owned card that is already correct must not be rewritten"
+  pass "fm-logbook-resync corrects its own drifted card and flattens nobody else's"
+}
+
+test_resync_clears_its_own_card_that_left_the_set() {
+  local home fakebin log body out data
+  home="$TMP_ROOT/resync-clear"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # gone-x9 is an owned card whose work has finished, so compose no longer produces it.
+  # It must leave the board, or the board over-reports what needs the captain.
+  body=$(compose_as_board "$home" '
+    .items += [{ id: "gone-x9", project: "alpha", subproject: "", kind: "fyi",
+                 title: "Work that has since landed", body: "", options: [], priority: null,
+                 status: "pending", source: {producer: "fm-logbook-compose", task: "gone-x9"},
+                 expires_at: "", next_update_at: "" }]')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a refresh that clears a card must still print nothing: $out"
+  assert_no_declarative_sync "$log" "clearing a finished card"
+  data=$(grep '^data={' "$log" | sed 's/^data=//' \
+    | jq -c 'select(type=="object" and .id=="gone-x9")' | tail -1)
+  [ -n "$data" ] || fail "an owned card no longer in the composed set must be cleared"
+  [ "$(printf '%s' "$data" | jq -r .status)" = "resolved" ] \
+    || fail "clearing a card must go through the terminal-status upsert, not a delete"
+  pass "fm-logbook-resync clears its own card once the work leaves the attention set"
+}
+
+test_resync_never_clears_a_card_the_captain_answered() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-submitted"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # Same shape as above, but the captain has ANSWERED this card and firstmate has not
+  # acted yet. Yanking it off the board here would lose the visible trace of a decision
+  # that is still owed; the answer loop clears it after firstmate acts.
+  body=$(compose_as_board "$home" '
+    .items += [{ id: "answered-x9", project: "alpha", subproject: "", kind: "action",
+                 title: "Merge the widget endpoint", body: "", options: [], priority: null,
+                 status: "submitted", source: {producer: "fm-logbook-compose", task: "answered-x9"},
+                 expires_at: "", next_update_at: "" }]')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'answered-x9' \
+    && fail "a card the captain has answered must never be cleared by the refresh"
+  pass "fm-logbook-resync leaves an answered-but-unacted card for the answer loop"
+}
+
+test_resync_upserts_projects_and_never_deletes_them() {
+  local home fakebin log body out data
+  home="$TMP_ROOT/resync-projects"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # The board knows a project the registry no longer lists, and the captain has toggled
+  # one active by hand. Projects go up through the upsert-only route, which the tool
+  # treats as seed-only for `active`, so neither can be disturbed on a timer.
+  body=$(compose_as_board "$home" '
+    .projects |= (map(select(.name != "gamma") | .active = true)
+                  + [{name: "retired", repo: "retired", mode: "", active: true, subprojects: []}])')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  assert_no_declarative_sync "$log" "reconciling projects"
+  assert_grep "url=http://127.0.0.1:8137/api/projects" "$log" \
+    "a new or changed project must go through the upsert-only projects route"
+  data=$(grep '^data=\[' "$log" | sed 's/^data=//' \
+    | jq -c 'select(type=="array" and (.[0] | has("mode")))' | tail -1)
+  printf '%s' "$data" | jq -e 'any(.[]; .name=="gamma")' >/dev/null \
+    || fail "the project the registry still lists must be upserted"
+  pass "fm-logbook-resync upserts projects only, so no toggle is undone and no project deleted"
+}
+
+test_resync_failure_leaves_the_fingerprint_unrecorded() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-failure"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
+  # The board rejects the write. The cycle must stay silent (the reap owns board
+  # trouble, and a refresh is housekeeping) and must NOT bank the fingerprint, or the
+  # failed write would be skipped forever after.
+  out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_POST_CODE=500)
+  [ -z "$out" ] || fail "a failed refresh must stay silent and never wake firstmate: $out"
+  assert_absent "$home/state/logbook-resync.fingerprint" \
+    "a refresh that could not write must not record the fingerprint it failed to reach"
+  # And the next cycle retries rather than believing the board is current.
+  : > "$log"
+  run_resync "$home" "$fakebin" "$log" "$body" >/dev/null
+  assert_grep "url=http://127.0.0.1:8137/api/items" "$log" "the next cycle must retry the failed write"
+  pass "fm-logbook-resync retries after a failed cycle instead of banking a state it never reached"
+}
+
+test_resync_unreadable_board_is_silent_and_writes_nothing() {
+  local home fakebin log out
+  home="$TMP_ROOT/resync-boarddown"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # A board that is down is the reap's story to tell, once. The refresh must not write
+  # blind (that would mean reconciling without knowing what it owns) and must not wake
+  # firstmate a second time about the same fact.
+  out=$(run_resync "$home" "$fakebin" "$log" "" FAKE_BOARD_CODE=503)
+  [ -z "$out" ] || fail "an unreachable board must not wake firstmate from the refresh: $out"
+  posted_ids "$log" | grep -q . && fail "the refresh must write nothing when it cannot read the board"
+  assert_no_declarative_sync "$log" "an unreadable board"
+  assert_absent "$home/state/logbook-resync.fingerprint" "a refresh that could not read must record nothing"
+  pass "fm-logbook-resync stays silent and writes nothing when the board cannot be read"
+}
+
+test_compose_stamps_every_card_with_the_ownership_producer() {
+  local home out
+  home="$TMP_ROOT/compose-producer"; write_fleet_fixture "$home"
+  out=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 "$ROOT/bin/fm-logbook-compose.sh")
+  # The stamp is what lets the automatic refresh tell its own baseline from a card
+  # firstmate composed by hand. A card composed without one would be invisible to the
+  # refresh forever - never corrected, never cleared.
+  printf '%s' "$out" | jq -e 'all(.items[]; .source.producer == "fm-logbook-compose")' >/dev/null \
+    || fail "every composed card must carry the ownership stamp in its source blob"
+  # Additive only: it must not disturb what the rest of the board already reads there.
+  printf '%s' "$out" | jq -e '.items[] | select(.id=="ship-pr-a1")
+      | (.source.task=="ship-pr-a1") and (.source.pr=="https://github.com/acme/alpha/pull/42")' >/dev/null \
+    || fail "the stamp must not disturb source.task or source.pr"
+  pass "fm-logbook-compose stamps each card so the refresh can tell its own baseline apart"
+}
+
 test_bootstrap_opt_in_surfaces_link_and_autosyncs() {
   local home fakebin out log
   home="$TMP_ROOT/boot-link"; write_fleet_fixture "$home"; mkdir -p "$home/config"
@@ -3261,6 +3556,18 @@ test_compose_runaway_body_never_truncates_the_pr_link
 test_refresh_hard_noop_when_disabled
 test_refresh_dry_run_records_sync
 test_refresh_live_posts_sync
+test_resync_hard_noop_when_disabled
+test_resync_adds_a_task_dispatched_mid_session
+test_resync_leaves_a_hand_pushed_card_alone
+test_resync_unchanged_fleet_costs_no_network
+test_resync_notices_a_teardown_that_only_removes_state_files
+test_resync_rewrites_only_its_own_changed_card
+test_resync_clears_its_own_card_that_left_the_set
+test_resync_never_clears_a_card_the_captain_answered
+test_resync_upserts_projects_and_never_deletes_them
+test_resync_failure_leaves_the_fingerprint_unrecorded
+test_resync_unreadable_board_is_silent_and_writes_nothing
+test_compose_stamps_every_card_with_the_ownership_producer
 test_bootstrap_opt_in_surfaces_link_and_autosyncs
 test_bootstrap_autosync_surfaces_a_malformed_registry_posture
 test_bootstrap_surfaces_a_policy_diagnostic_no_caller_was_taught

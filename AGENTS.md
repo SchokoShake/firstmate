@@ -105,6 +105,8 @@ state/               volatile runtime signals; gitignored
   x-poll.error       generated X-mode relay diagnostic dedupe marker
   logbook-watch.check.sh  generated logbook board-response poll shim; present only when opted in (section 15)
   logbook-reap.check.sh  generated logbook board-liveness reap shim; present only when opted in; keeps the detached board alive, silent unless it gives up relaunching (section 15)
+  logbook-resync.check.sh  generated logbook board-refresh shim; present only when opted in; keeps the board's contents current as fleet state changes, always silent (section 15)
+  logbook-resync.fingerprint  generated logbook board-refresh change-detection record; absent until the first refresh reaches the board
   logbook-inbox/     generated logbook pending board-response payloads; logbook-respond drains it (section 15)
   logbook-outbox/    generated logbook dry-run push/sync/resolve/ack previews; inspect it when LOGBOOK_DRY_RUN is set (section 15)
   logbook-poll.error  generated logbook board-response diagnostic dedupe marker
@@ -824,7 +826,7 @@ Set `LOGBOOK_TOKEN` to a private value when you opt in, so firstmate's pushes au
 Because the board is loopback-only and bearer-token-gated, an answer given on it is the captain's own decision on a private, trusted surface and carries in-session trust; a destructive, irreversible, or security-sensitive step still escalates first.
 
 **Mechanism and cadence.**
-Bootstrap ensures the board server is up, auto-syncs the board from fleet state, and wires both the board-response poll and the board-liveness reap automatically and purely additively from that config's presence; `docs/configuration.md` "Logbook (config/logbook.env)" owns the generated-artifact mechanism, the wire protocol, the poll cadence and its transition handling, the board-liveness contract, and the watcher-backbone non-interference guarantee.
+Bootstrap ensures the board server is up, auto-syncs the board from fleet state, and wires the board-response poll, the board-liveness reap, and the board refresh automatically and purely additively from that config's presence; `docs/configuration.md` "Logbook (config/logbook.env)" owns the generated-artifact mechanism, the wire protocol, the poll cadence and its transition handling, the board-liveness contract, the board-refresh contract, and the watcher-backbone non-interference guarantee.
 Nothing else supervises the board - it is a bare detached node process - so the reap health-checks it every watcher check cycle and relaunches a dead one, silently; only a board it has given up relaunching reaches the captain, once, as a `logbook-error` wake.
 Where systemd exists, the `systemd --user` unit in that doc is the recommended setup instead, because it also covers the case the reap cannot: no firstmate session running at all.
 Relay bootstrap's captain-facing `LOGBOOK: attention board: <url>` link to the captain once at session start and after a restart, and do not hand-run the session-start sync.
@@ -834,6 +836,7 @@ Logbook is a reason to keep the watcher armed even with no fleet work, so an opt
 On a `logbook-response <response_id>` or `logbook-error ...` `check:` wake, load `logbook-respond` (section 13).
 It owns draining the inbox, routing each answer to its task, applying the captain's decision through the normal lifecycle, and the ack-resolve-clear ordering in full, including what a `logbook-error` wake means instead.
 The one fact that must survive here because it fires on ordinary escalation turns, not on a board wake: whatever reaches the captain under section 9 also goes on the board the moment it arises (`bin/fm-logbook-push.sh`), and once firstmate has acted - whether the captain answered on the board or in chat - the card is cleared with `bin/fm-logbook-resolve.sh` so the board never disagrees with live state.
+The board refresh does not relax that: it keeps the mechanical baseline current on its own and never rewrites or clears a hand-pushed card, so an escalation still owes its own push and its own resolve.
 
 ## Maintaining this file
 
