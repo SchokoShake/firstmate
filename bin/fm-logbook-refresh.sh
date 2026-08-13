@@ -11,6 +11,17 @@
 # automatic, not a step firstmate has to remember; firstmate can also run it by
 # hand mid-session to re-truth the board.
 #
+# One thing is subtracted from that composed set before it goes up: a card the captain
+# already answered and firstmate already cleared. The board keeps no trace a client can
+# read back (GET /api/board omits resolved and dismissed rows), so compose - which knows
+# only fleet state - re-derives such a card for as long as its task stays in the
+# attention set, and syncing it would put a settled question back in front of the
+# captain. bin/fm-logbook-resolve.sh records every clear it performs, and this honors
+# that record exactly as the mid-session refresh does: a cleared id whose composed
+# content still hashes the same is dropped from the payload, and one whose content has
+# moved on goes up, because that is a different question. fm-logbook-lib.sh owns the
+# rule so the two writers cannot drift.
+#
 # Inert by default: a hard no-op (exit 0, no output) unless logbook is opted in via
 # a truthy LOGBOOK_ENABLE. Honors LOGBOOK_DRY_RUN transitively - fm-logbook-sync.sh
 # records the would-be body to state/logbook-outbox/sync.json instead of posting.
@@ -35,7 +46,9 @@ logbook_enabled || exit 0
 command -v jq >/dev/null 2>&1 || { echo "fm-logbook-refresh: jq not found" >&2; exit 1; }
 
 BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
-trap 'rm -f "$BODY_FILE"' EXIT
+SUPPRESSED=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh-cleared.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
+FILTERED=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh-body.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
+trap 'rm -f "$BODY_FILE" "$SUPPRESSED" "$FILTERED"' EXIT
 
 # Compose the attention set. compose is itself opt-in gated, so we are past that;
 # treat an empty/non-JSON body as a compose failure rather than syncing garbage.
@@ -46,6 +59,23 @@ fi
 if [ ! -s "$BODY_FILE" ] || ! jq -e . "$BODY_FILE" >/dev/null 2>&1; then
   echo "fm-logbook-refresh: composed board body was empty or not valid JSON" >&2
   exit 1
+fi
+
+# Drop the cards the captain already settled. Best-effort by construction: the filter
+# writes an empty suppression set when it cannot read its record, which is the old
+# behavior (the card reappears) rather than a failed refresh. `$drop[0]` is bound before
+# index() because jq evaluates an argument to index() against the value being searched,
+# not against the item in hand.
+logbook_cleared_filter "$BODY_FILE" "" "$SUPPRESSED"
+if ! jq -e 'length == 0' "$SUPPRESSED" >/dev/null 2>&1; then
+  if jq -c --slurpfile drop "$SUPPRESSED" '
+        (($drop[0]) // []) as $settled
+        | .items = [ (.items // [])[] | . as $i | select(($settled | index($i.id)) == null) ]
+      ' "$BODY_FILE" > "$FILTERED" 2>/dev/null && [ -s "$FILTERED" ]; then
+    cat "$FILTERED" > "$BODY_FILE"
+  else
+    echo "fm-logbook-refresh: could not apply the settled-card record; syncing the full composed set" >&2
+  fi
 fi
 
 # Declarative full reconcile. Honors LOGBOOK_DRY_RUN inside fm-logbook-sync.sh, so a

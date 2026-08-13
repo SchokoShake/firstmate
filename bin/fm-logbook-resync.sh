@@ -62,20 +62,38 @@
 #   - The captain's unacted answer. A card at status `submitted` has been answered on
 #     the board and is waiting on firstmate, so it is never cleared here; the answer
 #     loop (fm-logbook-ack.sh / fm-logbook-resolve.sh) clears it after firstmate acts.
+#   - The captain's ANSWERED-AND-ACTED card. GET /api/board omits resolved and dismissed
+#     rows, so a card firstmate already cleared reads here as a card the board lacks -
+#     and the ADD rule above would put it straight back as pending, seconds after the
+#     answer, for as long as its task stays in the composed set. The settled-card record
+#     fm-logbook-resolve.sh writes (state/logbook-cleared.json, fm-logbook-lib.sh owns
+#     the contract) is consulted before every ADD: a cleared id whose composed content
+#     still hashes the same is suppressed, and one whose content has moved on goes back
+#     up, because that is a different question. bin/fm-logbook-refresh.sh honors the
+#     same record, so the session-start sync cannot undo it either.
 #
 # CHANGE DETECTION - an unchanged fleet must cost approximately nothing.
 # Composing is not cheap (it shells out to git once per carded project), so this never
 # composes speculatively. It first fingerprints exactly what compose READS - data/
-# projects.md, data/backlog.md, and every state/*.meta and state/*.status - and exits
-# without touching the network when that fingerprint is unchanged. Measured at 9ms on a
-# 93KB backlog with six state files, which against a 15s cycle is a 0.06% duty cycle.
-# The fingerprint hashes CONTENT rather than mtimes, so a backlog the backend rewrites
-# byte-identically (tasks-axi renders the file in place on every mutation) does not
-# trigger a pointless refresh; the file NAMES are hashed alongside the contents so a
-# teardown removing a meta registers as a change too. cksum is CRC32 and could in
-# principle collide across two successive states; the cost is one skipped refresh that
-# the next real change repairs, which is why a stronger digest is not worth a
-# non-POSIX dependency here.
+# projects.md, data/backlog.md, every state/*.meta and state/*.status, and the calendar
+# day - and exits without touching the network when that fingerprint is unchanged.
+# Measured at 9ms on a 93KB backlog with six state files, which against a 15s cycle is a
+# 0.06% duty cycle. The fingerprint hashes CONTENT rather than mtimes, so a backlog the
+# backend rewrites byte-identically (tasks-axi renders the file in place on every
+# mutation) does not trigger a pointless refresh; the file NAMES are hashed alongside the
+# contents so a teardown removing a meta registers as a change too. cksum is CRC32 and
+# could in principle collide across two successive states; the cost is one skipped
+# refresh that the next real change repairs, which is why a stronger digest is not worth
+# a non-POSIX dependency here.
+#
+# The DAY is in there because compose has one input that is not a file: it reads
+# date +%Y-%m-%d and drops a hold whose "(hold-until: <date>)" gate has arrived. When
+# that gate lapses, compose's output changes with nothing on disk changing - an in-flight
+# task with a verified PR flips from a not-ready fyi to an action card offering the
+# Merge - and a file-only fingerprint would keep showing the pre-lapse card until some
+# unrelated file moved. The worst case is exactly what the board is for: review-ready
+# work with no live crew writing status files, so nothing else moves. It costs at most
+# one extra compose per day.
 #
 # What the fingerprint deliberately does NOT cover, so this is not mistaken for
 # exhaustive: each clone's "origin" remote, compose's one other input. Reading it is a
@@ -92,6 +110,20 @@
 # supervision, and it is already the reap's story to tell if it is down for good. Any
 # diagnostic goes to stderr, which the watcher discards and a hand run shows. A failed
 # cycle does not record the fingerprint, so it simply retries on the next beat.
+#
+# That is also why compose's stderr is RELAYED here rather than dropped. Composing the
+# board reads every carded project's merge policy, so this is a second unattended read
+# of the +captain-merge posture - and unlike the session-start sync it runs on every
+# fleet change. A mistyped "+captain-merge" flag, or a policy lookup that fails outright
+# and leaves every project mergeable, composes a live Merge for a project the captain
+# reserved to themselves, and the policy library's warning is the only thing standing
+# between that and the tap; discarded, it is a warning that never existed. The relay
+# selects on the ONE marker bin/fm-merge-policy-lib.sh stamps, never on a copy of the
+# message texts, so a diagnostic added there later arrives here already selected. It
+# goes to STDERR only, exactly like every other diagnostic above: the rule that this
+# script never prints on stdout is what keeps housekeeping from waking firstmate, and no
+# fall-open warning is worth breaking it. The rest of compose's stream stays dropped as
+# plumbing noise.
 #
 # Inert unless opted in: a hard no-op (exit 0, no output, no network) without a truthy
 # LOGBOOK_ENABLE, the same discipline the other client scripts follow, and bootstrap
@@ -117,6 +149,13 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-logbook-lib.sh
 . "$SCRIPT_DIR/fm-logbook-lib.sh"
+# Sourced for FM_MERGE_POLICY_DIAG_MARKER alone: the relay below has to pick that
+# library's diagnostics out of compose's stderr, and reading the marker from its owner is
+# what keeps this caller from holding a copy of anything that can drift. Best-effort like
+# everything else on this path: a home whose bin/ is missing it (a partial update) loses
+# the relay, not the refresh.
+# shellcheck source=bin/fm-merge-policy-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-merge-policy-lib.sh" 2>/dev/null || true
 
 case "${1:-}" in
   --help|-h)
@@ -137,13 +176,16 @@ FINGERPRINT_FILE="$STATE/logbook-resync.fingerprint"
 PROJECTS_MD="$DATA/projects.md"
 BACKLOG_MD="$DATA/backlog.md"
 
-# The fingerprint of compose's file inputs; see the header for what it covers and what
-# it deliberately does not. The file NAMES go in ahead of the contents so a meta or
-# status appearing or disappearing changes the hash even when the surviving bytes do
-# not. Every read is best-effort: a missing input is a legitimate state (a home with no
-# registry yet, a fleet with no live crew), and it hashes as absent rather than failing.
+# The fingerprint of compose's inputs; see the header for what it covers and what it
+# deliberately does not. The calendar day goes in first, because it is compose's one
+# input that is not a file (a "(hold-until: <date>)" gate lapses with nothing on disk
+# changing). The file NAMES go in ahead of the contents so a meta or status appearing or
+# disappearing changes the hash even when the surviving bytes do not. Every read is
+# best-effort: a missing input is a legitimate state (a home with no registry yet, a
+# fleet with no live crew), and it hashes as absent rather than failing.
 fleet_fingerprint() {
   {
+    date +%Y-%m-%d 2>/dev/null
     ls -1 "$STATE"/*.meta "$STATE"/*.status 2>/dev/null
     cat "$PROJECTS_MD" "$BACKLOG_MD" "$STATE"/*.meta "$STATE"/*.status 2>/dev/null
   } | cksum 2>/dev/null | awk '{ print $1 "-" $2 }'
@@ -164,18 +206,38 @@ WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-logbook-resync.XXXXXX" 2>/dev/null) || 
 trap 'rm -rf "$WORK_DIR" 2>/dev/null || true' EXIT
 
 COMPOSED="$WORK_DIR/composed.json"
+COMPOSE_ERR="$WORK_DIR/compose.err"
 BOARD="$WORK_DIR/board.json"
 PLAN="$WORK_DIR/plan.json"
 ITEMS="$WORK_DIR/items.json"
 PROJECTS="$WORK_DIR/projects.json"
+SUPPRESSED="$WORK_DIR/suppressed.json"
+
+# Re-emit every merge-policy diagnostic compose wrote, on THIS script's stderr and in
+# its own voice. Selected on the marker its owner stamps rather than on any copy of the
+# texts, so a line that library gains later needs no edit here. Everything else compose
+# wrote stays dropped.
+relay_merge_policy_diagnostics() {
+  local line
+  [ -n "${FM_MERGE_POLICY_DIAG_MARKER:-}" ] || return 0
+  [ -s "$1" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      "$FM_MERGE_POLICY_DIAG_MARKER "*)
+        echo "fm-logbook-resync: merge policy - ${line#"$FM_MERGE_POLICY_DIAG_MARKER "}" >&2 ;;
+    esac
+  done < "$1"
+}
 
 # Compose the desired attention set. compose is opt-in gated too, so we are past that;
 # an empty or non-JSON body is a compose failure, and syncing garbage off it would be
 # worse than staying stale for one more cycle.
-if ! "$SCRIPT_DIR/fm-logbook-compose.sh" > "$COMPOSED" 2>/dev/null; then
+if ! "$SCRIPT_DIR/fm-logbook-compose.sh" > "$COMPOSED" 2>"$COMPOSE_ERR"; then
+  relay_merge_policy_diagnostics "$COMPOSE_ERR"
   echo "fm-logbook-resync: could not compose the attention set" >&2
   exit 0
 fi
+relay_merge_policy_diagnostics "$COMPOSE_ERR"
 if [ ! -s "$COMPOSED" ] || ! jq -e . "$COMPOSED" >/dev/null 2>&1; then
   echo "fm-logbook-resync: composed board body was empty or not valid JSON" >&2
   exit 0
@@ -190,20 +252,29 @@ if ! logbook_get_json /api/board "$BOARD" >/dev/null 2>&1; then
   exit 0
 fi
 
+# The cards the captain has already settled: cleared through the answer loop, and so
+# absent from the board even though the composed set still carries them. Suppressed
+# below unless their composed content has moved on since the clear, which makes them a
+# different question. This also evicts the records that are spent, using the board read
+# above, so the record cannot grow without bound (fm-logbook-lib.sh owns the rule).
+logbook_cleared_filter "$COMPOSED" "$BOARD" "$SUPPRESSED"
+SUPPRESS=$(cat "$SUPPRESSED" 2>/dev/null)
+[ -n "$SUPPRESS" ] || SUPPRESS='[]'
+
 # Partition into the three write sets. Both sides are normalized to exactly the fields
 # compose declares before they are compared, so fields the TOOL fills in (priority,
 # status, timestamps) can never read as a difference and cause a rewrite every cycle.
-# Every lookup argument is bound to a variable before use: jq evaluates an argument
-# against the value being searched, not against the item in hand, so an unbound `.id`
-# inside index() would silently compare the wrong thing.
+# That normalization is fm-logbook-lib.sh's LOGBOOK_ITEM_NORM_JQ, shared with the
+# settled-card hash so this diff and that record can never disagree about what "the same
+# card" means. Every lookup argument is bound to a variable before use: jq evaluates an
+# argument against the value being searched, not against the item in hand, so an unbound
+# `.id` inside index() would silently compare the wrong thing.
 if ! jq -n \
   --slurpfile composed "$COMPOSED" \
   --slurpfile board "$BOARD" \
-  --arg producer "$LOGBOOK_COMPOSE_PRODUCER" '
-  def norm:
-    { id, project: (.project // ""), subproject: (.subproject // ""),
-      kind, title, body: (.body // ""), options: (.options // []),
-      source: (.source // null) };
+  --argjson suppress "$SUPPRESS" \
+  --arg producer "$LOGBOOK_COMPOSE_PRODUCER" \
+  "$LOGBOOK_ITEM_NORM_JQ"'
   def pnorm:
     { name, repo: (.repo // ""), mode: (.mode // ""),
       subprojects: (.subprojects // []) };
@@ -221,8 +292,9 @@ if ! jq -n \
       items: [ $citems[]
                | . as $c
                | ($bindex[$c.id] // null) as $prev
-               | select($prev == null
-                        or (($prev | owned) and (($prev | norm) != ($c | norm)))) ],
+               | select(if $prev == null
+                        then (($suppress | index($c.id)) == null)
+                        else (($prev | owned) and (($prev | norm) != ($c | norm))) end) ],
       clear: [ $bitems[]
                | . as $b
                | select($b | owned)

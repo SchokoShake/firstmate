@@ -2978,15 +2978,25 @@ test_refresh_live_posts_sync() {
 # board always echoes those back and the refresh must not read them as a difference.
 # An optional jq filter mutates that body, which is how a test says "the board is
 # current EXCEPT for this one thing" and then proves that one thing is all that moves.
+# board_shape: read a composed {projects, items} body on stdin and print the body
+# GET /api/board would return for it - the per-item fields the TOOL fills in added.
+board_shape() {
+  jq -c '{ projects: (.projects // []),
+           items: [ (.items // [])[]
+                    | { subproject: "", priority: null, status: "pending",
+                        expires_at: "", next_update_at: "" } + . ] }'
+}
+
 compose_as_board() {
   local home=$1 filter=${2:-.}
   PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 "$ROOT/bin/fm-logbook-compose.sh" \
-    | jq -c '{ projects: (.projects // []),
-               items: [ (.items // [])[]
-                        | { subproject: "", priority: null, status: "pending",
-                            expires_at: "", next_update_at: "" } + . ] }' \
+    | board_shape \
     | jq -c "$filter"
 }
+
+# Where run_resync sends the refresh's stderr. Empty (the default) discards it exactly as
+# the watcher does; a test that cares about a diagnostic points it at a file first.
+RESYNC_ERR=""
 
 # run_resync <home> <fakebin> <log> <board-body> [extra env assignments...]: one refresh
 # cycle against a stubbed board, returning its stdout. Stdout is the thing under the
@@ -2997,7 +3007,46 @@ run_resync() {
   env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=resynctok \
     LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_BOARD_BODY="$body" \
     FAKE_BOARD_CODE=200 FAKE_POST_CODE=200 "$@" \
-    "$ROOT/bin/fm-logbook-resync.sh" 2>/dev/null
+    "$ROOT/bin/fm-logbook-resync.sh" 2>"${RESYNC_ERR:-/dev/null}"
+}
+
+# clear_card <home> <fakebin> <board-body> <id>: firstmate acting on the captain's answer,
+# through bin/fm-logbook-resolve.sh - the single owner of clearing, and so the single
+# writer of the settled-card record. The tests below drive that real writer rather than
+# hand-authoring its file, because the record is only worth anything if the two ends
+# agree, and a fixture written by hand would agree with nothing.
+clear_card() {
+  local home=$1 fakebin=$2 body=$3 id=$4
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=resynctok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_BODY="$body" FAKE_BOARD_CODE=200 \
+    FAKE_POST_CODE=200 "$ROOT/bin/fm-logbook-resolve.sh" "$id" >/dev/null 2>&1
+}
+
+# settled_ids <home>: the ids the settled-card record currently holds, one per line. The
+# record is a state artifact this feature owns and AGENTS.md lists, so a test reads it as
+# the persisted state it is - parsed, never grepped - to prove eviction really happens.
+settled_ids() {
+  local file="$1/state/logbook-cleared.json"
+  [ -s "$file" ] || return 0
+  jq -r 'keys_unsorted[]' "$file" 2>/dev/null
+}
+
+# make_fake_date <fakebin>: a `date` that answers "+%Y-%m-%d" from FAKE_TODAY when it is
+# set and defers to the real one otherwise, so a test can walk a "(hold-until: <date>)"
+# gate across its lapse without waiting for a real day to pass. Both the composer and the
+# refresh read the day through this one call.
+make_fake_date() {
+  local fakebin=$1 real
+  real=$(PATH="$BASE_PATH" command -v date) || real=/bin/date
+  cat > "$fakebin/date" <<SH
+#!/usr/bin/env bash
+if [ -n "\${FAKE_TODAY:-}" ] && [ "\${1:-}" = "+%Y-%m-%d" ]; then
+  printf '%s\n' "\$FAKE_TODAY"
+  exit 0
+fi
+exec $(printf '%q' "$real") "\$@"
+SH
+  chmod +x "$fakebin/date"
 }
 
 # posted_ids <log>: every item id the run upserted, one per line. The fake curl logs
@@ -3229,6 +3278,202 @@ test_resync_unreadable_board_is_silent_and_writes_nothing() {
   assert_no_declarative_sync "$log" "an unreadable board"
   assert_absent "$home/state/logbook-resync.fingerprint" "a refresh that could not read must record nothing"
   pass "fm-logbook-resync stays silent and writes nothing when the board cannot be read"
+}
+
+test_resync_never_resurrects_a_card_the_captain_settled() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-settled"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  body=$(compose_as_board "$home")
+  # The captain answered scout-c3 and firstmate acted, clearing the card through the
+  # answer loop. The tool drops resolved rows from GET /api/board, so from here on the
+  # refresh sees a composed card the board simply "lacks" - and its add rule would put
+  # the settled question straight back in front of the captain, seconds after the answer.
+  clear_card "$home" "$fakebin" "$body" scout-c3
+  # decide-b2 is missing from the board for the ORDINARY reason (nothing ever pushed it),
+  # so this cannot pass by refusing to add anything at all.
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3" and .id != "decide-b2"))')
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  assert_no_declarative_sync "$log" "a board carrying a settled card"
+  posted_ids "$log" | grep -qx 'decide-b2' \
+    || fail "the refresh must still add a card nobody has settled"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    && fail "a card the captain answered and firstmate cleared must not be re-added as pending"
+  pass "fm-logbook-resync never re-asks a question the captain already settled"
+}
+
+test_resync_resurfaces_a_settled_card_once_its_content_changes() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-settled-moved"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  body=$(compose_as_board "$home")
+  clear_card "$home" "$fakebin" "$body" scout-c3
+  # The situation genuinely moves on: the crew now needs a decision, so compose derives a
+  # DIFFERENT card under the same id. That is a new question, not the settled one, and
+  # holding it down would be the same under-reporting bug from the other side.
+  printf 'working: profiling the query\nneeds-decision: index or rewrite? (options: index, rewrite)\n' \
+    > "$home/state/scout-c3.status"
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "a settled card whose composed content changed must go back on the board"
+  settled_ids "$home" | grep -qx 'scout-c3' \
+    && fail "the spent record must be dropped, not weighed against a stale hash forever"
+  pass "fm-logbook-resync resurfaces a settled card once its situation actually changes"
+}
+
+test_resync_forgets_a_settled_card_that_left_the_composed_set() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-settled-evict"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  body=$(compose_as_board "$home")
+  clear_card "$home" "$fakebin" "$body" scout-c3
+  settled_ids "$home" | grep -qx 'scout-c3' \
+    || fail "clearing a card must record it as settled, or nothing below is under test"
+  # The board no longer carries the cleared card, exactly as GET /api/board reports it.
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
+  # The work finishes and teardown takes its state files, so compose stops producing the
+  # card at all. There is nothing left to suppress, and a record that outlived its card
+  # would make this file grow for the life of the home.
+  grep -v 'scout-c3' "$home/data/backlog.md" > "$home/data/backlog.md.new"
+  mv "$home/data/backlog.md.new" "$home/data/backlog.md"
+  rm -f "$home/state/scout-c3.meta" "$home/state/scout-c3.status"
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  settled_ids "$home" | grep -qx 'scout-c3' \
+    && fail "a record whose card left the composed set must be evicted on the normal cycle"
+  pass "fm-logbook-resync evicts a settled record once there is nothing left to suppress"
+}
+
+test_refresh_never_resurrects_a_card_the_captain_settled() {
+  local home fakebin body synced
+  home="$TMP_ROOT/refresh-settled"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home")
+  body=$(compose_as_board "$home")
+  clear_card "$home" "$fakebin" "$body" scout-c3
+  synced="$home/state/logbook-outbox/sync.json"
+  # The session-start truth-restore is the OTHER compose-driven writer, and it re-declared
+  # a cleared card exactly as the mid-session refresh did. It must honor the same record,
+  # or every session start undoes what the answer loop settled.
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
+  assert_present "$synced" "the session-start refresh must still compose and sync a body"
+  jq -e 'any(.items[]; .id == "scout-c3")' "$synced" >/dev/null \
+    && fail "the session-start sync must not re-declare a card the captain settled"$'\n'"$(cat "$synced")"
+  jq -e 'any(.items[]; .id == "ship-pr-a1")' "$synced" >/dev/null \
+    || fail "the session-start sync must still carry every card nobody settled"$'\n'"$(cat "$synced")"
+  # And the same guard lets it back through once the question is a different one.
+  printf 'working: profiling the query\nneeds-decision: index or rewrite? (options: index, rewrite)\n' \
+    > "$home/state/scout-c3.status"
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+    "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
+  jq -e 'any(.items[]; .id == "scout-c3")' "$synced" >/dev/null \
+    || fail "a settled card whose content changed must reach the board at session start"$'\n'"$(cat "$synced")"
+  pass "fm-logbook-refresh honors the settled-card record, so session start cannot undo an answer"
+}
+
+test_resolve_dry_run_settles_nothing() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resolve-dry-settle"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  body=$(compose_as_board "$home")
+  # A dry-run resolve clears nothing, so it must record nothing: a preview that made the
+  # refresh skip a card still on the board would be worse than no preview at all.
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_DRY_RUN=1 LOGBOOK_TOKEN=resynctok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_BODY="$body" FAKE_BOARD_CODE=200 \
+    "$ROOT/bin/fm-logbook-resolve.sh" scout-c3 >/dev/null 2>&1
+  assert_absent "$home/state/logbook-cleared.json" \
+    "a dry-run resolve must not record a clear it never performed"
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "a card only a PREVIEW resolve touched is still owed to the captain"
+  pass "a dry-run resolve settles nothing, so the refresh still puts the card on the board"
+}
+
+test_resync_fingerprint_covers_a_lapsing_hold_gate() {
+  local home fakebin log body out card
+  home="$TMP_ROOT/resync-hold-lapse"; mkdir -p "$home/data" "$home/state"
+  printf '# Registry\n\n- alpha [no-mistakes] - First project (added 2026-07-01)\n' > "$home/data/projects.md"
+  # A dated hold on a task whose PR is already up. Nothing on disk changes when that gate
+  # arrives - only the day does - and compose reads the day.
+  cat > "$home/data/backlog.md" <<'EOF'
+# Backlog
+
+## In flight
+- [ ] gated-pr-k1 - Trim the AR forms https://github.com/acme/alpha/pull/700 (repo: alpha) (kind: ship) (since 2026-07-10) (hold: not before the freeze lifts) (hold-until: 2026-07-15)
+## Queued
+## Done
+EOF
+  fakebin=$(make_fake_curl "$home"); make_fake_date "$fakebin"; log="$home/curl.log"
+  # The day before the gate: the hold is the fleet's record that the work is not ready, so
+  # it is a plain fyi offering nothing, and the board already matches it.
+  body=$(env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 FAKE_TODAY=2026-07-14 \
+    "$ROOT/bin/fm-logbook-compose.sh" | board_shape)
+  printf '%s' "$body" | jq -e '.items[] | select(.id == "gated-pr-k1")
+      | (.kind == "fyi") and (.options == [])' >/dev/null \
+    || fail "the fixture must start as a not-ready fyi, or the flip below proves nothing"$'\n'"$body"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_TODAY=2026-07-14)
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -q . && fail "a board already matching compose must not be rewritten"
+  assert_present "$home/state/logbook-resync.fingerprint" "the first cycle must record the fingerprint"
+  # The gate arrives. No file moves, so a fingerprint over files alone reads as "nothing
+  # changed" and the board keeps showing the pre-lapse card - in exactly the case the
+  # board exists for, review-ready work with no live crew writing status files.
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_TODAY=2026-07-16)
+  [ -z "$out" ] || fail "a refresh after a lapsed gate must still print nothing: $out"
+  assert_grep "url=http://127.0.0.1:8137/api/board" "$log" \
+    "a lapsed hold-until gate must break the fingerprint and re-read the board"
+  posted_ids "$log" | grep -qx 'gated-pr-k1' \
+    || fail "the card the lapsed gate changed must be corrected on the board"
+  card=$(grep '^data=' "$log" | sed 's/^data=//' \
+    | jq -c 'if type=="array" then .[] else . end | select(type=="object" and .id=="gated-pr-k1")' | tail -1)
+  printf '%s' "$card" | jq -e '.kind == "action" and ([.options[].value] | index("merge") != null)' >/dev/null \
+    || fail "the lapsed hold must reach the board as the ready action card"$'\n'"$card"
+  pass "fm-logbook-resync notices a hold-until gate that lapsed with no file changing"
+}
+
+test_resync_relays_a_merge_policy_diagnostic_without_waking() {
+  local home fakebin log body out err
+  home="$TMP_ROOT/resync-policy-diag"; write_fleet_fixture "$home"
+  # The prohibition, mistyped: the leading "+" dropped from "+captain-merge". The token
+  # binds nothing, so alpha stays mergeable and this refresh composes a live Merge for a
+  # project the captain reserved to themselves - unattended, on every fleet change. The
+  # policy library's warning is the only thing standing between that and the tap.
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes captain-merge] - First project (added 2026-07-01)
+- beta [direct-PR +yolo] - Second project (added 2026-07-02)
+- gamma [local-only] - Idle project with no work (added 2026-07-03)
+EOF
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"; err="$home/resync.err"
+  # The stand-in board is built with the same composer, which writes the same warning;
+  # only the refresh's own stderr is under test here.
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))' 2>/dev/null)
+  RESYNC_ERR="$err"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  RESYNC_ERR=""
+  # THE hard constraint: the watcher turns a check shim's stdout into a check: wake, and
+  # refreshing the board is housekeeping. The diagnostic goes to stderr, which the watcher
+  # discards and a hand run shows - it must not buy itself a wake.
+  [ -z "$out" ] || fail "the refresh must stay silent on stdout even when compose diagnoses: $out"
+  assert_grep "merge policy - unrecognized posture flag for alpha: captain-merge" "$err" \
+    "a merge-policy fall-open warning must not be discarded by the automatic refresh"
+  assert_no_grep "^fm-merge-policy:" "$err" \
+    "the diagnostic must be re-shaped onto this script's own channel, not passed through raw"
+  # Warned, never HONORED - a prohibition guessed at from a typo would be its own failure -
+  # and the refresh still did its work.
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "a policy diagnostic must not stop the refresh from reconciling the board"
+  pass "fm-logbook-resync relays a merge-policy fall-open warning to stderr without waking firstmate"
 }
 
 test_compose_stamps_every_card_with_the_ownership_producer() {
@@ -3567,6 +3812,13 @@ test_resync_never_clears_a_card_the_captain_answered
 test_resync_upserts_projects_and_never_deletes_them
 test_resync_failure_leaves_the_fingerprint_unrecorded
 test_resync_unreadable_board_is_silent_and_writes_nothing
+test_resync_never_resurrects_a_card_the_captain_settled
+test_resync_resurfaces_a_settled_card_once_its_content_changes
+test_resync_forgets_a_settled_card_that_left_the_composed_set
+test_refresh_never_resurrects_a_card_the_captain_settled
+test_resolve_dry_run_settles_nothing
+test_resync_fingerprint_covers_a_lapsing_hold_gate
+test_resync_relays_a_merge_policy_diagnostic_without_waking
 test_compose_stamps_every_card_with_the_ownership_producer
 test_bootstrap_opt_in_surfaces_link_and_autosyncs
 test_bootstrap_autosync_surfaces_a_malformed_registry_posture

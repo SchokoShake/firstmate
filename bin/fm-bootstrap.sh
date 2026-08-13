@@ -552,9 +552,12 @@ logbook_setup() {
     rm -f "$shim" "$reap_shim" "$resync_shim" "$cadence" 2>/dev/null || true
     # The refresh fingerprint is this home's record of the board state a resync last
     # reached. It means nothing without the shim, and leaving it behind would make a
-    # later re-opt-in skip its first refresh, so it goes with the artifacts. Its
-    # absence is never an error, so it is not part of the removal verdict.
-    rm -f "$STATE/logbook-resync.fingerprint" 2>/dev/null || true
+    # later re-opt-in skip its first refresh, so it goes with the artifacts. The
+    # settled-card record goes for the same reason: it only ever suppresses cards a
+    # compose-driven writer would otherwise re-declare, and a stale one carried across
+    # an opt-out would hold a card down on a board that has since been re-truthed. The
+    # absence of either is never an error, so neither is part of the removal verdict.
+    rm -f "$STATE/logbook-resync.fingerprint" "$STATE/logbook-cleared.json" 2>/dev/null || true
     [ ! -e "$shim" ] && [ ! -e "$reap_shim" ] && [ ! -e "$resync_shim" ] && [ ! -e "$cadence" ]
   }
 
@@ -593,8 +596,9 @@ logbook_setup() {
     #
     # The refresh's stderr is FILTERED, not dropped. Composing the board reads
     # every carded project's merge policy through bin/fm-merge-policy-lib.sh, so
-    # this sync is the earliest and most frequent read of the +captain-merge
-    # posture - and the only one that runs unattended. A malformed registry line
+    # this sync is the earliest read of the +captain-merge posture, and one of the
+    # two that run unattended (the other is the mid-session board refresh, which
+    # relays the same marked lines to its own stderr). A malformed registry line
     # ("[direct-PR captain-merge]", the "+" dropped) is not honored as the
     # prohibition it was meant to be, so the board composes a live Merge option
     # for a project the captain reserved to themselves; the diagnostic the policy

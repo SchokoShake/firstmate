@@ -16,6 +16,18 @@
 # is used. Both input paths - the captain answering on the board or answering
 # firstmate in chat - converge here once firstmate has acted.
 #
+# This is also the SINGLE WRITER of the settled-card record
+# (state/logbook-cleared.json, fm-logbook-lib.sh). Clearing is the only act that
+# means "the captain answered this and firstmate has acted", and the board keeps no
+# trace a client can read back: GET /api/board omits resolved and dismissed rows, so
+# to a compose-driven writer a cleared card is simply a card the board lacks, which
+# it re-adds. Recording the id here, with the content the card carried when it was
+# cleared, is what keeps the automatic refresh and the session-start sync from
+# putting an answered question straight back in front of the captain. The record is
+# written only after the clear actually landed, never under LOGBOOK_DRY (nothing was
+# cleared), and never at the cost of the clear itself: a record that cannot be
+# written is one stderr warning, not a failure.
+#
 # Honors LOGBOOK_DRY_RUN: with it set (truthy), the composed would-be POST body
 # (the full item) is recorded to state/logbook-outbox/<id>.json and no write is
 # sent. Composing that faithful body still requires reading the card, so a dry-run
@@ -81,3 +93,12 @@ fi
 printf '%s\n' "$FULL_ITEM" > "$BODY_FILE" || { echo "fm-logbook-resolve: failed to write request body" >&2; exit 1; }
 
 logbook_post_json /api/items "$BODY_FILE" "$ID" >/dev/null || exit 1
+
+# The clear landed. Remember it, hashing the card as the board still held it, so the
+# compose-driven writers do not re-declare a question the captain has settled. Skipped
+# under LOGBOOK_DRY, where nothing was actually cleared, and never fatal: the clear is
+# the important half, so a record that cannot be written is a warning, not an error.
+if [ -z "$LOGBOOK_DRY" ]; then
+  logbook_cleared_record "$ID" "$BOARD_FILE" \
+    || echo "fm-logbook-resolve: cleared '$ID' but could not record it as settled; an automatic refresh may re-add it" >&2
+fi

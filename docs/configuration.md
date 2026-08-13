@@ -322,9 +322,9 @@ Arming those shims needs `curl` and `jq`.
 When the board is reachable, bootstrap also prints a captain-facing `LOGBOOK: attention board: <url>` link for firstmate to relay to the captain, and auto-syncs the board from fleet state via `bin/fm-logbook-refresh.sh`, best-effort and non-blocking, so the session-start reconcile no longer depends on firstmate remembering to run it.
 Composing that board reads every carded project's merge policy, so bootstrap filters the refresh's stderr and re-emits every diagnostic `bin/fm-merge-policy-lib.sh` wrote as `LOGBOOK: merge policy - <detail>`.
 The filter selects on a single marker that library stamps on its own diagnostics rather than on a copy of their message texts, so a diagnostic added there later reaches the captain with no change to bootstrap.
-That sync is the earliest, most frequent, and only unattended read of the `+captain-merge` posture, and neither a mistyped flag nor a lookup that fails outright is honored as the prohibition it was meant to be, so the board would otherwise offer a one-click Merge for a project the captain reserved to themselves with the warning discarded.
+That sync is the earliest read of the `+captain-merge` posture and one of the two that run unattended (the other is the mid-session board refresh below, which relays the same marked lines to its own stderr), and neither a mistyped flag nor a lookup that fails outright is honored as the prohibition it was meant to be, so the board would otherwise offer a one-click Merge for a project the captain reserved to themselves with the warning discarded.
 The rest of the refresh's stderr stays dropped; the `LOGBOOK: board not auto-synced ...` line already reports a failed compose or sync.
-On opt-out it removes all four artifacts, plus the refresh's `state/logbook-resync.fingerprint`, reverting to the default 300s no-poll cadence.
+On opt-out it removes all four artifacts, plus the refresh's `state/logbook-resync.fingerprint` and `state/logbook-cleared.json`, reverting to the default 300s no-poll cadence.
 With no config and no leftover artifacts it is a complete no-op.
 `bin/fm-logbook-up.sh` health-checks `GET $LOGBOOK_URL/health`, and if the board is down launches `node $LOGBOOK_TOOL_DIR/server.mjs` detached with output to `state/logbook-server.log` and its runtime store under `state/logbook.data`, so nothing is ever written into `projects/`.
 
@@ -389,11 +389,23 @@ The captain's per-project `active` toggle survives because projects go up throug
 The captain's set-aside ("not now") survives because a card whose content is unchanged is not re-upserted at all, so a card put down stays down; when the content does change from an fyi into an answerable claim the tool's own `isNewClaim` clears the set-aside, which is correct, because it is a different card now.
 The captain's unacted answer survives because a card at status `submitted` has been answered on the board and is waiting on firstmate, so it is never cleared here - the answer loop clears it once firstmate has acted.
 
+**The settled-card record.**
+`GET /api/board` deliberately omits resolved and dismissed rows, so a card firstmate has already CLEARED through the answer loop reads to a compose-driven writer as a card the board simply lacks - and the add rule above would put it straight back as a pending card, for as long as its task stays in the composed set.
+A card the captain answered coming back as pending is the board re-asking a settled question, which is the exact failure this whole surface exists to remove.
+`bin/fm-logbook-resolve.sh`, the single owner of clearing, therefore records every clear that actually landed to `state/logbook-cleared.json` as `{ "<item id>": "<content hash>" }`, using the card's fields as the board still held them (it already reads them to compose its terminal-status upsert).
+It records nothing under `LOGBOOK_DRY_RUN`, where nothing was cleared, and a record it cannot write is one stderr warning rather than a failed clear.
+Both compose-driven writers consult it: the mid-session refresh before every add, and `bin/fm-logbook-refresh.sh` on the composed set before it hands the payload to `bin/fm-logbook-sync.sh`, so the session-start sync cannot undo what the answer loop settled either.
+The record is CONTENT-keyed, not a plain id list: a cleared id whose composed content still hashes the same is suppressed, and one whose content has moved on goes back up and its record is dropped, because that is a different question - the same rule the tool's own `upsertItem` applies when a client re-declares a cleared id.
+A record is evicted once there is nothing left to suppress: when its id leaves the composed set, when its id is on the board again (something re-added it), and when its content changed.
+That runs on the normal refresh cycle, so the record cannot grow without bound, and `bin/fm-logbook-lib.sh` owns both the hash's normalization (`LOGBOOK_ITEM_NORM_JQ`, the same definition the board-vs-composed diff uses) and the suppression rule, so the writer and the two readers cannot drift onto two different answers.
+
 **Change detection.**
 Composing is not cheap (it shells out to `git` once per carded project), so the refresh never composes speculatively.
-It first fingerprints exactly what compose reads from disk - `data/projects.md`, `data/backlog.md`, and every `state/*.meta` and `state/*.status` - into `state/logbook-resync.fingerprint`, and exits without touching the network when that fingerprint is unchanged.
+It first fingerprints exactly what compose reads - `data/projects.md`, `data/backlog.md`, every `state/*.meta` and `state/*.status`, and the calendar day - into `state/logbook-resync.fingerprint`, and exits without touching the network when that fingerprint is unchanged.
 Measured at 9ms on a 93KB backlog with six state files, which against a 15s cycle is a 0.06% duty cycle; a real reconcile against a stubbed board measured 0.05s end to end.
 The fingerprint hashes CONTENT rather than mtimes, so a backlog the backend rewrites byte-identically (`tasks-axi` renders the file in place on every mutation) does not trigger a pointless refresh, and it hashes the file NAMES alongside the contents so a teardown removing a meta registers as a change too.
+The calendar day is in there because compose has one input that is not a file: it reads `date +%Y-%m-%d` and drops a hold whose `(hold-until: <date>)` gate has arrived, so a lapsing gate changes compose's output with nothing on disk changing - an in-flight task with a verified PR flips from a not-ready fyi to an action card offering the Merge, in exactly the case the board exists for (review-ready work with no live crew writing status files, so nothing else moves).
+Covering it costs at most one extra compose per day.
 `cksum` is CRC32 and could in principle collide across two successive states; the cost is one skipped refresh that the next real change repairs, which is why a stronger digest is not worth a non-POSIX dependency.
 Two inputs are deliberately outside the fingerprint, so it is not mistaken for exhaustive: each clone's `origin` remote, because reading it is a `git` subprocess per project and it changes approximately never, and the BOARD's own state, because the fingerprint tracks the fleet.
 A board whose store is wiped out from under firstmate therefore reads as "nothing changed" until fleet state next moves, and is restored by the next session start or a hand-run `bin/fm-logbook-refresh.sh`.
@@ -402,6 +414,8 @@ A board whose store is wiped out from under firstmate therefore reads as "nothin
 Refreshing the board is housekeeping, so the refresh prints nothing on stdout ever, and therefore never wakes firstmate - the check rail defines printing nothing as "no wake".
 Every failure is quiet and non-fatal: a board that cannot be reached is not a reason to disturb the captain or interrupt supervision, and a board that is down for good is already the reap's story to tell, once.
 Diagnostics go to stderr, which the watcher discards and a hand run shows.
+That includes the merge-policy diagnostics compose writes: this refresh is the second unattended read of the `+captain-merge` posture and the one that runs on every fleet change, so it relays every line `bin/fm-merge-policy-lib.sh` marked - selecting on that library's own marker, never on a copy of the message texts - as `fm-logbook-resync: merge policy - <detail>`, and drops the rest of compose's stream as plumbing noise.
+Those relayed lines go to stderr like every other diagnostic here; nothing this script writes ever reaches stdout, because that is what keeps a housekeeping refresh from waking firstmate.
 A cycle that could not complete leaves the fingerprint unrecorded, so it simply retries on the next beat rather than banking a board state it never reached; the writes are independent, so one that could not land never cancels the others.
 The refresh is inert when logbook is off, exactly like the rest of the client: bootstrap drops the shim only on opt-in, and the script itself is a hard no-op without a truthy `LOGBOOK_ENABLE`.
 

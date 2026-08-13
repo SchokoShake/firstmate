@@ -79,6 +79,7 @@ The shared no-mistakes gate refusal used by `fm-spawn.sh`, `fm-send.sh`, and `fm
 | `fm-logbook-up.sh`       | Idempotently ensure the local logbook board server is up, detached and non-blocking |
 | `fm-logbook-compose.sh`  | Derive the current attention set from fleet state and emit the `{projects, items}` body |
 | `fm-logbook-refresh.sh`  | Compose the attention set, then sync it: the session-start board truth-restore       |
+| `fm-logbook-resync.sh`   | Mid-session board refresh: reconcile owned cards against the live board when fleet state changes; silent, never `POST /api/sync` |
 | `fm-logbook-push.sh`     | Upsert one attention item or an array of them via `POST /api/items`                  |
 | `fm-logbook-sync.sh`     | Declaratively reconcile the whole board via `POST /api/sync`                         |
 | `fm-logbook-resolve.sh`  | Clear a card by re-upserting its whole item with a terminal status; an unknown id is a no-op |
