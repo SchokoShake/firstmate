@@ -169,6 +169,107 @@ SH
   printf '%s\n' "$fakebin"
 }
 
+# A fakebin `curl` that stands in for the BOARD ITSELF rather than for one response:
+# item state lives in $FAKE_BOARD_STATE and every write goes through the two store rules
+# this client's design depends on and cannot see from here -
+#   (a) an upsert carrying no status normalizes to `pending`, but a STORED `submitted`
+#       is preserved, so a re-declared answered card does not revert to unanswered; and
+#   (b) a re-declaration does not clear the captain's set-aside on a card at
+#       `submitted` (the tool's isNewClaim returns false outright for one).
+# Those two are what make the session-start declarative sync safe to keep re-declaring
+# an answered card. They are a reading of the board tool, and a reading is exactly the
+# kind of thing that stops being true quietly, so this double is where that reading is
+# written down executably: a test drives the real client against it and asserts the
+# card the captain answered survives. GET /api/board serves only non-terminal rows, as
+# the real route does.
+make_fake_store_curl() {
+  local dir=$1 fakebin
+  fakebin=$(fm_fakebin "$dir")
+  cat > "$fakebin/curl" <<'SH'
+#!/usr/bin/env bash
+ofile="" method=GET data="" url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) ofile=$2; shift 2 ;;
+    -X) method=$2; shift 2 ;;
+    --data-binary)
+      case "$2" in
+        @-) data=$(cat) ;;
+        @*) data=$(cat -- "${2#@}") ;;
+        *) data=$2 ;;
+      esac
+      shift 2
+      ;;
+    -H|-m|-w) shift 2 ;;
+    -s) shift ;;
+    http://*|https://*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
+state=${FAKE_BOARD_STATE:-}
+[ -n "$state" ] || { printf '500'; exit 0; }
+[ -s "$state" ] || printf '{"items":[],"projects":[]}\n' > "$state"
+
+# The store's upsert, over an incoming items array on stdin. $replace makes it the
+# declarative sync (rows the payload omits are dropped) instead of the item upsert.
+store_upsert() {
+  local replace=$1 merged
+  merged=$(jq -c --slurpfile cur "$state" --argjson replace "$replace" '
+      ($cur[0].items // []) as $stored
+      | ($stored | map({ key: .id, value: . }) | from_entries) as $idx
+      | [ .[]
+          | . as $in
+          | ($idx[$in.id] // null) as $prev
+          | ($in.status // "pending") as $want
+          | (if $prev == null then $want
+             elif ($want == "resolved" or $want == "dismissed") then $want
+             elif $prev.status == "submitted" then "submitted"
+             else $want end) as $status
+          | (if $prev == null then false
+             elif $prev.status == "submitted" then ($prev.set_aside // false)
+             elif ($prev | { kind, title, body, options }) != ($in | { kind, title, body, options }) then false
+             else ($prev.set_aside // false) end) as $aside
+          | $in + { status: $status, set_aside: $aside } ] as $new
+      | (if $replace then $new
+         else ($stored | map(select(.id as $i | ($new | map(.id) | index($i)) == null)) + $new)
+         end)') || return 1
+  jq -c --argjson items "$merged" '.items = $items' "$state" > "$state.tmp" && mv -f "$state.tmp" "$state"
+}
+
+case "$url" in
+  */health) [ -n "$ofile" ] && : > "$ofile"; printf '%s' "${FAKE_HEALTH_CODE:-200}" ;;
+  */api/board)
+    [ -n "$ofile" ] && jq -c '{ projects: (.projects // []),
+                                items: [ (.items // [])[]
+                                         | select(.status != "resolved" and .status != "dismissed") ] }' \
+                          "$state" > "$ofile"
+    printf '200'
+    ;;
+  */api/items)
+    printf '%s' "$data" | jq -c 'if type == "array" then . else [.] end' | store_upsert false || { printf '500'; exit 0; }
+    printf '200'
+    ;;
+  */api/sync)
+    printf '%s' "$data" | jq -c '.items // []' | store_upsert true || { printf '500'; exit 0; }
+    printf '%s' "$data" | jq -c --slurpfile cur "$state" '($cur[0] // {}) + { projects: (.projects // []) }' > "$state.tmp" \
+      && mv -f "$state.tmp" "$state"
+    printf '200'
+    ;;
+  */api/projects) printf '200' ;;
+  *) printf '000' ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/curl"
+  printf '%s\n' "$fakebin"
+}
+
+# stored_card <state-file> <id>: one row of the stand-in board's own state, which is
+# this double's persisted representation of the board - read as state, never grepped.
+stored_card() {
+  jq -c --arg id "$2" 'first((.items // [])[] | select(.id == $id)) // {}' "$1" 2>/dev/null
+}
+
 # Resolve the config in a child and print URL|PORT|TOOL_DIR|ENABLE|TOKEN|DRY.
 resolve_cfg() {
   bash -c '. "'"$ROOT"'/bin/fm-logbook-lib.sh"; logbook_load_config
@@ -2980,11 +3081,22 @@ test_refresh_live_posts_sync() {
 # current EXCEPT for this one thing" and then proves that one thing is all that moves.
 # board_shape: read a composed {projects, items} body on stdin and print the body
 # GET /api/board would return for it - the per-item fields the TOOL fills in added.
+#
+# Every item's keys are REVERSED, nested objects included, because the board is not a
+# mirror: it validates and rebuilds each item it stores, so it owes no byte-for-byte
+# round trip of `source` or an `options` entry. A stand-in that echoes compose's own
+# serialization back would model the one property the real board is not verified to
+# have, and would hide any comparison that is sensitive to key order.
 board_shape() {
-  jq -c '{ projects: (.projects // []),
-           items: [ (.items // [])[]
-                    | { subproject: "", priority: null, status: "pending",
-                        expires_at: "", next_update_at: "" } + . ] }'
+  jq -c '
+    def reorder:
+      if type == "object" then (to_entries | reverse | map({ key, value: (.value | reorder) }) | from_entries)
+      elif type == "array" then map(reorder)
+      else . end;
+    { projects: (.projects // []),
+      items: [ (.items // [])[]
+               | ({ subproject: "", priority: null, status: "pending",
+                    expires_at: "", next_update_at: "" } + .) | reorder ] }'
 }
 
 compose_as_board() {
@@ -3395,6 +3507,83 @@ test_resolve_dry_run_settles_nothing() {
   posted_ids "$log" | grep -qx 'scout-c3' \
     || fail "a card only a PREVIEW resolve touched is still owed to the captain"
   pass "a dry-run resolve settles nothing, so the refresh still puts the card on the board"
+}
+
+test_resync_never_rewrites_a_card_the_captain_answered() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-submitted-update"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # ship-pr-a1 has been ANSWERED on the board (status submitted) and firstmate has not
+  # acted yet, and its composed content has since drifted. Correcting it here would put
+  # the mechanical baseline over the card the captain just answered. decide-b2 drifts
+  # identically WITHOUT an answer, so this cannot pass by correcting nothing at all.
+  body=$(compose_as_board "$home" '
+    .items |= map(if .id == "ship-pr-a1" then (.title = "stale owned title" | .status = "submitted")
+                  elif .id == "decide-b2" then .title = "stale owned title too"
+                  else . end)')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  assert_no_declarative_sync "$log" "an answered card on the board"
+  posted_ids "$log" | grep -qx 'decide-b2' \
+    || fail "an owned card whose content drifted must still be corrected"
+  posted_ids "$log" | grep -qx 'ship-pr-a1' \
+    && fail "a card the captain answered must not be rewritten while their answer is in flight"
+  pass "fm-logbook-resync leaves an answered card alone on the update path, not only on the clear path"
+}
+
+test_board_keeps_an_answered_card_across_a_session_start_re_declaration() {
+  local home fakebin state card
+  home="$TMP_ROOT/board-answered-redeclare"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_store_curl "$home"); state="$home/board-state.json"
+  # The captain answered ship-pr-a1 and set it aside; the board holds that answer while
+  # firstmate works. The session-start sync is DECLARATIVE, so it re-declares that card
+  # every time it runs - which is only safe because of the two store rules this stand-in
+  # implements. If either ever stops holding, the captain sees a question they answered
+  # come back unanswered, and this test is what says so.
+  compose_as_board "$home" '
+    .items |= map(if .id == "ship-pr-a1" then (.status = "submitted" | .set_aside = true)
+                  else (.set_aside = false) end)' > "$state"
+  # The situation drifts underneath the answer, so the re-declared card is not identical.
+  printf 'working: rebasing the branch\n' > "$home/state/ship-pr-a1.status"
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=synctok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
+    "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
+  card=$(stored_card "$state" ship-pr-a1)
+  [ -n "$card" ] && [ "$card" != "{}" ] \
+    || fail "the session-start sync must not drop the answered card"$'\n'"$(cat "$state")"
+  [ "$(printf '%s' "$card" | jq -r .status)" = "submitted" ] \
+    || fail "a re-declared answered card must keep its submitted status, not revert to pending"$'\n'"$card"
+  [ "$(printf '%s' "$card" | jq -r .set_aside)" = "true" ] \
+    || fail "a re-declaration must not clear the set-aside on a card the captain answered"$'\n'"$card"
+  pass "the board keeps an answered card's status and set-aside across the session-start re-declaration"
+}
+
+test_refresh_never_deletes_a_fresh_card_under_a_settled_id() {
+  local home fakebin body synced
+  home="$TMP_ROOT/refresh-settled-repushed"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home")
+  body=$(compose_as_board "$home")
+  # The captain answered decide-b2 and firstmate cleared it, so that id is settled.
+  clear_card "$home" "$fakebin" "$body" decide-b2
+  # firstmate then pushes a FRESH card under the same id - a second decision on the same
+  # task. No file the fingerprint hashes moved, so no incremental cycle ever sees it; the
+  # next writer to run is the session-start sync. That sync is DECLARATIVE: an id its
+  # payload omits is DELETED, not merely left alone, so suppressing a settled id whose
+  # card is live on the board would destroy it. Reading the board is what prevents that.
+  body=$(compose_as_board "$home" '
+    .items |= map(if .id == "decide-b2"
+                  then (.title = "Escalation: the nav call needs you again"
+                        | .source = {escalation: "section-9"})
+                  else . end)')
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+    LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
+    FAKE_BOARD_BODY="$body" FAKE_BOARD_CODE=200 \
+    "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
+  synced="$home/state/logbook-outbox/sync.json"
+  assert_present "$synced" "the session-start refresh must still compose and sync a body"
+  jq -e 'any(.items[]; .id == "decide-b2")' "$synced" >/dev/null \
+    || fail "a settled id whose card is live on the board must stay in the declarative payload, or the sync deletes it"$'\n'"$(cat "$synced")"
+  pass "fm-logbook-refresh reads the board first, so a fresh card under a settled id is never synced away"
 }
 
 test_resync_recards_work_that_left_the_set_and_came_back() {
@@ -3926,6 +4115,9 @@ test_resync_resurfaces_a_settled_card_once_its_content_changes
 test_resync_forgets_a_settled_card_that_left_the_composed_set
 test_refresh_never_resurrects_a_card_the_captain_settled
 test_resolve_dry_run_settles_nothing
+test_resync_never_rewrites_a_card_the_captain_answered
+test_board_keeps_an_answered_card_across_a_session_start_re_declaration
+test_refresh_never_deletes_a_fresh_card_under_a_settled_id
 test_resync_recards_work_that_left_the_set_and_came_back
 test_resync_never_resurrects_a_hand_pushed_card_the_captain_settled
 test_resync_fingerprint_covers_a_lapsing_hold_gate

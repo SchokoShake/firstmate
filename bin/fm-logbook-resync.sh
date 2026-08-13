@@ -60,8 +60,15 @@
 #     change from an fyi into an answerable claim, the tool's own isNewClaim clears the
 #     set-aside - correct, because it is a different card now.
 #   - The captain's unacted answer. A card at status `submitted` has been answered on
-#     the board and is waiting on firstmate, so it is never cleared here; the answer
-#     loop (fm-logbook-ack.sh / fm-logbook-resolve.sh) clears it after firstmate acts.
+#     the board and is waiting on firstmate, so THIS script neither clears it NOR
+#     rewrites it: the answer loop (fm-logbook-ack.sh / fm-logbook-resolve.sh) owns it
+#     end to end and clears it once firstmate acts. Both the clear set and the update
+#     set test the stored status, because a mid-answer content drift - another status
+#     line, a lapsed gate, an edited backlog one-liner - would otherwise re-upsert the
+#     baseline over the card the captain just answered. The session-start declarative
+#     sync still re-declares such a card, which is safe for a different reason that
+#     belongs to the board tool rather than to this script; docs/configuration.md
+#     "Board refresh" states it, and a test pins it.
 #   - The captain's ANSWERED-AND-ACTED card. GET /api/board omits resolved and dismissed
 #     rows, so a card firstmate already cleared reads here as a card the board lacks -
 #     and the ADD rule above would put it straight back as pending, seconds after the
@@ -292,7 +299,9 @@ if ! jq -n \
                | ($bindex[$c.id] // null) as $prev
                | select(if $prev == null
                         then (($suppress | index($c.id)) == null)
-                        else (($prev | owned($producer)) and (($prev | norm) != ($c | norm))) end) ],
+                        else (($prev | owned($producer))
+                              and ($prev.status != "submitted")
+                              and (($prev | norm) != ($c | norm))) end) ],
       clear: [ $bitems[]
                | . as $b
                | select($b | owned($producer))

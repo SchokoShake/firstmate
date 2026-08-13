@@ -247,11 +247,64 @@ logbook_load_config() {
 # logbook_item_hash: read ONE item object on stdin, print its content hash. Prints
 # nothing and fails when the input is not an item or the tools are missing, so a caller
 # can never mistake "could not hash" for a hash that matched.
+#
+# Keys are SORTED (-S) before the bytes are hashed. The normalization above fixes the
+# top-level order but copies `source` and `options` through verbatim, so their internal
+# order is whatever the input carried - and the two sides of this comparison come from
+# different places: the record hashes a card as GET /api/board returned it, while both
+# readers hash compose's own output. The board validates and rebuilds every item it
+# stores, so it owes no byte-for-byte round trip of a nested object; without -S a
+# re-serialized `source` would make every recorded hash unmatchable, and the settled
+# card would be re-asked on the very next cycle with no diagnostic anywhere. Sorting
+# makes the record independent of the board's serialization, and it is symmetric
+# because both sides go through this one function.
 logbook_item_hash() {
   local normalized
-  normalized=$(jq -c "$LOGBOOK_ITEM_NORM_JQ norm" 2>/dev/null) || return 1
+  normalized=$(jq -cS "$LOGBOOK_ITEM_NORM_JQ norm" 2>/dev/null) || return 1
   [ -n "$normalized" ] || return 1
   printf '%s' "$normalized" | cksum 2>/dev/null | awk '{ print $1 "-" $2 }'
+}
+
+# THE RECORD'S SINGLE-WRITER LOCK.
+#
+# state/logbook-cleared.json has two writers by design - fm-logbook-resolve.sh from
+# firstmate's interactive answer loop, and the refresh on the watcher beat - and both
+# read-modify-write it. They overlap on exactly the turns where clears happen, because
+# firstmate's own backlog edits are what break the fingerprint that makes the refresh
+# fire. A clear landing inside the filter's read/replace window would be dropped, and
+# the settled card re-asked on the next cycle: the failure this whole surface exists to
+# remove, so the window is worth closing even though it is milliseconds wide.
+#
+# FAIL-OPEN, always. A lock that cannot be taken must never fail a clear or wedge a
+# refresh, so both holders proceed unlocked after a bounded wait - which is exactly
+# today's behavior, and no worse. A lock dir older than a minute cannot be a live
+# holder (both do a handful of jq calls and release), so it is broken rather than
+# allowed to make the record permanently unserialized.
+LOGBOOK_CLEARED_LOCK=""
+
+logbook_cleared_lock() {
+  local lock tries=0
+  [ -n "${LOGBOOK_CLEARED_FILE:-}" ] || return 1
+  lock="$LOGBOOK_CLEARED_FILE.lock"
+  mkdir -p "${LOGBOOK_CLEARED_FILE%/*}" 2>/dev/null || return 1
+  while [ "$tries" -lt 20 ]; do
+    if mkdir "$lock" 2>/dev/null; then
+      LOGBOOK_CLEARED_LOCK=$lock
+      return 0
+    fi
+    if [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      rmdir "$lock" 2>/dev/null || true
+    fi
+    sleep 0.05 2>/dev/null || true
+    tries=$((tries + 1))
+  done
+  return 1
+}
+
+logbook_cleared_unlock() {
+  [ -n "${LOGBOOK_CLEARED_LOCK:-}" ] || return 0
+  rmdir "$LOGBOOK_CLEARED_LOCK" 2>/dev/null || true
+  LOGBOOK_CLEARED_LOCK=""
 }
 
 # logbook_cleared_record <id> <board-body-file>: remember that <id> was cleared. An
@@ -259,8 +312,18 @@ logbook_item_hash() {
 # value compose derives; an unowned one records the empty sentinel, because its board
 # content is not comparable with anything compose produces. Returns non-zero without
 # disturbing the existing record when it cannot, so a caller can warn: the clear itself
-# is the important half and must never fail on this.
+# is the important half and must never fail on this. Serialized against the refresh's
+# own read-modify-write by the fail-open lock above; the wrapper is what guarantees the
+# lock is released on every return path the body takes.
 logbook_cleared_record() {
+  local rc
+  logbook_cleared_lock || true
+  if logbook_cleared_record_locked "$@"; then rc=0; else rc=$?; fi
+  logbook_cleared_unlock
+  return "$rc"
+}
+
+logbook_cleared_record_locked() {
   local id=${1-} board=${2-} card hash existing dir tmp
   [ -n "$id" ] && [ -n "${LOGBOOK_CLEARED_FILE:-}" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
@@ -305,8 +368,17 @@ logbook_cleared_record() {
 # posts declaratively and never reads it); the two board-dependent rules then simply do
 # not fire, and the next refresh cycle applies them.
 # Always returns 0: a record it cannot read must degrade to the old behavior (the card
-# reappears), never to a failed refresh.
+# reappears), never to a failed refresh. Serialized against a concurrent clear by the
+# fail-open lock above, through the same wrapper shape the writer uses.
 logbook_cleared_filter() {
+  local rc
+  logbook_cleared_lock || true
+  if logbook_cleared_filter_locked "$@"; then rc=0; else rc=$?; fi
+  logbook_cleared_unlock
+  return "$rc"
+}
+
+logbook_cleared_filter_locked() {
   local composed=${1-} board=${2-} out=${3-}
   local record=${LOGBOOK_CLEARED_FILE:-} board_ids='[]' plan verb id want have
   local keep="" drop="" adopt="" dropped adopted suppress dir tmp

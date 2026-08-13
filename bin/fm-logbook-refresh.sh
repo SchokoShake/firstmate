@@ -16,11 +16,19 @@
 # read back (GET /api/board omits resolved and dismissed rows), so compose - which knows
 # only fleet state - re-derives such a card for as long as its task stays in the
 # attention set, and syncing it would put a settled question back in front of the
-# captain. bin/fm-logbook-resolve.sh records every clear it performs, and this honors
-# that record exactly as the mid-session refresh does: a cleared id whose composed
-# content still hashes the same is dropped from the payload, and one whose content has
-# moved on goes up, because that is a different question. fm-logbook-lib.sh owns the
-# rule so the two writers cannot drift.
+# captain. bin/fm-logbook-resolve.sh records every clear it performs and this honors
+# that record; docs/configuration.md "Board refresh" owns the contract.
+#
+# THAT SUBTRACTION IS WHY THIS READS THE BOARD FIRST, and the read is not optional.
+# On the incremental refresh, leaving an id out of the payload means "do not add it".
+# HERE it means DELETE: fm-logbook-sync.sh is declarative, and its own header states
+# that a collection present in the body becomes exactly that set, absent members
+# deleted. So a settled id that firstmate has since pushed a FRESH card under would be
+# stripped from the payload and the live card destroyed - strictly worse than the
+# staleness this whole surface exists to fix. Reading the board first lets the record's
+# "this id is back on the board -> evict" rule fire on this path too, so a card that is
+# actually there is never suppressed out of the payload. Do not re-introduce a payload
+# strip without this read.
 #
 # Inert by default: a hard no-op (exit 0, no output) unless logbook is opted in via
 # a truthy LOGBOOK_ENABLE. Honors LOGBOOK_DRY_RUN transitively - fm-logbook-sync.sh
@@ -48,7 +56,8 @@ command -v jq >/dev/null 2>&1 || { echo "fm-logbook-refresh: jq not found" >&2; 
 BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
 SUPPRESSED=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh-cleared.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
 FILTERED=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh-body.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
-trap 'rm -f "$BODY_FILE" "$SUPPRESSED" "$FILTERED"' EXIT
+BOARD_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh-board.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
+trap 'rm -f "$BODY_FILE" "$SUPPRESSED" "$FILTERED" "$BOARD_FILE"' EXIT
 
 # Compose the attention set. compose is itself opt-in gated, so we are past that;
 # treat an empty/non-JSON body as a compose failure rather than syncing garbage.
@@ -61,12 +70,20 @@ if [ ! -s "$BODY_FILE" ] || ! jq -e . "$BODY_FILE" >/dev/null 2>&1; then
   exit 1
 fi
 
+# The live board, for the settled-card filter below. Read-only and best-effort: an
+# unreadable board (down, no token) falls back to no board view, exactly as before this
+# read existed, and the sync that follows would fail against that same board anyway.
+BOARD_VIEW=""
+if logbook_get_json /api/board "$BOARD_FILE" >/dev/null 2>&1; then
+  BOARD_VIEW="$BOARD_FILE"
+fi
+
 # Drop the cards the captain already settled. Best-effort by construction: the filter
 # writes an empty suppression set when it cannot read its record, which is the old
 # behavior (the card reappears) rather than a failed refresh. `$drop[0]` is bound before
 # index() because jq evaluates an argument to index() against the value being searched,
 # not against the item in hand.
-logbook_cleared_filter "$BODY_FILE" "" "$SUPPRESSED"
+logbook_cleared_filter "$BODY_FILE" "$BOARD_VIEW" "$SUPPRESSED"
 if ! jq -e 'length == 0' "$SUPPRESSED" >/dev/null 2>&1; then
   if jq -c --slurpfile drop "$SUPPRESSED" '
         (($drop[0]) // []) as $settled
