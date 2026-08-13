@@ -552,18 +552,31 @@ logbook_setup() {
     rm -f "$shim" "$reap_shim" "$resync_shim" "$cadence" 2>/dev/null || true
     # The refresh fingerprint is this home's record of the board state a resync last
     # reached. It means nothing without the shim, and leaving it behind would make a
-    # later re-opt-in skip its first refresh, so it goes with the artifacts. The
-    # settled-card record goes for the same reason: it only ever suppresses cards a
-    # compose-driven writer would otherwise re-declare, and a stale one carried across
-    # an opt-out would hold a card down on a board that has since been re-truthed. The
-    # absence of either is never an error, so neither is part of the removal verdict.
-    rm -f "$STATE/logbook-resync.fingerprint" "$STATE/logbook-cleared.json" 2>/dev/null || true
+    # later re-opt-in skip its first refresh, so it goes wherever the shims go - losing
+    # it costs at most one extra refresh, which is why it is safe on every caller below,
+    # including the ones that are not opt-outs. Its absence is never an error, so it is
+    # not part of the removal verdict.
+    rm -f "$STATE/logbook-resync.fingerprint" 2>/dev/null || true
     [ ! -e "$shim" ] && [ ! -e "$reap_shim" ] && [ ! -e "$resync_shim" ] && [ ! -e "$cadence" ]
+  }
+
+  # Deliberately NOT part of the removal above, which three callers share and only one of
+  # which is an opt-out. The settled-card record is the captain's answers, not derived
+  # state: losing it makes the next refresh re-declare every card they already answered
+  # and firstmate cleared, which is the failure the record exists to prevent. A missing
+  # curl or jq, or a shim that could not be written, is a transient and must never be
+  # read as consent to forget that. Only a genuine opt-out calls this.
+  logbook_forget_settled_cards() {
+    rm -f "$STATE/logbook-cleared.json" 2>/dev/null || true
   }
 
   if ! logbook_enabled; then
     # Opt-out (or never opted in): drop any inbound poll artifacts; stay silent
-    # unless we actually removed something.
+    # unless we actually removed something. This is the ONE path that also forgets what
+    # the captain settled, because it is the one where the board itself is going away.
+    if [ -e "$STATE/logbook-cleared.json" ]; then
+      logbook_forget_settled_cards
+    fi
     if [ -e "$shim" ] || [ -e "$reap_shim" ] || [ -e "$resync_shim" ] || [ -e "$cadence" ]; then
       if logbook_remove_inbound_artifacts; then
         echo "LOGBOOK: off - removed board-response poll shim, board-liveness reap shim, board-refresh shim, and 15s cadence; restart the watcher (bin/fm-watch-arm.sh --restart) to drop back to the default cadence"

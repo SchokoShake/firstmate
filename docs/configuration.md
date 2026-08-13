@@ -324,7 +324,7 @@ Composing that board reads every carded project's merge policy, so bootstrap fil
 The filter selects on a single marker that library stamps on its own diagnostics rather than on a copy of their message texts, so a diagnostic added there later reaches the captain with no change to bootstrap.
 That sync is the earliest read of the `+captain-merge` posture and one of the two that run unattended (the other is the mid-session board refresh below, which relays the same marked lines to its own stderr), and neither a mistyped flag nor a lookup that fails outright is honored as the prohibition it was meant to be, so the board would otherwise offer a one-click Merge for a project the captain reserved to themselves with the warning discarded.
 The rest of the refresh's stderr stays dropped; the `LOGBOOK: board not auto-synced ...` line already reports a failed compose or sync.
-On opt-out it removes all four artifacts, plus the refresh's `state/logbook-resync.fingerprint` and `state/logbook-cleared.json`, reverting to the default 300s no-poll cadence.
+On opt-out it removes all four artifacts, plus the refresh's `state/logbook-resync.fingerprint` and - on that path only - the settled-card record `state/logbook-cleared.json` ("Board refresh" below), reverting to the default 300s no-poll cadence.
 With no config and no leftover artifacts it is a complete no-op.
 `bin/fm-logbook-up.sh` health-checks `GET $LOGBOOK_URL/health`, and if the board is down launches `node $LOGBOOK_TOOL_DIR/server.mjs` detached with output to `state/logbook-server.log` and its runtime store under `state/logbook.data`, so nothing is ever written into `projects/`.
 
@@ -392,12 +392,23 @@ The captain's unacted answer survives because a card at status `submitted` has b
 **The settled-card record.**
 `GET /api/board` deliberately omits resolved and dismissed rows, so a card firstmate has already CLEARED through the answer loop reads to a compose-driven writer as a card the board simply lacks - and the add rule above would put it straight back as a pending card, for as long as its task stays in the composed set.
 A card the captain answered coming back as pending is the board re-asking a settled question, which is the exact failure this whole surface exists to remove.
-`bin/fm-logbook-resolve.sh`, the single owner of clearing, therefore records every clear that actually landed to `state/logbook-cleared.json` as `{ "<item id>": "<content hash>" }`, using the card's fields as the board still held them (it already reads them to compose its terminal-status upsert).
+`bin/fm-logbook-resolve.sh`, the single owner of clearing, therefore records a clear that actually landed to `state/logbook-cleared.json` as `{ "<item id>": "<content hash>" }`, using the card's fields as the board still held them (it already reads them to compose its terminal-status upsert).
 It records nothing under `LOGBOOK_DRY_RUN`, where nothing was cleared, and a record it cannot write is one stderr warning rather than a failed clear.
 Both compose-driven writers consult it: the mid-session refresh before every add, and `bin/fm-logbook-refresh.sh` on the composed set before it hands the payload to `bin/fm-logbook-sync.sh`, so the session-start sync cannot undo what the answer loop settled either.
+
+ONLY A CAPTAIN-ANSWERED CLEAR RECORDS, because clearing is not one act.
+The answer loop clears because the captain decided and firstmate acted, and that settles the question; the mid-session refresh clears MECHANICALLY, because the work simply left the composed set, and that settles nothing.
+Recording a mechanical clear would suppress the card if that same work ever returned - a task parked to Queued and later resumed composes a byte-identical card - which is the original under-reporting bug re-introduced for resumed work, so the refresh marks every clear in its clear loop as mechanical (`LOGBOOK_MECHANICAL_CLEAR`) and no record is written for it.
+Recording is the DEFAULT, so every other caller of `bin/fm-logbook-resolve.sh` is the answer loop and needs no change.
+
 The record is CONTENT-keyed, not a plain id list: a cleared id whose composed content still hashes the same is suppressed, and one whose content has moved on goes back up and its record is dropped, because that is a different question - the same rule the tool's own `upsertItem` applies when a client re-declares a cleared id.
+For that comparison to mean anything, both sides have to be the same side of it - compose's baseline content.
+A compose-OWNED card satisfies this already, because its board content and its composed content are identical, so the board hash taken at clear time IS the composed hash.
+A card that is not owned cannot: a hand-composed escalation pushed through `bin/fm-logbook-push.sh` never carries the ownership stamp (and must not, or the refresh would treat it as its own baseline and flatten it every cycle), so its `source` alone differs from the composed baseline and `source` is inside the normalization.
+Clearing an unowned card therefore records the empty SENTINEL, which the readers treat as "suppress on this pass, and adopt the composed hash you see now"; from then on that id is compared like-for-like and stays down until its composed content actually changes.
 A record is evicted once there is nothing left to suppress: when its id leaves the composed set, when its id is on the board again (something re-added it), and when its content changed.
-That runs on the normal refresh cycle, so the record cannot grow without bound, and `bin/fm-logbook-lib.sh` owns both the hash's normalization (`LOGBOOK_ITEM_NORM_JQ`, the same definition the board-vs-composed diff uses) and the suppression rule, so the writer and the two readers cannot drift onto two different answers.
+That runs on the normal refresh cycle, so the record cannot grow without bound, and `bin/fm-logbook-lib.sh` owns the hash's normalization (`LOGBOOK_ITEM_NORM_JQ`), the ownership test (`LOGBOOK_ITEM_OWNED_JQ`) and the suppression rule - each the same single definition the board-vs-composed diff uses - so the writer and the two readers cannot drift onto two different answers.
+`bin/fm-bootstrap.sh` removes the record on a genuine opt-out only; a missing `curl`/`jq` or a shim it could not write is a transient, and losing the captain's answers to one would cause the very re-declaration the record prevents.
 
 **Change detection.**
 Composing is not cheap (it shells out to `git` once per carded project), so the refresh never composes speculatively.

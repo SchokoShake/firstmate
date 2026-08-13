@@ -73,6 +73,16 @@ LOGBOOK_ITEM_NORM_JQ='def norm:
       kind, title, body: (.body // ""), options: (.options // []),
       source: (.source // null) };'
 
+# The OWNERSHIP TEST over a board card, as the jq companion to the stamp above and for
+# the same reason the stamp's value lives here: bin/fm-logbook-resync.sh asks it of every
+# card it is about to rewrite or clear, and the settled-card record below asks it of a
+# card being cleared to decide whether the board content and the composed content are
+# even comparable. Two copies of this predicate answering differently would let one of
+# those two decide "mine" while the other decides "someone else's".
+# shellcheck disable=SC2016  # single quotes are deliberate: $producer is jq's own named argument, bound by the caller with --arg, and must reach jq unexpanded.
+LOGBOOK_ITEM_OWNED_JQ='def owned($producer):
+    ((.source | type) == "object") and (.source.producer == $producer);'
+
 # Read the value of KEY from a .env-style file: last assignment wins; tolerates a
 # leading "export ", surrounding whitespace, and one layer of matching single or
 # double quotes. Prints nothing (and succeeds) when the file or key is absent, so
@@ -189,13 +199,14 @@ logbook_load_config() {
   # declares, read by fm-logbook-compose.sh and fm-logbook-resync.sh after sourcing.
   : "$LOGBOOK_ENABLE" "$LOGBOOK_TOKEN" "$LOGBOOK_TOOL_DIR" "$LOGBOOK_PORT" \
     "$LOGBOOK_URL" "$LOGBOOK_DRY" "$LOGBOOK_STATE" "$LOGBOOK_COMPOSE_PRODUCER" \
-    "$LOGBOOK_CLEARED_FILE" "$LOGBOOK_ITEM_NORM_JQ"
+    "$LOGBOOK_CLEARED_FILE" "$LOGBOOK_ITEM_NORM_JQ" "$LOGBOOK_ITEM_OWNED_JQ"
 }
 
-# THE SETTLED-CARD RECORD.
+# THE SETTLED-CARD RECORD. docs/configuration.md "Board refresh" owns the contract;
+# this is how it is implemented.
 #
-# GET /api/board deliberately omits resolved and dismissed rows, so a card firstmate
-# CLEARED through the answer loop is simply ABSENT to a compose-driven writer - and a
+# GET /api/board deliberately omits resolved and dismissed rows, so a card the captain
+# answered and firstmate then CLEARED is simply ABSENT to a compose-driven writer - and a
 # writer whose rule is "add what the board lacks" re-adds it as a pending card for as
 # long as its task stays in the composed set. The captain taps Hold or Done, firstmate
 # acts and clears the card, and the board asks the same settled question again. That is
@@ -203,11 +214,31 @@ logbook_load_config() {
 # bin/fm-logbook-resync.sh on the watcher beat and bin/fm-logbook-refresh.sh at session
 # start - consult this record before they declare a card the board does not have.
 #
-# The record is deliberately CONTENT-KEYED rather than a plain id list: a cleared id
-# whose composed content still hashes the same is the settled question and stays down,
-# while a differing hash means the situation genuinely moved on and the card goes back
-# up (and the record is dropped). That mirrors the board tool's own rule, that a client
-# re-declaring a cleared id is the client saying the work needs the captain again.
+# ONLY A CAPTAIN-ANSWERED CLEAR MAY RECORD. Clearing is not one act: the answer loop
+# clears because the captain decided and firstmate acted, while the refresh clears
+# MECHANICALLY, because the work simply left the attention set. Recording the mechanical
+# one would suppress the card if that same work ever came back unchanged - a task parked
+# to Queued and later resumed - which is the original under-reporting bug re-introduced
+# for resumed work. So the caller says which kind of clear it performed
+# (LOGBOOK_MECHANICAL_CLEAR in bin/fm-logbook-resolve.sh), and recording is the default
+# because the answer loop is every other caller.
+#
+# The record is CONTENT-KEYED rather than a plain id list: a cleared id whose composed
+# content still hashes the same is the settled question and stays down, while a differing
+# hash means the situation genuinely moved on and the card goes back up (and the record
+# is dropped). That mirrors the board tool's own rule, that a client re-declaring a
+# cleared id is the client saying the work needs the captain again.
+#
+# BOTH SIDES OF THAT COMPARISON MUST BE THE SAME SIDE - compose's baseline content - or
+# the guard means nothing. For a compose-OWNED card the board content and the composed
+# content are identical, so the board hash taken at clear time is already that value.
+# For a card that is NOT owned - a hand-composed escalation pushed through
+# bin/fm-logbook-push.sh, which never carries the ownership stamp (and must not: the
+# refresh would then flatten it back to the baseline every cycle) - the two can never
+# match, because `source` alone differs and `source` is inside the normalization. Those
+# record a SENTINEL instead, the empty hash, which the reader treats as "suppress on this
+# pass, and adopt the composed hash you see now". From then on the id is compared
+# like-for-like and stays down until its COMPOSED content actually changes.
 #
 # cksum/CRC32 is the hash, for the reason the refresh gives for its own fingerprint: a
 # collision costs one card that stays down until its content moves again, which does
@@ -223,17 +254,24 @@ logbook_item_hash() {
   printf '%s' "$normalized" | cksum 2>/dev/null | awk '{ print $1 "-" $2 }'
 }
 
-# logbook_cleared_record <id> <board-body-file>: remember that <id> was cleared,
-# hashing the card as the BOARD still held it (the fields the clear was performed on).
-# Returns non-zero without disturbing the existing record when it cannot, so a caller
-# can warn: the clear itself is the important half and must never fail on this.
+# logbook_cleared_record <id> <board-body-file>: remember that <id> was cleared. An
+# OWNED card records the hash of the card as the board still held it, which is the same
+# value compose derives; an unowned one records the empty sentinel, because its board
+# content is not comparable with anything compose produces. Returns non-zero without
+# disturbing the existing record when it cannot, so a caller can warn: the clear itself
+# is the important half and must never fail on this.
 logbook_cleared_record() {
-  local id=${1-} board=${2-} hash existing dir tmp
+  local id=${1-} board=${2-} card hash existing dir tmp
   [ -n "$id" ] && [ -n "${LOGBOOK_CLEARED_FILE:-}" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
-  hash=$(jq -c --arg id "$id" 'first((.items // [])[] | select(.id == $id))' "$board" 2>/dev/null \
-    | logbook_item_hash) || return 1
-  [ -n "$hash" ] || return 1
+  card=$(jq -c --arg id "$id" 'first((.items // [])[] | select(.id == $id))' "$board" 2>/dev/null) || return 1
+  [ -n "$card" ] || return 1
+  hash=""
+  if printf '%s' "$card" | jq -e --arg producer "$LOGBOOK_COMPOSE_PRODUCER" \
+       "$LOGBOOK_ITEM_OWNED_JQ owned(\$producer)" >/dev/null 2>&1; then
+    hash=$(printf '%s' "$card" | logbook_item_hash) || return 1
+    [ -n "$hash" ] || return 1
+  fi
 
   existing='{}'
   if [ -s "$LOGBOOK_CLEARED_FILE" ]; then
@@ -254,12 +292,15 @@ logbook_cleared_record() {
 # logbook_cleared_filter <composed-body-file> <board-body-file|""> <out-file>
 # The reader half, shared by both compose-driven writers so they cannot diverge on what
 # "settled" means. It writes the JSON array of composed ids to SUPPRESS to <out-file>
-# (always valid JSON, "[]" when there is nothing to suppress) and evicts spent records
-# in the same pass, so the record cannot grow without bound:
+# (always valid JSON, "[]" when there is nothing to suppress) and maintains the record
+# in the same pass, so it cannot grow without bound:
 #   - recorded id no longer in the composed set  -> evict (nothing left to suppress)
 #   - recorded id back on the board              -> evict (something re-added it)
 #   - recorded id composed with a DIFFERENT hash -> evict, and let the card go back up
 #   - recorded id composed with the SAME hash    -> suppress; the captain settled it
+#   - recorded id holding the empty SENTINEL     -> suppress, and adopt the composed hash
+#                                                   it has now, so every later pass
+#                                                   compares like with like
 # Pass "" for the board when the caller has no board view (the session-start refresh
 # posts declaratively and never reads it); the two board-dependent rules then simply do
 # not fire, and the next refresh cycle applies them.
@@ -268,7 +309,7 @@ logbook_cleared_record() {
 logbook_cleared_filter() {
   local composed=${1-} board=${2-} out=${3-}
   local record=${LOGBOOK_CLEARED_FILE:-} board_ids='[]' plan verb id want have
-  local keep="" drop="" dropped suppress dir tmp
+  local keep="" drop="" adopt="" dropped adopted suppress dir tmp
 
   [ -n "$out" ] || return 0
   printf '[]\n' > "$out" 2>/dev/null || return 0
@@ -309,7 +350,12 @@ logbook_cleared_filter() {
       | logbook_item_hash) || have=""
     # A hash that could not be computed counts as CHANGED, so a broken tool degrades
     # to the board re-asking rather than to a card silently held down.
-    if [ -n "$have" ] && [ -n "$want" ] && [ "$have" = "$want" ]; then
+    if [ -z "$want" ]; then
+      keep="$keep$id
+"
+      [ -n "$have" ] && adopt="$adopt$id	$have
+"
+    elif [ -n "$have" ] && [ "$have" = "$want" ]; then
       keep="$keep$id
 "
     else
@@ -324,16 +370,20 @@ EOF
   [ -n "$suppress" ] || suppress='[]'
   printf '%s\n' "$suppress" > "$out" 2>/dev/null || true
 
-  # Suppression is decided above and applies on every path; only the eviction WRITE is
-  # skipped under LOGBOOK_DRY, so a preview can never change which cards a later live
-  # refresh puts in front of the captain.
-  [ -n "$drop" ] && [ -z "${LOGBOOK_DRY:-}" ] || return 0
+  # Suppression is decided above and applies on every path; only the record WRITE - the
+  # evictions and the sentinel adoptions - is skipped under LOGBOOK_DRY, so a preview can
+  # never change which cards a later live refresh puts in front of the captain.
+  [ -z "${LOGBOOK_DRY:-}" ] || return 0
+  [ -n "$drop" ] || [ -n "$adopt" ] || return 0
   dropped=$(printf '%s' "$drop" | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null) || return 0
   [ -n "$dropped" ] || return 0
+  adopted=$(printf '%s' "$adopt" | jq -R -s \
+    'split("\n") | map(select(length > 0) | split("\t") | { key: .[0], value: .[1] }) | from_entries' 2>/dev/null) || return 0
+  [ -n "$adopted" ] || return 0
   dir=${record%/*}
   tmp=$(mktemp "$dir/.logbook-cleared.XXXXXX" 2>/dev/null) || return 0
-  if jq -c --argjson drop "$dropped" \
-       'with_entries(select(.key as $k | ($drop | index($k)) == null))' "$record" > "$tmp" 2>/dev/null; then
+  if jq -c --argjson drop "$dropped" --argjson adopt "$adopted" \
+       'with_entries(select(.key as $k | ($drop | index($k)) == null)) + $adopt' "$record" > "$tmp" 2>/dev/null; then
     if jq -e 'length == 0' "$tmp" >/dev/null 2>&1; then
       rm -f "$tmp" "$record" 2>/dev/null
     else

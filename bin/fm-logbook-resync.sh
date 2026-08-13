@@ -66,11 +66,11 @@
 #     rows, so a card firstmate already cleared reads here as a card the board lacks -
 #     and the ADD rule above would put it straight back as pending, seconds after the
 #     answer, for as long as its task stays in the composed set. The settled-card record
-#     fm-logbook-resolve.sh writes (state/logbook-cleared.json, fm-logbook-lib.sh owns
-#     the contract) is consulted before every ADD: a cleared id whose composed content
-#     still hashes the same is suppressed, and one whose content has moved on goes back
-#     up, because that is a different question. bin/fm-logbook-refresh.sh honors the
-#     same record, so the session-start sync cannot undo it either.
+#     the answer loop writes through fm-logbook-resolve.sh is therefore consulted before
+#     every ADD; docs/configuration.md "Board refresh" owns that contract and
+#     fm-logbook-lib.sh implements it. The clears THIS script performs are mechanical and
+#     record nothing (see the clear loop below), so a card can never be held down by its
+#     own retirement.
 #
 # CHANGE DETECTION - an unchanged fleet must cost approximately nothing.
 # Composing is not cheap (it shells out to git once per carded project), so this never
@@ -274,12 +274,10 @@ if ! jq -n \
   --slurpfile board "$BOARD" \
   --argjson suppress "$SUPPRESS" \
   --arg producer "$LOGBOOK_COMPOSE_PRODUCER" \
-  "$LOGBOOK_ITEM_NORM_JQ"'
+  "$LOGBOOK_ITEM_NORM_JQ$LOGBOOK_ITEM_OWNED_JQ"'
   def pnorm:
     { name, repo: (.repo // ""), mode: (.mode // ""),
       subprojects: (.subprojects // []) };
-  def owned:
-    ((.source | type) == "object") and (.source.producer == $producer);
 
   (($composed[0] // {}) | .items // []) as $citems
   | (($composed[0] // {}) | .projects // []) as $cprojects
@@ -294,10 +292,10 @@ if ! jq -n \
                | ($bindex[$c.id] // null) as $prev
                | select(if $prev == null
                         then (($suppress | index($c.id)) == null)
-                        else (($prev | owned) and (($prev | norm) != ($c | norm))) end) ],
+                        else (($prev | owned($producer)) and (($prev | norm) != ($c | norm))) end) ],
       clear: [ $bitems[]
                | . as $b
-               | select($b | owned)
+               | select($b | owned($producer))
                | select($b.status != "submitted")
                | select(($cids | index($b.id)) == null)
                | $b.id ],
@@ -344,10 +342,16 @@ fi
 # done. Re-deriving it here to save a GET per card would be a second copy of a contract
 # that has to stay in step, for a saving on the rarest path: a card leaves the attention
 # set only when its work actually finishes.
+#
+# Every clear here is MECHANICAL - the work left the composed set, nobody answered
+# anything - so each one says so, and no settled-card record is written for it. Recording
+# these would be the under-reporting bug turned inside out: work parked to Queued and
+# later resumed composes a byte-identical card, and a record taken at the clear would
+# match it and hold it off the board for good. Only the answer loop settles questions.
 while IFS= read -r clear_id; do
   [ -n "$clear_id" ] || continue
   logbook_valid_id "$clear_id" || continue
-  if ! "$SCRIPT_DIR/fm-logbook-resolve.sh" "$clear_id" >/dev/null 2>&1; then
+  if ! LOGBOOK_MECHANICAL_CLEAR=1 "$SCRIPT_DIR/fm-logbook-resolve.sh" "$clear_id" >/dev/null 2>&1; then
     echo "fm-logbook-resync: could not clear card $clear_id" >&2
     FAILED=1
   fi

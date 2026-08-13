@@ -3397,6 +3397,82 @@ test_resolve_dry_run_settles_nothing() {
   pass "a dry-run resolve settles nothing, so the refresh still puts the card on the board"
 }
 
+test_resync_recards_work_that_left_the_set_and_came_back() {
+  local home fakebin log full body out backlog
+  home="$TMP_ROOT/resync-returning"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  full=$(compose_as_board "$home")
+  backlog=$(cat "$home/data/backlog.md")
+  # The work is parked: scout-c3 leaves In flight and its crew is torn down, so compose
+  # stops producing it and the refresh retires its own card. That clear is MECHANICAL -
+  # the work left the attention set, nobody answered anything - so it settles nothing.
+  grep -v 'scout-c3' "$home/data/backlog.md" > "$home/data/backlog.md.new"
+  mv "$home/data/backlog.md.new" "$home/data/backlog.md"
+  mv "$home/state/scout-c3.meta" "$home/scout-c3.meta.parked"
+  mv "$home/state/scout-c3.status" "$home/scout-c3.status.parked"
+  out=$(run_resync "$home" "$fakebin" "$log" "$full")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "the parked card must leave the board, or the return below proves nothing"
+  # The captain resumes it: same backlog line, same crew state, so compose derives a
+  # BYTE-IDENTICAL card. The board no longer carries it (the clear resolved that row), so
+  # the refresh must put it back. A card silently missing here is the under-reporting bug
+  # this whole refresh exists to remove, aimed at resumed work.
+  printf '%s\n' "$backlog" > "$home/data/backlog.md"
+  mv "$home/scout-c3.meta.parked" "$home/state/scout-c3.meta"
+  mv "$home/scout-c3.status.parked" "$home/state/scout-c3.status"
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  assert_no_declarative_sync "$log" "re-carding resumed work"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "work that left the attention set and came back unchanged must be carded again"
+  pass "fm-logbook-resync re-cards work that left the attention set and came back unchanged"
+}
+
+test_resync_never_resurrects_a_hand_pushed_card_the_captain_settled() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-settled-rich"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # A section-9 escalation: firstmate pushes a rich card under the SAME id, replacing the
+  # mechanical baseline. It carries no ownership stamp - and must not, or the refresh
+  # would flatten it back every cycle - so its content is not comparable with anything
+  # compose derives for that id.
+  body=$(compose_as_board "$home" '
+    .items |= map(if .id == "decide-b2"
+                  then (.title = "Escalation: nav placement needs your call"
+                        | .body = "firstmate wrote the tradeoffs out in full"
+                        | .options = [{label: "Top", value: "top"}, {label: "Side", value: "side"}]
+                        | .source = {escalation: "section-9"})
+                  else . end)')
+  # The captain answers it, firstmate acts, and the card is cleared through the answer
+  # loop - the clear that DOES settle a question.
+  clear_card "$home" "$fakebin" "$body" decide-b2
+  # Next cycle: the board has dropped the resolved row and compose still derives its
+  # baseline for that id. Re-adding it would be the board re-asking what was answered,
+  # for exactly the class of card the escalation discipline exists for.
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "decide-b2" and .id != "scout-c3"))')
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "the refresh must still add a card nobody settled"
+  posted_ids "$log" | grep -qx 'decide-b2' \
+    && fail "an answered escalation must not return as the mechanical baseline"
+  # And it still returns once the underlying situation moves on, which is a different
+  # question - proof the pass above adopted a comparable hash rather than pinning it down.
+  printf 'working: sketching options\nneeds-decision: nav on top, side, or hidden? (options: top, side, hidden)\n' \
+    > "$home/state/decide-b2.status"
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "decide-b2"))')
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'decide-b2' \
+    || fail "a settled escalation whose composed content changed must reach the board again"
+  pass "fm-logbook-resync keeps an answered escalation down until its composed content changes"
+}
+
 test_resync_fingerprint_covers_a_lapsing_hold_gate() {
   local home fakebin log body out card
   home="$TMP_ROOT/resync-hold-lapse"; mkdir -p "$home/data" "$home/state"
@@ -3681,6 +3757,39 @@ test_bootstrap_surfaces_a_merge_policy_lookup_it_could_not_perform() {
   pass "bootstrap surfaces a merge-policy lookup the session-start sync could not perform"
 }
 
+test_bootstrap_keeps_settled_cards_through_a_missing_tool() {
+  local home fakebin out
+  home="$TMP_ROOT/boot-settled-record"; mkdir -p "$home/config" "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  cat > "$home/config/logbook.env" <<'EOF'
+LOGBOOK_ENABLE=1
+LOGBOOK_URL=http://127.0.0.1:8137
+LOGBOOK_TOKEN=boottok
+EOF
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+  assert_present "$home/state/logbook-resync.check.sh" "opt-in must arm the refresh shim first"
+  # What the captain has already answered and firstmate cleared, as a live instance would
+  # have left it behind (state/logbook-cleared.json is this feature's own state artifact).
+  printf '{"decide-b2":"1234567890-42"}\n' > "$home/state/logbook-cleared.json"
+  # A session that starts with jq briefly off PATH. Bootstrap rightly disarms the shims
+  # it cannot run - but that is a transient, not the captain changing their mind, and
+  # nothing can be recorded while jq is gone anyway. Guarded like the poll's own
+  # missing-jq test, since some hosts carry jq in /usr/bin.
+  if ! PATH="/usr/bin:/bin" command -v jq >/dev/null 2>&1; then
+    out=$(PATH="$fakebin:/usr/bin:/bin" FM_HOME="$home" FAKE_HEALTH_CODE=200 \
+      "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+    assert_contains "$out" "MISSING: jq" "the missing-tool path must name the tool it cannot find"
+    assert_absent "$home/state/logbook-resync.check.sh" "a shim that cannot run must be disarmed"
+    assert_present "$home/state/logbook-cleared.json" \
+      "a transient missing tool must not be read as consent to forget what the captain settled"
+  fi
+  # Opting out IS that consent: the board itself is going away, so the record goes too.
+  printf 'LOGBOOK_ENABLE=0\n' > "$home/config/logbook.env"
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FAKE_HEALTH_CODE=200 "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+  assert_absent "$home/state/logbook-cleared.json" "opt-out must forget the settled-card record"
+  pass "bootstrap keeps the settled-card record through a missing tool and drops it only on opt-out"
+}
+
 test_bootstrap_unreachable_omits_link_and_autosync() {
   local home fakebin out
   home="$TMP_ROOT/boot-link-down"; mkdir -p "$home/config"
@@ -3817,6 +3926,8 @@ test_resync_resurfaces_a_settled_card_once_its_content_changes
 test_resync_forgets_a_settled_card_that_left_the_composed_set
 test_refresh_never_resurrects_a_card_the_captain_settled
 test_resolve_dry_run_settles_nothing
+test_resync_recards_work_that_left_the_set_and_came_back
+test_resync_never_resurrects_a_hand_pushed_card_the_captain_settled
 test_resync_fingerprint_covers_a_lapsing_hold_gate
 test_resync_relays_a_merge_policy_diagnostic_without_waking
 test_compose_stamps_every_card_with_the_ownership_producer
@@ -3824,6 +3935,7 @@ test_bootstrap_opt_in_surfaces_link_and_autosyncs
 test_bootstrap_autosync_surfaces_a_malformed_registry_posture
 test_bootstrap_surfaces_a_policy_diagnostic_no_caller_was_taught
 test_bootstrap_surfaces_a_merge_policy_lookup_it_could_not_perform
+test_bootstrap_keeps_settled_cards_through_a_missing_tool
 test_bootstrap_unreachable_omits_link_and_autosync
 test_xmode_and_logbook_cadences_coexist
 test_logbook_off_leaves_supervision_block_inert
