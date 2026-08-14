@@ -3406,6 +3406,40 @@ test_resync_unreadable_board_is_silent_and_writes_nothing() {
   pass "fm-logbook-resync stays silent and writes nothing when the board cannot be read"
 }
 
+test_resync_treats_an_unusable_board_body_as_an_unread_board() {
+  local home fakebin log out answered
+  home="$TMP_ROOT/resync-board-badbody"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # A 2xx is an answer about the REQUEST, not a board view. Every one of these bodies
+  # reads to jq as a board with NO cards, which is worse than a failed read: with nothing
+  # on the board to compare against, every composed item lands in the ADD set and the
+  # ownership test is never consulted, so a hand-pushed escalation under a composed id is
+  # overwritten by the mechanical baseline - and because those writes answer 2xx the
+  # cycle banks its fingerprint and never retries. Any write at all here is that bug.
+  for answered in '' 'null' '{"error":"the board is not here"}' '{"items":[]}'; do
+    : > "$log"
+    rm -f "$home/state/logbook-resync.fingerprint"
+    out=$(run_resync "$home" "$fakebin" "$log" "$answered" FAKE_BOARD_CODE=200)
+    [ -z "$out" ] || fail "an unusable board body must not wake firstmate: $out"
+    assert_no_declarative_sync "$log" "an unusable board body"
+    posted_ids "$log" | grep -q . \
+      && fail "a 2xx that did not carry a board must write nothing (body: '$answered')"
+    assert_absent "$home/state/logbook-resync.fingerprint" \
+      "a cycle that never read a board must not bank a fingerprint over it (body: '$answered')"
+  done
+  # A legitimately EMPTY board is still a board, so this narrows to the unusable bodies
+  # rather than refusing to reconcile against a board with nothing on it.
+  : > "$log"
+  rm -f "$home/state/logbook-resync.fingerprint"
+  out=$(run_resync "$home" "$fakebin" "$log" '{"projects":[],"items":[]}' FAKE_BOARD_CODE=200)
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "an empty board is a board: the refresh must still put the composed set on it"
+  assert_present "$home/state/logbook-resync.fingerprint" \
+    "a cycle that reconciled against an empty board must bank its fingerprint"
+  pass "fm-logbook-resync reads a 2xx that did not carry a board as a board it never read"
+}
+
 test_resync_never_resurrects_a_card_the_captain_settled() {
   local home fakebin log body out
   home="$TMP_ROOT/resync-settled"; write_fleet_fixture "$home"
@@ -3656,7 +3690,7 @@ test_refresh_treats_an_unusable_board_body_as_no_board_view() {
   # exactly the state in which the "this id is back on the board -> evict" rule cannot
   # fire, so a settled id whose card is live would be stripped and the declarative sync
   # would delete it. Both bad bodies must take the same branch a dead board takes.
-  for answered in '' 'not json at all' '[]'; do
+  for answered in '' 'not json at all' '[]' '{"error":"the board is not here"}'; do
     rm -f "$synced"
     env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
       LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
@@ -3909,6 +3943,47 @@ test_resync_recards_work_that_left_the_set_and_came_back() {
   posted_ids "$log" | grep -qx 'scout-c3' \
     || fail "work that left the attention set and came back unchanged must be carded again"
   pass "fm-logbook-resync re-cards work that left the attention set and came back unchanged"
+}
+
+test_settled_record_survives_a_cycle_that_cannot_read_it() {
+  local home fakebin log body out
+  home="$TMP_ROOT/settled-unreadable"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  body=$(compose_as_board "$home")
+  # The captain answered scout-c3 and firstmate cleared it through the answer loop, so
+  # the record holds that settled card.
+  clear_card "$home" "$fakebin" "$body" scout-c3
+  settled_ids "$home" | grep -qx 'scout-c3' \
+    || fail "clearing a card must record it as settled, or nothing below is under test"
+  chmod 000 "$home/state/logbook-cleared.json" 2>/dev/null || true
+  if [ -r "$home/state/logbook-cleared.json" ]; then
+    # Running as root, or a filesystem with no permission bits: the state under test
+    # cannot be produced here.
+    chmod 600 "$home/state/logbook-cleared.json" 2>/dev/null || true
+    pass "the settled-card record survives a cycle that cannot read it (unreadable state not reproducible here)"
+    return 0
+  fi
+  # A record that is THERE and cannot be read is not a corrupt one. Neither writer may
+  # treat it as consent to forget: the answer loop must not replace it with the one clear
+  # it is making now, and the refresh must not delete it as unparseable.
+  clear_card "$home" "$fakebin" "$body" decide-b2
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  assert_present "$home/state/logbook-cleared.json" \
+    "a record this cycle could not read must never be deleted as corrupt"
+  chmod 600 "$home/state/logbook-cleared.json" 2>/dev/null || true
+  settled_ids "$home" | grep -qx 'scout-c3' \
+    || fail "a clear made while the record was unreadable must not have written over what the captain already settled"
+  # And once it can be read again it is honored again, which is what makes the pass above
+  # a deferral rather than a quiet loss.
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
+  rm -f "$home/state/logbook-resync.fingerprint"
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    && fail "the settled card must be honored again once the record is readable"
+  pass "the settled-card record survives a cycle that cannot read it, and is honored once it can be"
 }
 
 test_resync_never_resurrects_a_hand_pushed_card_the_captain_settled() {
@@ -4401,6 +4476,8 @@ test_resync_never_clears_a_card_the_captain_answered
 test_resync_upserts_projects_and_never_deletes_them
 test_resync_failure_leaves_the_fingerprint_unrecorded
 test_resync_unreadable_board_is_silent_and_writes_nothing
+test_resync_treats_an_unusable_board_body_as_an_unread_board
+test_settled_record_survives_a_cycle_that_cannot_read_it
 test_resync_never_resurrects_a_card_the_captain_settled
 test_resync_resurfaces_a_settled_card_once_its_content_changes
 test_resync_forgets_a_settled_card_that_left_the_composed_set

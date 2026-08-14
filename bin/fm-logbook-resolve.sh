@@ -83,8 +83,11 @@ trap 'rm -f "$BOARD_FILE" "$BODY_FILE"' EXIT
 # LOGBOOK_DRY (a GET has no side effects; only the upsert is suppressed) so the
 # recorded preview is the exact full item a live resolve would send. A read
 # failure (board down, no token, curl missing) is a real error: exit non-zero so
-# the answer-loop leaves the inbox file and retries on the next poll.
-logbook_get_json /api/board "$BOARD_FILE" >/dev/null || exit 1
+# the answer-loop leaves the inbox file and retries on the next poll. Through
+# logbook_get_board, the gate every board reader shares, so a 2xx that did not
+# carry a board is a failed read here too rather than a board with no cards -
+# which this script would otherwise read as "that id is already cleared".
+logbook_get_board "$BOARD_FILE" >/dev/null || exit 1
 
 # Compose the full valid upsert: the whole item with status overridden. jq prints
 # nothing (and exits 0) when the id is not present, so an empty result is the

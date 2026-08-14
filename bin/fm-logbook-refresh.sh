@@ -84,16 +84,15 @@ fi
 # header): the suppression rule that needs it most is "this id is back on the board ->
 # evict", and that is exactly the rule protecting a live card from a declarative delete.
 #
-# All THREE conditions, because a 2xx is not a board view. logbook_get_json answers for
-# the request, not for the body, so a 200 carrying nothing, or an HTML error page from
-# whatever else is listening on this URL, would otherwise set BOARD_VIEW - and the filter
-# reads an unusable body as a board with NO ids on it, which is precisely the state that
-# cannot fire the eviction and deletes the live card. Neither bad body is distinguishable
-# from a dead board here, so both take the same branch it does.
+# Read through logbook_get_board rather than logbook_get_json, because a 2xx is not a
+# board view: a 200 carrying nothing, or an error object from whatever else is listening
+# on this URL, reads to the filter as a board with NO ids on it - precisely the state
+# that cannot fire the eviction and so deletes the live card. That gate belongs to
+# fm-logbook-lib.sh, which every board reader shares, rather than to this call site;
+# a body it will not vouch for is not distinguishable from a dead board here, so both
+# take the same branch.
 BOARD_VIEW=""
-if logbook_get_json /api/board "$BOARD_FILE" >/dev/null 2>&1 \
-   && [ -s "$BOARD_FILE" ] \
-   && jq -e 'type == "object"' "$BOARD_FILE" >/dev/null 2>&1; then
+if logbook_get_board "$BOARD_FILE" >/dev/null 2>&1; then
   BOARD_VIEW="$BOARD_FILE"
 fi
 

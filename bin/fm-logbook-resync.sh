@@ -401,8 +401,13 @@ fi
 
 # Read the live board. This is what makes the reconcile incremental rather than
 # declarative: without it there is no way to know which cards are already right, which
-# are this script's to rewrite, and which belong to someone else.
-if ! logbook_get_json /api/board "$BOARD" >/dev/null 2>&1; then
+# are this script's to rewrite, and which belong to someone else. Through
+# logbook_get_board, the one gate that answers for the board VIEW rather than for the
+# request: a 2xx whose body is not a board would otherwise read as a board with no cards,
+# which puts every composed item in the ADD set with the ownership test never consulted -
+# flattening a hand-pushed escalation - and then banks the fingerprint over it, because
+# those writes succeed. A board this cycle cannot vouch for is a board it did not read.
+if ! logbook_get_board "$BOARD" >/dev/null 2>&1; then
   # Almost always the board being down, which the reap already owns and reports.
   echo "fm-logbook-resync: could not read the board" >&2
   record_failure

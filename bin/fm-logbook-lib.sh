@@ -27,6 +27,9 @@
 #                                   (starts alphanumeric, then [A-Za-z0-9._:-],
 #                                   <=200 chars, no "..")
 #   logbook_auth_header_file      - write the bearer header to a 0600 temp file
+#   logbook_get_board <out-file>  - GET /api/board through logbook_get_json and
+#                                   answer for the BOARD VIEW rather than for the
+#                                   request; the one gate every board reader uses
 #   logbook_get_json <api-path> <out-file> - bounded curl GET of
 #                                   $LOGBOOK_URL<api-path> into <out-file> with the
 #                                   bearer token. A GET has no side effects, so
@@ -337,8 +340,13 @@ logbook_cleared_record_locked() {
     [ -n "$hash" ] || return 1
   fi
 
+  # A record that is there and cannot be READ is not a corrupt one, and the difference
+  # matters: falling back to "{}" here would write this one clear over every clear the
+  # captain has answered so far. Refuse the record instead, without touching the file -
+  # the caller warns, the clear itself still lands, and nothing is forgotten.
   existing='{}'
   if [ -s "$LOGBOOK_CLEARED_FILE" ]; then
+    [ -r "$LOGBOOK_CLEARED_FILE" ] || return 1
     existing=$(jq -c 'if type == "object" then . else {} end' "$LOGBOOK_CLEARED_FILE" 2>/dev/null) || existing='{}'
     [ -n "$existing" ] || existing='{}'
   fi
@@ -392,6 +400,12 @@ logbook_cleared_filter_locked() {
   printf '[]\n' > "$out" 2>/dev/null || return 0
   [ -n "$record" ] && [ -s "$record" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
+  # Unreadable is not corrupt, and only one of the two may cost the captain their
+  # answers. A record this pass cannot open degrades to the documented fail-open (no
+  # suppression this cycle, so the card reappears) with the FILE LEFT ALONE, so the next
+  # readable pass honors it again. Only a file jq actually parsed and found not to be
+  # this object is dropped.
+  [ -r "$record" ] || return 0
   if ! jq -e 'type == "object"' "$record" >/dev/null 2>&1; then
     # A record that is not the object this owns cannot be reasoned about; drop it
     # rather than let a corrupt file suppress cards forever.
@@ -542,6 +556,41 @@ logbook_get_json() (
     *) echo "logbook: board returned HTTP $code" >&2; return 1 ;;
   esac
 )
+
+# logbook_get_board <out-file>
+# THE ONE GATE EVERY BOARD READ GOES THROUGH. logbook_get_json answers for the REQUEST -
+# it returns 0 for any 2xx - and a 2xx is not a board view. Every reader here indexes
+# into what came back, and jq reads an empty file, a `null`, or an object that is not a
+# board as A BOARD WITH NO CARDS rather than as a failed read. That silent substitution
+# is the dangerous one in both directions this client writes:
+#
+#   - the DECLARATIVE session-start sync subtracts settled ids from its payload, and a
+#     board with no ids cannot fire the "this id is back on the board -> evict" rule, so
+#     a live card under a settled id is stripped from the payload and DELETED;
+#   - the INCREMENTAL refresh partitions on what the board already holds, and a board
+#     with no cards puts every composed item in the ADD set with the ownership test never
+#     consulted, FLATTENING a hand-pushed escalation back to the mechanical baseline -
+#     and the writes answer 2xx, so the cycle banks its fingerprint and never retries.
+#
+# So the check lives HERE, once, rather than at each call site remembering it: a board
+# view is a 2xx whose body is present and is an object carrying an `items` array and a
+# `projects` array, which is what GET /api/board returns and what its readers walk. A
+# legitimately empty board passes; a body that merely parsed does not. On success it
+# prints the HTTP status code, exactly like logbook_get_json; otherwise it returns
+# non-zero, forwarding that function's own code when the request itself was the problem.
+logbook_get_board() {
+  local out=${1-} code
+  [ -n "$out" ] || return 2
+  code=$(logbook_get_json /api/board "$out") || return $?
+  if [ ! -s "$out" ] || ! jq -e '
+        (type == "object") and ((.items | type) == "array")
+        and ((.projects | type) == "array")' "$out" >/dev/null 2>&1; then
+    echo "logbook: the board URL answered, but not with a board" >&2
+    return 5
+  fi
+  printf '%s\n' "$code"
+  return 0
+}
 
 # logbook_post_json <api-path> <json-file|-> [outbox-name]
 # POST the JSON in <json-file> (or stdin when "-") to $LOGBOOK_URL<api-path> with
