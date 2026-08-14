@@ -3463,16 +3463,21 @@ test_resync_forgets_a_settled_card_that_left_the_composed_set() {
 }
 
 test_refresh_never_resurrects_a_card_the_captain_settled() {
-  local home fakebin body synced
+  local home fakebin body cleared synced
   home="$TMP_ROOT/refresh-settled"; write_fleet_fixture "$home"
   fakebin=$(make_fake_curl "$home")
   body=$(compose_as_board "$home")
   clear_card "$home" "$fakebin" "$body" scout-c3
   synced="$home/state/logbook-outbox/sync.json"
+  # The board as GET /api/board now reports it: the cleared row is gone, exactly the
+  # shape the suppression has to reason about.
+  cleared=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
   # The session-start truth-restore is the OTHER compose-driven writer, and it re-declared
   # a cleared card exactly as the mid-session refresh did. It must honor the same record,
   # or every session start undoes what the answer loop settled.
   env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+    LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
+    FAKE_BOARD_BODY="$cleared" FAKE_BOARD_CODE=200 \
     "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
   assert_present "$synced" "the session-start refresh must still compose and sync a body"
   jq -e 'any(.items[]; .id == "scout-c3")' "$synced" >/dev/null \
@@ -3483,6 +3488,8 @@ test_refresh_never_resurrects_a_card_the_captain_settled() {
   printf 'working: profiling the query\nneeds-decision: index or rewrite? (options: index, rewrite)\n' \
     > "$home/state/scout-c3.status"
   env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+    LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
+    FAKE_BOARD_BODY="$cleared" FAKE_BOARD_CODE=200 \
     "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
   jq -e 'any(.items[]; .id == "scout-c3")' "$synced" >/dev/null \
     || fail "a settled card whose content changed must reach the board at session start"$'\n'"$(cat "$synced")"
@@ -3584,6 +3591,184 @@ test_refresh_never_deletes_a_fresh_card_under_a_settled_id() {
   jq -e 'any(.items[]; .id == "decide-b2")' "$synced" >/dev/null \
     || fail "a settled id whose card is live on the board must stay in the declarative payload, or the sync deletes it"$'\n'"$(cat "$synced")"
   pass "fm-logbook-refresh reads the board first, so a fresh card under a settled id is never synced away"
+}
+
+test_refresh_suppresses_nothing_when_the_board_cannot_be_read() {
+  local home fakebin body synced
+  home="$TMP_ROOT/refresh-settled-boarddown"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home")
+  body=$(compose_as_board "$home")
+  # The captain answered decide-b2 and firstmate cleared it, so that id is settled.
+  clear_card "$home" "$fakebin" "$body" decide-b2
+  # Now the ONE read this refresh makes fails - a 503, a slow board, a curl that timed
+  # out. The board read is what licenses subtracting from a DECLARATIVE payload at all
+  # (only it can fire the "this id is back on the board -> evict" rule), so a read that
+  # did not answer has to cancel the subtraction: firstmate may have pushed a fresh card
+  # under that id, and the sync would delete it. A settled card re-declared once is
+  # recoverable; a live card deleted is not.
+  synced="$home/state/logbook-outbox/sync.json"
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+    LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
+    FAKE_BOARD_BODY="" FAKE_BOARD_CODE=503 \
+    "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
+  assert_present "$synced" "an unreadable board must not stop the session-start sync"
+  jq -e 'any(.items[]; .id == "decide-b2")' "$synced" >/dev/null \
+    || fail "with no board view nothing may be subtracted from a declarative payload"$'\n'"$(cat "$synced")"
+  # The record itself is untouched, so this is a deferral and not a forgotten answer.
+  settled_ids "$home" | grep -qx 'decide-b2' \
+    || fail "a board this cycle could not read must never be read as consent to forget a clear"
+  # Proof of that: the next cycle CAN read the board, and the same card is suppressed
+  # again with no clear repeated.
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "decide-b2"))')
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+    LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
+    FAKE_BOARD_BODY="$body" FAKE_BOARD_CODE=200 \
+    "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
+  jq -e 'any(.items[]; .id == "decide-b2")' "$synced" >/dev/null \
+    && fail "the settled card must be suppressed again on the next readable cycle"$'\n'"$(cat "$synced")"
+  pass "fm-logbook-refresh subtracts nothing when it could not read the board, and defers rather than forgets"
+}
+
+test_push_never_hands_the_refresh_a_card_it_did_not_compose() {
+  local home fakebin state item card
+  home="$TMP_ROOT/push-unstamped"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_store_curl "$home"); state="$home/board-state.json"
+  # Session start puts the mechanical baseline up, every card stamped as the refresh's
+  # own - which is what makes the escalation below inherit the stamp at all.
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=pushtok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
+    "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
+  [ "$(stored_card "$state" ship-pr-a1 | jq -r '.source.producer')" = "fm-logbook-compose" ] \
+    || fail "the session-start baseline must carry the ownership stamp, or nothing below is under test"
+  # Section 9: firstmate escalates by composing a RICH card ON TOP of that baseline. That
+  # is the natural way to write one - and it carries compose's ownership stamp along with
+  # every other field, so the hand-push boundary is where the stamp has to come off.
+  item=$(PATH="$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 "$ROOT/bin/fm-logbook-compose.sh" \
+    | jq -c '.items[] | select(.id == "ship-pr-a1")
+             | .title = "Escalation: the widget rollout needs your call"
+             | .body = "firstmate wrote the tradeoffs out in full"')
+  printf '%s' "$item" | env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=pushtok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
+    "$ROOT/bin/fm-logbook-push.sh" - >/dev/null 2>&1
+  card=$(stored_card "$state" ship-pr-a1)
+  [ "$(printf '%s' "$card" | jq -r .title)" = "Escalation: the widget rollout needs your call" ] \
+    || fail "the escalation must reach the board"$'\n'"$card"
+  [ "$(printf '%s' "$card" | jq -r '.source.pr')" = "https://github.com/acme/alpha/pull/42" ] \
+    || fail "the strip must leave source.pr alone - it is the merge-policy gate's second signal"$'\n'"$card"
+  # The 15s beat, with the fleet unchanged underneath: the composed baseline for that id
+  # differs from the curated card, so an OWNED card would be corrected right back to the
+  # mechanical text. This one is not the refresh's to correct.
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=pushtok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
+    "$ROOT/bin/fm-logbook-resync.sh" >/dev/null 2>&1
+  card=$(stored_card "$state" ship-pr-a1)
+  [ "$(printf '%s' "$card" | jq -r .title)" = "Escalation: the widget rollout needs your call" ] \
+    || fail "a hand-pushed escalation must never be flattened back to the mechanical baseline"$'\n'"$card"
+  [ "$(printf '%s' "$card" | jq -r '.body')" = "firstmate wrote the tradeoffs out in full" ] \
+    || fail "the curated body must survive the refresh"$'\n'"$card"
+  pass "fm-logbook-push strips the ownership stamp, so an escalation cannot be flattened by the refresh"
+}
+
+test_resync_keeps_a_set_aside_card_down_through_progress_churn() {
+  local home fakebin log body out
+  home="$TMP_ROOT/resync-setaside"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # scout-c3 is a live-crew fyi, so its BODY IS the crew's last status line. The captain
+  # has set it aside - "not now" - and the crew keeps writing status.
+  printf 'working: reading the query plan\n' > "$home/state/scout-c3.status"
+  body=$(compose_as_board "$home" '
+    .items |= map(if .id == "scout-c3" then (.set_aside = true | .body = "profiling the query")
+                  else . end)')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  assert_no_declarative_sync "$log" "a set-aside card drifting on progress text"
+  # Re-upserting it would hand the tool an isNewClaim it answers yes to, clearing the
+  # captain's "not now" - several times per task, on the 15s beat, for exactly the
+  # progress-noise card they put down.
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    && fail "a set-aside fyi whose only drift is its progress text must not be re-upserted"
+  # A card the captain has NOT set aside still refreshes on the same kind of drift, so
+  # this narrows to the set-aside and nothing else.
+  body=$(compose_as_board "$home" '
+    .items |= map(if .id == "scout-c3" then .body = "profiling the query" else . end)')
+  rm -f "$home/state/logbook-resync.fingerprint"
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "a card the captain is watching must keep showing progress"
+  pass "fm-logbook-resync leaves a set-aside fyi down through crew progress churn"
+}
+
+test_resync_still_clears_a_set_aside_when_the_card_becomes_a_claim() {
+  local home fakebin log body out card
+  home="$TMP_ROOT/resync-setaside-claim"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  # Same set-aside card, but the situation genuinely moves on: the crew now needs a
+  # decision, so compose derives a different KIND of card offering options. That is a new
+  # claim, the set-aside is the captain's answer to the OLD one, and the tool clearing it
+  # on the upsert is the correct outcome - this is what stops the guard above from
+  # quietly becoming "set aside is forever".
+  printf 'working: profiling the query\nneeds-decision: index or rewrite? (options: index, rewrite)\n' \
+    > "$home/state/scout-c3.status"
+  body=$(compose_as_board "$home" '
+    .items |= map(if .id == "scout-c3"
+                  then (.set_aside = true | .kind = "fyi" | .body = "profiling the query"
+                        | .options = [])
+                  else . end)')
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "a set-aside card that became an answerable claim must still be re-upserted"
+  card=$(grep '^data=' "$log" | sed 's/^data=//' \
+    | jq -c 'if type=="array" then .[] else . end | select(type=="object" and .id=="scout-c3")' | tail -1)
+  printf '%s' "$card" | jq -e '.kind == "decision"' >/dev/null \
+    || fail "the re-upserted card must be the new claim, not the fyi the captain set aside"$'\n'"$card"
+  pass "fm-logbook-resync still refreshes a set-aside card once it turns into an answerable claim"
+}
+
+test_resync_backs_off_after_a_long_run_of_failed_cycles() {
+  local home fakebin log body out i
+  home="$TMP_ROOT/resync-backoff"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
+  # The board is up and rejecting every write. Nothing on disk changes, so the
+  # fingerprint stays broken and every cycle recomposes - a git shell-out per carded
+  # project plus a jq invocation per item - and throws the result away.
+  i=0
+  while [ "$i" -lt 21 ]; do
+    out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_POST_CODE=500)
+    [ -z "$out" ] || fail "a failing refresh must stay silent on every cycle: $out"
+    i=$((i + 1))
+  done
+  assert_absent "$home/state/logbook-resync.fingerprint" \
+    "a cycle that could not write must never bank the state it failed to reach"
+  # Past the bound - five minutes of continuous failure at the 15s beat - it backs off
+  # before the expensive half: the next beat costs nothing at all, not even the board GET.
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_POST_CODE=500)
+  [ -z "$out" ] || fail "a backed-off cycle must stay silent too: $out"
+  [ -s "$log" ] && fail "past the bound a failing refresh must stop paying for a full cycle every beat"
+  # The board comes back. The backoff is a bound, not a wedge: it still retries, and the
+  # first cycle that completes clears the counter with no restart and no session start.
+  i=0
+  while [ "$i" -lt 25 ] && [ ! -f "$home/state/logbook-resync.fingerprint" ]; do
+    run_resync "$home" "$fakebin" "$log" "$body" >/dev/null
+    i=$((i + 1))
+  done
+  assert_present "$home/state/logbook-resync.fingerprint" \
+    "a healthy board must be reconciled again without a restart"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "the recovered cycle must do the work the backoff had been skipping"
+  # And the beat is the normal one from here: the very next fleet change is reconciled on
+  # the very next cycle, not 20 beats later.
+  printf 'working: rewriting the query\n' > "$home/state/scout-c3.status"
+  : > "$log"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body")
+  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
+  posted_ids "$log" | grep -qx 'scout-c3' \
+    || fail "after recovery the next fleet change must be reconciled on the next beat"
+  pass "fm-logbook-resync bounds its retry after a lasting failure and recovers on one good cycle"
 }
 
 test_resync_recards_work_that_left_the_set_and_came_back() {
@@ -4118,6 +4303,11 @@ test_resolve_dry_run_settles_nothing
 test_resync_never_rewrites_a_card_the_captain_answered
 test_board_keeps_an_answered_card_across_a_session_start_re_declaration
 test_refresh_never_deletes_a_fresh_card_under_a_settled_id
+test_refresh_suppresses_nothing_when_the_board_cannot_be_read
+test_push_never_hands_the_refresh_a_card_it_did_not_compose
+test_resync_keeps_a_set_aside_card_down_through_progress_churn
+test_resync_still_clears_a_set_aside_when_the_card_becomes_a_claim
+test_resync_backs_off_after_a_long_run_of_failed_cycles
 test_resync_recards_work_that_left_the_set_and_came_back
 test_resync_never_resurrects_a_hand_pushed_card_the_captain_settled
 test_resync_fingerprint_covers_a_lapsing_hold_gate

@@ -59,6 +59,19 @@
 #     (the content diff above), so a card put down stays down. When the content DOES
 #     change from an fyi into an answerable claim, the tool's own isNewClaim clears the
 #     set-aside - correct, because it is a different card now.
+#     That rule needs one exception, or the diff above hands isNewClaim far more than it
+#     was meant to see. A live-crew fyi's BODY IS the last status line
+#     (bin/fm-logbook-compose.sh), so it moves on every status write a crewmate makes -
+#     several times per task, on this 15s beat - and each of those upserts would clear
+#     the "not now" on exactly the progress-noise card a captain sets aside. So the
+#     update set SKIPS a card the board reports set aside whose drift is its body alone
+#     and which is an fyi offering no options: nothing about it is answerable, so the
+#     new body is progress text and not a new claim. Everything else still updates and
+#     still clears the set-aside, exactly as before - a changed kind, title or options,
+#     and a body change on a card that IS answerable (a decision's question text moving
+#     is a different question). Only a card the captain actually put down is affected;
+#     one they are watching keeps showing progress. A board that does not report
+#     set_aside at all reads as not-set-aside, which is precisely today's behavior.
 #   - The captain's unacted answer. A card at status `submitted` has been answered on
 #     the board and is waiting on firstmate, so THIS script neither clears it NOR
 #     rewrites it: the answer loop (fm-logbook-ack.sh / fm-logbook-resolve.sh) owns it
@@ -116,7 +129,8 @@
 # board that cannot be reached is not a reason to disturb the captain or interrupt
 # supervision, and it is already the reap's story to tell if it is down for good. Any
 # diagnostic goes to stderr, which the watcher discards and a hand run shows. A failed
-# cycle does not record the fingerprint, so it simply retries on the next beat.
+# cycle does not record the fingerprint, so it simply retries on the next beat - bounded,
+# for a failure that lasts; see BOUNDED RETRY below.
 #
 # That is also why compose's stderr is RELAYED here rather than dropped. Composing the
 # board reads every carded project's merge policy, so this is a second unattended read
@@ -180,6 +194,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 command -v curl >/dev/null 2>&1 || exit 0
 
 FINGERPRINT_FILE="$STATE/logbook-resync.fingerprint"
+FAILURE_FILE="$STATE/logbook-resync.failures"
 PROJECTS_MD="$DATA/projects.md"
 BACKLOG_MD="$DATA/backlog.md"
 
@@ -206,6 +221,56 @@ FINGERPRINT=$(fleet_fingerprint)
 
 if [ -f "$FINGERPRINT_FILE" ] && [ "$(cat "$FINGERPRINT_FILE" 2>/dev/null)" = "$FINGERPRINT" ]; then
   # The overwhelmingly common path: nothing in the fleet moved, so nothing is owed.
+  exit 0
+fi
+
+# BOUNDED RETRY. A cycle that cannot complete records no fingerprint, so it retries on
+# the next beat. That is right for the transient failure it was written for and wrong for
+# one that lasts: a board that stays down after the reap gives up, or a board that is up
+# and rejecting every write, would otherwise buy a full compose - a git shell-out per
+# carded project plus a jq invocation per item - every 15s for as long as the failure
+# lasts, and throw the result away. So consecutive cycles that did not reach the board
+# state they composed are COUNTED, persisted beside the fingerprint (and the same way, so
+# the count survives a cycle exactly as the fingerprint does), and past the bound this
+# backs off toward the staleness it had before this script existed: one attempt every
+# RESYNC_BACKOFF_AFTER beats instead of one every beat.
+#
+# The bound is 20 because at the 15s beat 20 consecutive failures is FIVE MINUTES of
+# continuous failure - generous headroom for the board-liveness reap to notice a dead
+# board and relaunch it, including a crash-loop retry or two, so an ordinary board
+# restart never trips this. Past five minutes the board is not transiently down, and
+# paying a full compose every 15s to throw the result away buys nothing.
+#
+# Recovery needs no restart and no session start: ONE cycle that completes deletes the
+# counter, and the very next fleet change is reconciled on the normal beat again. The
+# skipped beats are counted too, which is what spaces the retries out; without that the
+# counter would freeze one past the bound and the backoff would become a wedge.
+RESYNC_BACKOFF_AFTER=20
+
+FAILURES=$(cat "$FAILURE_FILE" 2>/dev/null)
+case "$FAILURES" in
+  ''|*[!0-9]*) FAILURES=0 ;;
+esac
+
+# Persist one more consecutive cycle that did not get there. Best-effort and silent like
+# every other write here: a counter that cannot be written costs the backoff, not the
+# refresh.
+record_failure() {
+  local tmp
+  mkdir -p "$STATE" 2>/dev/null || return 0
+  tmp=$(mktemp "$STATE/.logbook-resync.failures.XXXXXX" 2>/dev/null) || return 0
+  if printf '%s\n' "$((FAILURES + 1))" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$FAILURE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  else
+    rm -f "$tmp" 2>/dev/null
+  fi
+}
+
+if [ "$FAILURES" -ge "$RESYNC_BACKOFF_AFTER" ] \
+   && [ "$((FAILURES % RESYNC_BACKOFF_AFTER))" -ne 0 ]; then
+  # Backed off: this beat is skipped before the compose that is the expensive half, and
+  # in silence, like every other thing this script declines to do.
+  record_failure
   exit 0
 fi
 
@@ -242,11 +307,13 @@ relay_merge_policy_diagnostics() {
 if ! "$SCRIPT_DIR/fm-logbook-compose.sh" > "$COMPOSED" 2>"$COMPOSE_ERR"; then
   relay_merge_policy_diagnostics "$COMPOSE_ERR"
   echo "fm-logbook-resync: could not compose the attention set" >&2
+  record_failure
   exit 0
 fi
 relay_merge_policy_diagnostics "$COMPOSE_ERR"
 if [ ! -s "$COMPOSED" ] || ! jq -e . "$COMPOSED" >/dev/null 2>&1; then
   echo "fm-logbook-resync: composed board body was empty or not valid JSON" >&2
+  record_failure
   exit 0
 fi
 
@@ -256,6 +323,7 @@ fi
 if ! logbook_get_json /api/board "$BOARD" >/dev/null 2>&1; then
   # Almost always the board being down, which the reap already owns and reports.
   echo "fm-logbook-resync: could not read the board" >&2
+  record_failure
   exit 0
 fi
 
@@ -286,6 +354,20 @@ if ! jq -n \
     { name, repo: (.repo // ""), mode: (.mode // ""),
       subprojects: (.subprojects // []) };
 
+  # Read of a BOARD card (the input) against the composed one: is the only thing that
+  # moved the progress text on a card the captain has put down? A set-aside is the
+  # captain saying "not now" about this card as it stands, and a re-upsert hands the
+  # tool an isNewClaim it would answer yes to, clearing that. Nothing here is
+  # answerable - an fyi offering no options - so a new body is the live crew status
+  # line moving, not a new question, and there is nothing to bring back to the captain.
+  # An absent set_aside (a board that does not report one) reads false, so this guard
+  # can only ever narrow to the cards it is about.
+  def progress_noise($cand):
+    ((.set_aside // false) == true)
+    and ($cand.kind == "fyi")
+    and ((($cand.options // []) | length) == 0)
+    and ((norm | del(.body)) == ($cand | norm | del(.body)));
+
   (($composed[0] // {}) | .items // []) as $citems
   | (($composed[0] // {}) | .projects // []) as $cprojects
   | (($board[0] // {}) | .items // []) as $bitems
@@ -301,7 +383,8 @@ if ! jq -n \
                         then (($suppress | index($c.id)) == null)
                         else (($prev | owned($producer))
                               and ($prev.status != "submitted")
-                              and (($prev | norm) != ($c | norm))) end) ],
+                              and (($prev | norm) != ($c | norm))
+                              and (($prev | progress_noise($c)) | not)) end) ],
       clear: [ $bitems[]
                | . as $b
                | select($b | owned($producer))
@@ -314,6 +397,7 @@ if ! jq -n \
                   | select($prev == null or (($prev | pnorm) != ($p | pnorm))) ]
     }' > "$PLAN" 2>/dev/null; then
   echo "fm-logbook-resync: could not reconcile the composed set against the board" >&2
+  record_failure
   exit 0
 fi
 
@@ -372,7 +456,14 @@ EOF
 # fingerprint describes. A partial cycle leaves it unrecorded so the next beat retries,
 # which is why every failure above is a quiet FAILED=1 rather than an early exit: the
 # writes are independent, and one that could not land must not cancel the others.
-if [ "$FAILED" -eq 0 ]; then
+#
+# The consecutive-failure counter is settled here too, and by the same test: one cycle
+# that got there drops it outright, so a board that comes back is back on the normal
+# beat immediately, with no restart and no session start.
+if [ "$FAILED" -ne 0 ]; then
+  record_failure
+else
+  rm -f "$FAILURE_FILE" 2>/dev/null || true
   mkdir -p "$STATE" 2>/dev/null || exit 0
   tmp=$(mktemp "$STATE/.logbook-resync.fingerprint.XXXXXX" 2>/dev/null) || exit 0
   if printf '%s\n' "$FINGERPRINT" > "$tmp" 2>/dev/null; then

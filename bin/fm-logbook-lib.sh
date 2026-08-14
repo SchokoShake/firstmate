@@ -234,10 +234,11 @@ logbook_load_config() {
 # content are identical, so the board hash taken at clear time is already that value.
 # For a card that is NOT owned - a hand-composed escalation pushed through
 # bin/fm-logbook-push.sh, which never carries the ownership stamp (and must not: the
-# refresh would then flatten it back to the baseline every cycle) - the two can never
-# match, because `source` alone differs and `source` is inside the normalization. Those
-# record a SENTINEL instead, the empty hash, which the reader treats as "suppress on this
-# pass, and adopt the composed hash you see now". From then on the id is compared
+# refresh would then flatten it back to the baseline every cycle, which is why that
+# script strips the stamp rather than trusting each escalation to omit it) - the two can
+# never match, because `source` alone differs and `source` is inside the normalization.
+# Those record a SENTINEL instead, the empty hash, which the reader treats as "suppress
+# on this pass, and adopt the composed hash you see now". From then on the id is compared
 # like-for-like and stays down until its COMPOSED content actually changes.
 #
 # cksum/CRC32 is the hash, for the reason the refresh gives for its own fingerprint: a
@@ -364,9 +365,13 @@ logbook_cleared_record_locked() {
 #   - recorded id holding the empty SENTINEL     -> suppress, and adopt the composed hash
 #                                                   it has now, so every later pass
 #                                                   compares like with like
-# Pass "" for the board when the caller has no board view (the session-start refresh
-# posts declaratively and never reads it); the two board-dependent rules then simply do
-# not fire, and the next refresh cycle applies them.
+# Pass "" for the board only from a caller whose suppression means "do not ADD this id":
+# the two board-dependent rules then simply do not fire, and the next cycle with a view
+# applies them. A caller whose payload is DECLARATIVE must not: there, leaving an id out
+# means DELETE, and the "recorded id is back on the board -> evict" rule is the only
+# thing standing between a settled id and the destruction of a fresh card firstmate has
+# since pushed under it. bin/fm-logbook-refresh.sh is that caller, and it skips this
+# filter entirely rather than call it with no view.
 # Always returns 0: a record it cannot read must degrade to the old behavior (the card
 # reappears), never to a failed refresh. Serialized against a concurrent clear by the
 # fail-open lock above, through the same wrapper shape the writer uses.

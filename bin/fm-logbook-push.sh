@@ -38,7 +38,20 @@
 # all is worse than one with a button removed, and AGENTS.md section 15 requires that
 # everything reaching the captain also reaches the board. It warns to stderr instead, so
 # the authoring mistake is visible rather than silent. An item for a project without the
-# flag is passed through untouched, byte for byte.
+# flag keeps every field it was handed except the ownership stamp below, which this path
+# always removes.
+#
+# CARD OWNERSHIP: this path never hands over a card as the automatic refresh's own.
+# bin/fm-logbook-lib.sh's LOGBOOK_COMPOSE_PRODUCER stamp, written into "source" by
+# bin/fm-logbook-compose.sh, is what tells bin/fm-logbook-resync.sh which cards are its
+# mechanical baseline to rewrite and clear. A card pushed HERE is firstmate's own
+# composition, and the natural way to write a rich escalation is on top of the composed
+# baseline - which carries that stamp along with everything else. Left in place, the
+# refresh reads the curated card as its own and flattens it back to the baseline on the
+# next cycle, destroying the escalation. So the stamp is stripped at this boundary, where
+# the fact "this was hand-pushed" is actually known, rather than guessed at later from a
+# cleverer read-time test. Only ".source.producer" goes: ".source.pr" is the merge-policy
+# gate's second signal and stays exactly as it was.
 # Every step of this gate that can FAIL therefore falls open - a selector jq that will not
 # run, a list that cannot be built, a temp file that cannot be allocated, a gated body that
 # cannot be written or installed - and every one of them SAYS SO, on stderr. Falling open
@@ -107,16 +120,39 @@ command -v jq >/dev/null 2>&1 || { echo "fm-logbook-push: jq not found" >&2; exi
 
 # Slurp the body so we can validate it parses as JSON before posting.
 BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-push.XXXXXX") || { echo "fm-logbook-push: cannot create temp file" >&2; exit 1; }
-# Allocated lazily by the gate below, and cleaned up here on every exit path whether the
-# gate reached it or not.
+# Allocated lazily by the ownership strip and the gate below, and cleaned up here on
+# every exit path whether either reached them or not.
 GATED_FILE=
-trap 'rm -f "$BODY_FILE" ${GATED_FILE:+"$GATED_FILE"}' EXIT
+UNSTAMPED_FILE=
+trap 'rm -f "$BODY_FILE" ${GATED_FILE:+"$GATED_FILE"} ${UNSTAMPED_FILE:+"$UNSTAMPED_FILE"}' EXIT
 if [ "$SRC" = "-" ]; then
   cat > "$BODY_FILE" || { echo "fm-logbook-push: cannot read body from stdin" >&2; exit 1; }
 else
   cat -- "$SRC" > "$BODY_FILE" || { echo "fm-logbook-push: cannot read body file: $SRC" >&2; exit 1; }
 fi
 jq -e . "$BODY_FILE" >/dev/null 2>&1 || { echo "fm-logbook-push: body is not valid JSON" >&2; exit 1; }
+
+# Strip the ownership stamp, as the header explains, BEFORE either merge-policy signal
+# reads the body, so every later step works on the item that will actually be posted.
+# Its own mktemp for the same reason the gated body gets one: a derived name in a shared
+# temp dir is predictable and redirect-able, and mktemp's 0600 is what keeps composed
+# card text from sitting there world-readable.
+# Falls open like every other step here - a card the captain never sees is worse than one
+# the refresh may later flatten - and says so, because a silent fall-open would leave a
+# curated escalation looking exactly like one this boundary had nothing to do.
+UNSTAMPED_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-push-unstamped.XXXXXX") || UNSTAMPED_FILE=
+if [ -z "$UNSTAMPED_FILE" ]; then
+  echo "fm-logbook-push: cannot create a temp file to strip the ownership stamp; the board refresh may treat this card as its own and flatten it" >&2
+elif jq -c '
+    def unstamp:
+      if (type == "object") and ((.source? | type) == "object")
+      then .source |= del(.producer) else . end;
+    if type == "array" then map(unstamp) else unstamp end' "$BODY_FILE" > "$UNSTAMPED_FILE"; then
+  mv -f "$UNSTAMPED_FILE" "$BODY_FILE" ||
+    echo "fm-logbook-push: could not install the unstamped body; the board refresh may treat this card as its own and flatten it" >&2
+else
+  echo "fm-logbook-push: could not strip the ownership stamp; the board refresh may treat this card as its own and flatten it" >&2
+fi
 
 # JQ_USABLE_LINES: the ONE definition of "a value this gate can carry", read by BOTH
 # selectors below so the project list and the url list can never be built by two rules that
@@ -213,7 +249,7 @@ fi
 FORBIDDEN_URLS_JSON=$(json_array_of "$FORBIDDEN_URLS" "PR url")
 
 # Rewritten only when there is something to strip, so every other push reaches the board
-# as exactly the bytes it was handed.
+# as the ownership strip above left it, option for option.
 if [ -n "$FORBIDDEN" ] || [ -n "$FORBIDDEN_URLS" ]; then
   # The gated body gets its own mktemp rather than a name derived from $BODY_FILE's. A
   # derived name is predictable the moment the first file exists, and this temp dir is

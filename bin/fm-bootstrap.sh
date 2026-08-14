@@ -557,6 +557,10 @@ logbook_setup() {
     # including the ones that are not opt-outs. Its absence is never an error, so it is
     # not part of the removal verdict.
     rm -f "$STATE/logbook-resync.fingerprint" 2>/dev/null || true
+    # The consecutive-failure counter behind the resync's bounded retry rides along for
+    # the same reason and with the same cost: without the shim it means nothing, and a
+    # stale one left over a re-opt-in would start the new session already backed off.
+    rm -f "$STATE/logbook-resync.failures" 2>/dev/null || true
     [ ! -e "$shim" ] && [ ! -e "$reap_shim" ] && [ ! -e "$resync_shim" ] && [ ! -e "$cadence" ]
   }
 
