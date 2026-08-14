@@ -107,7 +107,7 @@ state/               volatile runtime signals; gitignored
   logbook-reap.check.sh  generated logbook board-liveness reap shim; present only when opted in; keeps the detached board alive, silent unless it gives up relaunching (section 15)
   logbook-resync.check.sh  generated logbook board-refresh shim; present only when opted in; keeps the board's contents current as fleet state changes, always silent (section 15)
   logbook-resync.fingerprint  generated logbook board-refresh change-detection record; absent until the first refresh reaches the board
-  logbook-resync.failures  generated logbook board-refresh consecutive-failure count behind its bounded retry; absent while the board is reachable and accepting writes
+  logbook-resync.failures  generated logbook board-refresh consecutive-failure count behind its bounded retry; absent while its cycles are completing
   logbook-cleared.json  generated record of the cards fm-logbook-resolve.sh cleared, with the content each carried; keeps both compose-driven board writers from re-declaring a question the captain settled (section 15)
   logbook-inbox/     generated logbook pending board-response payloads; logbook-respond drains it (section 15)
   logbook-outbox/    generated logbook dry-run push/sync/resolve/ack previews; inspect it when LOGBOOK_DRY_RUN is set (section 15)
