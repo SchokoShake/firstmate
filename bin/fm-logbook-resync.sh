@@ -259,6 +259,13 @@ case "$FAILURES" in
   ''|*[!0-9]*) FAILURES=0 ;;
 esac
 
+# The relay's voice, in one place, so a line this script writes about the merge policy and
+# a line it forwards from the library can never be shaped by two rules that drifted apart.
+# STDERR only, like every other diagnostic here.
+merge_policy_relay_line() {
+  echo "fm-logbook-resync: merge policy - ${1-}" >&2
+}
+
 # Re-emit every merge-policy diagnostic the stream in <file> carried, on THIS script's
 # stderr and in its own voice. Selected on the marker its owner stamps rather than on any
 # copy of the texts, so a line that library gains later arrives here already selected.
@@ -270,7 +277,7 @@ relay_merge_policy_diagnostics() {
   while IFS= read -r line; do
     case "$line" in
       "$FM_MERGE_POLICY_DIAG_MARKER "*)
-        echo "fm-logbook-resync: merge policy - ${line#"$FM_MERGE_POLICY_DIAG_MARKER "}" >&2 ;;
+        merge_policy_relay_line "${line#"$FM_MERGE_POLICY_DIAG_MARKER "}" ;;
     esac
   done < "$1"
 }
@@ -280,15 +287,39 @@ relay_merge_policy_diagnostics() {
 # registry line rule is the one every other parser in this fleet uses. The sweep runs in a
 # subshell so the library's per-process memo and its once-warned flag cannot leak into a
 # cycle that goes on to compose, and so the child's answer on stdout can never reach the
-# stdout this script keeps silent. Best-effort throughout: a home with no registry, a
-# missing awk, or a bin/ without the policy library loses the sweep, not the refresh.
+# stdout this script keeps silent.
+#
+# Best-effort, but never SILENTLY so: every way this can decline to sweep says so on
+# stderr. A sweep it could not run is not the absence of a posture problem, and the state
+# where it matters most is the one where it is likeliest to bail - a registry that exists
+# and cannot be READ is the fleet-wide fall-open the whole marker mechanism was built for,
+# with every project reading as mergeable. A composing beat relays that; a backed-off beat
+# must never be quieter than a composing beat, which is the entire contract this function
+# exists to keep.
+#
+# The one exception is a home with NO registry, which is a legitimate state (a fresh home
+# with nothing declared) and which the policy library itself drops as routine noise. Saying
+# nothing there is MATCHING the composing beat, not falling short of it.
 relay_registry_merge_policy() {
   local err_file
-  [ -n "${FM_MERGE_POLICY_DIAG_MARKER:-}" ] || return 0
-  command -v fm_merge_forbidden_project >/dev/null 2>&1 || return 0
-  command -v awk >/dev/null 2>&1 || return 0
-  [ -r "$PROJECTS_MD" ] || return 0
-  err_file=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-resync-policy.XXXXXX" 2>/dev/null) || return 0
+  if [ -z "${FM_MERGE_POLICY_DIAG_MARKER:-}" ] \
+     || ! command -v fm_merge_forbidden_project >/dev/null 2>&1; then
+    merge_policy_relay_line "the policy library did not load in this home, so no posture can be read or relayed on a backed-off beat"
+    return 0
+  fi
+  if ! command -v awk >/dev/null 2>&1; then
+    merge_policy_relay_line "no awk here, so the registry cannot be swept on a backed-off beat"
+    return 0
+  fi
+  [ -e "$PROJECTS_MD" ] || return 0
+  if [ ! -r "$PROJECTS_MD" ]; then
+    merge_policy_relay_line "could not read the registry at $PROJECTS_MD; every project in the fleet reads as mergeable until it can be read"
+    return 0
+  fi
+  err_file=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-resync-policy.XXXXXX" 2>/dev/null) || {
+    merge_policy_relay_line "could not capture the registry sweep, so a posture warning may be going unheard on a backed-off beat"
+    return 0
+  }
   (
     while IFS= read -r policy_project; do
       [ -n "$policy_project" ] || continue
@@ -301,18 +332,32 @@ EOF
   rm -f "$err_file" 2>/dev/null || true
 }
 
-# Persist one more consecutive cycle that did not get there. Best-effort and silent like
-# every other write here: a counter that cannot be written costs the backoff, not the
-# refresh.
-record_failure() {
-  local tmp
-  mkdir -p "$STATE" 2>/dev/null || return 0
-  tmp=$(mktemp "$STATE/.logbook-resync.failures.XXXXXX" 2>/dev/null) || return 0
-  if printf '%s\n' "$((FAILURES + 1))" > "$tmp" 2>/dev/null; then
-    mv -f "$tmp" "$FAILURE_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+# resync_state_write <file> <value>: this script's one way to put a line of its own state
+# on disk. Both things it persists - the fingerprint and the consecutive-failure count -
+# are read by the NEXT cycle to decide whether to work at all, so a half-written one would
+# be read as a state no cycle ever reached; the write therefore lands through a temp file
+# in the same directory and a rename. One owner, so the two can never drift apart on that
+# or on the best-effort rule below.
+#
+# Best-effort and silent by contract: a state write that cannot happen costs the
+# short-circuit or the backoff on a later beat, never this cycle, so it always returns 0.
+resync_state_write() {
+  local file=${1-} value=${2-} dir tmp
+  [ -n "$file" ] || return 0
+  dir=${file%/*}
+  mkdir -p "$dir" 2>/dev/null || return 0
+  tmp=$(mktemp "$dir/.${file##*/}.XXXXXX" 2>/dev/null) || return 0
+  if printf '%s\n' "$value" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   else
     rm -f "$tmp" 2>/dev/null
   fi
+  return 0
+}
+
+# Persist one more consecutive cycle that did not get there.
+record_failure() {
+  resync_state_write "$FAILURE_FILE" "$((FAILURES + 1))"
 }
 
 if [ "$FAILURES" -ge "$RESYNC_BACKOFF_AFTER" ] \
@@ -486,13 +531,7 @@ if [ "$FAILED" -ne 0 ]; then
   record_failure
 else
   rm -f "$FAILURE_FILE" 2>/dev/null || true
-  mkdir -p "$STATE" 2>/dev/null || exit 0
-  tmp=$(mktemp "$STATE/.logbook-resync.fingerprint.XXXXXX" 2>/dev/null) || exit 0
-  if printf '%s\n' "$FINGERPRINT" > "$tmp" 2>/dev/null; then
-    mv -f "$tmp" "$FINGERPRINT_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null
-  else
-    rm -f "$tmp" 2>/dev/null
-  fi
+  resync_state_write "$FINGERPRINT_FILE" "$FINGERPRINT"
 fi
 
 exit 0

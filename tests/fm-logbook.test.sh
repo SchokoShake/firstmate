@@ -3834,6 +3834,26 @@ EOF
     "the relayed diagnostic must still be re-shaped onto this script's own channel"
   assert_grep "backed off after" "$err" \
     "a hand run must be able to tell a backed-off beat from a beat with nothing to do"
+  # The state the relay exists for, and the one where the sweep is likeliest to bail: a
+  # registry that is THERE and cannot be read. Every project in the fleet falls open to
+  # mergeable, and a beat that composes says so - so a backed-off beat must too, rather
+  # than declining to sweep in silence.
+  chmod 000 "$home/data/projects.md" 2>/dev/null || true
+  if [ -r "$home/data/projects.md" ]; then
+    # Running as root, or a filesystem with no permission bits: the state under test
+    # cannot be produced here, so there is nothing to assert about it.
+    :
+  else
+    : > "$log"
+    : > "$err"
+    RESYNC_ERR="$err"
+    out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_POST_CODE=500)
+    RESYNC_ERR=""
+    [ -z "$out" ] || fail "an unreadable registry must not wake firstmate from a backed-off beat: $out"
+    assert_grep "merge policy - could not read the registry" "$err" \
+      "a sweep that cannot read the registry must say so; a fleet-wide fall-open is what the relay is for"
+  fi
+  chmod 644 "$home/data/projects.md" 2>/dev/null || true
   printf '%s\n' "$registry" > "$home/data/projects.md"
   # The board comes back. The backoff is a bound, not a wedge: it still retries, and the
   # first cycle that completes clears the counter with no restart and no session start.
