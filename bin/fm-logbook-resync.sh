@@ -56,22 +56,18 @@
 #     deleted on this path either; a project that leaves the registry mid-session is the
 #     session-start sync's business, not a timer's.
 #   - The captain's set-aside ("not now"). An unchanged card is not re-upserted at all
-#     (the content diff above), so a card put down stays down. When the content DOES
-#     change from an fyi into an answerable claim, the tool's own isNewClaim clears the
-#     set-aside - correct, because it is a different card now.
-#     That rule needs one exception, or the diff above hands isNewClaim far more than it
-#     was meant to see. A live-crew fyi's BODY IS the last status line
-#     (bin/fm-logbook-compose.sh), so it moves on every status write a crewmate makes -
-#     several times per task, on this 15s beat - and each of those upserts would clear
-#     the "not now" on exactly the progress-noise card a captain sets aside. So the
-#     update set SKIPS a card the board reports set aside whose drift is its body alone
-#     and which is an fyi offering no options: nothing about it is answerable, so the
-#     new body is progress text and not a new claim. Everything else still updates and
-#     still clears the set-aside, exactly as before - a changed kind, title or options,
-#     and a body change on a card that IS answerable (a decision's question text moving
-#     is a different question). Only a card the captain actually put down is affected;
-#     one they are watching keeps showing progress. A board that does not report
-#     set_aside at all reads as not-set-aside, which is precisely today's behavior.
+#     (the content diff above), so a card put down stays down - and a card that DID
+#     change still keeps its set-aside unless it became a different question, because
+#     the tool's own isNewClaim is far narrower than this diff. It clears the set-aside
+#     in exactly two cases: an unanswerable card (an fyi) re-declared as an answerable
+#     one (a decision or an action), and an ALREADY-answerable card whose options list
+#     changed. A re-declared body, a new title and a moved moment are not inputs to it
+#     at all, so the status line a live crewmate rewrites every few minutes - which IS a
+#     composed fyi's body - cannot disturb a set-aside however often this beat re-upserts
+#     it. That narrowness is the tool's, so no client-side exception is needed here and
+#     none is wanted: one would only freeze a set-aside card's text while the captain has
+#     it put down, and the board would then show them stale text the moment they pick it
+#     back up.
 #   - The captain's unacted answer. A card at status `submitted` has been answered on
 #     the board and is waiting on firstmate, so THIS script neither clears it NOR
 #     rewrites it: the answer loop (fm-logbook-ack.sh / fm-logbook-resolve.sh) owns it
@@ -145,6 +141,17 @@
 # script never prints on stdout is what keeps housekeeping from waking firstmate, and no
 # fall-open warning is worth breaking it. The rest of compose's stream stays dropped as
 # plumbing noise.
+#
+# THE RELAY OUTLIVES THE BACKOFF. Past the bound below the compose is skipped, and with
+# it the stream those diagnostics normally ride in - which would trade a permission
+# warning for a duty-cycle saving on all but one beat in RESYNC_BACKOFF_AFTER. A bounded
+# suppression of a fall-open warning is the same defect as an unbounded one, only
+# smaller, so the relay is lifted out of the skipped work instead. It can be: not one of
+# those lines is compose's own. Every one comes from fm_merge_policy_project reading the
+# REGISTRY, so a skipped beat asks the policy library about each registry project itself
+# and relays what it says, through the same marker-selected filter. That costs one
+# registry lookup per registry project - no git, no backlog parse, no per-item jq - which
+# is the whole reason the expensive half can be skipped while this half is not.
 #
 # Inert unless opted in: a hard no-op (exit 0, no output, no network) without a truthy
 # LOGBOOK_ENABLE, the same discipline the other client scripts follow, and bootstrap
@@ -252,6 +259,48 @@ case "$FAILURES" in
   ''|*[!0-9]*) FAILURES=0 ;;
 esac
 
+# Re-emit every merge-policy diagnostic the stream in <file> carried, on THIS script's
+# stderr and in its own voice. Selected on the marker its owner stamps rather than on any
+# copy of the texts, so a line that library gains later arrives here already selected.
+# Everything else that stream carried stays dropped.
+relay_merge_policy_diagnostics() {
+  local line
+  [ -n "${FM_MERGE_POLICY_DIAG_MARKER:-}" ] || return 0
+  [ -s "$1" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      "$FM_MERGE_POLICY_DIAG_MARKER "*)
+        echo "fm-logbook-resync: merge policy - ${line#"$FM_MERGE_POLICY_DIAG_MARKER "}" >&2 ;;
+    esac
+  done < "$1"
+}
+
+# The relay's other source, for the beats the backoff skips: ask the policy library about
+# every project the registry lists, and relay what it says through the same filter. The
+# registry line rule is the one every other parser in this fleet uses. The sweep runs in a
+# subshell so the library's per-process memo and its once-warned flag cannot leak into a
+# cycle that goes on to compose, and so the child's answer on stdout can never reach the
+# stdout this script keeps silent. Best-effort throughout: a home with no registry, a
+# missing awk, or a bin/ without the policy library loses the sweep, not the refresh.
+relay_registry_merge_policy() {
+  local err_file
+  [ -n "${FM_MERGE_POLICY_DIAG_MARKER:-}" ] || return 0
+  command -v fm_merge_forbidden_project >/dev/null 2>&1 || return 0
+  command -v awk >/dev/null 2>&1 || return 0
+  [ -r "$PROJECTS_MD" ] || return 0
+  err_file=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-resync-policy.XXXXXX" 2>/dev/null) || return 0
+  (
+    while IFS= read -r policy_project; do
+      [ -n "$policy_project" ] || continue
+      fm_merge_forbidden_project "$FM_ROOT" "$FM_HOME" "$policy_project" || true
+    done <<EOF
+$(awk '$1 == "-" && $2 != "" { print $2 }' "$PROJECTS_MD" 2>/dev/null)
+EOF
+  ) >/dev/null 2>"$err_file"
+  relay_merge_policy_diagnostics "$err_file"
+  rm -f "$err_file" 2>/dev/null || true
+}
+
 # Persist one more consecutive cycle that did not get there. Best-effort and silent like
 # every other write here: a counter that cannot be written costs the backoff, not the
 # refresh.
@@ -268,9 +317,13 @@ record_failure() {
 
 if [ "$FAILURES" -ge "$RESYNC_BACKOFF_AFTER" ] \
    && [ "$((FAILURES % RESYNC_BACKOFF_AFTER))" -ne 0 ]; then
-  # Backed off: this beat is skipped before the compose that is the expensive half, and
-  # in silence, like every other thing this script declines to do.
+  # Backed off: the compose that is the expensive half is skipped, the merge-policy relay
+  # is NOT, and the skip says so on stderr - every other path here explains why it did
+  # nothing, and an operator running this by hand must be able to tell a backed-off beat
+  # from a beat with nothing to do. Stdout stays empty, so no wake is bought.
+  relay_registry_merge_policy
   record_failure
+  echo "fm-logbook-resync: backed off after $FAILURES consecutive failed cycles; retrying every $RESYNC_BACKOFF_AFTER beats" >&2
   exit 0
 fi
 
@@ -284,22 +337,6 @@ PLAN="$WORK_DIR/plan.json"
 ITEMS="$WORK_DIR/items.json"
 PROJECTS="$WORK_DIR/projects.json"
 SUPPRESSED="$WORK_DIR/suppressed.json"
-
-# Re-emit every merge-policy diagnostic compose wrote, on THIS script's stderr and in
-# its own voice. Selected on the marker its owner stamps rather than on any copy of the
-# texts, so a line that library gains later needs no edit here. Everything else compose
-# wrote stays dropped.
-relay_merge_policy_diagnostics() {
-  local line
-  [ -n "${FM_MERGE_POLICY_DIAG_MARKER:-}" ] || return 0
-  [ -s "$1" ] || return 0
-  while IFS= read -r line; do
-    case "$line" in
-      "$FM_MERGE_POLICY_DIAG_MARKER "*)
-        echo "fm-logbook-resync: merge policy - ${line#"$FM_MERGE_POLICY_DIAG_MARKER "}" >&2 ;;
-    esac
-  done < "$1"
-}
 
 # Compose the desired attention set. compose is opt-in gated too, so we are past that;
 # an empty or non-JSON body is a compose failure, and syncing garbage off it would be
@@ -354,20 +391,6 @@ if ! jq -n \
     { name, repo: (.repo // ""), mode: (.mode // ""),
       subprojects: (.subprojects // []) };
 
-  # Read of a BOARD card (the input) against the composed one: is the only thing that
-  # moved the progress text on a card the captain has put down? A set-aside is the
-  # captain saying "not now" about this card as it stands, and a re-upsert hands the
-  # tool an isNewClaim it would answer yes to, clearing that. Nothing here is
-  # answerable - an fyi offering no options - so a new body is the live crew status
-  # line moving, not a new question, and there is nothing to bring back to the captain.
-  # An absent set_aside (a board that does not report one) reads false, so this guard
-  # can only ever narrow to the cards it is about.
-  def progress_noise($cand):
-    ((.set_aside // false) == true)
-    and ($cand.kind == "fyi")
-    and ((($cand.options // []) | length) == 0)
-    and ((norm | del(.body)) == ($cand | norm | del(.body)));
-
   (($composed[0] // {}) | .items // []) as $citems
   | (($composed[0] // {}) | .projects // []) as $cprojects
   | (($board[0] // {}) | .items // []) as $bitems
@@ -383,8 +406,7 @@ if ! jq -n \
                         then (($suppress | index($c.id)) == null)
                         else (($prev | owned($producer))
                               and ($prev.status != "submitted")
-                              and (($prev | norm) != ($c | norm))
-                              and (($prev | progress_noise($c)) | not)) end) ],
+                              and (($prev | norm) != ($c | norm))) end) ],
       clear: [ $bitems[]
                | . as $b
                | select($b | owned($producer))

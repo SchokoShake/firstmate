@@ -170,18 +170,27 @@ SH
 }
 
 # A fakebin `curl` that stands in for the BOARD ITSELF rather than for one response:
-# item state lives in $FAKE_BOARD_STATE and every write goes through the two store rules
-# this client's design depends on and cannot see from here -
+# item state lives in $FAKE_BOARD_STATE and every write goes through the store rules this
+# client's design depends on and cannot see from here -
 #   (a) an upsert carrying no status normalizes to `pending`, but a STORED `submitted`
 #       is preserved, so a re-declared answered card does not revert to unanswered; and
-#   (b) a re-declaration does not clear the captain's set-aside on a card at
-#       `submitted` (the tool's isNewClaim returns false outright for one).
-# Those two are what make the session-start declarative sync safe to keep re-declaring
-# an answered card. They are a reading of the board tool, and a reading is exactly the
-# kind of thing that stops being true quietly, so this double is where that reading is
-# written down executably: a test drives the real client against it and asserts the
-# card the captain answered survives. GET /api/board serves only non-terminal rows, as
-# the real route does.
+#   (b) a re-declaration clears the captain's set-aside ONLY when the card became a
+#       different question - the tool's isNewClaim, which reads the declared status, the
+#       stored status, ANSWERABILITY (kind is decision or action) and the options list,
+#       and nothing else. A stored `submitted` returns false outright. A re-declared
+#       body, a new title and a moved moment are not inputs at all, so the status line a
+#       live crewmate rewrites cannot disturb a set-aside however often it is re-upserted;
+#       and an options list that churns on an `fyi` cannot either, because nothing can
+#       pick from it.
+# Those are what make the session-start declarative sync safe to keep re-declaring an
+# answered card, and what makes the mid-session beat safe to keep a set-aside card's text
+# current. They are a reading of the board tool, and a reading is exactly the kind of
+# thing that stops being true quietly, so this double is where that reading is written
+# down executably: a test drives the real client against it and asserts the card the
+# captain answered survives. A double that clears MORE than the tool does is the
+# dangerous direction - it invents a hazard a client then defends against - so the rule
+# below is the tool's, narrowness included. GET /api/board serves only non-terminal rows,
+# as the real route does.
 make_fake_store_curl() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
@@ -215,6 +224,7 @@ state=${FAKE_BOARD_STATE:-}
 store_upsert() {
   local replace=$1 merged
   merged=$(jq -c --slurpfile cur "$state" --argjson replace "$replace" '
+      def answerable: (.kind == "decision") or (.kind == "action");
       ($cur[0].items // []) as $stored
       | ($stored | map({ key: .id, value: . }) | from_entries) as $idx
       | [ .[]
@@ -226,8 +236,10 @@ store_upsert() {
              elif $prev.status == "submitted" then "submitted"
              else $want end) as $status
           | (if $prev == null then false
-             elif $prev.status == "submitted" then ($prev.set_aside // false)
-             elif ($prev | { kind, title, body, options }) != ($in | { kind, title, body, options }) then false
+             elif ($want != "pending") or ($prev.status == "submitted")
+               then ($prev.set_aside // false)
+             elif (($prev | answerable) | not) and ($in | answerable) then false
+             elif ($in | answerable) and (($prev.options // []) != ($in.options // [])) then false
              else ($prev.set_aside // false) end) as $aside
           | $in + { status: $status, set_aside: $aside } ] as $new
       | (if $replace then $new
@@ -3056,8 +3068,10 @@ test_refresh_live_posts_sync() {
   log="$home/curl.log"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=reftok \
     LOGBOOK_URL=http://127.0.0.1:8137 FAKE_CURL_LOG="$log" FAKE_POST_CODE=200 \
-    "$ROOT/bin/fm-logbook-refresh.sh"); rc=$?
+    FAKE_BOARD_BODY='{"projects":[],"items":[]}' FAKE_BOARD_CODE=200 \
+    "$ROOT/bin/fm-logbook-refresh.sh" 2>"$home/err"); rc=$?
   expect_code 0 "$rc" "refresh live exit"
+  assert_grep "url=http://127.0.0.1:8137/api/board" "$log" "refresh must read the board before it subtracts"
   assert_grep "url=http://127.0.0.1:8137/api/sync" "$log" "refresh must POST the reconcile to /api/sync"
   assert_grep "method=POST" "$log" "refresh must use POST"
   grep '^argv=' "$log" | grep -F 'reftok' >/dev/null 2>&1 \
@@ -3629,6 +3643,44 @@ test_refresh_suppresses_nothing_when_the_board_cannot_be_read() {
   pass "fm-logbook-refresh subtracts nothing when it could not read the board, and defers rather than forgets"
 }
 
+test_refresh_treats_an_unusable_board_body_as_no_board_view() {
+  local home fakebin body synced answered
+  home="$TMP_ROOT/refresh-settled-badbody"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_curl "$home")
+  body=$(compose_as_board "$home")
+  clear_card "$home" "$fakebin" "$body" decide-b2
+  synced="$home/state/logbook-outbox/sync.json"
+  # A 2xx is an answer about the REQUEST, not a board view. Something else on this URL - a
+  # proxy, another local responder, an HTML error page - answers 200 with a body that is
+  # not the board. The filter reads such a body as a board carrying NO ids, which is
+  # exactly the state in which the "this id is back on the board -> evict" rule cannot
+  # fire, so a settled id whose card is live would be stripped and the declarative sync
+  # would delete it. Both bad bodies must take the same branch a dead board takes.
+  for answered in '' 'not json at all' '[]'; do
+    rm -f "$synced"
+    env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+      LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
+      FAKE_BOARD_BODY="$answered" FAKE_BOARD_CODE=200 \
+      "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
+    assert_present "$synced" "an unusable board body must not stop the session-start sync"
+    jq -e 'any(.items[]; .id == "decide-b2")' "$synced" >/dev/null \
+      || fail "a 2xx carrying no board view must cancel the subtraction, not license it (body: '$answered')"$'\n'"$(cat "$synced")"
+  done
+  settled_ids "$home" | grep -qx 'decide-b2' \
+    || fail "an unusable board body must never be read as consent to forget a clear"
+  # And a body that IS a board view still licenses it, so this narrows to the unusable
+  # ones rather than disabling the subtraction outright.
+  body=$(compose_as_board "$home" '.items |= map(select(.id != "decide-b2"))')
+  rm -f "$synced"
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+    LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
+    FAKE_BOARD_BODY="$body" FAKE_BOARD_CODE=200 \
+    "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
+  jq -e 'any(.items[]; .id == "decide-b2")' "$synced" >/dev/null \
+    && fail "a real board view must still suppress the settled card"$'\n'"$(cat "$synced")"
+  pass "fm-logbook-refresh reads a 2xx with an unusable body as no board view at all"
+}
+
 test_push_never_hands_the_refresh_a_card_it_did_not_compose() {
   local home fakebin state item card
   home="$TMP_ROOT/push-unstamped"; write_fleet_fixture "$home"
@@ -3669,12 +3721,15 @@ test_push_never_hands_the_refresh_a_card_it_did_not_compose() {
   pass "fm-logbook-push strips the ownership stamp, so an escalation cannot be flattened by the refresh"
 }
 
-test_resync_keeps_a_set_aside_card_down_through_progress_churn() {
-  local home fakebin log body out
+test_resync_keeps_a_set_aside_card_current_through_progress_churn() {
+  local home fakebin log body out card
   home="$TMP_ROOT/resync-setaside"; write_fleet_fixture "$home"
   fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
   # scout-c3 is a live-crew fyi, so its BODY IS the crew's last status line. The captain
-  # has set it aside - "not now" - and the crew keeps writing status.
+  # has set it aside - "not now" - and the crew keeps writing status. The card is still
+  # theirs to pick back up, so it must keep tracking the work: the tool's isNewClaim reads
+  # answerability and options, never the body, so re-upserting it cannot disturb the "not
+  # now" - and refusing to refresh it would freeze the text they see when they do.
   printf 'working: reading the query plan\n' > "$home/state/scout-c3.status"
   body=$(compose_as_board "$home" '
     .items |= map(if .id == "scout-c3" then (.set_aside = true | .body = "profiling the query")
@@ -3682,53 +3737,52 @@ test_resync_keeps_a_set_aside_card_down_through_progress_churn() {
   out=$(run_resync "$home" "$fakebin" "$log" "$body")
   [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
   assert_no_declarative_sync "$log" "a set-aside card drifting on progress text"
-  # Re-upserting it would hand the tool an isNewClaim it answers yes to, clearing the
-  # captain's "not now" - several times per task, on the 15s beat, for exactly the
-  # progress-noise card they put down.
   posted_ids "$log" | grep -qx 'scout-c3' \
-    && fail "a set-aside fyi whose only drift is its progress text must not be re-upserted"
-  # A card the captain has NOT set aside still refreshes on the same kind of drift, so
-  # this narrows to the set-aside and nothing else.
-  body=$(compose_as_board "$home" '
-    .items |= map(if .id == "scout-c3" then .body = "profiling the query" else . end)')
-  rm -f "$home/state/logbook-resync.fingerprint"
-  : > "$log"
-  out=$(run_resync "$home" "$fakebin" "$log" "$body")
-  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
-  posted_ids "$log" | grep -qx 'scout-c3' \
-    || fail "a card the captain is watching must keep showing progress"
-  pass "fm-logbook-resync leaves a set-aside fyi down through crew progress churn"
-}
-
-test_resync_still_clears_a_set_aside_when_the_card_becomes_a_claim() {
-  local home fakebin log body out card
-  home="$TMP_ROOT/resync-setaside-claim"; write_fleet_fixture "$home"
-  fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
-  # Same set-aside card, but the situation genuinely moves on: the crew now needs a
-  # decision, so compose derives a different KIND of card offering options. That is a new
-  # claim, the set-aside is the captain's answer to the OLD one, and the tool clearing it
-  # on the upsert is the correct outcome - this is what stops the guard above from
-  # quietly becoming "set aside is forever".
-  printf 'working: profiling the query\nneeds-decision: index or rewrite? (options: index, rewrite)\n' \
-    > "$home/state/scout-c3.status"
-  body=$(compose_as_board "$home" '
-    .items |= map(if .id == "scout-c3"
-                  then (.set_aside = true | .kind = "fyi" | .body = "profiling the query"
-                        | .options = [])
-                  else . end)')
-  out=$(run_resync "$home" "$fakebin" "$log" "$body")
-  [ -z "$out" ] || fail "a routine refresh must print nothing: $out"
-  posted_ids "$log" | grep -qx 'scout-c3' \
-    || fail "a set-aside card that became an answerable claim must still be re-upserted"
+    || fail "a set-aside card must keep tracking the work, or it shows stale text the moment it is picked back up"
   card=$(grep '^data=' "$log" | sed 's/^data=//' \
     | jq -c 'if type=="array" then .[] else . end | select(type=="object" and .id=="scout-c3")' | tail -1)
-  printf '%s' "$card" | jq -e '.kind == "decision"' >/dev/null \
-    || fail "the re-upserted card must be the new claim, not the fyi the captain set aside"$'\n'"$card"
-  pass "fm-logbook-resync still refreshes a set-aside card once it turns into an answerable claim"
+  printf '%s' "$card" | jq -e '.body == "reading the query plan"' >/dev/null \
+    || fail "the refreshed card must carry the crew's current status line"$'\n'"$card"
+  pass "fm-logbook-resync keeps a set-aside card current through crew progress churn"
+}
+
+test_board_keeps_a_set_aside_through_everything_but_a_new_claim() {
+  local home fakebin state card
+  home="$TMP_ROOT/board-setaside-redeclare"; write_fleet_fixture "$home"
+  fakebin=$(make_fake_store_curl "$home"); state="$home/board-state.json"
+  # The captain set aside scout-c3, an fyi. What the board does with that across a
+  # re-declaration is the tool's rule, not this client's, and the whole mid-session beat
+  # rests on it: if a re-declaration could clear a set-aside on ordinary drift, every
+  # writer here would need an exception, and the previous fix round added one on exactly
+  # that belief. So drive the REAL client against the stand-in and assert the rule.
+  compose_as_board "$home" '
+    .items |= map(if .id == "scout-c3" then .set_aside = true else .set_aside = false end)' > "$state"
+  # Title, body AND options all move, and the card stays an fyi. Nothing here can be
+  # answered - the board renders an fyi read-only and /respond refuses it - so none of it
+  # is a new question, and the "not now" must survive all three.
+  printf '%s' '{"id":"scout-c3","project":"alpha","kind":"fyi","title":"Investigate the slow query (rewritten)","body":"a completely different status line","options":[{"label":"Later","value":"later"}]}' \
+    | env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=storetok \
+      LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
+      "$ROOT/bin/fm-logbook-push.sh" - >/dev/null 2>&1
+  card=$(stored_card "$state" scout-c3)
+  [ "$(printf '%s' "$card" | jq -r .title)" = "Investigate the slow query (rewritten)" ] \
+    || fail "the re-declaration must reach the board"$'\n'"$card"
+  [ "$(printf '%s' "$card" | jq -r .set_aside)" = "true" ] \
+    || fail "a title, body or options change on an unanswerable card must not clear the captain's set-aside"$'\n'"$card"
+  # The one thing that DOES clear it: the card becomes answerable. That is a different
+  # question, and holding it down would make a set-aside permanent.
+  printf '%s' '{"id":"scout-c3","project":"alpha","kind":"decision","title":"Index or rewrite?","body":"pick one","options":[{"label":"Index","value":"index"},{"label":"Rewrite","value":"rewrite"}]}' \
+    | env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=storetok \
+      LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
+      "$ROOT/bin/fm-logbook-push.sh" - >/dev/null 2>&1
+  card=$(stored_card "$state" scout-c3)
+  [ "$(printf '%s' "$card" | jq -r .set_aside)" = "false" ] \
+    || fail "an fyi re-declared as an answerable claim must clear the set-aside"$'\n'"$card"
+  pass "the board clears a set-aside only when the card becomes a new claim, not on ordinary drift"
 }
 
 test_resync_backs_off_after_a_long_run_of_failed_cycles() {
-  local home fakebin log body out i
+  local home fakebin log body out i registry err
   home="$TMP_ROOT/resync-backoff"; write_fleet_fixture "$home"
   fakebin=$(make_fake_curl "$home"); log="$home/curl.log"
   body=$(compose_as_board "$home" '.items |= map(select(.id != "scout-c3"))')
@@ -3736,19 +3790,51 @@ test_resync_backs_off_after_a_long_run_of_failed_cycles() {
   # fingerprint stays broken and every cycle recomposes - a git shell-out per carded
   # project plus a jq invocation per item - and throws the result away.
   i=0
-  while [ "$i" -lt 21 ]; do
+  while [ "$i" -lt 19 ]; do
     out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_POST_CODE=500)
     [ -z "$out" ] || fail "a failing refresh must stay silent on every cycle: $out"
     i=$((i + 1))
   done
-  assert_absent "$home/state/logbook-resync.fingerprint" \
-    "a cycle that could not write must never bank the state it failed to reach"
-  # Past the bound - five minutes of continuous failure at the 15s beat - it backs off
-  # before the expensive half: the next beat costs nothing at all, not even the board GET.
+  # The LOWER half of the bound, and the reason it is 20: five minutes of continuous
+  # failure is generous headroom for the reap to notice a dead board and relaunch it,
+  # crash-loop retries included, so an ordinary board restart must never trip this. A
+  # bound that fired early would still pass every assertion below.
   : > "$log"
   out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_POST_CODE=500)
+  [ -z "$out" ] || fail "a failing refresh must stay silent on every cycle: $out"
+  [ -s "$log" ] || fail "a board down for less than the bound must still be reconciled in full on every beat"
+  # One more, to reach the bound itself.
+  out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_POST_CODE=500)
+  [ -z "$out" ] || fail "a failing refresh must stay silent on every cycle: $out"
+  assert_absent "$home/state/logbook-resync.fingerprint" \
+    "a cycle that could not write must never bank the state it failed to reach"
+  # Past the bound it backs off before the expensive half: the next beat costs nothing at
+  # all, not even the board GET. The merge-policy relay is NOT part of that saving, so the
+  # prohibition is mistyped underneath it - the leading "+" dropped from "+captain-merge",
+  # which binds nothing and leaves a project the captain reserved to themselves mergeable.
+  # A warning suppressed on 19 beats in 20 is the same fall-open as one suppressed always.
+  registry=$(cat "$home/data/projects.md")
+  cat > "$home/data/projects.md" <<'EOF'
+# Fleet project registry (firstmate-private)
+
+- alpha [no-mistakes captain-merge] - First project (added 2026-07-01)
+- beta [direct-PR +yolo] - Second project (added 2026-07-02)
+- gamma [local-only] - Idle project with no work (added 2026-07-03)
+EOF
+  : > "$log"
+  err="$home/backoff.err"
+  RESYNC_ERR="$err"
+  out=$(run_resync "$home" "$fakebin" "$log" "$body" FAKE_POST_CODE=500)
+  RESYNC_ERR=""
   [ -z "$out" ] || fail "a backed-off cycle must stay silent too: $out"
   [ -s "$log" ] && fail "past the bound a failing refresh must stop paying for a full cycle every beat"
+  assert_grep "merge policy - unrecognized posture flag for alpha: captain-merge" "$err" \
+    "the merge-policy relay must survive the backoff; a bounded suppression is the same fall-open"
+  assert_no_grep "^fm-merge-policy:" "$err" \
+    "the relayed diagnostic must still be re-shaped onto this script's own channel"
+  assert_grep "backed off after" "$err" \
+    "a hand run must be able to tell a backed-off beat from a beat with nothing to do"
+  printf '%s\n' "$registry" > "$home/data/projects.md"
   # The board comes back. The backoff is a bound, not a wedge: it still retries, and the
   # first cycle that completes clears the counter with no restart and no session start.
   i=0
@@ -4304,9 +4390,10 @@ test_resync_never_rewrites_a_card_the_captain_answered
 test_board_keeps_an_answered_card_across_a_session_start_re_declaration
 test_refresh_never_deletes_a_fresh_card_under_a_settled_id
 test_refresh_suppresses_nothing_when_the_board_cannot_be_read
+test_refresh_treats_an_unusable_board_body_as_no_board_view
 test_push_never_hands_the_refresh_a_card_it_did_not_compose
-test_resync_keeps_a_set_aside_card_down_through_progress_churn
-test_resync_still_clears_a_set_aside_when_the_card_becomes_a_claim
+test_resync_keeps_a_set_aside_card_current_through_progress_churn
+test_board_keeps_a_set_aside_through_everything_but_a_new_claim
 test_resync_backs_off_after_a_long_run_of_failed_cycles
 test_resync_recards_work_that_left_the_set_and_came_back
 test_resync_never_resurrects_a_hand_pushed_card_the_captain_settled

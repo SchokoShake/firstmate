@@ -83,8 +83,17 @@ fi
 # BOARD_VIEW empty, and an empty view means nothing is subtracted at all (see the
 # header): the suppression rule that needs it most is "this id is back on the board ->
 # evict", and that is exactly the rule protecting a live card from a declarative delete.
+#
+# All THREE conditions, because a 2xx is not a board view. logbook_get_json answers for
+# the request, not for the body, so a 200 carrying nothing, or an HTML error page from
+# whatever else is listening on this URL, would otherwise set BOARD_VIEW - and the filter
+# reads an unusable body as a board with NO ids on it, which is precisely the state that
+# cannot fire the eviction and deletes the live card. Neither bad body is distinguishable
+# from a dead board here, so both take the same branch it does.
 BOARD_VIEW=""
-if logbook_get_json /api/board "$BOARD_FILE" >/dev/null 2>&1; then
+if logbook_get_json /api/board "$BOARD_FILE" >/dev/null 2>&1 \
+   && [ -s "$BOARD_FILE" ] \
+   && jq -e 'type == "object"' "$BOARD_FILE" >/dev/null 2>&1; then
   BOARD_VIEW="$BOARD_FILE"
 fi
 
@@ -112,7 +121,7 @@ if [ -n "$BOARD_VIEW" ]; then
     fi
   fi
 else
-  echo "fm-logbook-refresh: could not read the board, so the settled-card record is not applied to this declarative sync" >&2
+  echo "fm-logbook-refresh: could not read a usable board view, so the settled-card record is not applied to this declarative sync" >&2
 fi
 
 # Declarative full reconcile. Honors LOGBOOK_DRY_RUN inside fm-logbook-sync.sh, so a
