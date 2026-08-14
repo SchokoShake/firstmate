@@ -33,10 +33,18 @@
 # "Not optional" is enforced rather than asserted: a board read that FAILS cancels the
 # subtraction entirely instead of degrading it. Without the view, the eviction rule
 # cannot fire, and a suppression applied blind is a live card deleted - the one outcome
-# that cannot be undone. A settled card re-declared because this cycle could not read
-# the board is recoverable: the record itself is untouched, and the next readable cycle
-# (this script re-run by hand, or the mid-session refresh on its own beat) suppresses it
-# again. That is the whole trade, and it only ever runs in the recoverable direction.
+# that cannot be undone.
+#
+# What the other side of that trade actually costs, stated plainly rather than softened:
+# the failed-read cycle leaves the settled-card record untouched, but it still syncs the
+# full composed set, so if that sync LANDS the settled card is back on the board as
+# pending - the captain is asked once more. The next readable cycle does not then
+# suppress it; it EVICTS the record, because the rule is "recorded id is back on the
+# board -> evict" and this sync is what put it there. That eviction is correct - an id
+# whose card is live must never be suppressed, or the next declarative sync deletes it -
+# so nothing here is destroyed and no answer is silently discarded. But the card is up
+# again and stays up until the captain answers it a second time. That is the price of
+# the read failing, and it is paid against a re-ask rather than against a lost card.
 #
 # Inert by default: a hard no-op (exit 0, no output) unless logbook is opted in via
 # a truthy LOGBOOK_ENABLE. Honors LOGBOOK_DRY_RUN transitively - fm-logbook-sync.sh

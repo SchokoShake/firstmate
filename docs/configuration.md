@@ -380,7 +380,9 @@ The refresh therefore reconciles INCREMENTALLY against the live board, and scope
 | anything else, in particular any card it does not own | skip |
 
 Ownership is a `producer` key that `bin/fm-logbook-compose.sh` stamps into each card's opaque `source` blob; `bin/fm-logbook-lib.sh` owns the value (`LOGBOOK_COMPOSE_PRODUCER`) so the writer and the reader cannot drift.
-A rich card pushed through `bin/fm-logbook-push.sh` carries no such stamp, so the refresh neither rewrites nor clears it, and it now survives indefinitely rather than until the next session-start sync.
+A rich card pushed through `bin/fm-logbook-push.sh` carries no such stamp, so the mid-session refresh neither rewrites nor clears it: it survives every refresh beat, however many it sits through, instead of being flattened twice a minute.
+That is the whole of the protection, and the boundary is worth stating exactly: the stamp is read by `bin/fm-logbook-resync.sh` and nowhere else.
+The session-start truth-restore consults nothing - it hands the composed baseline to `bin/fm-logbook-sync.sh`, and `POST /api/sync` is a declarative full-ITEM replace - so at the next session start a rich card sharing an id with a composed one is overwritten by the mechanical baseline, and one under an id compose does not produce is deleted outright.
 That is true by construction rather than by authoring discipline: the natural way to write a rich escalation is on top of the composed baseline, which carries the stamp along with everything else, so `bin/fm-logbook-push.sh` REMOVES `source.producer` from every item it posts - at the boundary where "this was hand-pushed" is actually known, rather than inferring it later from a cleverer read-time test.
 Only that key goes; `source.pr` is the merge-policy gate's second signal and is left exactly as it was.
 A hand-push is therefore no longer a byte-for-byte pass-through, which is the accepted cost of the invariant.
@@ -408,7 +410,11 @@ Those two suppressions do not mean the same thing, which is why `bin/fm-logbook-
 On the incremental path, leaving an id out means "do not add it"; on the declarative path it means DELETE, because a collection present in a `POST /api/sync` body becomes exactly that set.
 Without the board view a settled id that firstmate had since pushed a fresh card under would be stripped from the payload and that live card destroyed, so the board view is what lets the "this id is back on the board" eviction fire on this path too.
 That read is therefore not optional in the enforced sense: a `GET /api/board` that fails, times out, or comes back empty CANCELS the subtraction rather than degrading it, and `bin/fm-logbook-refresh.sh` syncs the full composed set with one stderr diagnostic.
-A settled card re-declared because one cycle could not read the board is recoverable - the record itself is untouched and the next readable cycle suppresses it again - while a live card deleted by a declarative sync is not, so the only direction this can fail in is the recoverable one.
+What the other side of that trade costs is worth stating plainly rather than softening.
+The failed-read cycle leaves the settled-card record untouched, but it still syncs the full composed set, so if that sync lands the settled card is back on the board as pending and the captain is asked once more.
+The next readable cycle does not then suppress it, it EVICTS the record: the rule is "recorded id is back on the board -> evict", and that sync is what put it there.
+The eviction is correct - an id whose card is live must never be suppressed, or the next declarative sync deletes it - so nothing is destroyed and no answer is silently discarded, but the card stays up until the captain answers it a second time.
+That is the price of the read failing, and it is paid against a re-ask rather than against a card that cannot be recovered.
 
 ONLY A CAPTAIN-ANSWERED CLEAR RECORDS, because clearing is not one act.
 The answer loop clears because the captain decided and firstmate acted, and that settles the question; the mid-session refresh clears MECHANICALLY, because the work simply left the composed set, and that settles nothing.

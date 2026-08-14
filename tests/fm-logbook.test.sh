@@ -251,11 +251,19 @@ store_upsert() {
 case "$url" in
   */health) [ -n "$ofile" ] && : > "$ofile"; printf '%s' "${FAKE_HEALTH_CODE:-200}" ;;
   */api/board)
-    [ -n "$ofile" ] && jq -c '{ projects: (.projects // []),
-                                items: [ (.items // [])[]
-                                         | select(.status != "resolved" and .status != "dismissed") ] }' \
-                          "$state" > "$ofile"
-    printf '200'
+    # FAKE_BOARD_CODE lets a test fail the READ while the writes still land against this
+    # same stored board - the state a dry run cannot reach, because a dry run posts
+    # nothing at all.
+    case "${FAKE_BOARD_CODE:-200}" in
+      2[0-9][0-9])
+        [ -n "$ofile" ] && jq -c '{ projects: (.projects // []),
+                                    items: [ (.items // [])[]
+                                             | select(.status != "resolved" and .status != "dismissed") ] }' \
+                              "$state" > "$ofile"
+        printf '%s' "${FAKE_BOARD_CODE:-200}"
+        ;;
+      *) [ -n "$ofile" ] && : > "$ofile"; printf '%s' "$FAKE_BOARD_CODE" ;;
+    esac
     ;;
   */api/items)
     printf '%s' "$data" | jq -c 'if type == "array" then . else [.] end' | store_upsert false || { printf '500'; exit 0; }
@@ -3642,39 +3650,53 @@ test_refresh_never_deletes_a_fresh_card_under_a_settled_id() {
 }
 
 test_refresh_suppresses_nothing_when_the_board_cannot_be_read() {
-  local home fakebin body synced
+  local home fakebin state
   home="$TMP_ROOT/refresh-settled-boarddown"; write_fleet_fixture "$home"
-  fakebin=$(make_fake_curl "$home")
-  body=$(compose_as_board "$home")
-  # The captain answered decide-b2 and firstmate cleared it, so that id is settled.
-  clear_card "$home" "$fakebin" "$body" decide-b2
+  # Driven against the STORE stand-in, not a canned response, because the whole point is
+  # what the failed-read cycle's sync DOES to the board. Under a dry run it posts
+  # nothing, so the state this test is about could never be reached.
+  fakebin=$(make_fake_store_curl "$home"); state="$home/board-state.json"
+  compose_as_board "$home" > "$state"
+  # The captain answered decide-b2 and firstmate cleared it through the answer loop, so
+  # that id is settled and the board no longer serves the row.
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=reftok \
+    LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
+    "$ROOT/bin/fm-logbook-resolve.sh" decide-b2 >/dev/null 2>&1
+  settled_ids "$home" | grep -qx 'decide-b2' \
+    || fail "clearing a card must record it as settled, or nothing below is under test"
+  [ "$(stored_card "$state" decide-b2 | jq -r '.status')" = "resolved" ] \
+    || fail "the cleared card must be off the board, or the re-declaration below proves nothing"
   # Now the ONE read this refresh makes fails - a 503, a slow board, a curl that timed
-  # out. The board read is what licenses subtracting from a DECLARATIVE payload at all
-  # (only it can fire the "this id is back on the board -> evict" rule), so a read that
-  # did not answer has to cancel the subtraction: firstmate may have pushed a fresh card
-  # under that id, and the sync would delete it. A settled card re-declared once is
-  # recoverable; a live card deleted is not.
-  synced="$home/state/logbook-outbox/sync.json"
-  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+  # out - while the board itself is up and takes writes. The board read is what licenses
+  # subtracting from a DECLARATIVE payload at all (only it can fire the "this id is back
+  # on the board -> evict" rule), so a read that did not answer has to cancel the
+  # subtraction: firstmate may have pushed a fresh card under that id, and the sync would
+  # delete it.
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
     LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
-    FAKE_BOARD_BODY="" FAKE_BOARD_CODE=503 \
+    FAKE_BOARD_STATE="$state" FAKE_BOARD_CODE=503 \
     "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
-  assert_present "$synced" "an unreadable board must not stop the session-start sync"
-  jq -e 'any(.items[]; .id == "decide-b2")' "$synced" >/dev/null \
-    || fail "with no board view nothing may be subtracted from a declarative payload"$'\n'"$(cat "$synced")"
-  # The record itself is untouched, so this is a deferral and not a forgotten answer.
+  # The record itself is untouched by that cycle: a board it could not read is never read
+  # as consent to forget what the captain settled.
   settled_ids "$home" | grep -qx 'decide-b2' \
     || fail "a board this cycle could not read must never be read as consent to forget a clear"
-  # Proof of that: the next cycle CAN read the board, and the same card is suppressed
-  # again with no clear repeated.
-  body=$(compose_as_board "$home" '.items |= map(select(.id != "decide-b2"))')
-  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_DRY_RUN=1 \
+  # But the sync LANDED, so this is what the trade actually costs: the settled card is
+  # back on the board as pending, and the captain will be asked once more.
+  [ "$(stored_card "$state" decide-b2 | jq -r '.status')" = "pending" ] \
+    || fail "with no board view the payload is not subtracted from, so the settled card is re-declared"$'\n'"$(stored_card "$state" decide-b2)"
+  # And the next readable cycle does NOT suppress it - it EVICTS the record, because the
+  # rule is "recorded id is back on the board -> evict" and that sync is what put it
+  # there. The eviction is correct: suppressing an id whose card is live is what would
+  # delete that live card on this very path. Nothing is destroyed; the card stays up.
+  env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 \
     LOGBOOK_TOKEN=reftok LOGBOOK_URL=http://127.0.0.1:8137 \
-    FAKE_BOARD_BODY="$body" FAKE_BOARD_CODE=200 \
+    FAKE_BOARD_STATE="$state" \
     "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
-  jq -e 'any(.items[]; .id == "decide-b2")' "$synced" >/dev/null \
-    && fail "the settled card must be suppressed again on the next readable cycle"$'\n'"$(cat "$synced")"
-  pass "fm-logbook-refresh subtracts nothing when it could not read the board, and defers rather than forgets"
+  settled_ids "$home" | grep -qx 'decide-b2' \
+    && fail "a recorded id that is back on the board must be evicted, or the next sync would delete the live card"
+  [ "$(stored_card "$state" decide-b2 | jq -r '.status')" = "pending" ] \
+    || fail "the re-asked card stays up until the captain answers it again"$'\n'"$(stored_card "$state" decide-b2)"
+  pass "fm-logbook-refresh subtracts nothing when it could not read the board, at the cost of one re-ask"
 }
 
 test_refresh_treats_an_unusable_board_body_as_no_board_view() {
@@ -3716,7 +3738,7 @@ test_refresh_treats_an_unusable_board_body_as_no_board_view() {
 }
 
 test_push_never_hands_the_refresh_a_card_it_did_not_compose() {
-  local home fakebin state item card
+  local home fakebin state item card i
   home="$TMP_ROOT/push-unstamped"; write_fleet_fixture "$home"
   fakebin=$(make_fake_store_curl "$home"); state="$home/board-state.json"
   # Session start puts the mechanical baseline up, every card stamped as the refresh's
@@ -3741,18 +3763,44 @@ test_push_never_hands_the_refresh_a_card_it_did_not_compose() {
     || fail "the escalation must reach the board"$'\n'"$card"
   [ "$(printf '%s' "$card" | jq -r '.source.pr')" = "https://github.com/acme/alpha/pull/42" ] \
     || fail "the strip must leave source.pr alone - it is the merge-policy gate's second signal"$'\n'"$card"
+  # A second hand-pushed card, under an id compose does NOT produce. The declarative sync
+  # below is what tells these two apart, so both are on the board before it runs.
+  printf '%s' '{"id":"hand-note-x1","project":"alpha","kind":"decision","title":"Hand-composed: pick a rollout window","body":"firstmate wrote this","options":[{"label":"Tonight","value":"tonight"}]}' \
+    | env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_TOKEN=pushtok \
+      LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
+      "$ROOT/bin/fm-logbook-push.sh" - >/dev/null 2>&1
   # The 15s beat, with the fleet unchanged underneath: the composed baseline for that id
   # differs from the curated card, so an OWNED card would be corrected right back to the
-  # mechanical text. This one is not the refresh's to correct.
+  # mechanical text. This one is not the refresh's to correct - not on this beat and not
+  # on any later one, which is the whole of what the stamp buys. Run it repeatedly, with
+  # the fingerprint cleared each time so every cycle really reconciles.
+  for i in 1 2 3; do
+    rm -f "$home/state/logbook-resync.fingerprint"
+    env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=pushtok \
+      LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
+      "$ROOT/bin/fm-logbook-resync.sh" >/dev/null 2>&1
+    card=$(stored_card "$state" ship-pr-a1)
+    [ "$(printf '%s' "$card" | jq -r .title)" = "Escalation: the widget rollout needs your call" ] \
+      || fail "a hand-pushed escalation must never be flattened back to the mechanical baseline (beat $i)"$'\n'"$card"
+    [ "$(printf '%s' "$card" | jq -r '.body')" = "firstmate wrote the tradeoffs out in full" ] \
+      || fail "the curated body must survive the refresh (beat $i)"$'\n'"$card"
+    [ "$(stored_card "$state" hand-note-x1 | jq -r .title)" = "Hand-composed: pick a rollout window" ] \
+      || fail "a hand-pushed card under an id compose does not produce must survive the refresh (beat $i)"
+  done
+  # THE BOUNDARY. The stamp is read by the mid-session refresh and by nothing else: the
+  # session-start truth-restore posts a DECLARATIVE full-item replace and consults no
+  # ownership at all, so it flattens the curated card back to the mechanical baseline and
+  # deletes the one compose does not produce. That is the current contract, and a reader
+  # who expected an escalation to outlive a restart would be wrong about it.
   env PATH="$fakebin:$BASE_PATH" FM_HOME="$home" LOGBOOK_ENABLE=1 LOGBOOK_TOKEN=pushtok \
     LOGBOOK_URL=http://127.0.0.1:8137 FAKE_BOARD_STATE="$state" \
-    "$ROOT/bin/fm-logbook-resync.sh" >/dev/null 2>&1
+    "$ROOT/bin/fm-logbook-refresh.sh" >/dev/null 2>&1
   card=$(stored_card "$state" ship-pr-a1)
-  [ "$(printf '%s' "$card" | jq -r .title)" = "Escalation: the widget rollout needs your call" ] \
-    || fail "a hand-pushed escalation must never be flattened back to the mechanical baseline"$'\n'"$card"
-  [ "$(printf '%s' "$card" | jq -r '.body')" = "firstmate wrote the tradeoffs out in full" ] \
-    || fail "the curated body must survive the refresh"$'\n'"$card"
-  pass "fm-logbook-push strips the ownership stamp, so an escalation cannot be flattened by the refresh"
+  [ "$(printf '%s' "$card" | jq -r .title)" = "Ship the widget endpoint" ] \
+    || fail "the session-start sync flattens a card sharing a composed id; that is what the stamp does NOT cover"$'\n'"$card"
+  [ "$(stored_card "$state" hand-note-x1)" = "{}" ] \
+    || fail "the session-start sync deletes a card under an id compose does not produce"$'\n'"$(stored_card "$state" hand-note-x1)"
+  pass "the ownership stamp carries a hand-pushed card through every mid-session refresh, and no further"
 }
 
 test_resync_keeps_a_set_aside_card_current_through_progress_churn() {

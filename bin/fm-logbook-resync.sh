@@ -42,10 +42,17 @@
 # Ownership is the $LOGBOOK_COMPOSE_PRODUCER stamp compose writes into each card's
 # opaque "source" blob (fm-logbook-lib.sh owns the value). A hand-composed card pushed
 # through fm-logbook-push.sh carries no such stamp, so this script will not rewrite it
-# and will not clear it - it survives indefinitely, which is strictly better than
-# today, where the next session-start sync flattens it. An unstamped card also cannot
-# be cleared here, so a card compose has stopped producing but firstmate pushed by hand
-# is left for firstmate or the next session-start sync to deal with.
+# and will not clear it: it survives EVERY MID-SESSION REFRESH, however many beats it
+# sits through, instead of being flattened twice a minute.
+#
+# That is the whole of the protection, and the boundary is worth stating exactly. This
+# stamp is read HERE and nowhere else. The session-start truth-restore consults nothing:
+# bin/fm-logbook-refresh.sh hands the composed baseline to bin/fm-logbook-sync.sh, and
+# POST /api/sync is a declarative full-ITEM replace, so at the next session start a rich
+# card sharing an id with a composed one is overwritten by the mechanical baseline and
+# one under an id compose does not produce is deleted outright. So a card compose has
+# stopped producing but firstmate pushed by hand is left for firstmate or that
+# session-start sync to deal with - the same fact from the other side.
 #
 # Three further protections, each guarding a way an automatic writer could be worse
 # than the staleness it fixes:
