@@ -60,10 +60,11 @@
 #       -> writes one policy diagnostic to stderr, marked with FM_MERGE_POLICY_DIAG_MARKER
 
 # The marker every diagnostic this library writes carries, and the ONE thing a caller has
-# to know to pick those diagnostics out of a stream it otherwise drops. Only
-# bin/fm-bootstrap.sh's session-start board sync needs that today - the other callers let
-# this stderr through untouched - and it needs it badly, because that sync is the only read
-# of the policy that runs unattended.
+# to know to pick those diagnostics out of a stream it otherwise drops. Only the two
+# UNATTENDED reads of the policy need that today - bin/fm-bootstrap.sh's session-start
+# board sync and bin/fm-logbook-resync.sh's mid-session board refresh, each composing a
+# board with no one watching its stderr - and they need it badly, for exactly that reason.
+# Every other caller lets this stderr through untouched.
 #
 # It exists because the caller-side alternative failed exactly once and in the worst way: a
 # filter that enumerated the message TEXTS worth keeping had to be re-edited every time a

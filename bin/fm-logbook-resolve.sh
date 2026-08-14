@@ -16,6 +16,31 @@
 # is used. Both input paths - the captain answering on the board or answering
 # firstmate in chat - converge here once firstmate has acted.
 #
+# This is also the SINGLE WRITER of the settled-card record
+# (state/logbook-cleared.json; fm-logbook-lib.sh implements it and
+# docs/configuration.md "Board refresh" owns the contract). The board keeps no trace
+# of a cleared card that a client can read back: GET /api/board omits resolved and
+# dismissed rows, so to a compose-driven writer a cleared card is simply a card the
+# board lacks, which it re-adds. Recording the id here, with the content it carried,
+# is what keeps the automatic refresh and the session-start sync from putting an
+# answered question straight back in front of the captain.
+#
+# But clearing is not ONE act, and the difference decides whether a record may be
+# written at all. A CAPTAIN-ANSWERED clear - the answer loop acting on a board
+# response, or firstmate clearing after acting on a decision given in chat - means
+# the question is settled, and records. A MECHANICAL clear - bin/fm-logbook-resync.sh
+# retiring an owned card purely because the work left the composed set - means
+# nothing of the sort, and must NOT record: the same work can come back (a task
+# parked to Queued and later resumed composes a byte-identical card), and a record
+# written here would hold that returning card off the board for good, which is the
+# under-reporting bug this whole surface exists to remove. Callers say which they
+# performed by setting LOGBOOK_MECHANICAL_CLEAR; recording is the DEFAULT, because
+# every caller other than the refresh is the answer loop.
+#
+# The record is written only after the clear actually landed, never under LOGBOOK_DRY
+# (nothing was cleared), and never at the cost of the clear itself: a record that
+# cannot be written is one stderr warning, not a failure.
+#
 # Honors LOGBOOK_DRY_RUN: with it set (truthy), the composed would-be POST body
 # (the full item) is recorded to state/logbook-outbox/<id>.json and no write is
 # sent. Composing that faithful body still requires reading the card, so a dry-run
@@ -58,8 +83,11 @@ trap 'rm -f "$BOARD_FILE" "$BODY_FILE"' EXIT
 # LOGBOOK_DRY (a GET has no side effects; only the upsert is suppressed) so the
 # recorded preview is the exact full item a live resolve would send. A read
 # failure (board down, no token, curl missing) is a real error: exit non-zero so
-# the answer-loop leaves the inbox file and retries on the next poll.
-logbook_get_json /api/board "$BOARD_FILE" >/dev/null || exit 1
+# the answer-loop leaves the inbox file and retries on the next poll. Through
+# logbook_get_board, the gate every board reader shares, so a 2xx that did not
+# carry a board is a failed read here too rather than a board with no cards -
+# which this script would otherwise read as "that id is already cleared".
+logbook_get_board "$BOARD_FILE" >/dev/null || exit 1
 
 # Compose the full valid upsert: the whole item with status overridden. jq prints
 # nothing (and exits 0) when the id is not present, so an empty result is the
@@ -81,3 +109,17 @@ fi
 printf '%s\n' "$FULL_ITEM" > "$BODY_FILE" || { echo "fm-logbook-resolve: failed to write request body" >&2; exit 1; }
 
 logbook_post_json /api/items "$BODY_FILE" "$ID" >/dev/null || exit 1
+
+# The clear landed. Remember it so the compose-driven writers do not re-declare a
+# question the captain has settled - unless this clear was MECHANICAL, in which case
+# nothing was settled and a record would hold the card down if the same work returned.
+# Skipped under LOGBOOK_DRY too, where nothing was actually cleared, and never fatal:
+# the clear is the important half, so a record that cannot be written is a warning.
+case "$(printf '%s' "${LOGBOOK_MECHANICAL_CLEAR:-}" | tr '[:upper:]' '[:lower:]')" in
+  ''|0|false|no|off) MECHANICAL="" ;;
+  *) MECHANICAL=1 ;;
+esac
+if [ -z "$LOGBOOK_DRY" ] && [ -z "$MECHANICAL" ]; then
+  logbook_cleared_record "$ID" "$BOARD_FILE" \
+    || echo "fm-logbook-resolve: cleared '$ID' but could not record it as settled; an automatic refresh may re-add it" >&2
+fi

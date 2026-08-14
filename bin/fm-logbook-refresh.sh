@@ -11,6 +11,41 @@
 # automatic, not a step firstmate has to remember; firstmate can also run it by
 # hand mid-session to re-truth the board.
 #
+# One thing is subtracted from that composed set before it goes up: a card the captain
+# already answered and firstmate already cleared. The board keeps no trace a client can
+# read back (GET /api/board omits resolved and dismissed rows), so compose - which knows
+# only fleet state - re-derives such a card for as long as its task stays in the
+# attention set, and syncing it would put a settled question back in front of the
+# captain. bin/fm-logbook-resolve.sh records every clear it performs and this honors
+# that record; docs/configuration.md "Board refresh" owns the contract.
+#
+# THAT SUBTRACTION IS WHY THIS READS THE BOARD FIRST, and the read is not optional.
+# On the incremental refresh, leaving an id out of the payload means "do not add it".
+# HERE it means DELETE: fm-logbook-sync.sh is declarative, and its own header states
+# that a collection present in the body becomes exactly that set, absent members
+# deleted. So a settled id that firstmate has since pushed a FRESH card under would be
+# stripped from the payload and the live card destroyed - strictly worse than the
+# staleness this whole surface exists to fix. Reading the board first lets the record's
+# "this id is back on the board -> evict" rule fire on this path too, so a card that is
+# actually there is never suppressed out of the payload. Do not re-introduce a payload
+# strip without this read.
+#
+# "Not optional" is enforced rather than asserted: a board read that FAILS cancels the
+# subtraction entirely instead of degrading it. Without the view, the eviction rule
+# cannot fire, and a suppression applied blind is a live card deleted - the one outcome
+# that cannot be undone.
+#
+# What the other side of that trade actually costs, stated plainly rather than softened:
+# the failed-read cycle leaves the settled-card record untouched, but it still syncs the
+# full composed set, so if that sync LANDS the settled card is back on the board as
+# pending - the captain is asked once more. The next readable cycle does not then
+# suppress it; it EVICTS the record, because the rule is "recorded id is back on the
+# board -> evict" and this sync is what put it there. That eviction is correct - an id
+# whose card is live must never be suppressed, or the next declarative sync deletes it -
+# so nothing here is destroyed and no answer is silently discarded. But the card is up
+# again and stays up until the captain answers it a second time. That is the price of
+# the read failing, and it is paid against a re-ask rather than against a lost card.
+#
 # Inert by default: a hard no-op (exit 0, no output) unless logbook is opted in via
 # a truthy LOGBOOK_ENABLE. Honors LOGBOOK_DRY_RUN transitively - fm-logbook-sync.sh
 # records the would-be body to state/logbook-outbox/sync.json instead of posting.
@@ -35,7 +70,10 @@ logbook_enabled || exit 0
 command -v jq >/dev/null 2>&1 || { echo "fm-logbook-refresh: jq not found" >&2; exit 1; }
 
 BODY_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
-trap 'rm -f "$BODY_FILE"' EXIT
+SUPPRESSED=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh-cleared.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
+FILTERED=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh-body.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
+BOARD_FILE=$(mktemp "${TMPDIR:-/tmp}/fm-logbook-refresh-board.XXXXXX") || { echo "fm-logbook-refresh: cannot create temp file" >&2; exit 1; }
+trap 'rm -f "$BODY_FILE" "$SUPPRESSED" "$FILTERED" "$BOARD_FILE"' EXIT
 
 # Compose the attention set. compose is itself opt-in gated, so we are past that;
 # treat an empty/non-JSON body as a compose failure rather than syncing garbage.
@@ -46,6 +84,51 @@ fi
 if [ ! -s "$BODY_FILE" ] || ! jq -e . "$BODY_FILE" >/dev/null 2>&1; then
   echo "fm-logbook-refresh: composed board body was empty or not valid JSON" >&2
   exit 1
+fi
+
+# The live board, and the licence for the subtraction below. Read-only and best-effort
+# in the sense that it never fails the refresh - but a read that did not answer leaves
+# BOARD_VIEW empty, and an empty view means nothing is subtracted at all (see the
+# header): the suppression rule that needs it most is "this id is back on the board ->
+# evict", and that is exactly the rule protecting a live card from a declarative delete.
+#
+# Read through logbook_get_board rather than logbook_get_json, because a 2xx is not a
+# board view: a 200 carrying nothing, or an error object from whatever else is listening
+# on this URL, reads to the filter as a board with NO ids on it - precisely the state
+# that cannot fire the eviction and so deletes the live card. That gate belongs to
+# fm-logbook-lib.sh, which every board reader shares, rather than to this call site;
+# a body it will not vouch for is not distinguishable from a dead board here, so both
+# take the same branch.
+BOARD_VIEW=""
+if logbook_get_board "$BOARD_FILE" >/dev/null 2>&1; then
+  BOARD_VIEW="$BOARD_FILE"
+fi
+
+# Drop the cards the captain already settled, against a board this cycle could actually
+# read. Best-effort by construction: the filter writes an empty suppression set when it
+# cannot read its record, which is the old behavior (the card reappears) rather than a
+# failed refresh. `$drop[0]` is bound before index() because jq evaluates an argument to
+# index() against the value being searched, not against the item in hand.
+#
+# With no view the filter is not consulted at all, so the record is neither read nor
+# maintained on this cycle: a settled card is re-declared once, and stays settled for
+# every cycle that can see the board. Skipping the maintenance too is deliberate - a
+# pass that adopted a sentinel hash without suppressing anything would spend the one
+# suppression that sentinel exists to grant.
+if [ -n "$BOARD_VIEW" ]; then
+  logbook_cleared_filter "$BODY_FILE" "$BOARD_VIEW" "$SUPPRESSED"
+  if ! jq -e 'length == 0' "$SUPPRESSED" >/dev/null 2>&1; then
+    if jq -c --slurpfile drop "$SUPPRESSED" '
+          (($drop[0]) // []) as $settled
+          | .items = [ (.items // [])[] | . as $i | select(($settled | index($i.id)) == null) ]
+        ' "$BODY_FILE" > "$FILTERED" 2>/dev/null && [ -s "$FILTERED" ]; then
+      cat "$FILTERED" > "$BODY_FILE"
+    else
+      echo "fm-logbook-refresh: could not apply the settled-card record; syncing the full composed set" >&2
+    fi
+  fi
+else
+  echo "fm-logbook-refresh: could not read a usable board view, so the settled-card record is not applied to this declarative sync" >&2
 fi
 
 # Declarative full reconcile. Honors LOGBOOK_DRY_RUN inside fm-logbook-sync.sh, so a

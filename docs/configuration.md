@@ -311,19 +311,20 @@ An explicit environment variable always wins over the file, mirroring X mode's r
 As of Phase 2 the loop is two-way: firstmate pushes items and reconciles the board, and the captain can answer a card on the board (or still in chat), with both paths converging on the same lifecycle action and the same card resolve.
 The inbound answer-loop rides the existing `state/*.check.sh` watcher rail exactly as X mode does, so opting in drops a poll shim (`state/logbook-watch.check.sh` -> `bin/fm-logbook-poll.sh`) and a generated cadence file (`config/logbook-mode.env`, `FM_CHECK_INTERVAL=15`), without editing the watcher backbone.
 Opting in drops a second shim on that same rail, `state/logbook-reap.check.sh` -> `bin/fm-logbook-reap.sh`, which keeps the board itself alive; see "Board liveness" below.
+It drops a third, `state/logbook-resync.check.sh` -> `bin/fm-logbook-resync.sh`, which keeps the board's CONTENTS current as fleet state moves; see "Board refresh" below.
 
 `LOGBOOK_URL` defaults to `http://127.0.0.1:8137` (loopback only; a trailing slash is trimmed), `LOGBOOK_PORT` is derived from that URL when not set explicitly and otherwise falls back to `8137`, and `LOGBOOK_TOOL_DIR` defaults to this home's `projects/logbook` clone.
 Set `LOGBOOK_TOKEN` to a private value when you opt in so firstmate's pushes can authenticate and other local processes cannot drive the board; without it the client posters cannot authenticate a live post.
 `LOGBOOK_ENV_FILE` can point direct client invocations at another `.env`-style file.
 
-On the locked session-start bootstrap step, a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up through `bin/fm-logbook-up.sh` (detached and non-blocking), print `LOGBOOK: on - board at <url>`, and drop the inbound poll shim `state/logbook-watch.check.sh` and the board-liveness reap shim `state/logbook-reap.check.sh`, plus the generated cadence `config/logbook-mode.env` (`FM_CHECK_INTERVAL=15`, a distinct file from the hand-authored `config/logbook.env`).
+On the locked session-start bootstrap step, a truthy `LOGBOOK_ENABLE` makes bootstrap ensure the board server is up through `bin/fm-logbook-up.sh` (detached and non-blocking), print `LOGBOOK: on - board at <url>`, and drop the inbound poll shim `state/logbook-watch.check.sh`, the board-liveness reap shim `state/logbook-reap.check.sh`, and the board-refresh shim `state/logbook-resync.check.sh`, plus the generated cadence `config/logbook-mode.env` (`FM_CHECK_INTERVAL=15`, a distinct file from the hand-authored `config/logbook.env`).
 Arming those shims needs `curl` and `jq`.
 When the board is reachable, bootstrap also prints a captain-facing `LOGBOOK: attention board: <url>` link for firstmate to relay to the captain, and auto-syncs the board from fleet state via `bin/fm-logbook-refresh.sh`, best-effort and non-blocking, so the session-start reconcile no longer depends on firstmate remembering to run it.
 Composing that board reads every carded project's merge policy, so bootstrap filters the refresh's stderr and re-emits every diagnostic `bin/fm-merge-policy-lib.sh` wrote as `LOGBOOK: merge policy - <detail>`.
 The filter selects on a single marker that library stamps on its own diagnostics rather than on a copy of their message texts, so a diagnostic added there later reaches the captain with no change to bootstrap.
-That sync is the earliest, most frequent, and only unattended read of the `+captain-merge` posture, and neither a mistyped flag nor a lookup that fails outright is honored as the prohibition it was meant to be, so the board would otherwise offer a one-click Merge for a project the captain reserved to themselves with the warning discarded.
+That sync is the earliest read of the `+captain-merge` posture and one of the two that run unattended (the other is the mid-session board refresh below, which relays the same marked lines to its own stderr), and neither a mistyped flag nor a lookup that fails outright is honored as the prohibition it was meant to be, so the board would otherwise offer a one-click Merge for a project the captain reserved to themselves with the warning discarded.
 The rest of the refresh's stderr stays dropped; the `LOGBOOK: board not auto-synced ...` line already reports a failed compose or sync.
-On opt-out it removes all three artifacts, reverting to the default 300s no-poll cadence.
+On opt-out it removes all four artifacts, plus the refresh's `state/logbook-resync.fingerprint` and `state/logbook-resync.failures` and - on that path only - the settled-card record `state/logbook-cleared.json` ("Board refresh" below), reverting to the default 300s no-poll cadence.
 With no config and no leftover artifacts it is a complete no-op.
 `bin/fm-logbook-up.sh` health-checks `GET $LOGBOOK_URL/health`, and if the board is down launches `node $LOGBOOK_TOOL_DIR/server.mjs` detached with output to `state/logbook-server.log` and its runtime store under `state/logbook.data`, so nothing is ever written into `projects/`.
 
@@ -336,23 +337,132 @@ Because `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start, a cad
 Logbook is a reason to keep the watcher armed even with no fleet work, so an opted-in captain's board answers are always picked up.
 While away mode is active the daemon owns the watcher and its default cadence applies; away-mode logbook cadence is a deferred follow-up, as it is for X mode.
 Logbook is purely additive: no edit is made to `bin/fm-watch.sh`, `bin/fm-watch-arm.sh`, `bin/fm-wake-lib.sh`, or the afk daemon.
-That holds for the board-liveness reap too, despite it being watcher-driven: it is a check shim like any other, so the watcher runs it without knowing what it is.
+That holds for the board-liveness reap and the board refresh too, despite both being watcher-driven: each is a check shim like any other, so the watcher runs it without knowing what it is.
 It lives entirely in the `bin/fm-logbook-*.sh` scripts, bootstrap's `logbook_setup()` block, the `logbook-respond` skill, and the generated local artifacts above.
 The session-start reconcile is automatic: bootstrap runs `bin/fm-logbook-refresh.sh`, which composes the attention set with `bin/fm-logbook-compose.sh` (a mechanical baseline derived from `data/projects.md`, `data/backlog.md`, `state/*.meta`, `state/*.status`, and each project clone's `origin` remote) and hands it to `bin/fm-logbook-sync.sh` (`POST /api/sync {projects?, items?}`, a declarative truth-restore).
 That last source is compose's only reach into `projects/`, and it is a single `git remote get-url origin` per project: it reads the repo a project's PRs actually land in, so a card's Merge option can be gated on the PR naming that repo rather than the local directory name the captain chose at clone time.
 It touches no ref, index, or worktree, so prime directive 1 holds - firstmate still never writes to a project.
 A verified PR earns the Merge option only where firstmate is permitted to merge that project at all: a `+captain-merge` project (`AGENTS.md` section 6) composes the same action card with a `Done / dismiss` acknowledgement instead, and `bin/fm-logbook-push.sh` strips a hand-composed `merge` option back to that same acknowledgement so a rich upsert cannot put back what compose withheld.
 `bin/fm-pr-merge.sh` refuses the merge even if a stale card's `merge` answer arrives anyway - `bin/fm-merge-policy-lib.sh` owns every side of it.
-Firstmate can re-run `bin/fm-logbook-refresh.sh` by hand to re-truth the board mid-session.
+Firstmate can re-run `bin/fm-logbook-refresh.sh` by hand to re-truth the board mid-session, and the board-refresh shim keeps it current between those runs without one ("Board refresh" below).
 It then upserts richer changed items with `bin/fm-logbook-push.sh` (`POST /api/items`) and clears acted-on cards with `bin/fm-logbook-resolve.sh <id> [resolved|dismissed]`.
 The tool has no dedicated resolve endpoint and rejects a bare `{id, status}` upsert (it runs full item validation on every `POST /api/items`), so `fm-logbook-resolve.sh` fetches the card's current fields via a read-only `GET /api/board` and re-upserts the whole item with a terminal `status` that drops the card off the board; an id absent from the board is a clean no-op.
+Every board read in this client - that one, the session-start refresh's, and the mid-session refresh's - goes through one gate in `bin/fm-logbook-lib.sh` that answers for the board VIEW rather than for the request: a 2xx whose body is not an `items`/`projects` board is a failed read, never a board with no cards, because resolve would otherwise take a card it never saw for one already cleared and a compose-driven writer would act on a board it never read. A legitimately empty board passes.
 The inbound answer-loop works like this: `bin/fm-logbook-poll.sh`, the shim body, polls `GET /api/connector/poll`, stashes each pending answer to `state/logbook-inbox/<response_id>.json`, and prints `logbook-response <id>` for a `check:` wake.
 The `logbook-respond` skill then drains the inbox, applies each captain answer through the normal lifecycle, and acks it with `bin/fm-logbook-ack.sh` (`POST /api/connector/ack`) before resolving the card.
 Item bodies are composed from fleet internals and are always passed via `--json-file` or stdin, never inlined into a shell argument.
 The board binds `127.0.0.1` only and requires a bearer token on every `/api/*` call; the client keeps the token in `config/logbook.env` and sends it via a `0600` auth-header temp file, never on a command line.
 
-Set `LOGBOOK_DRY_RUN` (truthy) to make `fm-logbook-push.sh`, `fm-logbook-sync.sh`, `fm-logbook-resolve.sh`, and `fm-logbook-ack.sh` record the would-be POST body to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting; `fm-logbook-refresh.sh` inherits it through its sync step, while the read-only `fm-logbook-compose.sh` needs no such switch (it only reads fleet state and prints the body).
+Set `LOGBOOK_DRY_RUN` (truthy) to make `fm-logbook-push.sh`, `fm-logbook-sync.sh`, `fm-logbook-resolve.sh`, and `fm-logbook-ack.sh` record the would-be POST body to `state/logbook-outbox/<name>.json` (`items.json`, `sync.json`, `<id>.json`, or `<response_id>.json`) instead of posting; `fm-logbook-refresh.sh` inherits it through its sync step and `fm-logbook-resync.sh` through its push and resolve steps (as `resync-items.json`, `resync-projects.json`, and `<id>.json`), while the read-only `fm-logbook-compose.sh` needs no such switch (it only reads fleet state and prints the body).
 Push, sync, and ack compose their body from their arguments, so they need neither the token nor the board; resolve must read the card's current fields via the read-only `GET /api/board` to compose its full-item body (needing the token and a reachable board) but still writes nothing.
+
+### Board refresh
+
+This subsection is the single owner of the mid-session board-refresh contract; `bin/fm-logbook-resync.sh` is its only implementation.
+
+**The gap it closes.**
+`bin/fm-logbook-compose.sh` has always derived the correct attention set at any moment, but for a long time the only thing that ever pushed that set to the board was the session-start sync above.
+The board was therefore a photograph taken when the session opened: every dispatch, completion, decision and merge afterwards stayed invisible until the next session unless firstmate remembered to hand-push a card.
+The captain found this twice before firstmate did, and a board that silently under-reports is worse than one that is obviously empty, because they use it to know what needs them.
+`bin/fm-logbook-resync.sh` is the body of the `state/logbook-resync.check.sh` shim, so the watcher runs it every check cycle (15s once logbook is on, 300s under away mode) on the same beat the answer-loop and the reap already ride.
+There is no new scheduler, daemon, or timer, and no edit to any watcher-backbone file.
+
+**It never posts `/api/sync`, and that is the whole design.**
+`POST /api/sync` is a declarative full-ITEM replace: it deletes every stored item the payload does not list, then overwrites every column of the ones it does.
+Once per session that is survivable, because firstmate re-pushes what it wants back.
+On a 15-second beat it is not: it would delete every hand-pushed card compose does not know about and flatten every rich card compose does know about back to its mechanical baseline, twice a minute, forever.
+The refresh therefore reconciles INCREMENTALLY against the live board, and scopes every write by card ownership:
+
+| Case | Action |
+| --- | --- |
+| a composed item the board does not have | upsert via `POST /api/items` |
+| a composed item whose board card is owned and whose content differs | upsert via `POST /api/items` |
+| an owned board card the composed set no longer contains, unanswered | clear via `bin/fm-logbook-resolve.sh` |
+| anything else, in particular any card it does not own | skip |
+
+Ownership is a `producer` key that `bin/fm-logbook-compose.sh` stamps into each card's opaque `source` blob; `bin/fm-logbook-lib.sh` owns the value (`LOGBOOK_COMPOSE_PRODUCER`) so the writer and the reader cannot drift.
+A rich card pushed through `bin/fm-logbook-push.sh` carries no such stamp, so the mid-session refresh neither rewrites nor clears it: it survives every refresh beat, however many it sits through, instead of being flattened twice a minute.
+That is the whole of the protection, and the boundary is worth stating exactly: the stamp is read by `bin/fm-logbook-resync.sh` and nowhere else.
+The session-start truth-restore consults nothing - it hands the composed baseline to `bin/fm-logbook-sync.sh`, and `POST /api/sync` is a declarative full-ITEM replace - so at the next session start a rich card sharing an id with a composed one is overwritten by the mechanical baseline, and one under an id compose does not produce is deleted outright.
+That is true by construction rather than by authoring discipline: the natural way to write a rich escalation is on top of the composed baseline, which carries the stamp along with everything else, so `bin/fm-logbook-push.sh` REMOVES `source.producer` from every item it posts - at the boundary where "this was hand-pushed" is actually known, rather than inferring it later from a cleverer read-time test.
+Only that key goes; `source.pr` is the merge-policy gate's second signal and is left exactly as it was.
+A hand-push is therefore no longer a byte-for-byte pass-through, which is the accepted cost of the invariant.
+An unstamped card is also never cleared here, so a card compose has stopped producing but firstmate pushed by hand is left for firstmate or the next full refresh.
+A card composed before the stamp existed reads as unowned until the next session-start sync restamps it; new cards still appear immediately, so the primary staleness is fixed at once and only content-corrections and clears of pre-existing cards wait.
+
+Three further protections each guard a way an automatic writer could be worse than the staleness it fixes.
+The captain's per-project `active` toggle survives because projects go up through the upsert-only `POST /api/projects`, never the deleting sync, and the tool's `upsertProject` treats `active` as seed-only; no project is ever deleted on this path either, which is the session-start sync's business rather than a timer's.
+The captain's set-aside ("not now") survives because a card whose content is unchanged is not re-upserted at all, so a card put down stays down - and because the tool's own `isNewClaim` is far narrower than this client's content diff, a card that DID change keeps its set-aside too unless it became a different question.
+`isNewClaim` clears the set-aside in exactly two cases: an unanswerable card (an `fyi`) re-declared as an answerable one (a `decision` or an `action`), and an already-answerable card whose `options` list changed.
+A re-declared body, a new title and a moved moment are not inputs to it at all, so the status line a live crewmate rewrites every few minutes - which IS a composed `fyi` card's body - cannot disturb a set-aside however often this beat re-upserts it; neither can an `options` list that churns on an `fyi`, since nothing can pick from one.
+That narrowness belongs to the tool, so the refresh needs no client-side exception for a set-aside card and deliberately has none: one would only freeze that card's text while the captain has it put down, and the board would then show them stale text the moment they pick it back up.
+Every card therefore keeps refreshing on every drift, set aside or not.
+The captain's unacted answer survives because a card at status `submitted` has been answered on the board and is waiting on firstmate, so the mid-session refresh neither clears it NOR rewrites it - both its clear set and its update set test the stored status, or a content drift arriving mid-answer (another status line, a lapsed hold gate, an edited backlog one-liner) would re-upsert the mechanical baseline over the card the captain just answered; the answer loop owns that card end to end and clears it once firstmate has acted.
+The session-start declarative sync is the one writer that does still re-declare an answered card, and that is safe for a reason belonging to the board tool rather than to firstmate: an upsert carrying no `status` normalizes to `pending`, but the tool's own conflict handling preserves a stored `submitted`, and its `isNewClaim` returns false outright for a card at `submitted`, so neither the answer nor the set-aside is lost across the re-declaration.
+Both of those are reads of the tool's behavior, so they are pinned by tests against the board stand-in in `tests/fm-logbook.test.sh` rather than trusted to stay true on their own - and the stand-in models `isNewClaim` at exactly the tool's narrowness, because a double that clears MORE than the tool does is the direction that invents a hazard the client then defends against.
+
+**The settled-card record.**
+`GET /api/board` deliberately omits resolved and dismissed rows, so a card firstmate has already CLEARED through the answer loop reads to a compose-driven writer as a card the board simply lacks - and the add rule above would put it straight back as a pending card, for as long as its task stays in the composed set.
+A card the captain answered coming back as pending is the board re-asking a settled question, which is the exact failure this whole surface exists to remove.
+`bin/fm-logbook-resolve.sh`, the single owner of clearing, therefore records a clear that actually landed to `state/logbook-cleared.json` as `{ "<item id>": "<content hash>" }`, using the card's fields as the board still held them (it already reads them to compose its terminal-status upsert).
+It records nothing under `LOGBOOK_DRY_RUN`, where nothing was cleared, and a record it cannot write is one stderr warning rather than a failed clear.
+Both compose-driven writers consult it: the mid-session refresh before every add, and `bin/fm-logbook-refresh.sh` on the composed set before it hands the payload to `bin/fm-logbook-sync.sh`, so the session-start sync cannot undo what the answer loop settled either.
+Those two suppressions do not mean the same thing, which is why `bin/fm-logbook-refresh.sh` performs its own read-only `GET /api/board` first and passes that view to the filter.
+On the incremental path, leaving an id out means "do not add it"; on the declarative path it means DELETE, because a collection present in a `POST /api/sync` body becomes exactly that set.
+Without the board view a settled id that firstmate had since pushed a fresh card under would be stripped from the payload and that live card destroyed, so the board view is what lets the "this id is back on the board" eviction fire on this path too.
+That read is therefore not optional in the enforced sense: a `GET /api/board` that fails, times out, or answers with something the shared gate above will not vouch for as a board view CANCELS the subtraction rather than degrading it, and `bin/fm-logbook-refresh.sh` syncs the full composed set with one stderr diagnostic.
+What the other side of that trade costs is worth stating plainly rather than softening.
+The failed-read cycle leaves the settled-card record untouched, but it still syncs the full composed set, so if that sync lands the settled card is back on the board as pending and the captain is asked once more.
+The next readable cycle does not then suppress it, it EVICTS the record: the rule is "recorded id is back on the board -> evict", and that sync is what put it there.
+The eviction is correct - an id whose card is live must never be suppressed, or the next declarative sync deletes it - so nothing is destroyed and no answer is silently discarded, but the card stays up until the captain answers it a second time.
+That is the price of the read failing, and it is paid against a re-ask rather than against a card that cannot be recovered.
+
+ONLY A CAPTAIN-ANSWERED CLEAR RECORDS, because clearing is not one act.
+The answer loop clears because the captain decided and firstmate acted, and that settles the question; the mid-session refresh clears MECHANICALLY, because the work simply left the composed set, and that settles nothing.
+Recording a mechanical clear would suppress the card if that same work ever returned - a task parked to Queued and later resumed composes a byte-identical card - which is the original under-reporting bug re-introduced for resumed work, so the refresh marks every clear in its clear loop as mechanical (`LOGBOOK_MECHANICAL_CLEAR`) and no record is written for it.
+Recording is the DEFAULT, so every other caller of `bin/fm-logbook-resolve.sh` is the answer loop and needs no change.
+
+The record is CONTENT-keyed, not a plain id list: a cleared id whose composed content still hashes the same is suppressed, and one whose content has moved on goes back up and its record is dropped, because that is a different question - the same rule the tool's own `upsertItem` applies when a client re-declares a cleared id.
+For that comparison to mean anything, both sides have to be the same side of it - compose's baseline content.
+A compose-OWNED card satisfies this already, because its board content and its composed content are identical, so the board hash taken at clear time IS the composed hash.
+A card that is not owned cannot: a hand-composed escalation pushed through `bin/fm-logbook-push.sh` never carries the ownership stamp (and must not, or the refresh would treat it as its own baseline and flatten it every cycle), so its `source` alone differs from the composed baseline and `source` is inside the normalization.
+Clearing an unowned card therefore records the empty SENTINEL, which the readers treat as "suppress on this pass, and adopt the composed hash you see now"; from then on that id is compared like-for-like and stays down until its composed content actually changes.
+A record is evicted once there is nothing left to suppress: when its id leaves the composed set, when its id is on the board again (something re-added it), and when its content changed.
+That runs on the normal refresh cycle, so the record cannot grow without bound, and `bin/fm-logbook-lib.sh` owns the hash's normalization (`LOGBOOK_ITEM_NORM_JQ`), the ownership test (`LOGBOOK_ITEM_OWNED_JQ`) and the suppression rule - each the same single definition the board-vs-composed diff uses - so the writer and the two readers cannot drift onto two different answers.
+The hash sorts keys before hashing bytes, so a board that re-serializes a nested `source` or `options` when it stores an item cannot make a recorded hash unmatchable; both sides go through the one hashing function, so that is symmetric.
+The record has two writers - the answer loop and the watcher beat - so both take a fail-open single-writer lock around their read-modify-write: a lock that cannot be taken is proceeded past unlocked (today's behavior) rather than failing a clear or wedging a refresh, and a lock left behind by a killed process is broken after a minute.
+`bin/fm-bootstrap.sh` removes the record on a genuine opt-out only; a missing `curl`/`jq` or a shim it could not write is a transient, and losing the captain's answers to one would cause the very re-declaration the record prevents.
+
+**Change detection.**
+Composing is not cheap (it shells out to `git` once per carded project), so the refresh never composes speculatively.
+It first fingerprints exactly what compose reads - `data/projects.md`, `data/backlog.md`, every `state/*.meta` and `state/*.status`, and the calendar day - into `state/logbook-resync.fingerprint`, and exits without touching the network when that fingerprint is unchanged.
+Measured at 9ms on a 93KB backlog with six state files, which against a 15s cycle is a 0.06% duty cycle; a real reconcile against a stubbed board measured 0.05s end to end.
+The fingerprint hashes CONTENT rather than mtimes, so a backlog the backend rewrites byte-identically (`tasks-axi` renders the file in place on every mutation) does not trigger a pointless refresh, and it hashes the file NAMES alongside the contents so a teardown removing a meta registers as a change too.
+The calendar day is in there because compose has one input that is not a file: it reads `date +%Y-%m-%d` and drops a hold whose `(hold-until: <date>)` gate has arrived, so a lapsing gate changes compose's output with nothing on disk changing - an in-flight task with a verified PR flips from a not-ready fyi to an action card offering the Merge, in exactly the case the board exists for (review-ready work with no live crew writing status files, so nothing else moves).
+Covering it costs at most one extra compose per day.
+`cksum` is CRC32 and could in principle collide across two successive states; the cost is one skipped refresh that the next real change repairs, which is why a stronger digest is not worth a non-POSIX dependency.
+Two inputs are deliberately outside the fingerprint, so it is not mistaken for exhaustive: each clone's `origin` remote, because reading it is a `git` subprocess per project and it changes approximately never, and the BOARD's own state, because the fingerprint tracks the fleet.
+A board whose store is wiped out from under firstmate therefore reads as "nothing changed" until fleet state next moves, and is restored by the next session start or a hand-run `bin/fm-logbook-refresh.sh`.
+
+**Wake discipline.**
+Refreshing the board is housekeeping, so the refresh prints nothing on stdout ever, and therefore never wakes firstmate - the check rail defines printing nothing as "no wake".
+Every failure is quiet and non-fatal: a board that cannot be reached is not a reason to disturb the captain or interrupt supervision, and a board that is down for good is already the reap's story to tell, once.
+Diagnostics go to stderr, which the watcher discards and a hand run shows.
+That includes the merge-policy diagnostics compose writes: this refresh is the second unattended read of the `+captain-merge` posture and the one that runs on every fleet change, so it relays every line `bin/fm-merge-policy-lib.sh` marked - selecting on that library's own marker, never on a copy of the message texts - as `fm-logbook-resync: merge policy - <detail>`, and drops the rest of compose's stream as plumbing noise.
+That relay outlives the bounded retry below, because a fall-open permission warning suppressed on 19 beats in 20 is the same defect as one suppressed always, only smaller.
+It can, because none of those lines is compose's own: every one comes from `fm_merge_policy_project` reading the REGISTRY, so a backed-off beat asks the policy library about each registry project directly and relays what it says through the same marker-selected filter - one registry lookup per registry project, with no `git`, no backlog parse and no per-item `jq`, which is what makes the expensive half skippable while this half is not.
+A sweep that cannot run says so on the same channel rather than declining in silence, because a sweep that did not happen is not the absence of a posture problem: a registry that is present and unreadable is precisely the fleet-wide fall-open the marker mechanism exists for, with every project reading as mergeable, and a beat that composes reports it.
+A home with no registry at all is the one silence kept, because it is a legitimate state that the policy library itself drops as routine, so staying quiet there matches the composing beat rather than falling short of it.
+Those relayed lines go to stderr like every other diagnostic here; nothing this script writes ever reaches stdout, because that is what keeps a housekeeping refresh from waking firstmate.
+A cycle that could not complete leaves the fingerprint unrecorded, so it simply retries on the next beat rather than banking a board state it never reached; the writes are independent, so one that could not land never cancels the others.
+That retry is bounded, because a failure that lasts is a different thing from the transient one it was written for: a board that stays down after the reap gives up, or one that is up and rejecting every write, would otherwise buy a full compose (a `git` shell-out per carded project plus a `jq` invocation per item) every 15 seconds forever and throw the result away.
+Consecutive cycles that did not reach the board state they composed are counted into `state/logbook-resync.failures`, persisted the same way the fingerprint is, and past 20 of them the refresh backs off toward the staleness it had before this script existed: one attempt every 20 beats instead of one every beat, skipped before the compose.
+20 is five minutes of continuous failure at the 15s beat - generous headroom for the reap to notice a dead board and relaunch it, including a crash-loop retry or two, so an ordinary board restart never trips it.
+Recovery needs no restart and no session start: one cycle that completes deletes the counter, and the next fleet change is reconciled on the normal beat again.
+A skipped beat still says so on stderr, so a hand run can tell a backed-off beat from a beat with nothing to do, and it still relays the merge-policy diagnostics above; only the expensive compose is skipped.
+The refresh is inert when logbook is off, exactly like the rest of the client: bootstrap drops the shim only on opt-in, and the script itself is a hard no-op without a truthy `LOGBOOK_ENABLE`.
+
+`bin/fm-logbook-refresh.sh` and `bin/fm-logbook-resync.sh` are complements, not alternatives: the former is the one-call full declarative truth-restore that bootstrap runs at session start and firstmate can run by hand, and the latter is the incremental, ownership-scoped rider that keeps it true in between.
 
 ### Sub-projects
 

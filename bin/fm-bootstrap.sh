@@ -518,6 +518,12 @@ EOF
 #                                      a board killed mid-session is health-checked and
 #                                      relaunched on the same beat instead of staying
 #                                      dead. Silent unless it gives up relaunching
+#       state/logbook-resync.check.sh - check shim that execs bin/fm-logbook-resync.sh:
+#                                      the board's ONLY refresh between session starts,
+#                                      so the session-start sync below is not a
+#                                      photograph the whole session works from. It
+#                                      reconciles incrementally by card ownership and
+#                                      never re-runs the declarative sync. Always silent
 #       config/logbook-mode.env      - exports FM_CHECK_INTERVAL=15, sourced by the
 #                                      watcher arm so an opted-in home polls the
 #                                      board every 15s (its own generated file, so
@@ -533,26 +539,53 @@ EOF
 # 'bin/fm-watch-arm.sh --restart' (see AGENTS.md section 15). Like x_mode_setup,
 # this runs only on the caller's lock-holding (non-detect) path.
 logbook_setup() {
-  local shim reap_shim cadence shim_body reap_shim_body cadence_body tool missing
+  local shim reap_shim resync_shim cadence shim_body reap_shim_body resync_shim_body
+  local cadence_body tool missing
   local refresh_err refresh_line
   logbook_load_config
   shim="$STATE/logbook-watch.check.sh"
   reap_shim="$STATE/logbook-reap.check.sh"
+  resync_shim="$STATE/logbook-resync.check.sh"
   cadence="$CONFIG/logbook-mode.env"
 
   logbook_remove_inbound_artifacts() {
-    rm -f "$shim" "$reap_shim" "$cadence" 2>/dev/null || true
-    [ ! -e "$shim" ] && [ ! -e "$reap_shim" ] && [ ! -e "$cadence" ]
+    rm -f "$shim" "$reap_shim" "$resync_shim" "$cadence" 2>/dev/null || true
+    # The refresh fingerprint is this home's record of the board state a resync last
+    # reached. It means nothing without the shim, and leaving it behind would make a
+    # later re-opt-in skip its first refresh, so it goes wherever the shims go - losing
+    # it costs at most one extra refresh, which is why it is safe on every caller below,
+    # including the ones that are not opt-outs. Its absence is never an error, so it is
+    # not part of the removal verdict.
+    rm -f "$STATE/logbook-resync.fingerprint" 2>/dev/null || true
+    # The consecutive-failure counter behind the resync's bounded retry rides along for
+    # the same reason and with the same cost: without the shim it means nothing, and a
+    # stale one left over a re-opt-in would start the new session already backed off.
+    rm -f "$STATE/logbook-resync.failures" 2>/dev/null || true
+    [ ! -e "$shim" ] && [ ! -e "$reap_shim" ] && [ ! -e "$resync_shim" ] && [ ! -e "$cadence" ]
+  }
+
+  # Deliberately NOT part of the removal above, which three callers share and only one of
+  # which is an opt-out. The settled-card record is the captain's answers, not derived
+  # state: losing it makes the next refresh re-declare every card they already answered
+  # and firstmate cleared, which is the failure the record exists to prevent. A missing
+  # curl or jq, or a shim that could not be written, is a transient and must never be
+  # read as consent to forget that. Only a genuine opt-out calls this.
+  logbook_forget_settled_cards() {
+    rm -f "$STATE/logbook-cleared.json" 2>/dev/null || true
   }
 
   if ! logbook_enabled; then
     # Opt-out (or never opted in): drop any inbound poll artifacts; stay silent
-    # unless we actually removed something.
-    if [ -e "$shim" ] || [ -e "$reap_shim" ] || [ -e "$cadence" ]; then
+    # unless we actually removed something. This is the ONE path that also forgets what
+    # the captain settled, because it is the one where the board itself is going away.
+    if [ -e "$STATE/logbook-cleared.json" ]; then
+      logbook_forget_settled_cards
+    fi
+    if [ -e "$shim" ] || [ -e "$reap_shim" ] || [ -e "$resync_shim" ] || [ -e "$cadence" ]; then
       if logbook_remove_inbound_artifacts; then
-        echo "LOGBOOK: off - removed board-response poll shim, board-liveness reap shim, and 15s cadence; restart the watcher (bin/fm-watch-arm.sh --restart) to drop back to the default cadence"
+        echo "LOGBOOK: off - removed board-response poll shim, board-liveness reap shim, board-refresh shim, and 15s cadence; restart the watcher (bin/fm-watch-arm.sh --restart) to drop back to the default cadence"
       else
-        echo "LOGBOOK: off - failed to remove board-response poll shim, board-liveness reap shim, or 15s cadence"
+        echo "LOGBOOK: off - failed to remove board-response poll shim, board-liveness reap shim, board-refresh shim, or 15s cadence"
       fi
     fi
     return 0
@@ -580,8 +613,9 @@ logbook_setup() {
     #
     # The refresh's stderr is FILTERED, not dropped. Composing the board reads
     # every carded project's merge policy through bin/fm-merge-policy-lib.sh, so
-    # this sync is the earliest and most frequent read of the +captain-merge
-    # posture - and the only one that runs unattended. A malformed registry line
+    # this sync is the earliest read of the +captain-merge posture, and one of the
+    # two that run unattended (the other is the mid-session board refresh, which
+    # relays the same marked lines to its own stderr). A malformed registry line
     # ("[direct-PR captain-merge]", the "+" dropped) is not honored as the
     # prohibition it was meant to be, so the board composes a live Merge option
     # for a project the captain reserved to themselves; the diagnostic the policy
@@ -627,8 +661,11 @@ logbook_setup() {
     fi
   done
   if [ "$missing" -ne 0 ]; then
-    # Never leave a poll shim armed that cannot run; the MISSING line is the signal.
-    if [ -e "$shim" ] || [ -e "$cadence" ]; then
+    # Never leave a shim armed that cannot run; the MISSING line is the signal. Every
+    # artifact is checked, not just the poll's: all three shims need curl+jq, so a home
+    # that keeps only a reap or refresh shim here would still be running one that exits
+    # at its own tool check every cycle.
+    if [ -e "$shim" ] || [ -e "$reap_shim" ] || [ -e "$resync_shim" ] || [ -e "$cadence" ]; then
       logbook_remove_inbound_artifacts >/dev/null 2>&1 || true
     fi
     return 0
@@ -636,9 +673,9 @@ logbook_setup() {
 
   logbook_arm_failed() {
     if logbook_remove_inbound_artifacts; then
-      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim, reap shim, or 15s cadence"
+      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim, reap shim, refresh shim, or 15s cadence"
     else
-      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim, reap shim, or 15s cadence; stale artifacts remain"
+      echo "LOGBOOK: board-response poll not armed - failed to write the poll shim, reap shim, refresh shim, or 15s cadence; stale artifacts remain"
     fi
   }
 
@@ -672,6 +709,25 @@ EOF
   write_if_changed "$reap_shim" "$reap_shim_body" || { logbook_arm_failed; return 0; }
   chmod +x "$reap_shim" 2>/dev/null || { logbook_arm_failed; return 0; }
 
+  # Board refresh, on the SAME check rail. The sync just above is a photograph of fleet
+  # state at session start; without this nothing re-takes it, so every dispatch,
+  # completion, decision and merge for the rest of the session is invisible on the board
+  # unless firstmate hand-pushes a card. The refresh is deliberately silent - it never
+  # prints, so it never wakes firstmate - and it reconciles INCREMENTALLY by card
+  # ownership rather than re-running the declarative POST /api/sync, which on a 15s beat
+  # would delete every hand-pushed card and flatten every rich one.
+  resync_shim_body=$(cat <<EOF
+#!/usr/bin/env bash
+# Auto-generated by fm-bootstrap.sh - logbook board-refresh shim.
+# The watcher runs this each check cycle; output would become a check: wake, so the
+# refresh prints nothing at all - reconciling the board is housekeeping.
+export FM_HOME=$(printf '%q' "$FM_HOME")
+exec $(printf '%q' "$FM_ROOT/bin/fm-logbook-resync.sh")
+EOF
+)
+  write_if_changed "$resync_shim" "$resync_shim_body" || { logbook_arm_failed; return 0; }
+  chmod +x "$resync_shim" 2>/dev/null || { logbook_arm_failed; return 0; }
+
   cadence_body=$(cat <<'EOF'
 # Auto-generated by fm-bootstrap.sh - logbook watcher cadence.
 # Source this before arming the watcher (see AGENTS.md section 15) so fm-watch.sh
@@ -682,7 +738,7 @@ EOF
 )
   write_if_changed "$cadence" "$cadence_body" || { logbook_arm_failed; return 0; }
 
-  echo "LOGBOOK: board-response poll armed via state/logbook-watch.check.sh; board-liveness reap armed via state/logbook-reap.check.sh; 15s watcher cadence in config/logbook-mode.env"
+  echo "LOGBOOK: board-response poll armed via state/logbook-watch.check.sh; board-liveness reap armed via state/logbook-reap.check.sh; board refresh armed via state/logbook-resync.check.sh; 15s watcher cadence in config/logbook-mode.env"
 }
 
 crew_dispatch_validate() {
