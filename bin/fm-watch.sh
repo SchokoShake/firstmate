@@ -407,9 +407,14 @@ pause_state_class() {  # <window> <task>
     return
   fi
   # Bounded reuse of a paused verdict this window already earned, so a churny idle
-  # pane cannot pay for a crew-state read every poll. Written only where the
-  # classification below resolved to paused, so this replays a decision rather than
-  # inventing one, and expires into a fresh read after STALE_ESCALATE_SECS.
+  # pane cannot pay for a crew-state read every poll. Written by the classification
+  # below when it resolved to paused, and also primed by surface_nonterminal_stale
+  # once it has already surfaced one wake for such a window. Both writers require the
+  # declared pause or captain-held line tested above, so the cache replays or bounds a
+  # decision rather than inventing a pause for a window that never declared one: the
+  # second writer caps re-surfacing of an already-surfaced declared endpoint at once
+  # per STALE_ESCALATE_SECS, the same cadence as the wedge timer. Either way the entry
+  # expires into a fresh read at that age.
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
     printf 'paused'
     return
