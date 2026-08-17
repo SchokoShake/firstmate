@@ -389,11 +389,13 @@ clear_pause_tracking() {  # <window>
 # (blocked:/failed:/done:/needs-decision:) leaves this path entirely through the
 # terminal and signal branches; a crew that resumes work reads `working` and gets the
 # STALE_ESCALATE_SECS wedge timer back; and a crew whose authoritative state stops
-# reading paused falls straight through to the surfacing branch below.
+# reading paused reaches the surfacing branch below on the next fresh read of that
+# state, at most one STALE_ESCALATE_SECS recheck window later.
 #
 # Only a confidently dead ordinary crew may RECOVER paused classification after
 # fm-crew-state has fallen back to stopped or unknown; a live crew that lost its
-# paused verdict surfaces immediately.
+# paused verdict surfaces once the recheck cache below expires, within
+# STALE_ESCALATE_SECS of the verdict that cache replays.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive
   key=${win//:/_}
