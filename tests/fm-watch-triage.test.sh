@@ -1075,11 +1075,11 @@ test_declared_wait_absorb_still_surfaces_real_failures() {
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
   [ "$wakes" -ge 1 ] || fail "an expired recheck cache queued no stale wake for a lost declared-wait verdict"
 
-  # (e) The same lost verdict on a FROZEN pane, where the hash never changes. The
-  #     unchanged-hash branch keeps a standing declared wait on the pause cadence
-  #     instead of wedge-escalating it, so the recheck-cache expiry buys nothing
-  #     here and the cadence is the bound that actually holds - it must stay quiet
-  #     below the cadence and still come back for a recheck once the wait is old.
+  # (e) The same lost verdict on a FROZEN pane, where the hash never changes, so no
+  #     fresh stale hash ever arrives to expire the recheck cache into a surface. It
+  #     starts with a residual wedge timer and escalation count that the pause path
+  #     must discard, must stay quiet below the cadence, and must still come back for
+  #     a recheck once the declared wait itself is old.
   dir=$(make_case wait-verdict-lost-frozen); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/frozen.status"
   window="test:fm-frozen"
@@ -1092,9 +1092,10 @@ test_declared_wait_absorb_still_surfaces_real_failures() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
   printf '%s' "$pane_hash" > "$state/.stale-$key"
-  : > "$state/.paused-$key"
   : > "$state/.paused-rechecked-$key"
   back=$(( $(date +%s) - 500 ))
+  printf '%s\n' "$back" > "$state/.stale-since-$key"
+  printf '1\n' > "$state/.wedge-escalations-$key"
   if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$state/.paused-rechecked-$key"
   else touch -m -d "@$back" "$state/.paused-rechecked-$key"; fi
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -1107,8 +1108,9 @@ test_declared_wait_absorb_still_surfaces_real_failures() {
   fi
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
   [ "$wakes" -eq 0 ] || { reap "$pid"; fail "a frozen pane under a standing declared wait queued $wakes stale wakes below its cadence"; }
-  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "a frozen pane under a declared wait started the wedge timer"; }
-  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "a frozen pane under a declared wait lost its pause cadence marker"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "a frozen pane under a declared wait never recorded its pause cadence marker"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "a frozen pane under a declared wait kept a residual wedge timer"; }
+  [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$pid"; fail "a frozen pane under a declared wait kept a residual escalation count"; }
   reap "$pid"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional frozen-pane absorb stop"
 

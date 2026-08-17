@@ -21,8 +21,8 @@ No-verb wakes, such as `working:` notes and bare turn-ended signals, are benign 
 A `kind=secondmate` task's status signal is the parent-directed reply stream and is never absorbed as provably working; only its bare turn-ended signal retains the ordinary absorb rule.
 A crew that declares `paused:` for a known external wait is separately absorbed while idle and re-surfaced only on the longer pause cadence, rather than being treated as a possible wedge.
 That absorb follows the authoritative `paused` verdict itself and does not additionally require a dead agent, because an idle pane is what a declared wait looks like while its worker is alive and waiting.
-A crew whose authoritative state no longer reports `paused` is surfaced instead once a bounded per-window recheck cache has expired and its pane presents a fresh stale hash, which is the only way that surface arrives sooner than the pause cadence.
-While the status log still carries the declared wait that cadence is the guarantee that always holds, including for a frozen pane whose hash never changes, which this path keeps on the same cadence rather than wedge-escalating it.
+A crew whose authoritative state no longer reports `paused` is surfaced instead once a bounded per-window recheck cache has expired and its pane presents a fresh stale hash.
+An authoritative `working` verdict returns the window to the `FM_STALE_ESCALATE_SECS` wedge timer, for a pane whose hash never changes as much as for one that redraws.
 A backend that confidently reports the agent dead recovers the same cadence for an unchanged `paused:` or durable `captain-held` endpoint after that fallback.
 That fresh-hash surface also primes the same cache while the endpoint's own declaration still stands, so a redrawing idle pane re-reads its authoritative state and re-surfaces at most once per wedge interval rather than on every fresh pane hash.
 The secondmate idle-endpoint exemption is unchanged.

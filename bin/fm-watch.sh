@@ -384,16 +384,15 @@ clear_pause_tracking() {  # <window>
 # every fresh pane hash - a shipped PR waiting on the captain's own merge burned a
 # supervision turn per pane redraw, for as many days as the merge took.
 #
-# Absorbing here never makes a real wedge unreachable. While the status log still
-# carries a declared wait the bound that ALWAYS holds is the pause cadence itself:
-# the window re-surfaces for a recheck within PAUSE_RESURFACE_SECS, on a frozen pane
-# exactly as on a churny one, because the caller has always kept an unchanged stale
-# hash on that cadence rather than wedge-escalating it. Any later captain-relevant
-# line (blocked:/failed:/done:/needs-decision:) leaves this path entirely through the
-# terminal and signal branches; a crew that resumes work reads `working` and gets the
-# STALE_ESCALATE_SECS wedge timer back; and a crew whose authoritative state stops
-# reading paused reaches the surfacing branch below on its next fresh read, which
-# beats the cadence only where the pane goes on to present a fresh stale hash.
+# Absorbing here leaves several routes back to a real wedge. A window whose status
+# log still carries a declared wait re-surfaces for a recheck within
+# PAUSE_RESURFACE_SECS. A crew whose authoritative state stops reading paused reaches
+# the surfacing branch below on its next fresh read, and a fresh stale hash after the
+# recheck cache below has expired can surface it sooner. A crew that resumes work
+# reads `working` and gets the STALE_ESCALATE_SECS wedge timer back, on a pane whose
+# hash never changes as much as on one that redraws. Any later captain-relevant line
+# (blocked:/failed:/done:/needs-decision:) leaves this path entirely through the
+# terminal and signal branches.
 #
 # Only a confidently dead ordinary crew may RECOVER paused classification after
 # fm-crew-state has fallen back to stopped or unknown; a live crew that lost its
