@@ -780,7 +780,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
 # an idle pane is exactly what a declared external wait looks like, so it is
 # absorbed rather than surfaced, and an unchanged hash must not append the same
 # wake on every watcher re-arm.
-test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
+test_declared_pause_is_bounded_whether_agent_exited_or_live() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes bare
   dir=$(make_case exited-declared-pause); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
@@ -2096,7 +2096,7 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection
 test_busy_pane_default_turn_age_bound_is_3600s
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
-test_exited_declared_pause_is_bounded_but_live_gate_surfaces
+test_declared_pause_is_bounded_whether_agent_exited_or_live
 test_live_parked_pr_never_floods_stale_wakes
 test_declared_wait_absorb_still_surfaces_real_failures
 test_secondmate_paused_resurfaces_in_normal_mode
