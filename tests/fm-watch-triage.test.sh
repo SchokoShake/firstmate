@@ -940,10 +940,10 @@ test_live_parked_pr_never_floods_stale_wakes() {
 # The other direction, and the property a reviewer cannot read off the diff:
 # absorbing a declared wait must not blind the watcher to a real failure. Each
 # case below keeps the SAME declared pause on the status log and a live agent -
-# only the authoritative crew state, the status verb, or the freshness of the
-# bounded recheck cache changes.
+# only the authoritative crew state, the status verb, the freshness of the bounded
+# recheck cache, or whether the pane still redraws changes.
 test_declared_wait_absorb_still_surfaces_real_failures() {
-  local dir state fakebin out capture_file statusf window key pid wakes back
+  local dir state fakebin out capture_file statusf window key pid wakes back pane_hash
 
   # (a) The wait turned into a real blocker. `blocked:` means firstmate must act,
   #     so it is captain-relevant and must never be absorbed by the pause path.
@@ -1074,7 +1074,60 @@ test_declared_wait_absorb_still_surfaces_real_failures() {
   wait_for_exit "$pid" 90 || { reap "$pid"; fail "an expired recheck cache kept absorbing a lost declared-wait verdict: $(cat "$out")"; }
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
   [ "$wakes" -ge 1 ] || fail "an expired recheck cache queued no stale wake for a lost declared-wait verdict"
-  pass "absorbing a declared wait still surfaces a real blocker, a lost wait verdict cold or cached, and a frozen run"
+
+  # (e) The same lost verdict on a FROZEN pane, where the hash never changes. The
+  #     unchanged-hash branch keeps a standing declared wait on the pause cadence
+  #     instead of wedge-escalating it, so the recheck-cache expiry buys nothing
+  #     here and the cadence is the bound that actually holds - it must stay quiet
+  #     below the cadence and still come back for a recheck once the wait is old.
+  dir=$(make_case wait-verdict-lost-frozen); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/frozen.status"
+  window="test:fm-frozen"
+  printf 'a frozen pane under a standing declared wait\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/frozen.meta"
+  printf 'paused: awaiting the captain merge\n' > "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-frozen_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "a frozen pane under a standing declared wait")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  printf '%s' "$pane_hash" > "$state/.stale-$key"
+  : > "$state/.paused-$key"
+  : > "$state/.paused-rechecked-$key"
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$state/.paused-rechecked-$key"
+  else touch -m -d "@$back" "$state/.paused-rechecked-$key"; fi
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
+  pid=$!
+  if ! wait_live "$pid" 45; then
+    reap "$pid"; fail "a frozen pane under a standing declared wait surfaced ahead of its pause cadence: $(cat "$out")"
+  fi
+  wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+  [ "$wakes" -eq 0 ] || { reap "$pid"; fail "a frozen pane under a standing declared wait queued $wakes stale wakes below its cadence"; }
+  [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "a frozen pane under a declared wait started the wedge timer"; }
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "a frozen pane under a declared wait lost its pause cadence marker"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional frozen-pane absorb stop"
+
+  # Age the declared wait itself past PAUSE_RESURFACE_SECS. The pane is still frozen
+  # and the recheck cache is still expired, so the cadence is what brings it back.
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-frozen_status"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" 2>&1 &
+  pid=$!
+  wait_for_exit "$pid" 90 || { reap "$pid"; fail "a frozen pane under an aged declared wait never came back for its recheck: $(cat "$out")"; }
+  grep -F "awaiting external" "$state/.wake-queue" >/dev/null \
+    || fail "the frozen-pane recheck did not surface as a declared-pause recheck"
+  grep -F "possible wedge" "$state/.wake-queue" >/dev/null \
+    && fail "a frozen pane under a declared wait was escalated as a possible wedge"
+  pass "absorbing a declared wait still surfaces a real blocker, a lost wait verdict cold, cached or frozen, and a frozen run"
 }
 
 test_secondmate_paused_resurfaces_in_normal_mode() {

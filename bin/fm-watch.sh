@@ -384,18 +384,21 @@ clear_pause_tracking() {  # <window>
 # every fresh pane hash - a shipped PR waiting on the captain's own merge burned a
 # supervision turn per pane redraw, for as many days as the merge took.
 #
-# Absorbing here never makes a real wedge unreachable. The pause still re-surfaces
-# for a recheck every PAUSE_RESURFACE_SECS; any later captain-relevant line
-# (blocked:/failed:/done:/needs-decision:) leaves this path entirely through the
+# Absorbing here never makes a real wedge unreachable. While the status log still
+# carries a declared wait the bound that ALWAYS holds is the pause cadence itself:
+# the window re-surfaces for a recheck within PAUSE_RESURFACE_SECS, on a frozen pane
+# exactly as on a churny one, because the caller has always kept an unchanged stale
+# hash on that cadence rather than wedge-escalating it. Any later captain-relevant
+# line (blocked:/failed:/done:/needs-decision:) leaves this path entirely through the
 # terminal and signal branches; a crew that resumes work reads `working` and gets the
 # STALE_ESCALATE_SECS wedge timer back; and a crew whose authoritative state stops
-# reading paused reaches the surfacing branch below on the next fresh read of that
-# state, at most one STALE_ESCALATE_SECS recheck window later.
+# reading paused reaches the surfacing branch below on its next fresh read, which
+# beats the cadence only where the pane goes on to present a fresh stale hash.
 #
 # Only a confidently dead ordinary crew may RECOVER paused classification after
 # fm-crew-state has fallen back to stopped or unknown; a live crew that lost its
-# paused verdict surfaces once the recheck cache below expires, within
-# STALE_ESCALATE_SECS of the verdict that cache replays.
+# paused verdict is classified none again once the recheck cache below expires, and
+# what the caller then does with that verdict is the cadence stated above.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive
   key=${win//:/_}
