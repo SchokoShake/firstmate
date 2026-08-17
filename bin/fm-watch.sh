@@ -384,20 +384,17 @@ clear_pause_tracking() {  # <window>
 # every fresh pane hash - a shipped PR waiting on the captain's own merge burned a
 # supervision turn per pane redraw, for as many days as the merge took.
 #
-# Absorbing here leaves several routes back to a real wedge. A window whose status
-# log still carries a declared wait re-surfaces for a recheck within
-# PAUSE_RESURFACE_SECS. A crew whose authoritative state stops reading paused reaches
-# the surfacing branch below on its next fresh read, and a fresh stale hash after the
-# recheck cache below has expired can surface it sooner. A crew that resumes work
-# reads `working` and gets the STALE_ESCALATE_SECS wedge timer back, on a pane whose
-# hash never changes as much as on one that redraws. Any later captain-relevant line
-# (blocked:/failed:/done:/needs-decision:) leaves this path entirely through the
-# terminal and signal branches.
+# Absorbing here leaves other routes back to a real wedge.
+# A window whose status log still carries a declared wait re-surfaces for a recheck
+# within PAUSE_RESURFACE_SECS.
+# A crew that resumes work reads `working` and gets the STALE_ESCALATE_SECS wedge
+# timer back.
+# Any later captain-relevant line (blocked:/failed:/done:/needs-decision:) leaves this
+# path entirely through the terminal and signal branches.
 #
 # Only a confidently dead ordinary crew may RECOVER paused classification after
 # fm-crew-state has fallen back to stopped or unknown; a live crew that lost its
-# paused verdict is classified none again once the recheck cache below expires, and
-# what the caller then does with that verdict is the cadence stated above.
+# paused verdict is classified none again once the recheck cache below expires.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive
   key=${win//:/_}
@@ -424,8 +421,7 @@ pause_state_class() {  # <window> <task>
     return
   fi
   class=$(crew_absorb_class "$task")
-  if [ "$class" != working ] && [ "$class" != paused ] &&
-    [ "$(window_kind "$win")" != secondmate ]; then
+  if [ "$class" = none ] && [ "$(window_kind "$win")" != secondmate ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
     [ "$agent_alive" = dead ] && class=paused
   fi

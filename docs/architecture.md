@@ -20,11 +20,11 @@ A concurrent replacement remains armed, every non-merged or invalid observation 
 No-verb wakes, such as `working:` notes and bare turn-ended signals, are benign only when `bin/fm-crew-state.sh` reports positive evidence that the crew is still working: an actively running no-mistakes step attributed to that crew's current code, or an exact busy verdict from the semantic busy-state contract.
 A `kind=secondmate` task's status signal is the parent-directed reply stream and is never absorbed as provably working; only its bare turn-ended signal retains the ordinary absorb rule.
 A crew that declares `paused:` for a known external wait is separately absorbed while idle and re-surfaced only on the longer pause cadence, rather than being treated as a possible wedge.
-That absorb follows the authoritative `paused` verdict itself and does not additionally require a dead agent, because an idle pane is what a declared wait looks like while its worker is alive and waiting.
-A crew whose authoritative state no longer reports `paused` is surfaced instead once a bounded per-window recheck cache has expired and its pane presents a fresh stale hash.
+Absorbing a declared wait follows the authoritative `paused` verdict itself and does not additionally require a dead agent, because an idle pane is what a declared wait looks like while its worker is alive and waiting.
+A crew whose authoritative state no longer reports `paused` is surfaced once the per-window recheck cache has expired and its pane presents a fresh stale hash.
 An authoritative `working` verdict returns the window to the `FM_STALE_ESCALATE_SECS` wedge timer, for a pane whose hash never changes as much as for one that redraws.
-A backend that confidently reports the agent dead recovers the same cadence for an unchanged `paused:` or durable `captain-held` endpoint after that fallback.
-That fresh-hash surface also primes the same cache while the endpoint's own declaration still stands, so a redrawing idle pane re-reads its authoritative state and re-surfaces at most once per wedge interval rather than on every fresh pane hash.
+A backend that confidently reports the agent dead restores the pause cadence for an unchanged `paused:` or durable `captain-held` endpoint once `bin/fm-crew-state.sh` has fallen back to reporting stopped or unknown.
+Surfacing a stale pane whose `paused:` or `captain-held` declaration still stands also primes the per-window recheck cache, so a redrawing idle pane re-reads its authoritative state and re-surfaces at most once per wedge interval rather than on every fresh pane hash.
 The secondmate idle-endpoint exemption is unchanged.
 Its initial normal-mode status signal still surfaces through the no-verb path, while away mode self-handles that routine signal and owns the later recheck.
 Fresh stale panes use the same current-state read before trusting the status log, so an active run or a proven busy worker outranks an old captain-relevant status-log line left behind before validation.
