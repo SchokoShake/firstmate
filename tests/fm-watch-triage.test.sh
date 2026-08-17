@@ -926,7 +926,7 @@ test_live_parked_pr_never_floods_stale_wakes() {
     wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
     [ "$wakes" -eq 0 ] || fail "round $round of a live parked PR queued $wakes stale wakes: $(cat "$out")"
     [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$(hash_text "$pane_text")" ] \
-      || fail "round $round of a live parked PR never classified its redrawn pane as stale: $(cat "$out")"
+      || fail "round $round of a live parked PR did not reach the declared-wait absorb path and record its redrawn pane hash: $(cat "$out")"
     ack_stopped_cycle "$state" >/dev/null 2>&1 || true
     round=$((round + 1))
   done
