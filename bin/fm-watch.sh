@@ -161,9 +161,9 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A crew that declared a pause is idling on a known external wait, so its stale
-# pane is absorbed rather than wedge-escalated.
-# A captain-held or paused crew whose agent has confidently exited uses the same
-# bounded cadence, while a live or ambiguously read agent still surfaces once.
+# pane is absorbed rather than wedge-escalated, whether or not its agent is still
+# alive. A captain-held or paused crew whose agent has confidently exited recovers
+# the same cadence after fm-crew-state falls back to stopped or unknown.
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
@@ -372,8 +372,28 @@ clear_pause_tracking() {  # <window>
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
-# Only a confidently dead ordinary crew may recover paused classification after
-# fm-crew-state has fallen back to stopped or unknown.
+# crew_absorb_class remains the one owner of the working/paused/none decision; this
+# wrapper adds only what that reader cannot see - a bounded per-window recheck cache
+# and dead-agent recovery - and never second-guesses a verdict it did return.
+#
+# An authoritative `paused` verdict absorbs whether or not the agent is still alive.
+# AGENTS.md section 8 defines a declared `paused:` as a bounded external wait
+# expected to clear on its own, so an idle pane under one is EXPECTED rather than
+# evidence of a wedge. Gating that absorb on a confidently dead agent instead
+# reclassified every LIVE parked crew as `none`, which surfaced a bare stale wake on
+# every fresh pane hash - a shipped PR waiting on the captain's own merge burned a
+# supervision turn per pane redraw, for as many days as the merge took.
+#
+# Absorbing here never makes a real wedge unreachable. The pause still re-surfaces
+# for a recheck every PAUSE_RESURFACE_SECS; any later captain-relevant line
+# (blocked:/failed:/done:/needs-decision:) leaves this path entirely through the
+# terminal and signal branches; a crew that resumes work reads `working` and gets the
+# STALE_ESCALATE_SECS wedge timer back; and a crew whose authoritative state stops
+# reading paused falls straight through to the surfacing branch below.
+#
+# Only a confidently dead ordinary crew may RECOVER paused classification after
+# fm-crew-state has fallen back to stopped or unknown; a live crew that lost its
+# paused verdict surfaces immediately.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive
   key=${win//:/_}
@@ -386,33 +406,20 @@ pause_state_class() {  # <window> <task>
     crew_absorb_class "$task"
     return
   fi
+  # Bounded reuse of a paused verdict this window already earned, so a churny idle
+  # pane cannot pay for a crew-state read every poll. Written only where the
+  # classification below resolved to paused, so this replays a decision rather than
+  # inventing one, and expires into a fresh read after STALE_ESCALATE_SECS.
   if [ -e "$STATE/.paused-$key" ] && [ "$(age_of "$recheck_file")" -lt "$STALE_ESCALATE_SECS" ]; then
-    if [ "$(window_kind "$win")" != secondmate ]; then
-      agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-      if [ "$agent_alive" != dead ]; then
-        rm -f "$recheck_file"
-        printf 'none'
-        return
-      fi
-    fi
     printf 'paused'
     return
   fi
   class=$(crew_absorb_class "$task")
-  if [ "$class" = working ]; then
-    rm -f "$recheck_file"
-    printf 'working'
-    return
-  fi
-  if [ "$(window_kind "$win")" != secondmate ]; then
+  if [ "$class" != working ] && [ "$class" != paused ] &&
+    [ "$(window_kind "$win")" != secondmate ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
-    if [ "$agent_alive" != dead ]; then
-      rm -f "$recheck_file"
-      printf 'none'
-      return
-    fi
+    [ "$agent_alive" = dead ] && class=paused
   fi
-  [ "$class" = none ] && [ "${agent_alive:-unknown}" = dead ] && class=paused
   case "$class" in
     paused) date +%s > "$recheck_file" ;;
     *) rm -f "$recheck_file" ;;
