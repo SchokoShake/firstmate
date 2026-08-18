@@ -21,7 +21,7 @@ No-verb wakes, such as `working:` notes and bare turn-ended signals, are benign 
 A `kind=secondmate` task's status signal is the parent-directed reply stream and is never absorbed as provably working; only its bare turn-ended signal retains the ordinary absorb rule.
 A crew that declares `paused:` for a known external wait is separately absorbed while idle and re-surfaced only on the longer pause cadence, rather than being treated as a possible wedge.
 Absorbing a declared wait follows the authoritative verdict itself and does not additionally require a dead agent, because an idle pane is what a declared wait looks like while its worker is alive and waiting.
-A crew whose attributed run reports `done` while its status log's last line still declares that wait, such as one parked on its own open PR awaiting the captain's merge, takes the same cadence; a `parked` or `failed` verdict does not, because both need firstmate.
+A crew whose attributed run reports `done` while its status log's last line still declares that wait, such as one holding its own open PR until the captain merges it, takes the same cadence; a `parked` or `failed` verdict does not, because both need firstmate.
 An authoritative `working` verdict returns the window to the `FM_STALE_ESCALATE_SECS` wedge timer.
 A backend that confidently reports the agent dead restores the declared-wait cadence for an unchanged `paused:` or durable `captain-held` endpoint once `bin/fm-crew-state.sh` reports a state that absorbs nothing on its own, typically `unknown` after the endpoint reads as a bare shell.
 The secondmate idle-endpoint exemption is unchanged.
