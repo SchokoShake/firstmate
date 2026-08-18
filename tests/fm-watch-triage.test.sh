@@ -302,6 +302,9 @@ test_status_is_paused_classifier() {
 # reasons - working (active run/busy pane), paused (declared external wait), or none
 # (surface it) - so the watcher's stale path gets both for one bounded call.
 # crew_is_paused delegates to it exactly as crew_is_provably_working does.
+# The optional second argument is the caller's already-read last status line: with a
+# standing declared wait on it, a `done` verdict classes paused, and without it the
+# same verdict classes none.
 test_crew_absorb_class_classifier() {
   local dir fakebin
   dir=$(make_case absorb-class); fakebin="$dir/fakebin"
@@ -321,8 +324,24 @@ test_crew_absorb_class_classifier() {
   [ "$(crew_absorb_class a)" = none ] || fail "unknown crew classed absorbable"
   ! crew_is_paused a || fail "unknown crew classed paused"
   [ "$(crew_absorb_class "")" = none ] || fail "empty id not classed none"
+  # A run-attributed done verdict: absorbable only while the caller's line still
+  # declares the wait, and never for a line that demands firstmate.
+  FM_FAKE_CREW_STATE='state: done · source: run-step · checks green: PR ready for review'
+  [ "$(crew_absorb_class a)" = none ] || fail "done crew classed absorbable with no declared wait"
+  [ "$(crew_absorb_class a 'paused: awaiting the captain merge')" = paused ] \
+    || fail "done crew under a declared wait not classed paused"
+  [ "$(crew_absorb_class a 'captain-held [key=route]: tracked in the backlog')" = paused ] \
+    || fail "done crew under a captain-held transfer not classed paused"
+  [ "$(crew_absorb_class a 'blocked: the merge needs a credential')" = none ] \
+    || fail "a blocked: line was treated as a declared wait"
+  FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at review: 2 finding(s)'
+  [ "$(crew_absorb_class a 'paused: awaiting the captain merge')" = none ] \
+    || fail "a parked gate was absorbed under a declared wait"
+  FM_FAKE_CREW_STATE='state: failed · source: run-step · run failed'
+  [ "$(crew_absorb_class a 'paused: awaiting the captain merge')" = none ] \
+    || fail "a failed run was absorbed under a declared wait"
   unset FM_FAKE_CREW_STATE
-  pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
+  pass "crew_absorb_class: working/paused/none from one read, done absorbing only under a declared wait"
 }
 
 # signal_crew_provably_working: a no-verb "signal:" wake is benign ONLY when EVERY
@@ -773,7 +792,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
 }
 
 # A captain-held crew can leave a stable backend endpoint after its agent exits.
-# fm-crew-state then authoritatively reports stopped rather than paused, but the
+# fm-crew-state then authoritatively reports unknown rather than paused, but the
 # confirmed-dead agent plus the declared wait or captain-held transfer must retain
 # bounded pause handling.
 # A STILL-LIVE agent under the same declared wait gets the same bounded cadence:
@@ -800,7 +819,7 @@ test_declared_pause_is_bounded_whether_agent_exited_or_live() {
   round=1
   while [ "$round" -le 6 ]; do
     PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-      FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+      FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown: bare shell)' \
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
     pid=$!
@@ -829,7 +848,7 @@ test_declared_pause_is_bounded_whether_agent_exited_or_live() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown: bare shell)' \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
@@ -937,6 +956,91 @@ test_live_parked_pr_never_floods_stale_wakes() {
   pass "a live crew parked on a declared wait never floods stale wakes as its idle pane redraws"
 }
 
+# The same parked PR, read through its own no-mistakes run instead of its log.
+# fm-crew-state.sh gives an attributed run precedence, so a crew whose PR is up and
+# green reports `done · run-step` while its log's last line is still the standing
+# `paused:` - the shape the log-verdict case above never reaches. It must absorb on
+# the same declared-wait cadence, still come back once that wait has gone silent
+# past PAUSE_RESURFACE_SECS, and still escalate the moment the crew says `blocked:`.
+test_run_attributed_done_under_declared_wait() {
+  local dir state fakebin out capture_file statusf window key pid round wakes bare back pane_text
+  local done_state='state: done · source: run-step · checks green: PR ready for review'
+  dir=$(make_case run-done-declared-wait); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/merged.status"
+  window="test:fm-merged"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/merged.meta"
+  printf 'paused: awaiting the captain merge on PR 7\n' > "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-merged_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+
+  round=1
+  while [ "$round" -le 6 ]; do
+    pane_text="idle at the prompt, PR 7 green (ctx $((99 - round))%)"
+    printf '%s\n' "$pane_text" > "$capture_file"
+    rm -f "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$done_state" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+      FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" 2>&1 &
+    pid=$!
+    wait_live "$pid" 45 || fail "round $round of a run-attributed done PR exited instead of absorbing its declared wait: $(cat "$out")"
+    reap "$pid"
+    wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+    [ "$wakes" -eq 0 ] || fail "round $round of a run-attributed done PR queued $wakes stale wakes: $(cat "$out")"
+    [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$(hash_text "$pane_text")" ] \
+      || fail "round $round of a run-attributed done PR did not reach the declared-wait absorb path: $(cat "$out")"
+    ack_stopped_cycle "$state" >/dev/null 2>&1 || true
+    round=$((round + 1))
+  done
+  [ -e "$state/.paused-$key" ] || fail "a run-attributed done PR lost its pause cadence marker"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a run-attributed done PR started a wedge timer"
+
+  # The wait has now gone silent past its own timer. Absorbing must not be forever:
+  # the same standing declaration comes back as the bounded recheck, never as a bare
+  # stale wake and never as a possible wedge.
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$statusf"
+  else touch -m -d "@$back" "$statusf"; fi
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-merged_status"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$done_state" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=240 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" 2>&1 &
+  pid=$!
+  wait_for_exit "$pid" 90 || { reap "$pid"; fail "a run-attributed done PR never came back once its wait aged past the cadence: $(cat "$out")"; }
+  grep -F "awaiting external" "$state/.wake-queue" >/dev/null \
+    || fail "the aged run-attributed done PR did not surface as a declared-pause recheck"
+  grep -F "possible wedge" "$state/.wake-queue" >/dev/null \
+    && fail "an aged declared wait over a done verdict was escalated as a possible wedge"
+  bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+  [ "$bare" -eq 0 ] || fail "a run-attributed done PR queued $bare bare stale wakes"
+
+  # The crew then says the merge is blocked. `blocked:` means firstmate must act, so
+  # it must escalate against the very same done verdict that absorbs a declared wait.
+  dir=$(make_case run-done-then-blocked); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/merged.status"
+  printf 'idle after the merge turned into a blocker\n' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/merged.meta"
+  printf 'paused: awaiting the captain merge on PR 7\nblocked: PR 7 needs a branch protection override\n' > "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-merged_status"
+  printf '%s' "$(hash_text "idle after the merge turned into a blocker")" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$done_state" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
+  pid=$!
+  wait_for_exit "$pid" 60 || { reap "$pid"; fail "a blocked: line over a done verdict was absorbed as a declared wait"; }
+  wakes=$(awk -F '\t' -v w="$window" '$4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+  [ "$wakes" -ge 1 ] || fail "a blocked: line over a done verdict queued no wake"
+  [ ! -e "$state/.paused-$key" ] || fail "a blocked: line took the declared-wait pause cadence"
+  pass "a run-attributed done PR under a declared wait absorbs, still rechecks once the wait ages, and never absorbs blocked:"
+}
+
 # The other direction, and the property a reviewer cannot read off the diff:
 # absorbing a declared wait must not blind the watcher to a real failure. Each
 # case below keeps the SAME declared pause on the status log and a live agent -
@@ -978,7 +1082,7 @@ test_declared_wait_absorb_still_surfaces_real_failures() {
   printf '%s' "$(hash_text "a bare shell prompt where the agent used to be")" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown: bare shell)' \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999999 \
     FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
   pid=$!
@@ -1044,7 +1148,7 @@ test_declared_wait_absorb_still_surfaces_real_failures() {
   : > "$state/.paused-$key"
   date +%s > "$state/.paused-rechecked-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown: bare shell)' \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
     FM_PAUSE_RESURFACE_SECS=999999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
   pid=$!
@@ -1067,7 +1171,7 @@ test_declared_wait_absorb_still_surfaces_real_failures() {
   rm -f "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown: bare shell)' \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
     FM_PAUSE_RESURFACE_SECS=999999 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" 2>&1 &
   pid=$!
@@ -1099,7 +1203,7 @@ test_declared_wait_absorb_still_surfaces_real_failures() {
   if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$state/.paused-rechecked-$key"
   else touch -m -d "@$back" "$state/.paused-rechecked-$key"; fi
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown: bare shell)' \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
     FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
   pid=$!
@@ -1120,7 +1224,7 @@ test_declared_wait_absorb_still_surfaces_real_failures() {
   else touch -m -d "@$back" "$statusf"; fi
   printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-frozen_status"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+    FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: unknown · source: pane · harness state unavailable (unknown: bare shell)' \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 \
     FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" 2>&1 &
   pid=$!
@@ -2206,6 +2310,7 @@ test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_declared_pause_is_bounded_whether_agent_exited_or_live
 test_live_parked_pr_never_floods_stale_wakes
+test_run_attributed_done_under_declared_wait
 test_declared_wait_absorb_still_surfaces_real_failures
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed

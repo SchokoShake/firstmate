@@ -135,10 +135,11 @@ status_is_paused() {  # <status-line>
 # captain-held transfer.
 # Both declarations can intentionally leave a crew's endpoint idle while it is
 # alive and waiting, so the watcher applies its bounded pause cadence on the
-# authoritative paused verdict itself rather than additionally requiring a dead
+# authoritative absorbing verdict itself rather than additionally requiring a dead
 # agent, and a confidently dead agent only recovers that cadence once fm-crew-state
-# has fallen back to stopped or unknown (bin/fm-watch.sh pause_state_class owns
-# that reconciliation).
+# reports a state crew_absorb_class classes `none` - typically `unknown`, once the
+# endpoint reads as a bare shell (bin/fm-watch.sh pause_state_class owns that
+# reconciliation).
 status_is_paused_or_captain_held() {  # <status-line>
   local line=$1 verb
   status_is_paused "$line" && return 0
@@ -1095,17 +1096,31 @@ signal_reason_is_actionable() {  # <file> ...
 #             pane; the crew is legitimately mid-work on a static-looking pane
 #             (e.g. waiting on CI);
 #   paused  - the crew's authoritative current state is a declared external-wait
-#             pause (paused:), which is EXPECTED to idle;
-#   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
-#             torn-down/unknown crew, or an unreadable verdict).
+#             pause (paused:), which is EXPECTED to idle, or it is `done` while
+#             the optional <declared-line> still declares that wait (below);
+#   none    - neither, so the wake must surface (a parked/failed/blocked/unknown
+#             crew, an undeclared `done`, or an unreadable verdict).
 # One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
+#
+# <declared-line> is the caller's already-read last status line, and is how a crew
+# that finished its OWN work while still waiting on someone else stays absorbed.
+# fm-crew-state.sh gives an attributed run precedence over the log, so a crew whose
+# PR is up and green reports `done` even while its log's last line is a standing
+# `paused:` - keying only on the `paused` verdict classed exactly that crew `none`
+# and surfaced a stale wake for it. Only `done` is reconciled this way: `parked` is a
+# gate awaiting a decision and `failed` is a failure, both of which need firstmate.
+# Pass the line only where a still-standing declaration is what the caller is
+# reconciling; with it omitted the verdict decides alone, so `done` stays `none` for
+# every other caller. A `blocked:` line is not a declared wait
+# (status_is_paused_or_captain_held rejects it), so it never absorbs here.
+#
 # NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
 # run it only on no-verb signal and first-sighting stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
-crew_absorb_class() {  # <id>
-  local id=$1 line state src
+crew_absorb_class() {  # <id> [<declared-line>]
+  local id=$1 declared=${2-} line state src
   [ -n "$id" ] || { printf 'none'; return; }
   line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
   case "$line" in state:*) ;; *) printf 'none'; return ;; esac
@@ -1114,6 +1129,10 @@ crew_absorb_class() {  # <id>
   if [ "$state" = working ]; then
     src=${line#*source: }; src=${src%% *}
     case "$src" in run-step|pane) printf 'working'; return ;; esac
+  fi
+  if [ "$state" = "done" ] && status_is_paused_or_captain_held "$declared"; then
+    printf 'paused'
+    return
   fi
   printf 'none'
 }

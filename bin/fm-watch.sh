@@ -163,7 +163,8 @@ BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated, whether or not its agent is still
 # alive. A captain-held or paused crew whose agent has confidently exited recovers
-# the same cadence after fm-crew-state falls back to stopped or unknown.
+# the same cadence after fm-crew-state falls back to a state crew_absorb_class
+# classes `none` - typically `unknown`, once the endpoint reads as a bare shell.
 # These cases re-surface once for a recheck every PAUSE_RESURFACE_SECS - far
 # longer than the wedge threshold, but finite so a forgotten hold cannot rot invisibly.
 PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT}
@@ -376,13 +377,17 @@ clear_pause_tracking() {  # <window>
 # wrapper adds only what that reader cannot see - a bounded per-window recheck cache
 # and dead-agent recovery - and never second-guesses a verdict it did return.
 #
-# An authoritative `paused` verdict absorbs whether or not the agent is still alive.
-# AGENTS.md section 8 defines a declared `paused:` as a bounded external wait
+# An authoritative absorbing verdict absorbs whether or not the agent is still
+# alive. AGENTS.md section 8 defines a declared `paused:` as a bounded external wait
 # expected to clear on its own, so an idle pane under one is EXPECTED rather than
 # evidence of a wedge. Gating that absorb on a confidently dead agent instead
 # reclassified every LIVE parked crew as `none`, which surfaced a bare stale wake on
 # every fresh pane hash - a shipped PR waiting on the captain's own merge burned a
 # supervision turn per pane redraw, for as many days as the merge took.
+# The declared line read here is handed to crew_absorb_class so that owner, not a
+# second rule here, decides whether a `done` verdict under a standing declaration
+# still absorbs: a crew whose PR is up and green reports `done` from its attributed
+# run even while it waits, which is the same shipped-PR shape.
 #
 # Absorbing here leaves other routes back to a real wedge.
 # A window whose status log still carries a declared wait re-surfaces for a recheck
@@ -393,8 +398,9 @@ clear_pause_tracking() {  # <window>
 # path entirely through the terminal and signal branches.
 #
 # Only a confidently dead ordinary crew may RECOVER paused classification after
-# fm-crew-state has fallen back to stopped or unknown; a live crew that lost its
-# paused verdict is classified none again once the recheck cache below expires.
+# crew_absorb_class classes the fresh verdict none - typically `unknown`, once the
+# endpoint reads as a bare shell; a live crew that lost its absorbing verdict is
+# classified none again once the recheck cache below expires.
 pause_state_class() {  # <window> <task>
   local win=$1 task=$2 key last recheck_file class agent_alive
   key=${win//:/_}
@@ -420,7 +426,7 @@ pause_state_class() {  # <window> <task>
     printf 'paused'
     return
   fi
-  class=$(crew_absorb_class "$task")
+  class=$(crew_absorb_class "$task" "$last")
   if [ "$class" = none ] && [ "$(window_kind "$win")" != secondmate ]; then
     agent_alive=$(fm_backend_agent_alive "$(window_backend "$win")" "$win" 2>/dev/null) || agent_alive=unknown
     [ "$agent_alive" = dead ] && class=paused
