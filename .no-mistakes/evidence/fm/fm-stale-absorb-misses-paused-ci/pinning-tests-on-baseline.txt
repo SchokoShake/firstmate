@@ -1,0 +1,29 @@
+Pinning tests run against the PRE-FIX baseline source tree (base commit 69df9ab).
+Identical test bodies to the target commit; only bin/fm-watch.sh and
+bin/fm-classify-lib.sh are reverted to the base commit, so each failure below
+is the reported defect itself, reproduced through the executable interface.
+
+$ bash tests/fm-watch-triage.test.sh   # test_crew_absorb_class_classifier only
+    not ok - done crew under a declared wait not classed paused
+    [exit 1]
+
+$ bash tests/fm-watch-triage.test.sh   # test_declared_pause_is_bounded_whether_agent_exited_or_live only
+    not ok - a live declared wait surfaced instead of being absorbed: stale: test:fm-gate
+    [exit 1]
+
+$ bash tests/fm-watch-triage.test.sh   # test_live_parked_pr_never_floods_stale_wakes only
+    not ok - round 1 of a live parked PR exited instead of absorbing its declared wait: stale: test:fm-parked
+    [exit 1]
+
+$ bash tests/fm-watch-triage.test.sh   # test_run_attributed_done_under_declared_wait only
+    not ok - round 1 of a run-attributed done PR exited instead of absorbing its declared wait: stale: test:fm-merged
+    [exit 1]
+
+$ bash tests/fm-watch-triage.test.sh   # test_declared_wait_absorb_still_surfaces_real_failures only
+    not ok - a fresh recheck cache did not replay its paused verdict for a lost wait verdict: stale: test:fm-cached
+    [exit 1]
+
+$ bash tests/fm-watch-triage.test.sh   # test_nonterminal_stale_paused_absorbed_then_resurfaced only
+    ok - a declared pause is absorbed on first sight, then re-surfaced as a recheck past the threshold, never wedge-escalated
+    [exit 0]
+

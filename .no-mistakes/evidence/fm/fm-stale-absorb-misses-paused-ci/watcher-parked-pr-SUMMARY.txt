@@ -1,0 +1,48 @@
+firstmate watcher - declared external wait vs stale-pane wedge escalation
+Side-by-side of the two full transcripts in this directory.
+
+Fixture (identical in both columns): three finished PRs parked awaiting the
+captain's own merge. Each crew declared `paused:` correctly, its agent is alive
+and idle at the prompt, and its harness footer redraws between supervision
+rounds so every round presents the watcher a fresh stale pane hash.
+
+The authoritative reader agrees with the crews in BOTH columns:
+
+  $ bin/fm-crew-state.sh alpha  -> state: paused · source: status-log · awaiting the captain merge on PR 41
+  $ bin/fm-crew-state.sh beta   -> state: paused · source: status-log · awaiting the captain merge on PR 42
+  $ bin/fm-crew-state.sh gamma  -> state: done   · source: run-step   · checks green: PR ready for review
+                                   (log's last line is still `paused: awaiting the captain merge on PR 43`)
+
+What the captain actually receives over 4 supervision rounds per crew:
+
+                     BASELINE 69df9ab                   FIXED bbb554e
+  fm-alpha           4 stale wakes / 4 rounds           0 stale wakes / 4 rounds
+  fm-beta            4 stale wakes / 4 rounds           0 stale wakes / 4 rounds
+  fm-gamma           4 stale wakes / 4 rounds           0 stale wakes / 4 rounds
+  wake payload       "stale: firstmate:fm-<task>"       (watcher stays armed)
+
+That bare `stale: firstmate:fm-<task>` on every redraw is the reported defect
+verbatim, and each one burns a supervision turn on a worker behaving as designed.
+
+What STILL reaches the captain after the fix (unchanged from baseline):
+
+  (a) a later `blocked:` line under the same declared wait
+        state: blocked · source: status-log -> stale: firstmate:fm-delta
+        (never takes the pause cadence)
+  (b) the crew resumed work under the same declared pause - an actively running
+      no-mistakes CI step, the second absorb signal
+        state: working · source: run-step · ci running
+        first sighting absorbed, FM_STALE_ESCALATE_SECS wedge timer STARTED;
+        once that run froze past the threshold:
+        -> stale: firstmate:fm-epsilon (idle 501s, possible wedge, escalation 1)
+  (c) the declared wait no longer reads as absorbing while the agent is alive
+        state: unknown · source: pane -> stale: firstmate:fm-zeta (immediate)
+  (d) absorbing is bounded, not permanent silence - the same standing wait aged
+      past FM_PAUSE_RESURFACE_SECS comes back as a recheck, never a wedge:
+        -> stale: firstmate:fm-alpha (paused 501s, awaiting external - declared
+           pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+
+Harness: /tmp/no-mistakes-evidence/<run>/parked-pr-scenario.sh - it drives the
+real bin/fm-crew-state.sh and the real bin/fm-watch.sh against a fake tmux
+backend and a fake `no-mistakes` CLI, and reports the durable wake queue. No
+assertion anywhere reads implementation source.

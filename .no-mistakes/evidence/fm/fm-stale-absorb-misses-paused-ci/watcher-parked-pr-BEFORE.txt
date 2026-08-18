@@ -1,0 +1,74 @@
+========================================================================
+firstmate watcher - declared external wait vs stale-pane wedge escalation
+source tree under test: BASELINE 69df9ab - before the fix
+========================================================================
+
+REPRODUCE STEP 1 - what the authoritative reader says about each parked crew
+  (real bin/fm-crew-state.sh, real bin/fm-classify-lib.sh)
+
+  $ bin/fm-crew-state.sh alpha
+    last status line : paused: awaiting the captain merge on PR 41
+    verdict          : state: paused · source: status-log · awaiting the captain merge on PR 41
+
+  $ bin/fm-crew-state.sh beta
+    last status line : paused: awaiting the captain merge on PR 42
+    verdict          : state: paused · source: status-log · awaiting the captain merge on PR 42
+
+  $ bin/fm-crew-state.sh gamma
+    last status line : paused: awaiting the captain merge on PR 43
+    verdict          : state: done · source: run-step · checks green: PR ready for review
+
+------------------------------------------------------------------------
+
+REPRODUCE STEP 2 - 4 supervision rounds per crew. The crew is idle at its
+prompt with a live agent; its harness footer redraws between rounds, so each
+round presents the watcher a FRESH stale pane hash. Each round is armed,
+drained and acknowledged exactly as a supervision turn does.
+
+  crew fm-alpha (PR 41)
+    round 1: WOKE THE CAPTAIN -> stale: firstmate:fm-alpha
+    round 2: WOKE THE CAPTAIN -> stale: firstmate:fm-alpha
+    round 3: WOKE THE CAPTAIN -> stale: firstmate:fm-alpha
+    round 4: WOKE THE CAPTAIN -> stale: firstmate:fm-alpha
+    => 4 stale wake(s) over 4 rounds; pause cadence marker: present; wedge timer: none
+
+  crew fm-beta (PR 42)
+    round 1: WOKE THE CAPTAIN -> stale: firstmate:fm-beta
+    round 2: WOKE THE CAPTAIN -> stale: firstmate:fm-beta
+    round 3: WOKE THE CAPTAIN -> stale: firstmate:fm-beta
+    round 4: WOKE THE CAPTAIN -> stale: firstmate:fm-beta
+    => 4 stale wake(s) over 4 rounds; pause cadence marker: present; wedge timer: none
+
+  crew fm-gamma (PR 43)
+    round 1: WOKE THE CAPTAIN -> stale: firstmate:fm-gamma
+    round 2: WOKE THE CAPTAIN -> stale: firstmate:fm-gamma
+    round 3: WOKE THE CAPTAIN -> stale: firstmate:fm-gamma
+    round 4: WOKE THE CAPTAIN -> stale: firstmate:fm-gamma
+    => 4 stale wake(s) over 4 rounds; pause cadence marker: present; wedge timer: none
+
+------------------------------------------------------------------------
+
+COUNTER-CASES - what STILL reaches the captain under the same declared wait
+
+  (a) the crew later appended `blocked:` under the same declared wait
+      verdict   : state: blocked · source: status-log · the merge needs a branch-protection override I cannot grant
+      watcher   : stale: firstmate:fm-delta (exited=yes)
+      pause cadence marker: absent - never took the pause cadence
+
+  (b) the crew RESUMED work under the same declared pause (an actively
+      running no-mistakes CI step - the second absorb signal)
+      verdict   : state: working · source: run-step · ci running
+      first sighting: absorbed=yes, wedge timer started, pause cadence not taken
+      once that run froze past FM_STALE_ESCALATE_SECS:
+        stale: firstmate:fm-epsilon (idle 501s, possible wedge, escalation 1)
+
+  (c) the declared wait no longer reads as absorbing, agent still alive
+      verdict   : state: unknown · source: pane · harness state unavailable (unknown missing)
+      watcher   : stale: firstmate:fm-zeta (exited=yes)
+
+  (d) the SAME crew fm-alpha once its declared wait aged past
+      FM_PAUSE_RESURFACE_SECS - absorbing is bounded, not permanent silence
+      watcher   : stale: firstmate:fm-alpha
+      escalated as a possible wedge? no - a recheck, not a wedge
+
+------------------------------------------------------------------------
