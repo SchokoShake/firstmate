@@ -1,0 +1,28 @@
+watcher under test: /tmp/fm-after-fix/repo/bin/fm-watch.sh
+every case below keeps the SAME standing 'paused: awaiting the captain merge' on the status log
+
+(a) the wait turned into a real blocker - 'blocked:' must never be absorbed
+    watcher: EXITED to wake firstmate
+    firstmate drains:
+      | 1787084525	1	stale	firstmate:fm-parked	stale: firstmate:fm-parked
+      | OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+      | parked blocked: the merge needs a branch-protection override I do not have
+      | OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+(b) the worker's declared-wait verdict is gone while its endpoint is a bare shell - it actually died
+    watcher: EXITED to wake firstmate
+    firstmate drains:
+      | 1787084528	1	stale	firstmate:fm-parked	stale: firstmate:fm-parked
+
+(c) the worker resumed real work under the same declared pause, then froze - the wedge timer still fires
+    watcher: still supervising, firstmate NOT woken
+    (wedge timer armed: yes)
+    ...the run then makes no progress for 500s (> FM_STALE_ESCALATE_SECS=240)
+    watcher: EXITED to wake firstmate
+    firstmate drains:
+      | 1787084553	1	stale	firstmate:fm-parked	stale: firstmate:fm-parked (idle 501s, possible wedge, escalation 1)
+
+(d) nobody ever merges - the declared wait itself ages past FM_PAUSE_RESURFACE_SECS and comes back for a recheck
+    watcher: EXITED to wake firstmate
+    firstmate drains:
+      | 1787084556	1	stale	firstmate:fm-parked	stale: firstmate:fm-parked (paused 502s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)

@@ -1,0 +1,23 @@
+Same five tests, same order, run against the PRE-FIX bin/ (69df9ab) and then the POST-FIX bin/ (4709576).
+Test source is identical in both runs: tests/fm-watch-triage.test.sh @ 4709576.
+
+test_crew_absorb_class_classifier
+   before: not ok - done crew under a declared wait not classed paused
+   after:  ok - crew_absorb_class: working/paused/none from one read, done absorbing only under a declared wait
+
+test_declared_pause_is_bounded_whether_agent_exited_or_live
+   before: not ok - a live declared wait surfaced instead of being absorbed: stale: test:fm-gate
+   after:  ok - exited and still-live declared-pause and captain-held panes all use the bounded pause cadence
+
+test_live_parked_pr_never_floods_stale_wakes
+   before: not ok - round 1 of a live parked PR did not reach the declared-wait absorb path and record its redrawn pane hash: 
+   after:  ok - a live crew parked on a declared wait never floods stale wakes as its idle pane redraws
+
+test_run_attributed_done_under_declared_wait
+   before: not ok - round 1 of a run-attributed done PR did not reach the declared-wait absorb path: 
+   after:  ok - a run-attributed done PR under a declared wait absorbs, still rechecks once the wait ages, and never absorbs blocked:
+
+test_declared_wait_absorb_still_surfaces_real_failures
+   before: not ok - a fresh recheck cache did not replay its paused verdict for a lost wait verdict: stale: test:fm-cached
+   after:  ok - absorbing a declared wait still surfaces a real blocker, a lost wait verdict cold, cached or frozen, and a frozen run
+

@@ -1,0 +1,109 @@
+==================== BEFORE THE FIX (bin/ @ 69df9ab) ====================
+watcher under test: /tmp/fm-before-fix/repo/bin/fm-watch.sh
+fleet: three crewmates, PRs finished and green, each parked on the captain's own merge
+       firstmate:fm-logbook   status log last line -> paused:   crew state -> paused (status-log)
+       firstmate:fm-bearings  status log last line -> paused:   crew state -> paused (status-log)
+       firstmate:fm-ledger    status log last line -> paused:   crew state -> done   (run-step, checks-passed)
+       all three agents are ALIVE and idle at the prompt; each idle pane redraws its context counter between rounds
+
+--- supervision round 1 -------------------------------------------------
+    watcher: EXITED to wake firstmate -> stale: firstmate:fm-bearings
+    fm-logbook:              (no stale classification reached)
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               (no stale classification reached)
+    wakes firstmate drains this round:
+      stale: firstmate:fm-bearings
+--- supervision round 2 -------------------------------------------------
+    watcher: EXITED to wake firstmate -> stale: firstmate:fm-bearings
+    fm-logbook:              (no stale classification reached)
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               (no stale classification reached)
+    wakes firstmate drains this round:
+      stale: firstmate:fm-bearings
+--- supervision round 3 -------------------------------------------------
+    watcher: EXITED to wake firstmate -> stale: firstmate:fm-bearings
+    fm-logbook:              (no stale classification reached)
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               (no stale classification reached)
+    wakes firstmate drains this round:
+      stale: firstmate:fm-bearings
+--- supervision round 4 -------------------------------------------------
+    watcher: EXITED to wake firstmate -> stale: firstmate:fm-bearings
+    fm-logbook:              (no stale classification reached)
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               (no stale classification reached)
+    wakes firstmate drains this round:
+      stale: firstmate:fm-bearings
+--- supervision round 5 -------------------------------------------------
+    watcher: EXITED to wake firstmate -> stale: firstmate:fm-bearings
+    fm-logbook:              (no stale classification reached)
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               (no stale classification reached)
+    wakes firstmate drains this round:
+      stale: firstmate:fm-bearings
+--- supervision round 6 -------------------------------------------------
+    watcher: EXITED to wake firstmate -> stale: firstmate:fm-bearings
+    fm-logbook:              (no stale classification reached)
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               (no stale classification reached)
+    wakes firstmate drains this round:
+      stale: firstmate:fm-bearings
+
+==============================================================================
+stale wedge wakes queued across 6 supervision rounds for 3 parked crewmates: 6
+==============================================================================
+
+==================== AFTER THE FIX (bin/ @ 4709576) =====================
+watcher under test: /tmp/fm-after-fix/repo/bin/fm-watch.sh
+fleet: three crewmates, PRs finished and green, each parked on the captain's own merge
+       firstmate:fm-logbook   status log last line -> paused:   crew state -> paused (status-log)
+       firstmate:fm-bearings  status log last line -> paused:   crew state -> paused (status-log)
+       firstmate:fm-ledger    status log last line -> paused:   crew state -> done   (run-step, checks-passed)
+       all three agents are ALIVE and idle at the prompt; each idle pane redraws its context counter between rounds
+
+--- supervision round 1 -------------------------------------------------
+    watcher: still supervising (absorbed everything it saw, never woke firstmate)
+    fm-logbook:              stale-pane-classified pause-cadence-marker
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               stale-pane-classified pause-cadence-marker
+    wakes firstmate drains this round:
+      (none)
+--- supervision round 2 -------------------------------------------------
+    watcher: still supervising (absorbed everything it saw, never woke firstmate)
+    fm-logbook:              stale-pane-classified pause-cadence-marker
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               stale-pane-classified pause-cadence-marker
+    wakes firstmate drains this round:
+      (none)
+--- supervision round 3 -------------------------------------------------
+    watcher: still supervising (absorbed everything it saw, never woke firstmate)
+    fm-logbook:              stale-pane-classified pause-cadence-marker
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               stale-pane-classified pause-cadence-marker
+    wakes firstmate drains this round:
+      (none)
+--- supervision round 4 -------------------------------------------------
+    watcher: still supervising (absorbed everything it saw, never woke firstmate)
+    fm-logbook:              stale-pane-classified pause-cadence-marker
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               stale-pane-classified pause-cadence-marker
+    wakes firstmate drains this round:
+      (none)
+--- supervision round 5 -------------------------------------------------
+    watcher: still supervising (absorbed everything it saw, never woke firstmate)
+    fm-logbook:              stale-pane-classified pause-cadence-marker
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               stale-pane-classified pause-cadence-marker
+    wakes firstmate drains this round:
+      (none)
+--- supervision round 6 -------------------------------------------------
+    watcher: still supervising (absorbed everything it saw, never woke firstmate)
+    fm-logbook:              stale-pane-classified pause-cadence-marker
+    fm-bearings:             stale-pane-classified pause-cadence-marker
+    fm-ledger:               stale-pane-classified pause-cadence-marker
+    wakes firstmate drains this round:
+      (none)
+
+==============================================================================
+stale wedge wakes queued across 6 supervision rounds for 3 parked crewmates: 0
+==============================================================================

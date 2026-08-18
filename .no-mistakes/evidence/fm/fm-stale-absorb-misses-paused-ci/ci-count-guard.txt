@@ -1,0 +1,19 @@
+=== BEFORE the guard correction (.github/workflows/ci.yml @ 69df9ab) ===
+workflow job: macos-stock-bash  (Stock macOS Bash snapshot compatibility)
+step: Run snapshot consumers with stock Bash   shell: /bin/bash {0}   runs-on: macos-latest
+
+FAIL  snapshot_count guard: tests/fm-fleet-snapshot-view.test.sh
+        workflow expects -eq 15; script exit 0; real "ok - " lines: 16
+PASS  bearings_count guard: tests/fm-bearings-snapshot.test.sh
+        workflow expects -eq 41; script exit 0; real "ok - " lines: 41
+step exit=1
+
+=== AFTER the guard correction (.github/workflows/ci.yml @ 4709576) ===
+workflow job: macos-stock-bash  (Stock macOS Bash snapshot compatibility)
+step: Run snapshot consumers with stock Bash   shell: /bin/bash {0}   runs-on: macos-latest
+
+PASS  snapshot_count guard: tests/fm-fleet-snapshot-view.test.sh
+        workflow expects -eq 16; script exit 0; real "ok - " lines: 16
+PASS  bearings_count guard: tests/fm-bearings-snapshot.test.sh
+        workflow expects -eq 41; script exit 0; real "ok - " lines: 41
+step exit=0
