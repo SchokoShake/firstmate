@@ -347,11 +347,16 @@ jobs:
           done < "$shell_inventory"
           [ "$parse_fail" -eq 0 ] || { echo "::error::stock macOS Bash 3.2 parse sweep failed"; exit 1; }
 
+          # Both counts below are deliberate literals, not a tally computed from
+          # the scripts: their whole job is to catch a test that silently stops
+          # running under stock Bash 3.2, which a self-derived count cannot see.
+          # Adding or removing a test in either script must bump the matching
+          # number here in the same change.
           snapshot_output=$(/bin/bash tests/fm-fleet-snapshot-view.test.sh)
           printf '%s\n' "$snapshot_output"
           snapshot_count=$(printf '%s\n' "$snapshot_output" | grep -c '^ok - ')
-          [ "$snapshot_count" -eq 15 ] || {
-            echo "::error::expected 15 snapshot/fleet-view tests, got $snapshot_count"
+          [ "$snapshot_count" -eq 16 ] || {
+            echo "::error::expected 16 snapshot/fleet-view tests, got $snapshot_count"
             exit 1
           }
 
