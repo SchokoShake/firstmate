@@ -1,0 +1,14 @@
+=== End-to-end: Claude Stop auto-arm applies config/check-cadence.d/logbook.env ===
+=== Scratch primary home with the REAL bin/ tree at target commit 5afe91f ===
+
+$ cat config/check-cadence.d/logbook.env   # the carrier that was silently inert before this change
+export FM_CHECK_INTERVAL=15
+
+$ Stop fires: bin/fm-claude-stop-autoarm.sh runs as a child of the claude harness holding state/.lock
+firstmate watcher wake - one supervision event needs a handling turn now.
+check: /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-stop-autoarm-e2e.tMgzQe/home/state/probe.check.sh: probe interval=15 escalate=UNSET
+Run bin/fm-wake-drain.sh first, handle the wake, then run its exact WAKE_ACK_REQUIRED --ack-through command. Until that post-handling acknowledgement, interruption leaves the wake durable for idempotent re-handling. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.
+hook exit code: 2   (2 = rewake: the arm ran a real watcher cycle and closed actionably)
+
+The check: line above is the watcher PROCESS printing its own inherited environment:
+FM_CHECK_INTERVAL=15 reached the Stop-auto-armed watcher from the carrier.

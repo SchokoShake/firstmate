@@ -1,0 +1,5 @@
+=== bin/fm-watch-arm.sh reverted to base 0da1d91 (fix removed); running the new suite ===
+not ok - an armed watcher did not inherit the carrier's check interval (missing: 'interval=15')
+--- output ---
+probe interval=UNSET escalate=UNSET
+suite exit code: 1
