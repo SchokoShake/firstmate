@@ -394,11 +394,12 @@ export default function (pi: ExtensionAPI) {
       FM_WATCH_ARM_SCRIPT: armScript,
       FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
     };
-    // The login shell is what gives the arm the operator's own PATH. Its x-mode
-    // clause is now only a head start: bin/fm-watch-arm.sh applies every cadence
-    // carrier this home has, and bin/fm-cadence-lib.sh owns that list - so a new
-    // carrier kind is added there, never here.
-    const armChild = spawn("bash", ["-lc", "config_dir=\"${FM_CONFIG_OVERRIDE:-$FM_HOME/config}\"; [ -f \"$config_dir/x-mode.env\" ] && . \"$config_dir/x-mode.env\"; exec \"$FM_WATCH_ARM_SCRIPT\" --restart"], {
+    // The login shell is retained for PATH: it is what gives the arm and the
+    // watcher the operator's own tool resolution. Cadence carriers are applied
+    // by bin/fm-watch-arm.sh itself, and bin/fm-cadence-lib.sh is the single
+    // owner of which files are carriers - no carrier handling belongs in this
+    // adapter.
+    const armChild = spawn("bash", ["-lc", "exec \"$FM_WATCH_ARM_SCRIPT\" --restart"], {
       cwd: fmRoot,
       env,
       stdio: ["ignore", "pipe", "pipe"],

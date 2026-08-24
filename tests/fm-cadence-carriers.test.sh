@@ -126,6 +126,23 @@ test_explicit_environment_wins_over_a_carrier() {
   pass "an explicit environment value wins over a carrier"
 }
 
+test_presourced_x_mode_interval_still_wins_over_a_snappier_carrier() {
+  local home probe
+  home=$(make_home presourced)
+  printf 'export FM_CHECK_INTERVAL=30\n' > "$home/config/x-mode.env"
+  carrier "$home" logbook 'export FM_CHECK_INTERVAL=15'
+  # The state an arm-command prelude that sourced x-mode.env used to produce:
+  # the x-mode interval is already exported when the arm starts.
+  probe=$(arm_probe "$home" FM_CHECK_INTERVAL=30)
+  assert_contains "$probe" "interval=30" "a pre-sourced x-mode interval lost to a snappier carrier"
+  home=$(make_home presourced-clean)
+  printf 'export FM_CHECK_INTERVAL=30\n' > "$home/config/x-mode.env"
+  carrier "$home" logbook 'export FM_CHECK_INTERVAL=15'
+  probe=$(arm_probe "$home")
+  assert_contains "$probe" "interval=15" "a clean-environment arm did not apply the snappier carrier over x-mode"
+  pass "a pre-sourced interval wins, so an arm path must not source carriers itself"
+}
+
 test_unreadable_carrier_content_is_ignored_not_executed() {
   local home probe marker
   home=$(make_home hostile)
@@ -179,6 +196,7 @@ test_snappiest_carrier_wins
 test_carrier_carries_the_wedge_threshold
 test_another_homes_carriers_are_not_inherited
 test_explicit_environment_wins_over_a_carrier
+test_presourced_x_mode_interval_still_wins_over_a_snappier_carrier
 test_unreadable_carrier_content_is_ignored_not_executed
 test_non_env_files_in_the_carrier_directory_are_ignored
 test_missing_carrier_directory_is_not_an_error
