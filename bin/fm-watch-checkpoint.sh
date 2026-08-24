@@ -4,6 +4,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-cadence-lib.sh
+. "$SCRIPT_DIR/fm-cadence-lib.sh"
 SECONDS_ARG=${FM_CODEX_WATCH_CHECKPOINT:-180}
 
 usage() {
@@ -13,6 +15,9 @@ Usage: fm-watch-checkpoint.sh [--seconds <n>]
 Run bin/fm-watch.sh in the foreground for a bounded checkpoint.
 On an actionable watcher wake, pass through the watcher output and exit 0.
 On a quiet checkpoint, print "checkpoint: no actionable wake within <n>s" and exit 124.
+
+This home's watcher cadence carriers are applied to the checkpoint's watcher
+automatically; bin/fm-cadence-lib.sh owns them.
 EOF
 }
 
@@ -43,6 +48,11 @@ case "$SECONDS_ARG" in
   ''|*[!0-9]*) echo "error: --seconds must be a positive integer" >&2; exit 2 ;;
   0) echo "error: --seconds must be greater than zero" >&2; exit 2 ;;
 esac
+
+# Codex reaches the watcher through this checkpoint rather than through the arm
+# wrapper, so it applies this home's cadence carriers itself. bin/fm-cadence-lib.sh
+# owns which files those are, their order, and the allowlist it reads them by.
+fm_cadence_apply
 
 OUT=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.out.XXXXXX") || exit 1
 ERR=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.err.XXXXXX") || {

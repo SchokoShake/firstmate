@@ -129,11 +129,14 @@ See [`trace-context.md`](trace-context.md) for carrier semantics, supported rout
 
 ## Watcher cadence carriers (config/x-mode.env, config/check-cadence.d/*.env)
 
-A cadence carrier is a local, gitignored file whose only content is `export FM_CHECK_INTERVAL=<seconds>`, sourced into a watcher process so it polls faster than the 300s default.
+A cadence carrier is a local, gitignored file that declares `FM_CHECK_INTERVAL=<seconds>`, and optionally `FM_STALE_ESCALATE_SECS=<seconds>`, for the watcher processes of one home.
 Relay's `config/x-mode.env` (above) is the built-in one; `config/check-cadence.d/<name>.env` is the extension seam an out-of-tree feature installs its own cadence into, so firstmate carries the mechanism without learning that feature's name.
-`bin/fm-supervision-instructions.sh` is the single owner of carrier discovery and ordering: it reads each carrier's declared interval by pattern (never by sourcing it to render a block), and emits them so the SMALLEST interval is sourced last and therefore wins, because a home running several carriers must inherit the snappiest one rather than whichever file happened to sort last.
-`bin/fm-arm-command-policy.mjs` owns which paths an arm command may source, and admits exactly `config/x-mode.env` plus one `config/check-cadence.d/<name>.env` segment of the ordinary slug alphabet; a nested path, a sibling under `config/`, and a traversal back out of the directory all stay denied.
+`bin/fm-cadence-lib.sh` is the single owner of the carrier contract - which files count, their per-home resolution, their order, the two-key allowlist it reads them by, and the environment precedence rule - and its header owns the exact mechanics.
+The scripts that launch a watcher apply carriers themselves: `bin/fm-watch-arm.sh`, which every arm path reaches (the Claude Stop auto-arm, the Cursor stop-hook park, the Pi and OpenCode adapters, a Grok background task, a manual recovery probe), and `bin/fm-watch-checkpoint.sh` for Codex.
+No harness protocol asks the agent to source a carrier by hand, and a carrier is read by pattern rather than executed, so a malformed one cannot take watcher supervision down.
+`bin/fm-arm-command-policy.mjs` owns which paths an arm command may still source, and admits exactly `config/x-mode.env` plus one `config/check-cadence.d/<name>.env` segment of the ordinary slug alphabet; a nested path, a sibling under `config/`, and a traversal back out of the directory all stay denied.
 The cadence-transition rule is the Relay section's: `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start, so installing or removing a carrier takes effect when the home-scoped watcher next restarts through the emitted harness protocol.
+While away mode is active the daemon (`bin/fm-supervise-daemon.sh`) owns the watcher and applies no carrier; away-mode cadence remains the deferred follow-up the Relay section records.
 
 ## Locally installed skills (.agents/skills/&lt;name&gt;/)
 
@@ -373,8 +376,8 @@ The dashboard owns account creation, identity linking, bot installation, and tok
 The locked session-start bootstrap step turns the token into local generated state.
 It writes `state/x-watch.check.sh`, a byte-static identity shim for `bin/fm-x-poll.sh`, and `config/x-mode.env`, which exports `FM_CHECK_INTERVAL=30` for watcher processes in that home.
 The watcher accepts the shim only when its bytes match the expected generated content, then invokes the trusted repository poll script directly instead of executing state-file source.
-This section is the single owner of the Relay cadence contract: a Relay instance polls every 30 seconds instead of the default 300, only a Relay instance speeds up because a non-Relay home has no `config/x-mode.env`, and the session-start supervision operating block includes the cadence instruction when that file exists.
-The active primary-harness supervision protocol owns how that sourced cadence reaches the watcher process.
+This section is the single owner of the Relay cadence contract: a Relay instance polls every 30 seconds instead of the default 300, only a Relay instance speeds up because a non-Relay home has no `config/x-mode.env`, and the session-start supervision operating block reports the active cadence when that file exists.
+That file is an ordinary watcher cadence carrier, so the script launching the watcher applies it; "Watcher cadence carriers" above owns how.
 Because `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start, a cadence transition - opt-in while a watcher is already running, or opt-out - is applied by restarting the home-scoped watcher through the emitted harness protocol; bootstrap deliberately never restarts the watcher itself.
 While away mode is active the daemon owns the watcher and its default cadence applies; away-mode Relay cadence is a deferred follow-up.
 When the token is removed or empty, the next locked session-start bootstrap step removes those artifacts.

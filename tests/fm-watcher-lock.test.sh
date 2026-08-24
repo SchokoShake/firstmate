@@ -165,7 +165,10 @@ test_guard_warnings() {
   printf 'project=x\n' > "$state/task.meta"
   : > "$dir/config/x-mode.env"
   CLAUDECODE=1 PI_CODING_AGENT='' GROK_AGENT='' FM_ROOT_OVERRIDE="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 "$ROOT/bin/fm-guard.sh" 2> "$err" >/dev/null || fail "guard failed"
-  grep -F "source '$dir/config/x-mode.env' first" "$err" >/dev/null || fail "guard repair line did not source the X-mode cadence config"
+  # The carrier applies itself now (bin/fm-cadence-lib.sh), so the banner must
+  # report the repair without handing the operator a file to source by hand.
+  ! grep -F "source '$dir/config/x-mode.env'" "$err" >/dev/null || fail "guard repair line still tells the operator to source the cadence config"
+  grep -F 'watcher supervision needs Stop-owned automatic recovery' "$err" >/dev/null || fail "guard repair line lost its neutral automatic-recovery guidance"
 
   # (2) live watcher plus fresh beacon, empty queue -> silence.
   dir=$(make_case guard-fresh)

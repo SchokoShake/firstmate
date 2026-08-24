@@ -302,6 +302,10 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     FM_CONFIG_OVERRIDE: paths.config,
     FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
   };
+  // The login shell is what gives the arm the operator's own PATH. Its x-mode
+  // clause is now only a head start: bin/fm-watch-arm.sh applies every cadence
+  // carrier this home has, and bin/fm-cadence-lib.sh owns that list - so a new
+  // carrier kind is added there, never here.
   const armChild = spawn("bash", ["-lc", 'config_dir="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; [ -f "$config_dir/x-mode.env" ] && . "$config_dir/x-mode.env"; exec "$FM_ROOT_OVERRIDE/bin/fm-watch-arm.sh" --restart'], {
     cwd: paths.root,
     env,

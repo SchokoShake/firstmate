@@ -63,6 +63,15 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-cadence-lib.sh
+. "$SCRIPT_DIR/fm-cadence-lib.sh"
+
+# Every arm - the Claude Stop auto-arm, the Cursor stop-hook park, the Pi and
+# OpenCode adapters, a Grok background task, a manual recovery probe - reaches
+# the watcher through this script, so this is where a home's cadence carriers
+# become the forked watcher's environment. bin/fm-cadence-lib.sh owns which
+# files those are, their order, and the allowlist it reads them by.
+fm_cadence_apply
 
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
