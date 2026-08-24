@@ -111,6 +111,7 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-turnend-guard-grok.sh" "$dir/bin/fm-turnend-guard-grok.sh"
   cp "$ROOT/bin/fm-operational-input.sh" "$dir/bin/fm-operational-input.sh"
   cp "$ROOT/bin/fm-supervision-instructions.sh" "$dir/bin/fm-supervision-instructions.sh"
+  cp "$ROOT/bin/fm-cadence-lib.sh" "$dir/bin/fm-cadence-lib.sh"
   cp "$ROOT/bin/fm-harness.sh" "$dir/bin/fm-harness.sh"
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/fm-primary-scope-lib.sh"
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
@@ -375,7 +376,7 @@ test_hook_blocks_from_fm_home_state() {
   pass "fm-turnend-guard: blocks from active FM_HOME state, not only repo-root state"
 }
 
-test_hook_x_mode_reason_sources_cadence() {
+test_hook_x_mode_reason_leaves_cadence_to_the_launcher() {
   local dir home out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-x-mode")
   home=$(cd "$dir" && pwd)
@@ -384,8 +385,11 @@ test_hook_x_mode_reason_sources_cadence() {
   : > "$dir/state/task1.meta"
   out=$(run_hook "$dir" false); status=$?
   expect_code 2 "$status" "hook must block when in-flight X-mode work has no live watcher"
-  assert_contains "$out" "source '$home/config/x-mode.env' first" "block reason must source the effective X-mode cadence"
-  pass "fm-turnend-guard: X-mode repair reason sources the cadence config"
+  assert_contains "$out" "$REQUIRED_REASON" "block reason must contain the exact required instruction"
+  # The cadence carrier is applied by the script that launches the watcher
+  # (bin/fm-cadence-lib.sh), so a repair reason must not hand it to the model.
+  assert_not_contains "$out" "source '$home/config/x-mode.env'" "block reason still tells the model to source the cadence config by hand"
+  pass "fm-turnend-guard: X-mode repair reason leaves cadence to the watcher launcher"
 }
 
 test_hook_x_mode_only_blocks_in_default_mode() {
@@ -1617,7 +1621,7 @@ test_hook_non_claude_health_ignores_claude_budget_contention
 test_hook_blocks_with_live_lock_and_stale_beacon
 test_hook_blocks_when_unhealthy_in_primary
 test_hook_blocks_from_fm_home_state
-test_hook_x_mode_reason_sources_cadence
+test_hook_x_mode_reason_leaves_cadence_to_the_launcher
 test_hook_x_mode_only_blocks_in_default_mode
 test_hook_ignores_repo_state_when_fm_home_set
 test_hook_uses_state_override

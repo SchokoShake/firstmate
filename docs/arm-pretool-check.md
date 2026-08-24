@@ -101,6 +101,8 @@ Approved setup nodes are:
 
 The allowed x-mode paths are `config/x-mode.env`, `./config/x-mode.env`, and an absolute path that normalizes to `<active-firstmate-home>/config/x-mode.env`.
 An absolute x-mode path outside the active home is not an approved setup node.
+The same forms are approved for one `config/check-cadence.d/<name>.env` segment of the ordinary slug alphabet.
+Sourcing a carrier is permitted, not required: the scripts that launch a watcher apply this home's carriers themselves (see [`configuration.md`](configuration.md) "Watcher cadence carriers"), and a command that omits the prelude entirely is an ordinary allowed arm.
 
 Approved nodes may be separated by `;`, a real newline, or `&&`.
 `&&` is accepted after setup so a failed `cd`, `export`, or source prevents the protected call from running under the wrong setup.

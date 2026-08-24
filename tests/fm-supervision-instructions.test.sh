@@ -59,8 +59,8 @@ test_repair_lines() {
 
   : > "$home/config/x-mode.env"
   out=$(FM_HOME="$home" FM_CODEX_WATCH_CHECKPOINT=7 "$RENDER" --harness codex --x-mode 1 --repair-line)
-  assert_contains "$out" "source '$home/config/x-mode.env' first" "x-mode repair line did not source the effective cadence config"
   assert_contains "$out" "bin/fm-watch-checkpoint.sh --seconds 7" "x-mode codex repair line lost the checkpoint helper"
+  assert_not_contains "$out" "source " "repair line still tells the model to source a cadence carrier by hand"
 
   out=$(FM_HOME="$home" "$RENDER" --harness opencode --read-only 1 --repair-line)
   assert_contains "$out" "session holding the fleet lock" "read-only repair line missing"
@@ -150,14 +150,17 @@ test_grok_is_background_notify() {
   pass "grok supervision is Claude-shaped background notify with passive Stop-hook backstop"
 }
 
-test_grok_command_sources_effective_config() {
+test_grok_command_carries_no_cadence_prelude() {
   local home config out
   home="$TMP_ROOT/grok-home"
   config="$TMP_ROOT/grok-config"
   mkdir -p "$home/state" "$config"
   out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness grok --x-mode 1)
-  assert_contains "$out" "[ -f '$config/x-mode.env' ] && . '$config/x-mode.env'; exec bin/fm-watch-arm.sh" "grok arm command did not use the effective x-mode config path"
-  pass "grok rendered command sources the effective x-mode config"
+  # shellcheck disable=SC2016 # A literal backtick-fenced snippet, not an expansion.
+  assert_contains "$out" '`exec bin/fm-watch-arm.sh`' "grok arm command is not the bare arm"
+  assert_not_contains "$out" ". '$config/x-mode.env'; exec" "grok arm command still carries a cadence prelude the arm now applies itself"
+  assert_contains "$out" "$config/x-mode.env" "x-mode stanza did not name the effective cadence carrier"
+  pass "grok arm command is bare because the arm applies carriers itself"
 }
 
 test_pi_snippet_uses_effective_extension_path() {
@@ -176,8 +179,8 @@ test_pi_snippet_uses_effective_extension_path() {
   pass "pi supervision snippet renders the effective extension path"
 }
 
-test_cadence_carriers_order_smallest_interval_last() {
-  local home config out arm
+test_cadence_carriers_are_reported_never_handed_to_the_model() {
+  local home config out
   home="$TMP_ROOT/cadence-home"
   config="$TMP_ROOT/cadence-config"
   mkdir -p "$home/state" "$config/check-cadence.d"
@@ -185,28 +188,21 @@ test_cadence_carriers_order_smallest_interval_last() {
   printf 'export FM_CHECK_INTERVAL=15\n' > "$config/check-cadence.d/board.env"
   printf 'export FM_CHECK_INTERVAL=60\n' > "$config/check-cadence.d/slow.env"
 
+  # The rendered block reports which carriers are in effect for visibility. It
+  # must never ask the model to source one: the scripts that launch a watcher
+  # apply them, and tests/fm-cadence-carriers.test.sh pins that they arrive.
   out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness grok)
-  arm=$(printf '%s\n' "$out" | grep -F 'exec bin/fm-watch-arm.sh')
-  # All three are sourced, and they are sourced slowest-first so the SMALLEST
-  # interval is the last write to FM_CHECK_INTERVAL and therefore the one the
-  # watcher inherits. A 15s board answer regressing to 30s or 60s is exactly the
-  # silent failure this ordering exists to prevent.
-  assert_contains "$arm" "$config/check-cadence.d/slow.env" "arm command dropped the 60s carrier"
-  assert_contains "$arm" "$config/x-mode.env" "arm command dropped the 30s carrier"
-  assert_contains "$arm" "$config/check-cadence.d/board.env" "arm command dropped the 15s carrier"
-  case "$arm" in
-    *slow.env*x-mode.env*board.env*) ;;
-    *) fail "cadence carriers are not ordered slowest-first (smallest interval must be sourced last): $arm" ;;
-  esac
   assert_contains "$out" "- Watcher cadence: extra carriers active" "current-state block did not report the extra cadence carriers"
+  assert_contains "$out" "$config/check-cadence.d/slow.env" "current-state block dropped the 60s carrier"
+  assert_contains "$out" "$config/check-cadence.d/board.env" "current-state block dropped the 15s carrier"
+  assert_contains "$out" "do not source them by hand" "current-state block did not say carriers are applied automatically"
   assert_not_contains "$out" "__FM_CADENCE_PRELUDE__" "renderer leaked the cadence prelude placeholder"
+  # shellcheck disable=SC2016 # A literal backtick-fenced snippet, not an expansion.
+  assert_contains "$out" '`exec bin/fm-watch-arm.sh`' "arm command should stay bare now that the arm applies carriers"
 
   out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness grok --repair-line)
-  case "$out" in
-    *slow.env*x-mode.env*board.env*) ;;
-    *) fail "repair line did not name the cadence carriers slowest-first: $out" ;;
-  esac
-  pass "cadence carriers are all sourced, ordered so the snappiest interval wins"
+  assert_not_contains "$out" "$config/check-cadence.d/board.env" "repair line still hands a cadence carrier to the model"
+  pass "cadence carriers are reported for visibility and never handed to the model to source"
 }
 
 test_cadence_absent_leaves_arm_command_bare() {
@@ -224,11 +220,11 @@ test_cadence_absent_leaves_arm_command_bare() {
 test_selected_harness_block_only
 test_unknown_fallback
 test_conditional_stanzas
-test_cadence_carriers_order_smallest_interval_last
+test_cadence_carriers_are_reported_never_handed_to_the_model
 test_cadence_absent_leaves_arm_command_bare
 test_repair_lines
 test_cross_harness_ordinary_continuation_and_repair_matrix
 test_pi_signed_preserves_identity_with_pi_supervision_protocol
 test_grok_is_background_notify
-test_grok_command_sources_effective_config
+test_grok_command_carries_no_cadence_prelude
 test_pi_snippet_uses_effective_extension_path

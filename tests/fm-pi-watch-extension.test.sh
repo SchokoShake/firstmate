@@ -1259,7 +1259,7 @@ EOF
   pass "OpenCode watcher plugin uses the effective FM_HOME state"
 }
 
-test_opencode_primary_watch_plugin_sources_effective_config() {
+test_opencode_primary_watch_plugin_hands_arm_the_effective_home() {
   local plugin repo home log out status
   plugin="$ROOT/.opencode/plugins/fm-primary-watch-arm.js"
   repo="$TMP_ROOT/opencode-effective-config-root"
@@ -1271,7 +1271,8 @@ test_opencode_primary_watch_plugin_sources_effective_config() {
   printf 'export FM_POLL=7\n' > "$home/config/x-mode.env"
   cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
-printf 'poll=%s\n' "${FM_POLL:-missing}" >> "${FM_ARM_LOG:?}"
+printf 'home=%s config=%s poll=%s\n' \
+  "${FM_HOME:-}" "${FM_CONFIG_OVERRIDE:-}" "${FM_POLL:-missing}" >> "${FM_ARM_LOG:?}"
 printf 'watcher: healthy pid=1 (beacon 0s)\n'
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
@@ -1296,16 +1297,20 @@ if (!existsSync(process.env.FM_ARM_LOG)) {
   process.exit(1);
 }
 const text = readFileSync(process.env.FM_ARM_LOG, "utf8");
-if (!text.includes("poll=7")) {
+if (!text.includes(`home=${process.env.FM_HOME}`) || !text.includes(`config=${process.env.FM_HOME}/config`)) {
+  console.error(text);
+  process.exit(1);
+}
+if (text.includes("poll=7")) {
   console.error(text);
   process.exit(1);
 }
 EOF
 )
   status=$?
-  expect_code 0 "$status" "OpenCode watch plugin must source FM_HOME config outside the repo root"
+  expect_code 0 "$status" "OpenCode watch plugin must hand the arm the effective FM_HOME config outside the repo root"
   [ -z "$out" ] || fail "OpenCode effective-config test printed output: $out"
-  pass "OpenCode watcher plugin sources the effective config"
+  pass "OpenCode watcher plugin hands the arm the effective home and sources no carrier itself"
 }
 
 test_opencode_primary_watch_plugin_requires_session_lock() {
@@ -2167,7 +2172,7 @@ test_pi_process_exit_cleanup_listener_lifecycle
 test_pi_process_exit_cleanup_stops_arm_child
 test_opencode_plugin_package_boundary_is_explicit_esm
 test_opencode_primary_watch_plugin_uses_effective_state_home
-test_opencode_primary_watch_plugin_sources_effective_config
+test_opencode_primary_watch_plugin_hands_arm_the_effective_home
 test_opencode_primary_watch_plugin_requires_session_lock
 test_opencode_watch_arm_coordinator_respects_primary_scope
 test_opencode_primary_watch_plugin_rearms_after_wake

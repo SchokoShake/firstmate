@@ -302,7 +302,11 @@ function spawnArm(paths, sessionID, client, predecessorArmPid = "") {
     FM_CONFIG_OVERRIDE: paths.config,
     FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
   };
-  const armChild = spawn("bash", ["-lc", 'config_dir="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; [ -f "$config_dir/x-mode.env" ] && . "$config_dir/x-mode.env"; exec "$FM_ROOT_OVERRIDE/bin/fm-watch-arm.sh" --restart'], {
+  // The login shell is retained for PATH: it is what gives the arm and the
+  // watcher the operator's own tool resolution. Cadence carriers are applied by
+  // bin/fm-watch-arm.sh itself, and bin/fm-cadence-lib.sh is the single owner
+  // of which files are carriers - no carrier handling belongs in this adapter.
+  const armChild = spawn("bash", ["-lc", 'exec "$FM_ROOT_OVERRIDE/bin/fm-watch-arm.sh" --restart'], {
     cwd: paths.root,
     env,
     stdio: ["ignore", "pipe", "pipe"],
