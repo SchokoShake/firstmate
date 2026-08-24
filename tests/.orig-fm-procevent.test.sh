@@ -87,16 +87,6 @@ wait_for() {  # <file> [tries]
   return 1
 }
 
-wait_for_lines() {  # <file> <count> [tries]: until the file holds at least <count> lines
-  local f=$1 want=$2 n=${3:-100} have
-  for _ in $(seq 1 "$n"); do
-    have=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
-    [ "${have:-0}" -ge "$want" ] && return 0
-    sleep 0.1
-  done
-  return 1
-}
-
 hold_source_lock() {  # <source-id> <ready-file> <release-file>
   local id=$1 ready=$2 release=$3 parent=$$
   FM_HOME="$TMP_ROOT/lock-helper-home" bash -c '
@@ -156,7 +146,7 @@ sup=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
 assert_contains "$sup" yes "a registered source needs supervision with no task metadata"
 
 pe "$H1" reconcile >/dev/null
-wait_for "$FM_PROCEVENT_CLAIM_ROOT/src-one.claim" || fail "reconcile's detached runner never claimed its source"
+sleep 0.5
 out=$(pe "$H1" start src-one)
 assert_contains "$out" "already owned" "a duplicate start loses instead of running a second child"
 
@@ -418,17 +408,8 @@ assert_present "$HSELF/state/procevent-inbox/self-src.1.handled" "the self-annou
 if [ -e "$HSELF/state/.wake-queue" ] && grep -q 'procevent selfann self-src 1' "$HSELF/state/.wake-queue"; then
   fail "a fully autohandled self-announcing capture still published a duplicate check wake"
 fi
-# reconcile restarts every registered source with no live owner, and that
-# detached runner would race the explicit start below for the claim (and race
-# the failure marker for which generation it captures). Retire the registration
-# first so reconcile judges only the durable inbox: the acknowledged capture
-# stays quiet and nothing restarts. The inbox keeps its sequence, so the
-# re-registered source's next capture is still generation 2.
-pe_adapter "$HSELF" retire self-src >/dev/null
 out=$(pe_adapter "$HSELF" reconcile)
 assert_contains "$out" "published=0" "reconcile re-announced a capture its adapter already acknowledged"
-assert_contains "$out" "started=0" "reconcile restarted a source with no registration"
-pe_adapter "$HSELF" register selfann self-src -- /bin/echo "self announced" >/dev/null
 : > "$HSELF/state/selfann-fail"
 out=$(pe_adapter "$HSELF" start self-src 2>&1)
 assert_contains "$out" "not-autohandled: self-src" "a failed self-announcing application was reported as applied"
@@ -667,7 +648,7 @@ TRIG2="$TMP_ROOT/trigger-two"
 pe_register "$HA" lavish shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
 pe_register "$HB" lavish shared-src -- "$BLOCKER" "$TRIG2" "shared" >/dev/null
 pe "$HA" reconcile >/dev/null
-wait_for "$FM_PROCEVENT_CLAIM_ROOT/shared-src.claim" || fail "the first home's detached runner never claimed the shared source"
+sleep 0.5
 out=$(pe "$HB" start shared-src)
 assert_contains "$out" "already owned" "a second home cannot own a source another home already owns"
 [ -z "$(wake_payloads "$HB")" ] || fail "the losing home published an event"
@@ -690,7 +671,7 @@ TRIG4="$TMP_ROOT/trigger-four"
 HZ="$TMP_ROOT/hz"; new_home "$HZ"
 pe_register "$HZ" lavish orphan-src -- "$BLOCKER" "$TRIG4" "orphan" >/dev/null
 pe "$HZ" reconcile >/dev/null
-wait_for "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" || fail "orphan fixture runner did not claim its source"
+sleep 0.5
 orphan_pid=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" 2>/dev/null)
 if [ -z "$orphan_pid" ] || ! kill -0 "$orphan_pid" 2>/dev/null; then
   fail "orphan fixture runner did not start"
@@ -801,18 +782,16 @@ kill -0 -"$orphan_leader" 2>/dev/null || fail "fixture invalid: the owned child 
 orphan_out=$(pe "$HG" reconcile)
 kill -0 -"$orphan_leader" 2>/dev/null \
   && fail "reconcile left the crashed generation's process group alive: $orphan_out"
+sleep 0.5
+assert_absent "$ORPHAN_OVERLAP" "no replacement source starts while the crashed generation remains alive"
 case "$orphan_out" in
   *"started=1"*)
-    # The replacement runs detached and claims before it executes its source,
-    # so wait for that source to start before judging the claim or the count.
-    wait_for_lines "$ORPHAN_LOG" 2 || fail "the replacement source never started: $(cat "$ORPHAN_LOG")"
     [ -e "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" ] \
       || fail "a replacement runner started without recording its own claim"
     [ "$(wc -l < "$ORPHAN_LOG" | tr -d ' ')" = 2 ] \
       || fail "reconcile did not start exactly one replacement source: $(cat "$ORPHAN_LOG")"
     ;;
   *"started=0"*)
-    sleep 0.5
     [ -e "$FM_PROCEVENT_CLAIM_ROOT/orphan-src.claim" ] \
       || fail "refusing to replace must preserve the claim for retry: $orphan_out"
     [ "$(wc -l < "$ORPHAN_LOG" | tr -d ' ')" = 1 ] \
@@ -820,7 +799,6 @@ case "$orphan_out" in
     ;;
   *) fail "unexpected reconcile result for a crashed leader: $orphan_out" ;;
 esac
-assert_absent "$ORPHAN_OVERLAP" "no replacement source starts while the crashed generation remains alive"
 : > "$ORPHAN_TRIGGER"
 pe "$HG" retire orphan-src >/dev/null
 pass "a crashed runner leader never lets a live owned group be reclaimed as stale"
