@@ -1,26 +1,15 @@
 #!/usr/bin/env bash
 # tests/fm-pr-slug-contract.test.sh - pins bin/fm-merge-policy-lib.sh's
-# fm_merge_slug and fm_merge_same_part against the shared contract fixture in
-# tests/fixtures/pr-slug/.
+# fm_merge_slug and fm_merge_same_part against tests/fixtures/pr-slug/, the
+# shared statement of the PR-slug contract. docs/architecture.md ("Cross-repo
+# contracts are stated as fixtures") owns why that contract lives in a fixture.
 #
-# WHY A FIXTURE RATHER THAN ASSERTIONS IN THIS FILE. The same parse exists a
-# second time out of tree, in the logbook connector, where it decides whether a
-# repo's Merge control is offered at all. Two implementations of one permission
-# contract drift silently in every direction that matters, and consolidating them
-# is impossible across a repo boundary. So the contract is stated once, as data,
-# and each side tests against it: this script is firstmate's half. The fixture's
-# "peer" columns record what the connector answers today, so a divergence is a
-# written-down fact with a direction rather than a surprise at merge time.
-#
-# Firstmate's answer is the authoritative one - AGENTS.md section 7 makes
-# bin/fm-merge-policy-lib.sh the owner of the "+captain-merge" decision - and its
-# extra width on a url is deliberate: a url the guard cannot resolve is a merge it
-# cannot trace to a flagged clone. Asserting the peer's value on every declared
-# divergence is what makes narrowing this side back to the connector's parse fail
-# here instead of silently reopening that bypass.
+# Every declared divergence is asserted to STILL diverge from the peer's
+# recorded value, so narrowing this side back to the connector's parse fails
+# here rather than silently reopening a merge bypass.
 #
 # Pure shell, no jq: this guards a permission path, so it must run wherever the
-# suite runs rather than skipping on an optional binary.
+# suite runs and never gate-skip on an optional binary.
 set -u
 
 # shellcheck source=tests/lib.sh

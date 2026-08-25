@@ -1,22 +1,16 @@
 #!/usr/bin/env bash
 # tests/fm-backlog-item-line-contract.test.sh - pins bin/fm-fleet-snapshot.sh's
-# backlog_json against the shared contract fixture in
-# tests/fixtures/backlog-item-line/.
+# backlog_json against tests/fixtures/backlog-item-line/cases.json, the shared
+# statement of the AGENTS.md section 10 item-line grammar. docs/architecture.md
+# ("Cross-repo contracts are stated as fixtures") owns why that grammar lives
+# in a fixture.
 #
-# WHY A FIXTURE RATHER THAN ASSERTIONS IN THIS FILE. The AGENTS.md section 10
-# item line is read twice: here, by the reader every firstmate surface is built
-# from, and out of tree by the logbook connector, which reads the same lines
-# through tasks-axi and its own title/id rules before putting them on a board the
-# captain acts from. Two readers of one grammar drift silently, and consolidating
-# them across a repo boundary is not possible. So the grammar is stated once, as
-# data, and each side tests against it; this script is firstmate's half.
+# Every case declared as diverging is asserted to STILL diverge from the peer's
+# recorded value, so a row that quietly converged fails instead of passing
+# vacuously; the connector itself is not run here.
 #
-# The fixture's "peer" field records what the connector sees TODAY - agree,
-# diverge with the value it observes instead, or dropped when the row never
-# reaches it at all. Those are not assertions about the connector (it is not
-# present here); they are the written-down disagreement the logbook side has to
-# reconcile, and this script checks only that firstmate still answers what the
-# fixture says it answers, and that a row marked as diverging still does.
+# This drives bin/fm-fleet-snapshot.sh --json, which needs jq, so it self-skips
+# on a missing jq exactly like its snapshot-bearings siblings.
 set -u
 
 # shellcheck source=tests/lib.sh
