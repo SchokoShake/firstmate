@@ -338,6 +338,16 @@ For herdr, respawning after a server-restored layout closes and replaces confirm
 At session start, confirmed-dead secondmate agent endpoints are closed and relaunched through the same secondmate spawn path, while ambiguous liveness reads are left untouched to avoid duplicate supervisors.
 Use `/stow` before an intentional reset when the conversation may hold durable knowledge that has not yet been written to disk; after that, the next firstmate session can reconcile and carry on.
 
+## Cross-repo contracts are stated as fixtures
+
+Two of firstmate's contracts are read a second time by code firstmate does not own: the AGENTS.md section 10 backlog item line, which the logbook connector re-reads through `tasks-axi` and its own title and id rules, and the PR slug and same-repo-part parse in `bin/fm-merge-policy-lib.sh`, which that connector re-implements to decide whether a repo's Merge control may be offered.
+Neither pair can be consolidated, because the two implementations live in different repositories, and every way they drift fails silently: a merge slips past a guard that could not read its url, or a row the captain wrote never reaches the board.
+So each contract is stated once as data, in `tests/fixtures/`, and both sides test against that file rather than against a reading of one another's source.
+`tests/fixtures/pr-slug/` and `tests/fixtures/backlog-item-line/` are those statements, pinned on this side by `tests/fm-pr-slug-contract.test.sh` and `tests/fm-backlog-item-line-contract.test.sh`.
+Each fixture carries three things: the documented contract, the edge cases either implementation handles, and every case where the two disagree today, recorded with the value the other side produces instead.
+That third part is what makes the fixture worth having - a divergence written down with its direction fails the suite if this side quietly converges on the other, which is how a deliberate tolerance in a permission path stops being deliberate.
+Firstmate's answer is the authoritative one for the merge-policy slug, since `bin/fm-merge-policy-lib.sh` owns that decision; reconciling the other side is the other repo's work, against the same file.
+
 ## Development notes
 
 The current watcher reliability work combines always-on bash triage with a durable queue for actionable wakes, generation-bound post-handling acknowledgement, deterministic re-arm recovery after watcher downtime, a race-proof singleton lock, duplicate self-eviction, drain-time liveness assertion, and a self-verifying tracked-child arm wrapper.

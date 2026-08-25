@@ -1,0 +1,850 @@
+{
+  "contract": "The AGENTS.md section 10 backlog item line, as bin/fm-fleet-snapshot.sh backlog_json reads it. Each case is one line placed under its section; expect is the record that line must produce. peer records what the logbook connector sees today through tasks-axi 0.2.5 and its own peel_title/logbook_valid_id: agree, diverge (with the value it observes instead), or dropped (the row never reaches it at all). A case may carry a body array of the indented continuation lines that belong to its row.",
+  "peer_implementation": "tasks-axi 0.2.5 plus logbook/connector/firstmate peel_title, pr_token, report_token and logbook_valid_id, recorded 2026-08-25",
+  "cases": [
+    {
+      "name": "canonical-row",
+      "section": "In flight",
+      "line": "- [ ] alpha-fix - fix the login flow (repo: myapp)",
+      "expect": {
+        "structured": true,
+        "id": "alpha-fix",
+        "checked": false,
+        "title": "fix the login flow",
+        "repo": "myapp",
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "worker",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "agree",
+        "note": "the ordinary shape: a checkbox, an id, \" - \", a title, and a single-key marker"
+      }
+    },
+    {
+      "name": "checked-under-in-flight",
+      "section": "In flight",
+      "line": "- [x] beta-done - shipped the thing (repo: myapp, kind: ship)",
+      "expect": {
+        "structured": true,
+        "id": "beta-done",
+        "checked": true,
+        "title": "shipped the thing",
+        "repo": "myapp",
+        "kind": "ship",
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "worker",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "dropped",
+        "note": "a checked row in the In flight section: read here as in-flight work whose box is ticked, dropped entirely by tasks-axi, so the connector's board never shows it"
+      }
+    },
+    {
+      "name": "bold-id-row-without-checkbox",
+      "section": "In flight",
+      "line": "- **bold-id** - a bold-style row (repo: other)",
+      "expect": {
+        "structured": true,
+        "id": "bold-id",
+        "checked": false,
+        "title": "a bold-style row",
+        "repo": "other",
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "worker",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "agree",
+        "note": "the checkbox-less \"- **id** - rest\" form; read here as unchecked"
+      }
+    },
+    {
+      "name": "held-row-multi-key-marker",
+      "section": "In flight",
+      "line": "- [ ] gamma - held row (repo: myapp, hold: waiting on captain, hold-kind: captain)",
+      "expect": {
+        "structured": true,
+        "id": "gamma",
+        "checked": false,
+        "title": "held row",
+        "repo": "myapp",
+        "kind": null,
+        "priority": null,
+        "hold_reason": "waiting on captain",
+        "hold_kind": "captain",
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "held",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "THE MARKER BLEED. Every key after the first is folded into the first key's value by tasks-axi, so the connector receives a \"project name\" that is really the whole marker body. It fails valid_project_name, the clone origin is never resolved, and the merge-policy signal that would have traced this PR to a +captain-merge clone goes unanswered. Fail-open, in a permission path",
+        "observed": {
+          "repo": "myapp, hold: waiting on captain, hold-kind: captain"
+        }
+      }
+    },
+    {
+      "name": "program-kind",
+      "section": "In flight",
+      "line": "- [ ] prog - umbrella work (repo: myapp, kind: program)",
+      "expect": {
+        "structured": true,
+        "id": "prog",
+        "checked": false,
+        "title": "umbrella work",
+        "repo": "myapp",
+        "kind": "program",
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "program",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "the same bleed with two keys",
+        "observed": {
+          "repo": "myapp, kind: program"
+        }
+      }
+    },
+    {
+      "name": "star-bullet",
+      "section": "In flight",
+      "line": "* [ ] star-row - a star bullet is a list item too (repo: myapp)",
+      "expect": {
+        "structured": true,
+        "id": "star-row",
+        "checked": false,
+        "title": "a star bullet is a list item too",
+        "repo": "myapp",
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "worker",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "dropped",
+        "note": "\"*\" is a markdown list bullet exactly as \"-\" is, and is read here; tasks-axi drops the row"
+      }
+    },
+    {
+      "name": "row-with-indented-body",
+      "section": "In flight",
+      "line": "- [ ] withbody - a row that carries a body (repo: myapp)",
+      "expect": {
+        "structured": true,
+        "id": "withbody",
+        "checked": false,
+        "title": "a row that carries a body",
+        "repo": "myapp",
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "worker",
+        "captain_actionable": false,
+        "body_excerpt": "the indented continuation line"
+      },
+      "peer": {
+        "status": "agree",
+        "note": "an indented continuation line is the row's body, not a new row"
+      },
+      "body": [
+        "  the indented continuation line"
+      ]
+    },
+    {
+      "name": "blocked-by-with-reason",
+      "section": "Queued",
+      "line": "- [ ] delta - depends on stuff blocked-by: alpha-fix - until login lands",
+      "expect": {
+        "structured": true,
+        "id": "delta",
+        "checked": false,
+        "title": "depends on stuff",
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [
+          "alpha-fix"
+        ],
+        "blocked_reason": "until login lands",
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "agree",
+        "note": "\"blocked-by: <id> - <reason>\" splits into the blocker and its reason, and neither reaches the title"
+      }
+    },
+    {
+      "name": "blocked-by-repeated",
+      "section": "Queued",
+      "line": "- [ ] delta2 - two blockers blocked-by: alpha-fix blocked-by: gamma",
+      "expect": {
+        "structured": true,
+        "id": "delta2",
+        "checked": false,
+        "title": "two blockers",
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [
+          "alpha-fix",
+          "gamma"
+        ],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "agree",
+        "note": "repeated blocked-by keys accumulate in order"
+      }
+    },
+    {
+      "name": "url-inside-the-title",
+      "section": "Queued",
+      "line": "- [ ] eps - title with https://github.com/acme/r/pull/3 inline and more text",
+      "expect": {
+        "structured": true,
+        "id": "eps",
+        "checked": false,
+        "title": "title with inline and more text",
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": "https://github.com/acme/r/pull/3",
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "a url ANYWHERE in the row is a link here and leaves the title; the connector peels only a TRAILING run of link tokens, so an inline url stays in the card title",
+        "observed": {
+          "title": "title with https://github.com/acme/r/pull/3 inline and more text"
+        }
+      }
+    },
+    {
+      "name": "trailing-pr-link",
+      "section": "Queued",
+      "line": "- [ ] zeta - trailing link https://github.com/acme/r/pull/9",
+      "expect": {
+        "structured": true,
+        "id": "zeta",
+        "checked": false,
+        "title": "trailing link",
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": "https://github.com/acme/r/pull/9",
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "agree",
+        "note": "a trailing PR link is the row's pr_url and leaves the title on both sides"
+      }
+    },
+    {
+      "name": "trailing-report-artifact",
+      "section": "Queued",
+      "line": "- [ ] eta - report artifact - data/eta/report.md",
+      "expect": {
+        "structured": true,
+        "id": "eta",
+        "checked": false,
+        "title": "report artifact",
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": "data/eta/report.md",
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "the report path and the \" - \" that introduced it both leave the title here; the connector peels the path and leaves the dangling separator",
+        "observed": {
+          "title": "report artifact -"
+        }
+      }
+    },
+    {
+      "name": "trailing-local-main",
+      "section": "Queued",
+      "line": "- [ ] theta - local landing - local main",
+      "expect": {
+        "structured": true,
+        "id": "theta",
+        "checked": false,
+        "title": "local landing",
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": "local main",
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "\"local main\" is the local-only landing note here and leaves the title; the connector has no rule for it and shows it as title text",
+        "observed": {
+          "title": "local landing - local main"
+        }
+      }
+    },
+    {
+      "name": "id-with-slash",
+      "section": "Queued",
+      "line": "- [ ] my/task - slash in the id (repo: myapp)",
+      "expect": {
+        "structured": true,
+        "id": "my/task",
+        "checked": false,
+        "title": "slash in the id",
+        "repo": "myapp",
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "dropped",
+        "note": "the id grammar is the widest divergence of the three: read here as any non-whitespace run, dropped by tasks-axi, and rejected by the connector's own logbook_valid_id"
+      }
+    },
+    {
+      "name": "id-with-dot-dot",
+      "section": "Queued",
+      "line": "- [ ] ..dots - dotted id",
+      "expect": {
+        "structured": true,
+        "id": "..dots",
+        "checked": false,
+        "title": "dotted id",
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "dropped",
+        "note": "same class; also rejected by logbook_valid_id"
+      }
+    },
+    {
+      "name": "id-with-leading-dash",
+      "section": "Queued",
+      "line": "- [ ] -leading - leading dash id",
+      "expect": {
+        "structured": true,
+        "id": "-leading",
+        "checked": false,
+        "title": "leading dash id",
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "dropped",
+        "note": "same class; also rejected by logbook_valid_id"
+      }
+    },
+    {
+      "name": "id-with-colon",
+      "section": "Queued",
+      "line": "- [ ] iota:v2 - colon id (repo: myapp, priority: high)",
+      "expect": {
+        "structured": true,
+        "id": "iota:v2",
+        "checked": false,
+        "title": "colon id",
+        "repo": "myapp",
+        "kind": null,
+        "priority": "high",
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "dropped",
+        "note": "THREE grammars disagree on this one id: read here, ACCEPTED by the connector's logbook_valid_id, and dropped by tasks-axi - so the connector never sees a row it would have been happy to show"
+      }
+    },
+    {
+      "name": "all-metadata-keys",
+      "section": "Queued",
+      "line": "- [ ] kappa - multi (repo: myapp, kind: scout, priority: low, since 2026-08-01)",
+      "expect": {
+        "structured": true,
+        "id": "kappa",
+        "checked": false,
+        "title": "multi",
+        "repo": "myapp",
+        "kind": "scout",
+        "priority": "low",
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": "2026-08-01",
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "the marker bleed again, with four keys",
+        "observed": {
+          "repo": "myapp, kind: scout, priority: low, since 2026-08-01"
+        }
+      }
+    },
+    {
+      "name": "captain-actionable-hold",
+      "section": "Queued",
+      "line": "- [ ] cap - needs the captain (kind: captain, hold: pick a shape, hold-kind: captain)",
+      "expect": {
+        "structured": true,
+        "id": "cap",
+        "checked": false,
+        "title": "needs the captain",
+        "repo": null,
+        "kind": "captain",
+        "priority": null,
+        "hold_reason": "pick a shape",
+        "hold_kind": "captain",
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": true,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "the bleed lands on whichever key comes FIRST, not on repo specifically",
+        "observed": {
+          "kind": "captain, hold: pick a shape, hold-kind: captain"
+        }
+      }
+    },
+    {
+      "name": "free-form-row",
+      "section": "Queued",
+      "line": "- a free-form note that is not a structured row",
+      "expect": {
+        "structured": false,
+        "id": null,
+        "checked": null,
+        "title": null,
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": null,
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": null,
+        "captain_actionable": null,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "agree",
+        "note": "a row that is not a structured item is kept verbatim and marked unstructured, never guessed at"
+      }
+    },
+    {
+      "name": "angle-wrapped-url",
+      "section": "Queued",
+      "line": "- [ ] wrap - see <https://example.com/x> for context",
+      "expect": {
+        "structured": true,
+        "id": "wrap",
+        "checked": false,
+        "title": "see for context",
+        "repo": null,
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "an angle-wrapped url is still a url here and leaves the title",
+        "observed": {
+          "title": "see <https://example.com/x> for context"
+        }
+      }
+    },
+    {
+      "name": "done-merged",
+      "section": "Done",
+      "line": "- [x] lambda - landed (repo: myapp, merged 2026-08-20)",
+      "expect": {
+        "structured": true,
+        "id": "lambda",
+        "checked": true,
+        "title": "landed",
+        "repo": "myapp",
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": "2026-08-20",
+        "reported": null,
+        "done": null,
+        "current_role": "done",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "the bleed on a completion marker",
+        "observed": {
+          "repo": "myapp, merged 2026-08-20"
+        }
+      }
+    },
+    {
+      "name": "done-reported",
+      "section": "Done",
+      "line": "- [x] mu - reported (repo: myapp, reported 2026-08-21)",
+      "expect": {
+        "structured": true,
+        "id": "mu",
+        "checked": true,
+        "title": "reported",
+        "repo": "myapp",
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": "2026-08-21",
+        "done": null,
+        "current_role": "done",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "the scout completion verb",
+        "observed": {
+          "repo": "myapp, reported 2026-08-21"
+        }
+      }
+    },
+    {
+      "name": "done-plain",
+      "section": "Done",
+      "line": "- [x] nu - finished (repo: myapp, done 2026-08-22)",
+      "expect": {
+        "structured": true,
+        "id": "nu",
+        "checked": true,
+        "title": "finished",
+        "repo": "myapp",
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": "2026-08-22",
+        "current_role": "done",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "the third completion verb",
+        "observed": {
+          "repo": "myapp, done 2026-08-22"
+        }
+      }
+    },
+    {
+      "name": "done-with-pr-link",
+      "section": "Done",
+      "line": "- [x] xi - shipped https://github.com/acme/r/pull/12 (repo: myapp, merged 2026-08-23)",
+      "expect": {
+        "structured": true,
+        "id": "xi",
+        "checked": true,
+        "title": "shipped",
+        "repo": "myapp",
+        "kind": null,
+        "priority": null,
+        "hold_reason": null,
+        "hold_kind": null,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": "https://github.com/acme/r/pull/12",
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": "2026-08-23",
+        "reported": null,
+        "done": null,
+        "current_role": "done",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "diverge",
+        "note": "the completion artifact and the marker on one row; the titles agree here, the repo does not",
+        "observed": {
+          "repo": "myapp, merged 2026-08-23"
+        }
+      }
+    }
+  ]
+}
