@@ -1557,6 +1557,20 @@ test_hook_claude_mode_verified_failure_alarm_is_loud_and_once() {
   pass "fm-turnend-guard --claude: verified fail-open is loud, bounded, attended, and non-repeating"
 }
 
+test_hook_claude_mode_fail_open_names_logbook_board() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-logbook-fail-open")
+  : > "$dir/state/logbook-watch.check.sh"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 3
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "a logbook-only home with verified failure and exhausted budget must take the bounded attended fail-open"
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN: logbook board enabled' "logbook-only fail-open alarm must name the enabled logbook board"
+  assert_not_contains "$out" 'X-mode relay polling' "a logbook-only fail-open alarm must not be reported as a Relay home"
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" "logbook-only fail-open did not consume the episode alarm"
+  pass "fm-turnend-guard --claude: logbook-only verified fail-open names the logbook board"
+}
+
 test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch() {
   local no_notice notice_only out status
   no_notice=$(make_primary_dir "$TMP_ROOT/hook-claude-alarm-no-notice")
@@ -1724,6 +1738,7 @@ test_hook_claude_mode_concurrent_recovery_resets_are_idempotent
 test_hook_claude_mode_stale_rewake_epoch_blocks
 test_hook_claude_mode_budget_without_verified_failure_keeps_blocking
 test_hook_claude_mode_verified_failure_alarm_is_loud_and_once
+test_hook_claude_mode_fail_open_names_logbook_board
 test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch
 test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open
 test_hook_claude_mode_allow_resets_budget

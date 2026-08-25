@@ -385,8 +385,10 @@ if [ "$terminal_status" -eq 0 ]; then
     NEED_DESC="$FM_SUP_IN_FLIGHT task(s) in flight"
   elif [ "$FM_SUP_SOURCES" -gt 0 ]; then
     NEED_DESC="$FM_SUP_SOURCES process-event source(s) registered"
-  else
+  elif [ "$FM_SUP_RELAY" = true ]; then
     NEED_DESC="X-mode relay polling active"
+  else
+    NEED_DESC="logbook board enabled"
   fi
   printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, the Stop-owned auto-arm exhausted its bounded retries and one failure notice, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' "$NEED_DESC"
   exit 0
