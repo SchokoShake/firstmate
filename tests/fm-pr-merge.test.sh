@@ -14,6 +14,8 @@
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
+#   (i) the +captain-merge refusal holds on both signals, both merge paths, and on
+#       the url and origin shapes tests/fixtures/pr-slug/ pins the slug parse for
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -403,6 +405,65 @@ test_unflagged_project_still_merges() {
   pass "a project without the flag is exactly as mergeable as it was before the flag existed"
 }
 
+# The two slug tolerances that only matter END TO END. tests/fixtures/pr-slug/
+# pins what fm_merge_slug answers for these shapes; what matters here is that the
+# answer still reaches a REFUSAL through the real merge path, because that is the
+# property a narrowing of the parse would silently take away. Only forms
+# bin/fm-pr-lib.sh's fm_pr_url_parse actually admits can be pinned this way: a
+# trailing-slash url is rejected before the guard is ever consulted, so it lives
+# in the fixture and in the composition assertion beside it, not here.
+
+test_captain_merge_refused_when_the_url_carries_a_git_component() {
+  local case_dir home out rc
+  case_dir=$(make_case captain-merge-url-dot-git)
+  add_gh_mocks "$case_dir" deadbeef
+  home=$(make_policy_home "$case_dir" guarded "direct-PR +captain-merge" https://github.com/acme/guarded.git)
+  # fm_pr_url_parse accepts a ".git" repo component and would hand "acme/guarded.git"
+  # straight to gh-axi. The task records an unflagged project, so ONLY the url can
+  # refuse - and it can only refuse if the ".git" it carries is normalized away
+  # before the clone origin is compared.
+  mkdir -p "$home/projects/loose"
+  printf -- '- loose - unflagged (added 2026-01-01)\n' >> "$home/data/projects.md"
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" "project=$home/projects/loose" \
+    "kind=ship" "mode=direct-PR"
+
+  set +e
+  out=$(run_pr_merge_in_home "$case_dir" "$home" task-x1 https://github.com/acme/guarded.git/pull/7 2>&1)
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "url-dot-git: a .git url component must not carry a merge past the guard"
+  assert_contains "$out" "guarded" "url-dot-git: refusal did not name the project the url traced to"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "url-dot-git: refused merge still called gh-axi"
+  pass "a PR url naming its repo with a .git suffix is still traced to the flagged clone and refused"
+}
+
+test_captain_merge_refused_when_the_origin_ends_dot_git_slash() {
+  local case_dir home out rc
+  case_dir=$(make_case captain-merge-origin-dot-git-slash)
+  add_gh_mocks "$case_dir" deadbeef
+  # What "git clone https://github.com/acme/guarded.git/" records verbatim. The
+  # trailing "/" has to come off before the ".git" behind it, or this clone resolves
+  # to the repo "guarded.git", claims nothing, and its merge is permitted.
+  home=$(make_policy_home "$case_dir" guarded "direct-PR +captain-merge" https://github.com/acme/guarded.git/)
+  mkdir -p "$home/projects/loose"
+  printf -- '- loose - unflagged (added 2026-01-01)\n' >> "$home/data/projects.md"
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=fm-task-x1" "worktree=$case_dir/wt" "project=$home/projects/loose" \
+    "kind=ship" "mode=direct-PR"
+
+  set +e
+  out=$(run_pr_merge_in_home "$case_dir" "$home" task-x1 https://github.com/acme/guarded/pull/7 2>&1)
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "origin-dot-git-slash: a clone whose origin ends .git/ must still claim its PRs"
+  assert_contains "$out" "guarded" "origin-dot-git-slash: refusal did not name the project the url traced to"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "origin-dot-git-slash: refused merge still called gh-axi"
+  pass "a clone whose origin ends \".git/\" is still traced to by its PR url and its merge refused"
+}
+
 test_captain_merge_refuses_the_local_merge_too() {
   local case_dir home out rc
   case_dir=$(make_case captain-merge-local)
@@ -437,4 +498,6 @@ test_parses_pr_url_for_gh_axi
 test_captain_merge_refused_from_the_tasks_own_record
 test_captain_merge_refused_from_the_pr_url_alone
 test_unflagged_project_still_merges
+test_captain_merge_refused_when_the_url_carries_a_git_component
+test_captain_merge_refused_when_the_origin_ends_dot_git_slash
 test_captain_merge_refuses_the_local_merge_too

@@ -227,14 +227,18 @@ fm_merge_forbidden_project() {
 # half a name identifies nothing.
 #
 # Those two url tolerances are not cosmetic. This guard must resolve EVERY url the thing it
-# guards would act on, or the url it cannot read is exactly the one that walks past it:
-# bin/fm-pr-merge.sh's parse_pr_url accepts a trailing "/" (".../pull/7/") and a ".git"
-# repo component, and hands the parsed owner/repo straight to "gh-axi pr merge". A slug
-# parse that read ".../pull/7/" as a non-numeric PR number returned no owner/repo at all,
-# so signal 2 matched no clone and PERMITTED the merge of a "+captain-merge" project - on
-# the torn-down, pruned task that is the very case signal 2 exists for, since signal 1 then
-# has no meta and no backlog item to read. So the tolerances live HERE, in the guard,
-# rather than resting on a caller-side parse this library does not run.
+# guards would act on, or the url it cannot read is exactly the one that walks past it.
+# bin/fm-pr-lib.sh's fm_pr_url_parse is what decides which urls reach a merge, and it hands
+# the parsed owner/repo straight to "gh-axi pr merge". It accepts a ".git" repo component
+# today (".../acme/guarded.git/pull/7" parses, repo and all) and rejects a trailing "/" -
+# but which side of that line a given shape falls on is fm_pr_url_parse's to change, not
+# this library's to depend on. A slug parse that read ".../pull/7/" as a non-numeric PR
+# number returned no owner/repo at all, so signal 2 matched no clone and PERMITTED the
+# merge of a "+captain-merge" project - on the torn-down, pruned task that is the very case
+# signal 2 exists for, since signal 1 then has no meta and no backlog item to read. So the
+# tolerances live HERE, in the guard, and stay strictly WIDER than the merge path's own
+# parse rather than tracking it, because a later widening there must not be able to open a
+# bypass here. tests/fm-pr-slug-contract.test.sh asserts that composition directly.
 #
 # The tolerances are deliberately asymmetric, and each direction fails CLOSED:
 #
@@ -255,10 +259,13 @@ fm_merge_forbidden_project() {
 #     instead (project_remote_repo), and same_repo_part needs both halves, so a
 #     whitespace-bearing name matches nothing on either side.
 #
-# The shared table carries every one of those shapes: the ones both sides read alike are
-# pinned as agreements, and each divergence is pinned as a DECLARED one that asserts its
-# direction, so narrowing this side back to compose's fails the suite rather than
-# silently reopening a bypass. The two wider url forms and the ".git/" origin are pinned
+# Consolidating the two implementations is not possible across the repo boundary, so the
+# contract is stated once as DATA instead: tests/fixtures/pr-slug/ carries every one of
+# those shapes, the ones both sides read alike as agreements and each divergence as a
+# DECLARED one that asserts the peer's differing value. Narrowing this side back to
+# compose's therefore fails tests/fm-pr-slug-contract.test.sh rather than silently
+# reopening a bypass, and the logbook side reconciles against that same file rather than
+# against a reading of this comment. The forms fm_pr_url_parse actually admits are pinned
 # end to end in tests/fm-pr-merge.test.sh as well, since the refusal is the property that
 # actually matters.
 FM_MERGE_SLUG_OWNER=""

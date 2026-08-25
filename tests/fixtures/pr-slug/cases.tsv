@@ -1,0 +1,84 @@
+# tests/fixtures/pr-slug/cases.tsv - the executable statement of the PR-slug
+# contract: what "<owner>" and "<repo>" a GitHub PR url or a clone remote names.
+#
+# bin/fm-merge-policy-lib.sh's fm_merge_slug owns that contract (AGENTS.md
+# section 7 makes it the owner of the "+captain-merge" merge-policy decision), so
+# the "owner"/"repo" columns are AUTHORITATIVE: a change that moves them is a
+# change to a permission path, not a refactor.
+#
+# The logbook connector re-implements the same parse out of tree
+# (connector/firstmate/lb-fm-lib.sh pr_slug for the url half,
+# connector/firstmate/lb-fm-compose.sh project_remote_repo for the remote half),
+# where it decides whether that repo's Merge control may be offered. The "peer"
+# columns record what THAT side produces today, so a disagreement is written down
+# rather than discovered when a forbidden merge slips through. Reconciling them
+# is the logbook side's work; this file is what it reconciles against.
+#
+# TAB-separated. "#" starts a comment line. Fields:
+#   kind        url | remote
+#   input       the url or remote to parse
+#   owner       fm_merge_slug's FM_MERGE_SLUG_OWNER
+#   repo        fm_merge_slug's FM_MERGE_SLUG_REPO
+#   peer        agree | diverge
+#   peer_owner  the peer's owner ("=" when peer is agree)
+#   peer_repo   the peer's repo  ("=" when peer is agree)
+#   note        why the case is here
+#
+# "~" is the empty string in any field. An empty owner or repo is a DELIBERATE
+# answer, not a parse failure: half a name identifies nothing, so the pair is
+# unmatchable and the merge is permitted on this signal alone.
+#
+# kind	input	owner	repo	peer	peer_owner	peer_repo	note
+
+# --- the ordinary shapes both sides read alike -------------------------------
+url	https://github.com/acme/guarded/pull/7	acme	guarded	agree	=	=	the canonical PR url
+url	https://github.com/acme/guarded/pull/007	acme	guarded	agree	=	=	a zero-padded PR number is still numeric
+url	http://github.com/acme/guarded/pull/7	acme	guarded	agree	=	=	the scheme is not part of the slug
+url	https://github.com/ACME/Guarded/pull/7	ACME	Guarded	agree	=	=	case is preserved here and folded by fm_merge_same_part
+url	https://github.example.com/a/b/acme/guarded/pull/7	acme	guarded	agree	=	=	only the two components above /pull/ are read
+url	https://github.com/guarded/pull/7	github.com	guarded	agree	=	=	an owner-less path reads the host as the owner and so matches no clone
+url	https://github.com/acme/guarded/pull/abc	~	~	agree	=	=	a non-numeric PR number is not a PR url
+url	https://github.com/acme/guarded/pull/	~	~	agree	=	=	a missing PR number is not a PR url
+url	https://github.com/acme/guarded/pull/7?w=1	~	~	agree	=	=	a query string is not one of the two tolerated suffixes
+url	https://github.com/acme/guarded/pull/7#top	~	~	agree	=	=	a fragment is not one of the two tolerated suffixes
+url	https://github.com/acme/guarded/pull/7/files	~	~	agree	=	=	a sub-path is not one of the two tolerated suffixes
+url	https://github.com/acme/guarded/pull/7//	~	~	agree	=	=	exactly ONE trailing slash is tolerated, no more
+url	/pull/7	~	~	agree	=	=	no owner and no repo to read
+url	~	~	~	agree	=	=	the empty input resolves to nothing
+
+# --- DECLARED divergences on the url half ------------------------------------
+# Each of these is a url firstmate resolves and the connector does not, or
+# resolves differently. Firstmate's answer is the authoritative one, and its
+# extra width is deliberate: a url the guard cannot resolve is a merge it cannot
+# trace back to a flagged clone, so narrowing this side to the peer's reopens the
+# bypass. Asserting the peer's value here means a later narrowing fails the suite.
+url	https://github.com/acme/guarded/pull/7/	acme	guarded	diverge	~	~	one trailing slash is tolerated here and rejected by the connector
+url	https://github.com/acme/guarded.git/pull/7	acme	guarded	diverge	acme	guarded.git	a .git repo component is normalized here so the url and the clone origin resolve alike
+url	https://github.com/acme/guarded.git/pull/7/	acme	guarded	diverge	~	~	both tolerances at once
+url	https://github.com/acme/guarded/pulls/7	pulls	7	diverge	~	~	fm_merge_slug reads any non-PR string as a REMOTE; the connector's is url-only. Harmless: no clone origin resolves to "pulls/7"
+url	https://gitlab.com/acme/guarded/-/merge_requests/7	merge_requests	7	diverge	~	~	same dual-purpose fall-through; bin/fm-pr-merge.sh refuses a non-GitHub provider before the guard is consulted
+
+# --- DECLARED divergences that are mechanical, not behavioural ---------------
+# fm_merge_slug blanks a whitespace-bearing half on BOTH sides; the connector
+# blanks it on the remote side only. Both therefore match nothing either way, so
+# no merge decision turns on the difference - but the halves differ, so they are
+# written down rather than left to look like an agreement.
+url	https://github.com/acme/gu arded/pull/7	acme	~	diverge	acme	gu arded	whitespace cannot appear in a GitHub repo name; blanking it keeps the pair unmatchable
+url	https://github.com/ac me/guarded/pull/7	~	guarded	diverge	ac me	guarded	the same on the owner half
+
+# --- the remote half: shapes both sides read alike ---------------------------
+remote	https://github.com/acme/guarded	acme	guarded	agree	=	=	an https origin
+remote	https://github.com/acme/guarded.git	acme	guarded	agree	=	=	the .git suffix git clone records by default
+remote	https://github.com/acme/guarded/	acme	guarded	agree	=	=	a trailing slash
+remote	git@github.com:acme/guarded.git	acme	guarded	agree	=	=	the scp-style form leaves "host:" on the owner
+remote	git@github.com:acme/guarded	acme	guarded	agree	=	=	the scp-style form without .git
+remote	git@github.com:guarded.git	~	guarded	agree	=	=	an owner-less scp remote yields no owner and so matches no PR url
+remote	ssh://git@github.com/acme/guarded.git	acme	guarded	agree	=	=	the ssh:// form
+remote	https://github.com/ACME/Guarded.git	ACME	Guarded	agree	=	=	case is preserved and folded at comparison time
+remote	/local/path/acme/guarded	acme	guarded	agree	=	=	a path remote reads like any other
+remote	https://github.com/acme/gu arded.git	acme	~	agree	=	=	both sides blank a whitespace-bearing repo here
+remote	~	~	~	agree	=	=	a clone with no origin claims nothing
+
+# --- DECLARED divergences on the remote half ---------------------------------
+remote	https://github.com/acme/guarded.git/	acme	guarded	diverge	acme	guarded.git	ORDER IS THE WHOLE DIFFERENCE: the trailing slash comes off before the .git behind it. What "git clone https://github.com/acme/guarded.git/" records verbatim, and the peer's answer matches no PR url, so that clone claims nothing and its merge is permitted
+remote	https://github.com/acme/guarded.git/.git	guarded.git	~	diverge	acme	guarded.git	a doubled suffix defeats BOTH single-pass strips; recorded, not fixed, because neither answer matches a PR url and no real origin has this shape

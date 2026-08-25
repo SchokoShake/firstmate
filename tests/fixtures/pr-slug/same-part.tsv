@@ -1,0 +1,29 @@
+# tests/fixtures/pr-slug/same-part.tsv - the second half of the PR-slug
+# contract: when do two owner or repo names name the SAME thing on GitHub?
+#
+# bin/fm-merge-policy-lib.sh's fm_merge_same_part owns it. The two sides of every
+# comparison are written by different hands - a clone origin as the captain typed
+# it, a PR url as the forge returned it - so a byte-exact match would read a
+# case-only difference as a mismatch and let a forbidden merge through. Folding
+# cannot loosen it the other way: case-folded owner/repo names are unique on
+# GitHub, so two that fold alike ARE the same repo.
+#
+# The logbook connector's same_repo_part (connector/firstmate/lb-fm-compose.sh)
+# is byte-identical to fm_merge_same_part today, so every row here is an
+# agreement. That is exactly why the rows are worth writing down: this half is
+# the one that currently matches, and the fixture is what says so out loud if it
+# stops matching.
+#
+# TAB-separated. "#" starts a comment line. "~" is the empty string. Fields:
+#   a	b	expect(same|differ)	peer(agree|diverge)	note
+#
+# a	b	expect	peer	note
+acme	acme	same	agree	byte-identical names
+acme	ACME	same	agree	the owner half differs only in case
+Guarded	guarded	same	agree	the repo half differs only in case
+GuArDeD	gUaRdEd	same	agree	mixed case on both halves
+acme	other	differ	agree	different names
+guarded	guarded-2	differ	agree	a name that merely prefixes another is not that name
+~	acme	differ	agree	an unresolved half proves nothing and must never match
+acme	~	differ	agree	the same in the other direction
+~	~	differ	agree	two unresolved halves are not an agreement
