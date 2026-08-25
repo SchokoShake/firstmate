@@ -18,8 +18,10 @@
 #   - AFK: while state/.afk exists the away daemon owns the watcher and triage;
 #     this hook exits 0 and NEVER rewakes the primary (checked again at
 #     translation time so a mid-cycle AFK transition is honored).
-#   - Need: arms only while work is in flight (state/*.meta) or X mode has a
-#     relay poll to run (state/x-watch.check.sh); an idle home exits 0.
+#   - Need: arms only while work is in flight (state/*.meta), X mode has a
+#     relay poll to run (state/x-watch.check.sh), or a logbook board is enabled
+#     (state/logbook-*.check.sh); an idle home exits 0. The predicate itself is
+#     bin/fm-supervision-lib.sh's, never a copy.
 #   - Single-flight: Claude does not dedupe async hooks, so a home-scoped owner
 #     lock (state/.claude-autoarm.lock) admits exactly one owner; every other
 #     concurrent firing exits 0 without translating, which keeps one event
@@ -115,7 +117,7 @@ fi
 # --- AFK: the away daemon owns the watcher and triage; never rewake ----------
 [ -e "$STATE/.afk" ] && exit 0
 
-# --- need: in-flight work or an X-mode relay poll ----------------------------
+# --- need: in-flight work, an X-mode relay poll, or an enabled logbook board --
 need_supervision() {
   fm_supervision_needed "$STATE" "$GRACE"
 }

@@ -5,9 +5,11 @@
 # First, always warn if the firstmate primary checkout (FM_ROOT) is on a named
 # non-default branch, because that means firstmate-on-itself work landed in the
 # primary instead of an isolated worktree.
-# Then, if a task is in flight (a state/<id>.meta exists) or X-mode relay
-# polling is active (state/x-watch.check.sh exists) and supervision is not
-# healthy, prints a loud, clearly delimited banner so the agent cannot skim past
+# Then, if this home needs supervision at all - a task in flight (a
+# state/<id>.meta exists), a registered process-event source, X-mode relay
+# polling (state/x-watch.check.sh), or an enabled logbook board
+# (state/logbook-*.check.sh) - and supervision is not healthy, prints a loud,
+# clearly delimited banner so the agent cannot skim past
 # it in the tool output of whatever it was doing - the one channel every harness
 # has. Supervision health is MODEL-AWARE (fm_watcher_supervision_verdict in
 # bin/fm-wake-lib.sh): under the Claude Stop auto-arm model the watcher runs only
@@ -150,10 +152,11 @@ fi
 
 # Compute supervision need and watcher-beacon freshness via the shared
 # grace-based predicate (bin/fm-supervision-lib.sh). Act when work, an event
-# source, or an X-mode relay poll needs supervision.
+# source, an X-mode relay poll, or an enabled logbook board needs supervision.
 fm_supervision_status "$STATE" "$GRACE"
 in_flight=$FM_SUP_IN_FLIGHT
 sources=$FM_SUP_SOURCES
+relay=$FM_SUP_RELAY
 needed=$FM_SUP_NEEDED
 beacon_desc=$FM_SUP_BEACON_DESC
 fm_watcher_supervision_verdict "$STATE" "$WATCH" "$GRACE" "$FM_HOME" "$FM_ROOT"
@@ -161,8 +164,8 @@ watcher_healthy=$FM_WATCHER_VERDICT_OK
 watcher_down_reason=$FM_WATCHER_VERDICT_REASON
 if [ "$needed" = false ]; then
   # Leave the unhealthy state (nothing riding on the watcher): clear so a later
-  # work or X-mode need + stale combination is a fresh episode even if the
-  # beacon is still absent with the same key string.
+  # work, X-mode, or logbook need + stale combination is a fresh episode even if
+  # the beacon is still absent with the same key string.
   [ "$READ_ONLY" -eq 1 ] || fm_guard_clear_stale_banner
   exit 0
 fi
@@ -207,8 +210,10 @@ if [ "$watcher_healthy" = false ]; then
         printf '●  %s task(s) in flight, but %s.\n' "$in_flight" "$watcher_cause"
       elif [ "$sources" -gt 0 ]; then
         printf '●  %s process-event source(s) registered, but %s.\n' "$sources" "$watcher_cause"
-      else
+      elif [ "$relay" = true ]; then
         printf '●  X-mode relay polling needs supervision, but %s.\n' "$watcher_cause"
+      else
+        printf '●  Logbook board polling needs supervision, but %s.\n' "$watcher_cause"
       fi
       if [ "$READ_ONLY" -eq 1 ]; then
         printf '●  This read-only session should report the lapse, not repair it.\n'

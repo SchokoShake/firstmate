@@ -88,6 +88,39 @@ test_predicate_x_mode_needs_supervision() {
   pass "fm_supervision_needed: X-mode relay poll needs supervision"
 }
 
+test_predicate_logbook_needs_supervision() {
+  local state="$TMP_ROOT/pred-logbook/state"
+  mkdir -p "$state"
+  : > "$state/logbook-watch.check.sh"
+  fm_supervision_needed "$state" 300 || fail "logbook board poll did not register as supervision need"
+  [ "$FM_SUP_IN_FLIGHT" -eq 0 ] || fail "logbook board poll must not count as an in-flight task"
+  [ "$FM_SUP_LOGBOOK" = true ] || fail "logbook board poll must set FM_SUP_LOGBOOK"
+  [ "$FM_SUP_RELAY" = false ] || fail "a logbook-only home must not read as a Relay home"
+  fm_supervision_unhealthy "$state" 300 || fail "logbook board poll with no beacon must be unhealthy"
+  pass "fm_supervision_needed: an enabled logbook board needs supervision on an empty fleet"
+}
+
+test_predicate_logbook_extra_channel_shim() {
+  local state="$TMP_ROOT/pred-logbook-extra/state"
+  mkdir -p "$state"
+  : > "$state/logbook-cards.check.sh"
+  fm_supervision_needed "$state" 300 || fail "a second logbook channel shim did not register as supervision need"
+  [ "$FM_SUP_LOGBOOK" = true ] || fail "every state/logbook-*.check.sh shim must set FM_SUP_LOGBOOK"
+  pass "fm_supervision_needed: the whole state/logbook-*.check.sh namespace counts"
+}
+
+test_predicate_logbook_absent_stays_quiet() {
+  local state="$TMP_ROOT/pred-logbook-absent/state"
+  mkdir -p "$state"
+  : > "$state/notlogbook.check.sh"
+  : > "$state/logbook-watch.check-trust"
+  if fm_supervision_needed "$state" 300; then
+    fail "a home with no logbook board poll must not demand a watcher"
+  fi
+  [ "$FM_SUP_LOGBOOK" = false ] || fail "FM_SUP_LOGBOOK must stay false without a logbook-*.check.sh shim"
+  pass "fm_supervision_needed: no logbook board poll leaves an empty fleet unguarded-free"
+}
+
 test_predicate_source_needs_supervision() {
   local state="$TMP_ROOT/pred-source/state"
   mkdir -p "$state/procevent"
@@ -400,6 +433,17 @@ test_hook_x_mode_only_blocks_in_default_mode() {
   expect_code 2 "$status" "default hook mode must block an X-mode-only blind turn"
   assert_contains "$out" "X-mode relay polling needs supervision" "X-mode-only blind stop must identify its supervision need"
   pass "fm-turnend-guard: X-mode-only supervision remains guarded in default mode"
+}
+
+test_hook_logbook_only_blocks_in_default_mode() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-logbook-only")
+  : > "$dir/state/logbook-watch.check.sh"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "default hook mode must block a logbook-only blind turn"
+  assert_contains "$out" "Logbook board polling needs supervision" "logbook-only blind stop must identify its supervision need"
+  assert_not_contains "$out" "X-mode relay polling" "a logbook-only home must not be reported as a Relay home"
+  pass "fm-turnend-guard: logbook-only supervision is guarded in default mode"
 }
 
 test_hook_ignores_repo_state_when_fm_home_set() {
@@ -1179,6 +1223,17 @@ test_hook_claude_mode_reblocks_x_mode_without_tasks() {
   pass "fm-turnend-guard --claude: X-mode-only homes re-block when auto-arm recovery is absent"
 }
 
+test_hook_claude_mode_reblocks_logbook_without_tasks() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-logbook")
+  : > "$dir/state/logbook-watch.check.sh"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" "--claude mode must re-block a logbook-only stop when no auto-arm claims recovery"
+  assert_contains "$out" "Logbook board polling needs supervision" "--claude logbook re-block must name the active supervision need"
+  [ -f "$dir/state/.turnend-claude-blocks" ] || fail "--claude logbook re-block must consume the shared block budget"
+  pass "fm-turnend-guard --claude: logbook-only homes re-block when auto-arm recovery is absent"
+}
+
 test_hook_claude_mode_allows_when_autoarm_owner_alive() {
   local dir pid out out2 status status2 count count2
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-owner")
@@ -1612,6 +1667,9 @@ test_predicate_healthy_fresh_beacon
 test_predicate_queue_pending_flag
 test_predicate_x_mode_needs_supervision
 test_predicate_source_needs_supervision
+test_predicate_logbook_needs_supervision
+test_predicate_logbook_extra_channel_shim
+test_predicate_logbook_absent_stays_quiet
 test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_source_only_home
@@ -1623,6 +1681,7 @@ test_hook_blocks_when_unhealthy_in_primary
 test_hook_blocks_from_fm_home_state
 test_hook_x_mode_reason_leaves_cadence_to_the_launcher
 test_hook_x_mode_only_blocks_in_default_mode
+test_hook_logbook_only_blocks_in_default_mode
 test_hook_ignores_repo_state_when_fm_home_set
 test_hook_uses_state_override
 test_hook_loop_guard_allows_retry
@@ -1653,6 +1712,7 @@ test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
+test_hook_claude_mode_reblocks_logbook_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open
 test_hook_claude_mode_terminal_boundary_excludes_starting_owner
