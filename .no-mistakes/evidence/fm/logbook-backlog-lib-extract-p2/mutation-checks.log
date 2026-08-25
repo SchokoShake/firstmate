@@ -1,0 +1,26 @@
+# MUTATION A: remove the .git normalization on the url half of fm_merge_slug
+-      rest=${rest%.git}
++      : # MUTATION A: .git normalization removed
+== MUTATION A results ==
+not ok - slug repo for [https://github.com/acme/guarded.git/pull/7]: want [guarded], got [guarded.git] (a .git repo component is normalized here so the url and the clone origin resolve alike)
+tests/fm-pr-slug-contract.test.sh exit=1
+ok - fm-pr-merge propagates a real merge failure without silently succeeding
+not ok - url-dot-git: a .git url component must not carry a merge past the guard
+tests/fm-pr-merge.test.sh exit=1
+
+# MUTATION B: swap the remote-half strip order (.git before trailing /)
+-    *) rest=${s%/}; rest=${rest%.git} ;;
++    *) rest=${s%.git}; rest=${rest%/} ;; # MUTATION B
+== MUTATION B results ==
+not ok - slug repo for [https://github.com/acme/guarded.git/]: want [guarded], got [guarded.git] (ORDER IS THE WHOLE DIFFERENCE: the trailing slash comes off before the .git behind it. What "git clone https://github.com/acme/guarded.git/" records verbatim, and the peer's answer matches no PR url, so that clone claims nothing and its merge is permitted)
+tests/fm-pr-slug-contract.test.sh exit=1
+ok - fm-pr-merge propagates a real merge failure without silently succeeding
+not ok - origin-dot-git-slash: a clone whose origin ends .git/ must still claim its PRs
+tests/fm-pr-merge.test.sh exit=1
+
+# UNMUTATED control
+== control results ==
+tests/fm-pr-slug-contract.test.sh exit=0
+ok - fm-pr-merge propagates a real merge failure without silently succeeding
+tests/fm-pr-merge.test.sh exit=0
+# worktree status after revert: []

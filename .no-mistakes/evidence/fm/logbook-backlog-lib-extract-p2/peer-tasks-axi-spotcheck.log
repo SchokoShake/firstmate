@@ -1,0 +1,77 @@
+# tasks-axi 0.2.5 reading the fixture's item lines (the logbook connector's reader)
+## tasks-axi list --file backlog.md
+count: 18
+tasks[18]{id,state,kind,repo,title}:
+  alpha-fix,in_flight,task,myapp,fix the login flow
+  bold-id,in_flight,task,other,a bold-style row
+  gamma,in_flight,task,"myapp, hold: waiting on captain, hold-kind: captain",held row
+  prog,in_flight,task,"myapp, kind: program",umbrella work
+  withbody,in_flight,task,myapp,a row that carries a body
+  delta,queued,task,"-",depends on stuff
+  delta2,queued,task,"-",two blockers
+  eps,queued,task,"-","title with https://github.com/acme/r/pull/3 inline and more text"
+  zeta,queued,task,"-","trailing link https://github.com/acme/r/pull/9"
+  eta,queued,task,"-",report artifact - data/eta/report.md
+  theta,queued,task,"-",local landing - local main
+  kappa,queued,task,"myapp, kind: scout, priority: low, since 2026-08-01",multi
+  cap,queued,"captain, hold: pick a shape, hold-kind: captain","-",needs the captain
+  wrap,queued,task,"-","see <https://example.com/x> for context"
+  lambda,done,task,"myapp, merged 2026-08-20",landed
+  mu,done,task,"myapp, reported 2026-08-21",reported
+  nu,done,task,"myapp, done 2026-08-22",finished
+  xi,done,task,"myapp, merged 2026-08-23","shipped https://github.com/acme/r/pull/12"
+help[2]:
+  - Run `tasks-axi show <id> --file=/tmp/fm-tasks-axi-peer.QDph0E/backlog.md` for full notes on a task
+  - Run `tasks-axi ready --file=/tmp/fm-tasks-axi-peer.QDph0E/backlog.md` to see unblocked queued work
+
+## show gamma --full  (fixture: held-row-multi-key-marker, peer observed repo='myapp, hold: waiting on captain, hold-kind: captain')
+task:
+  id: gamma
+  title: held row
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: "myapp, hold: waiting on captain, hold-kind: captain"
+  priority: "-"
+  created: "-"
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+
+## show prog --full  (fixture: program-kind, peer observed repo='myapp, kind: program')
+task:
+  id: prog
+  title: umbrella work
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: task
+  repo: "myapp, kind: program"
+  priority: "-"
+  created: "-"
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+
+## show beta-done  (fixture: checked-under-in-flight, peer status=dropped)
+error: "Task \"beta-done\" not found in this backlog"
+code: NOT_FOUND
+help[1]: Run `tasks-axi list --file=/tmp/fm-tasks-axi-peer.QDph0E/backlog.md` to see existing tasks
+exit=1
+
+## show iota:v2  (fixture: id-with-colon, peer status=dropped)
+error: "Invalid id \"iota:v2\" - ids must be slug-shaped (letters, digits, \"._-\") with no spaces"
+code: VALIDATION_ERROR
+help[1]: "Use a slug like `homemux-h7`, or pass --mint to generate one"
+exit=2

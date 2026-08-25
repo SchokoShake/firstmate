@@ -1,0 +1,7 @@
+# connector peel_title (live lb-fm-compose.sh, with its pr_token/report_token/logbook_valid_id) applied to tasks-axi 0.2.5's title for each fixture case whose peer records a title, plus the agree cases that carry a PR url
+OK       diverge  url-inside-the-title: tasks-axi=[title with https://github.com/acme/r/pull/3 inline and more text] peel_title=[title with https://github.com/acme/r/pull/3 inline and more text] fixture_peer=[title with https://github.com/acme/r/pull/3 inline and more text] firstmate=[title with inline and more text]
+OK       agree    trailing-pr-link: tasks-axi=[trailing link https://github.com/acme/r/pull/9] peel_title=[trailing link] fixture_peer=[trailing link] firstmate=[trailing link]
+OK       diverge  trailing-report-artifact: tasks-axi=[report artifact - data/eta/report.md] peel_title=[report artifact -] fixture_peer=[report artifact -] firstmate=[report artifact]
+OK       diverge  trailing-local-main: tasks-axi=[local landing - local main] peel_title=[local landing - local main] fixture_peer=[local landing - local main] firstmate=[local landing]
+OK       diverge  angle-wrapped-url: tasks-axi=[see <https://example.com/x> for context] peel_title=[see <https://example.com/x> for context] fixture_peer=[see <https://example.com/x> for context] firstmate=[see for context]
+# title cases checked=5 mismatches=0

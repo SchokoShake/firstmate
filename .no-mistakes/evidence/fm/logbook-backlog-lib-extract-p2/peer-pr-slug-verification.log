@@ -1,0 +1,52 @@
+# live logbook connector pr_slug (1e9f6da fix(connector): never offer Merge on a PR a crew is still working (#28)) run against tests/fixtures/pr-slug/cases.tsv url rows
+# status  peer-col  input  ->  live peer answer  vs  fixture's recorded peer answer
+OK       agree    [https://github.com/acme/guarded/pull/7] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [https://github.com/acme/guarded/pull/007] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [http://github.com/acme/guarded/pull/7] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [https://github.com/ACME/Guarded/pull/7] -> live=[ACME|Guarded] fixture=[ACME|Guarded]
+OK       agree    [https://github.example.com/a/b/acme/guarded/pull/7] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [https://github.com/guarded/pull/7] -> live=[github.com|guarded] fixture=[github.com|guarded]
+OK       agree    [https://github.com/acme/guarded/pull/abc] -> live=[|] fixture=[|]
+OK       agree    [https://github.com/acme/guarded/pull/] -> live=[|] fixture=[|]
+OK       agree    [https://github.com/acme/guarded/pull/7?w=1] -> live=[|] fixture=[|]
+OK       agree    [https://github.com/acme/guarded/pull/7#top] -> live=[|] fixture=[|]
+OK       agree    [https://github.com/acme/guarded/pull/7/files] -> live=[|] fixture=[|]
+OK       agree    [https://github.com/acme/guarded/pull/7//] -> live=[|] fixture=[|]
+OK       agree    [/pull/7] -> live=[|] fixture=[|]
+OK       agree    [] -> live=[|] fixture=[|]
+OK       diverge  [https://github.com/acme/guarded/pull/7/] -> live=[|] fixture=[|]
+OK       diverge  [https://github.com/acme/guarded.git/pull/7] -> live=[acme|guarded.git] fixture=[acme|guarded.git]
+OK       diverge  [https://github.com/acme/guarded.git/pull/7/] -> live=[|] fixture=[|]
+OK       diverge  [https://github.com/acme/guarded/pulls/7] -> live=[|] fixture=[|]
+OK       diverge  [https://gitlab.com/acme/guarded/-/merge_requests/7] -> live=[|] fixture=[|]
+OK       diverge  [https://github.com/acme/gu arded/pull/7] -> live=[acme|gu arded] fixture=[acme|gu arded]
+OK       diverge  [https://github.com/ac me/guarded/pull/7] -> live=[ac me|guarded] fixture=[ac me|guarded]
+# url rows checked=21 mismatches=0
+
+# live logbook connector same_repo_part run against tests/fixtures/pr-slug/same-part.tsv
+OK       [acme] [acme] live=same fixture=same (agree)
+OK       [acme] [ACME] live=same fixture=same (agree)
+OK       [Guarded] [guarded] live=same fixture=same (agree)
+OK       [GuArDeD] [gUaRdEd] live=same fixture=same (agree)
+OK       [acme] [other] live=differ fixture=differ (agree)
+OK       [guarded] [guarded-2] live=differ fixture=differ (agree)
+OK       [] [acme] live=differ fixture=differ (agree)
+OK       [acme] [] live=differ fixture=differ (agree)
+OK       [] [] live=differ fixture=differ (agree)
+# same-part rows checked=9 mismatches=0
+
+# live logbook connector project_remote_repo parse (lb-fm-compose.sh lines 347-361, lifted verbatim) run against tests/fixtures/pr-slug/cases.tsv remote rows
+OK       agree    [https://github.com/acme/guarded] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [https://github.com/acme/guarded.git] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [https://github.com/acme/guarded/] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [git@github.com:acme/guarded.git] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [git@github.com:acme/guarded] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [git@github.com:guarded.git] -> live=[|guarded] fixture=[|guarded]
+OK       agree    [ssh://git@github.com/acme/guarded.git] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [https://github.com/ACME/Guarded.git] -> live=[ACME|Guarded] fixture=[ACME|Guarded]
+OK       agree    [/local/path/acme/guarded] -> live=[acme|guarded] fixture=[acme|guarded]
+OK       agree    [https://github.com/acme/gu arded.git] -> live=[acme|] fixture=[acme|]
+OK       agree    [] -> live=[|] fixture=[|]
+OK       diverge  [https://github.com/acme/guarded.git/] -> live=[acme|guarded.git] fixture=[acme|guarded.git]
+OK       diverge  [https://github.com/acme/guarded.git/.git] -> live=[acme|guarded.git] fixture=[acme|guarded.git]
+# remote rows checked=13 mismatches=0

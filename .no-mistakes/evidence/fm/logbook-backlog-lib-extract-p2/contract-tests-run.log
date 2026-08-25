@@ -1,0 +1,35 @@
+FM_TEST_BEGIN 2026-08-25T09:09:10Z tests/fm-pr-slug-contract.test.sh family=pr-forge expected_gate_skip=none
+ok - fm_merge_slug matches all 34 fixture cases (21 url, 13 remote, 9 declared divergences from the logbook connector)
+ok - fm_merge_same_part matches all 9 fixture cases (case-folded equality, and an empty half never matches)
+ok - the slug and same-part halves compose into the guard's url-to-origin match, including on the four forms the logbook connector reads differently
+# fm-pr-slug-contract.test.sh: all assertions passed
+FM_TEST_END 2026-08-25T09:09:10Z tests/fm-pr-slug-contract.test.sh exit=0 duration_ms=345 gate_skip=false
+FM_TEST_BEGIN 2026-08-25T09:09:10Z tests/fm-backlog-item-line-contract.test.sh family=snapshot-bearings expected_gate_skip=optional-binary
+ok - backlog_json parses all 25 fixture item lines into exactly the records the contract states
+ok - the fixture's cross-repo record still holds: 7 agreements, 12 divergences, 6 rows the logbook side never receives
+# fm-backlog-item-line-contract.test.sh: all assertions passed
+FM_TEST_END 2026-08-25T09:09:11Z tests/fm-backlog-item-line-contract.test.sh exit=0 duration_ms=286 gate_skip=false
+FM_TEST_BEGIN 2026-08-25T09:09:11Z tests/fm-pr-merge.test.sh family=pr-forge expected_gate_skip=none
+ok - fm-pr-merge records pr= and pr_head= before invoking gh-axi pr merge
+ok - fm-pr-merge propagates a real merge failure without silently succeeding
+ok - fm-pr-merge forwards extra flags to gh-axi pr merge after the -- separator
+ok - fm-pr-merge refuses before merging when task meta is missing
+ok - fm-pr-merge refuses malformed PR URLs before calling gh-axi
+ok - fm-pr-merge refuses unsafe PR URL segments before recording state
+ok - fm-pr-merge refuses repo override args before recording state
+ok - fm-pr-merge does not add default --squash when the caller passes an explicit merge method
+ok - fm-pr-merge respects --method=<value> as an explicit merge method
+ok - fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments
+ok - a +captain-merge project is refused from the task's own record, before recording
+ok - a PR traced to a +captain-merge clone's origin is refused even when the task records another project
+ok - a project without the flag is exactly as mergeable as it was before the flag existed
+ok - a PR url naming its repo with a .git suffix is still traced to the flagged clone and refused
+ok - a clone whose origin ends ".git/" is still traced to by its PR url and its merge refused
+ok - the prohibition holds on firstmate's local-only merge path as well as its PR path
+FM_TEST_END 2026-08-25T09:09:20Z tests/fm-pr-merge.test.sh exit=0 duration_ms=9248 gate_skip=false
+FM_TEST_SUMMARY total=3 failed=0 skipped_gate=0 duration_ms=10017
+FM_TEST_SUMMARY_FAMILY family=pr-forge count=2 duration_ms=9593 failed=0
+FM_TEST_SUMMARY_FAMILY family=snapshot-bearings count=1 duration_ms=286 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-pr-merge.test.sh duration_ms=9248
+FM_TEST_SLOWEST rank=2 script=tests/fm-pr-slug-contract.test.sh duration_ms=345
+FM_TEST_SLOWEST rank=3 script=tests/fm-backlog-item-line-contract.test.sh duration_ms=286
