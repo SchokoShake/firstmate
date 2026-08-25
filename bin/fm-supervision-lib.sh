@@ -17,6 +17,10 @@
 # presence is the same fact as "a wake can arrive here"; config/ is the operator
 # preference surface bin/fm-config-inherit-lib.sh propagates to secondmate
 # homes, where the board itself does not exist.
+# A board shim must be bound with bin/fm-check-register.sh, exactly like any
+# other custom check: an unregistered one is quarantined unrun by the watcher's
+# own startup migration (bin/fm-pr-check-migrate.sh), which would take this
+# supervision need down with it.
 # bin/fm-turnend-guard.sh uses the PID-strict fm_watcher_healthy from
 # bin/fm-wake-lib.sh for its block decision. bin/fm-guard.sh uses the model-aware
 # fm_watcher_supervision_verdict (also in bin/fm-wake-lib.sh), which owns what a

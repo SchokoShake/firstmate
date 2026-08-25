@@ -2213,6 +2213,12 @@ test_logbook_board_wake_reaches_an_empty_fleet() {
     || fail "the watcher never surfaced a board answer on an empty fleet: $(cat "$out")"
   grep -F "check: $state/logbook-watch.check.sh: logbook-response card-17" "$out" >/dev/null \
     || fail "the board poll did not run on the normal check cadence: $(cat "$out")"
+  # The watcher runs the non-executing legacy-check migration before it sweeps
+  # anything, so a registered board shim must come out the other side still
+  # armed - an unregistered one would be quarantined and take the supervision
+  # need down with it.
+  [ -f "$state/logbook-watch.check.sh" ] \
+    || fail "the registered board poll did not survive the watcher's startup migration"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
     || fail "drain after the logbook wake failed"
