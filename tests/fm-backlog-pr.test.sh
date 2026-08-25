@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# Regression tests for the backlog PR-link convention: a task's PR URL lives in
+# the item's `pr` field, never in its title, so a later title change cannot
+# silently drop the link and the board card cannot lose its PR link and merge
+# action.
+set -u
+
+# shellcheck source=tests/lib.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+BACKLOG_PR="$ROOT/bin/fm-backlog-pr.sh"
+PR_CHECK="$ROOT/bin/fm-pr-check.sh"
+TMP_ROOT=$(fm_test_tmproot fm-backlog-pr)
+
+command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit 0; }
+
+PR_A=https://github.com/acme/widget/pull/42
+PR_B=https://github.com/acme/widget/pull/77
+
+make_home() {  # <name>
+  local home="$TMP_ROOT/$1" fakebin
+  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  cp "$ROOT/.tasks.toml" "$home/.tasks.toml"
+  printf '# Backlog\n\n## In flight\n\n## Queued\n\n## Done\n' > "$home/data/backlog.md"
+  fakebin=$(fm_fakebin "$home")
+  fm_fake_exit0 "$fakebin" tmux treehouse no-mistakes gh gh-axi
+  printf '%s\n' "$home"
+}
+
+tasks_in() {  # <home> <args...>
+  local home=$1
+  shift
+  (cd "$home" && tasks-axi "$@")
+}
+
+run_backlog_pr() {  # <home> <args...>
+  local home=$1
+  shift
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$home/state" \
+    FM_CONFIG_OVERRIDE="$home/config" "$BACKLOG_PR" "$@"
+}
+
+# The item line as it sits on disk, which is what the board reads.
+item_line() {  # <home> <id>
+  grep -F -- "- [ ] $2 - " "$1/data/backlog.md" | head -1
+}
+
+recorded_links() {  # <home> <id>
+  tasks_in "$1" show "$2" --full | sed -n 's/^  links: //p' | head -1 | tr -d '"'
+}
+
+recorded_title() {  # <home> <id>
+  tasks_in "$1" show "$2" --full | sed -n 's/^  title: //p' | head -1 | tr -d '"'
+}
+
+# The defect, stated as the behavior that must not come back: with the URL living
+# in the title text, an ordinary title change takes the link with it. This pins
+# the loss so the rest of the suite is measuring against a real failure, not a
+# hypothetical one.
+test_raw_title_update_loses_a_url_written_into_the_title() {
+  local home
+  home=$(make_home raw-loss)
+  tasks_in "$home" add legacy-a1 "ship the widget $PR_A" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the legacy item"
+  assert_contains "$(recorded_links "$home" legacy-a1)" "pr:$PR_A" \
+    "a URL inside the title is not even read back as a pr link"
+
+  tasks_in "$home" update legacy-a1 --title "ship the widget" >/dev/null \
+    || fail "could not retitle the legacy item"
+  assert_contains "$(recorded_links "$home" legacy-a1)" none \
+    "a raw title update kept the PR link, so this suite is not measuring the real defect"
+  assert_no_grep "$PR_A" "$home/data/backlog.md" \
+    "a raw title update kept the PR URL on the item line"
+  pass "a URL written into a title is silently dropped by an ordinary title update"
+}
+
+# record puts the URL in the field and leaves the title a plain sentence.
+test_record_keeps_the_url_out_of_the_title() {
+  local home out
+  home=$(make_home record)
+  tasks_in "$home" add ship-b2 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+
+  out=$(run_backlog_pr "$home" record ship-b2 "$PR_A") \
+    || fail "record failed on a plain item"
+  assert_contains "$out" "recorded: ship-b2 pr=$PR_A" "record did not report the link it wrote"
+  assert_contains "$(recorded_links "$home" ship-b2)" "pr:$PR_A" "record did not put the URL in the pr field"
+
+  out=$(run_backlog_pr "$home" record ship-b2 "$PR_A") \
+    || fail "record was not idempotent"
+  assert_contains "$out" "unchanged: ship-b2 pr=$PR_A" "a repeated record rewrote the item"
+  assert_contains "$(item_line "$home" ship-b2)" "$PR_A" "the item line lost its PR URL"
+  pass "record writes the PR URL through the pr field and repeats idempotently"
+}
+
+# The acceptance case: the PR survives a title change made through the owner.
+test_retitle_carries_the_pr_link_across_a_title_change() {
+  local home out
+  home=$(make_home retitle)
+  tasks_in "$home" add ship-c3 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-c3 "$PR_A" >/dev/null || fail "record failed"
+
+  out=$(run_backlog_pr "$home" retitle ship-c3 "ship the widget, second pass") \
+    || fail "retitle failed"
+  assert_contains "$out" "retitled: ship-c3 pr=$PR_A" "retitle did not report the carried link"
+  assert_contains "$(recorded_links "$home" ship-c3)" "pr:$PR_A" \
+    "the PR link did not survive a title change through the owner"
+  assert_contains "$(recorded_title "$home" ship-c3)" "second pass" "the new title was not applied"
+  assert_grep "$PR_A" "$home/data/backlog.md" "the item line lost its PR URL across a retitle"
+  pass "a title change through the owner carries the recorded PR link with it"
+}
+
+# A URL the caller glues onto the new title is the link they meant; it is taken
+# as the link rather than left in the title where the next change would drop it.
+test_retitle_moves_a_pasted_url_into_the_field() {
+  local home
+  home=$(make_home retitle-pasted)
+  tasks_in "$home" add ship-d4 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-d4 "$PR_A" >/dev/null || fail "record failed"
+
+  run_backlog_pr "$home" retitle ship-d4 "ship the widget again $PR_B" >/dev/null \
+    || fail "retitle with a pasted URL failed"
+  assert_contains "$(recorded_links "$home" ship-d4)" "pr:$PR_B" \
+    "a pasted URL did not become the recorded link"
+  assert_not_contains "$(recorded_links "$home" ship-d4)" "pr:$PR_A" \
+    "the superseded link was left behind next to the new one"
+  pass "a URL pasted into a new title becomes the recorded link, not title text"
+}
+
+# Recording a different PR replaces the link instead of accumulating a second
+# one, so the board never has to guess which of two URLs is current.
+test_record_replaces_rather_than_accumulates() {
+  local home links
+  home=$(make_home replace)
+  tasks_in "$home" add ship-e5 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-e5 "$PR_A" >/dev/null || fail "first record failed"
+  run_backlog_pr "$home" record ship-e5 "$PR_B" >/dev/null || fail "second record failed"
+
+  links=$(recorded_links "$home" ship-e5)
+  assert_contains "$links" "pr:$PR_B" "the replacement link was not recorded"
+  assert_not_contains "$links" "pr:$PR_A" "the superseded link was kept alongside the new one"
+  pass "recording a different PR replaces the link instead of accumulating one"
+}
+
+# repair is the compatibility read for an item whose link was already lost: the
+# task metadata firstmate owns is the durable record it comes back from.
+test_repair_restores_a_lost_link_from_task_metadata() {
+  local home out
+  home=$(make_home repair)
+  tasks_in "$home" add ship-f6 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-f6 "$PR_A" >/dev/null || fail "record failed"
+  fm_write_meta "$home/state/ship-f6.meta" "kind=ship" "mode=no-mistakes" "pr=$PR_A"
+
+  tasks_in "$home" update ship-f6 --title "ship the widget" >/dev/null \
+    || fail "could not simulate the raw title update"
+  assert_contains "$(recorded_links "$home" ship-f6)" none "the raw update did not lose the link"
+
+  out=$(run_backlog_pr "$home" repair ship-f6) || fail "repair failed"
+  assert_contains "$out" "recorded: ship-f6 pr=$PR_A" "repair did not report the restored link"
+  assert_contains "$(recorded_links "$home" ship-f6)" "pr:$PR_A" \
+    "repair did not restore the link from the task metadata"
+  pass "repair restores a lost backlog link from the task's own durable record"
+}
+
+test_repair_is_quiet_when_nothing_is_recorded() {
+  local home out
+  home=$(make_home repair-empty)
+  tasks_in "$home" add ship-g7 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  out=$(run_backlog_pr "$home" repair ship-g7) || fail "repair failed on an item with no PR"
+  assert_contains "$out" "skipped: no PR URL is recorded for ship-g7" \
+    "repair did not report that there was nothing to restore"
+  pass "repair reports, rather than invents, a missing PR link"
+}
+
+# A merge request cannot be stored in the field at all, so it is reported instead
+# of being written into the title, which is the loss this owner exists to prevent.
+test_a_merge_request_is_reported_not_written_into_the_title() {
+  local home out
+  home=$(make_home gitlab)
+  tasks_in "$home" add ship-h8 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  out=$(run_backlog_pr "$home" record ship-h8 "https://gitlab.com/acme/widget/-/merge_requests/9") \
+    || fail "recording a merge request was treated as an error"
+  assert_contains "$out" "skipped:" "a merge request was not reported as unstorable"
+  assert_no_grep "merge_requests" "$home/data/backlog.md" \
+    "a merge request URL was written into the backlog title"
+  pass "a merge request is reported as unstorable rather than glued into a title"
+}
+
+test_a_task_outside_the_backlog_is_skipped_not_failed() {
+  local home out
+  home=$(make_home absent)
+  out=$(run_backlog_pr "$home" record ship-i9 "$PR_A") \
+    || fail "a task outside the backlog was treated as an error"
+  assert_contains "$out" "skipped: ship-i9 is not an item in this home's backlog" \
+    "an absent item was not reported as skipped"
+  pass "a task firstmate tracks outside the backlog is skipped, not failed"
+}
+
+test_a_flag_shaped_task_id_is_refused() {
+  local home rc
+  home=$(make_home flag-id)
+  run_backlog_pr "$home" record "--full" "$PR_A" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "a flag-shaped task id was accepted"
+  pass "a task id that looks like a flag is refused before it reaches tasks-axi"
+}
+
+test_an_invalid_url_is_refused() {
+  local home rc
+  home=$(make_home invalid)
+  tasks_in "$home" add ship-j1 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-j1 "not-a-url" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "an invalid URL was accepted"
+  assert_no_grep "not-a-url" "$home/data/backlog.md" "an invalid URL reached the backlog"
+  pass "an invalid PR URL is refused before anything is written"
+}
+
+# The convention has to hold on the path firstmate actually takes when a PR
+# becomes ready, not only when the owner is called by hand.
+test_pr_check_records_the_backlog_link() {
+  local home out
+  home=$(make_home pr-check)
+  tasks_in "$home" add ship-k2 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  fm_write_meta "$home/state/ship-k2.meta" "kind=ship" "mode=no-mistakes"
+  chmod 0600 "$home/state/ship-k2.meta"
+
+  out=$(PATH="$home/fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_TEST_GUARD_LOG="$home/guard.log" "$PR_CHECK" ship-k2 "$PR_A" 2>&1) \
+    || fail "fm-pr-check failed"$'\n'"--- output ---"$'\n'"$out"
+  assert_contains "$out" "armed:" "fm-pr-check did not arm the merge poll"
+  assert_grep "pr=$PR_A" "$home/state/ship-k2.meta" "fm-pr-check did not record the durable pr="
+  assert_contains "$(recorded_links "$home" ship-k2)" "pr:$PR_A" \
+    "fm-pr-check did not record the backlog PR link"
+
+  # And the link then survives the title change that used to wipe it.
+  run_backlog_pr "$home" retitle ship-k2 "ship the widget, revised" >/dev/null \
+    || fail "retitle failed after fm-pr-check"
+  assert_contains "$(recorded_links "$home" ship-k2)" "pr:$PR_A" \
+    "the link fm-pr-check recorded did not survive a title change"
+  pass "fm-pr-check records the backlog PR link and it survives a later title change"
+}
+
+test_raw_title_update_loses_a_url_written_into_the_title
+test_record_keeps_the_url_out_of_the_title
+test_retitle_carries_the_pr_link_across_a_title_change
+test_retitle_moves_a_pasted_url_into_the_field
+test_record_replaces_rather_than_accumulates
+test_repair_restores_a_lost_link_from_task_metadata
+test_repair_is_quiet_when_nothing_is_recorded
+test_a_merge_request_is_reported_not_written_into_the_title
+test_a_task_outside_the_backlog_is_skipped_not_failed
+test_a_flag_shaped_task_id_is_refused
+test_an_invalid_url_is_refused
+test_pr_check_records_the_backlog_link

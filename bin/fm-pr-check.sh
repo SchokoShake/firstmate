@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
-# exact pr_head=<sha> when available, then atomically arm a static merge poll.
+# exact pr_head=<sha> when available, atomically arm a static merge poll, and
+# record the same URL on the backlog item through bin/fm-backlog-pr.sh.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -134,4 +135,14 @@ fm_pr_poll_publish_prepared || {
   echo "error: could not publish PR poll" >&2
   exit 1
 }
+
+# The backlog item's own PR link, recorded now rather than at completion, so the
+# link exists from the moment the PR does. bin/fm-backlog-pr.sh owns the
+# convention that keeps it in the `pr` field and out of the title; it reports its
+# own skips. The metadata above is the durable record, and arming the merge poll
+# is what this script must not lose, so a backlog write that cannot happen is
+# noted and never fails the arming.
+"$SCRIPT_DIR/fm-backlog-pr.sh" record "$ID" "$URL" \
+  || echo "note: the backlog PR link was not recorded for $ID" >&2
+
 printf 'armed: state/%s.check.sh\n' "$ID"
