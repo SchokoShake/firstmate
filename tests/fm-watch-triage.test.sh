@@ -2172,14 +2172,15 @@ EOF
 }
 
 test_logbook_only_home_demands_a_watcher() {
-  local dir state out status
+  local dir state root out status
   dir=$(make_case logbook-guard); state="$dir/state"
+  root="$dir/root"; mkdir -p "$root"
   arm_logbook_board "$dir" logbook-watch 'logbook-response card-17' \
     || fail "could not arm the logbook board poll fixture"
   [ -z "$(find "$state" -maxdepth 1 -name '*.meta' -print -quit)" ] \
     || fail "the logbook fixture must leave the fleet empty"
 
-  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1); status=$?
+  out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1); status=$?
   expect_code 0 "$status" "the guard warns about a lapsed watcher, it never blocks"
   assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" \
     "an enabled logbook board with no watcher must raise the supervision alarm"
@@ -2190,7 +2191,7 @@ test_logbook_only_home_demands_a_watcher() {
 
   rm -f "$state/logbook-watch.check.sh" "$state/logbook-watch.check-trust" \
     "$state/.guard-watcher-stale-banner"
-  out=$(FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1)
+  out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1)
   [ -z "$out" ] || fail "the same empty home stayed loud after the board poll was removed: $out"
   pass "an enabled logbook board makes an empty fleet demand a watcher; removing it goes quiet again"
 }

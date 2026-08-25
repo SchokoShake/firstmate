@@ -1016,6 +1016,80 @@ EOF
   pass ".opencode primary plugin: guard path is anchored to worktree, not directory"
 }
 
+# A primary-shaped checkout for the OpenCode watch-arm plugin: plain git repo,
+# AGENTS.md, a fake bin/fm-watch-arm.sh that reports a started watcher and then
+# holds until <stop-file> appears, plus the real shared supervision predicate.
+make_opencode_arm_root() {  # <dir> <stop-file>
+  local dir=$1 stop=$2
+  mkdir -p "$dir/bin"
+  git init -q "$dir"
+  : > "$dir/AGENTS.md"
+  cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
+  cat > "$dir/bin/fm-watch-arm.sh" <<SH
+#!/usr/bin/env bash
+printf 'arm\n' >> "\${FM_ARM_LOG:?}"
+printf 'watcher: started pid=%s (beacon fresh)\n' "\$\$"
+trap 'exit 0' TERM INT
+while [ ! -e "$stop" ]; do sleep 0.02; done
+SH
+  chmod +x "$dir/bin/fm-watch-arm.sh"
+}
+
+# Drive the plugin's real arm decision for <home> against <repo> and print the
+# status ensureArmed returned plus whether the arm actually ran.
+probe_opencode_arm() {  # <repo> <home> <arm-log> <stop-file>
+  local repo=$1 home=$2 log=$3 stop=$4
+  NODE_NO_WARNINGS=1 PLUGIN="$ROOT/.opencode/plugins/fm-primary-watch-arm.js" WORKTREE="$repo" \
+    FM_HOME="$home" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const status = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+writeFileSync(process.env.FM_STOP_FILE, "");
+console.log(`status=${status} arm-ran=${existsSync(process.env.FM_ARM_LOG)}`);
+process.exit(0);
+EOF
+}
+
+test_opencode_watch_arm_arms_logbook_only_home() {
+  local repo home out
+  repo="$TMP_ROOT/opencode-arm-owner-root"
+  make_opencode_arm_root "$repo" "$TMP_ROOT/opencode-arm-owner.stop"
+  home="$TMP_ROOT/opencode-arm-logbook-home"
+  mkdir -p "$home/state" "$home/config"
+  : > "$home/state/logbook-watch.check.sh"
+  out=$(probe_opencode_arm "$repo" "$home" "$TMP_ROOT/opencode-arm-logbook.log" "$TMP_ROOT/opencode-arm-owner.stop")
+  [ "$out" = "status=armed arm-ran=true" ] \
+    || fail "OpenCode watch-arm plugin must arm a logbook-only home with no task in flight: $out"
+  home="$TMP_ROOT/opencode-arm-empty-home"
+  mkdir -p "$home/state" "$home/config"
+  out=$(probe_opencode_arm "$repo" "$home" "$TMP_ROOT/opencode-arm-empty.log" "$TMP_ROOT/opencode-arm-owner.stop")
+  [ "$out" = "status=not-needed arm-ran=false" ] \
+    || fail "OpenCode watch-arm plugin must honour the shared owner's not-needed answer on an idle home: $out"
+  pass ".opencode watch-arm plugin: the shared supervision owner decides, so a logbook-only home arms"
+}
+
+test_opencode_watch_arm_unreadable_owner_stays_conservative() {
+  local repo home out
+  repo="$TMP_ROOT/opencode-arm-no-owner-root"
+  make_opencode_arm_root "$repo" "$TMP_ROOT/opencode-arm-no-owner.stop"
+  rm -f "$repo/bin/fm-supervision-lib.sh"
+  home="$TMP_ROOT/opencode-arm-no-owner-home"
+  mkdir -p "$home/state" "$home/config"
+  out=$(probe_opencode_arm "$repo" "$home" "$TMP_ROOT/opencode-arm-no-owner.log" "$TMP_ROOT/opencode-arm-no-owner.stop")
+  [ "$out" = "status=armed arm-ran=true" ] \
+    || fail "an unreadable supervision owner must not be reported as not-needed: $out"
+  pass ".opencode watch-arm plugin: an unreadable supervision owner arms rather than claiming nothing is needed"
+}
+
 test_pi_extension_injects_once_per_logical_agent_run() {
   local repo home ext log out status
   repo="$TMP_ROOT/pi-logical-run-root"
@@ -1722,6 +1796,8 @@ test_tracked_claude_entries_inert_under_grok
 test_codex_hook_uses_process_pwd_when_payload_cwd_is_outside_root
 test_codex_hook_ignores_nested_git_root_guard
 test_opencode_plugin_anchors_guard_to_worktree
+test_opencode_watch_arm_arms_logbook_only_home
+test_opencode_watch_arm_unreadable_owner_stays_conservative
 test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
