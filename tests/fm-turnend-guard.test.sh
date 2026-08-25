@@ -118,7 +118,7 @@ test_predicate_logbook_absent_stays_quiet() {
     fail "a home with no logbook board poll must not demand a watcher"
   fi
   [ "$FM_SUP_LOGBOOK" = false ] || fail "FM_SUP_LOGBOOK must stay false without a logbook-*.check.sh shim"
-  pass "fm_supervision_needed: no logbook board poll leaves an empty fleet unguarded-free"
+  pass "fm_supervision_needed: only the logbook-*.check.sh namespace triggers the board need"
 }
 
 test_predicate_source_needs_supervision() {

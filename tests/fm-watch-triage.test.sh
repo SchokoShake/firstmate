@@ -2149,8 +2149,6 @@ test_procevent_marker_failure_exits_and_replays() {
   pass "marker failure exits through the shared wake owner, releases its lock, and replays later"
 }
 
-# --- heartbeat: no-change absorbed, backstop surfaces a missed status --------
-
 # --- logbook boards: the one inbound channel an empty fleet still has -------
 #
 # A home with a logbook enabled and NOTHING in flight is the exposed case: the
@@ -2226,6 +2224,8 @@ test_logbook_board_wake_reaches_an_empty_fleet() {
     || fail "the board answer was not durably queued for the drain: $(cat "$drain_out")"
   pass "a logbook board answer wakes the watcher and reaches the durable queue with no task in flight"
 }
+
+# --- heartbeat: no-change absorbed, backstop surfaces a missed status --------
 
 test_heartbeat_no_change_absorbed() {
   local dir state fakebin out pid
