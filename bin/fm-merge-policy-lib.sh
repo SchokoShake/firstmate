@@ -243,8 +243,8 @@ fm_merge_forbidden_project() {
 # The tolerances are deliberately asymmetric, and each direction fails CLOSED:
 #
 #   - A non-numeric <n> (".../pull/abc") matches no clone and forbids nothing. Nothing
-#     reaches a merge through that gap: bin/fm-pr-merge.sh's own URL parse hard-rejects a
-#     non-numeric PR number before this is ever consulted.
+#     reaches a merge through that gap: fm_pr_url_parse hard-rejects a non-numeric PR
+#     number before bin/fm-pr-merge.sh ever consults this.
 #   - The trailing "/" and ".git" tolerances go the other way and are deliberately WIDE,
 #     because a url this could not parse is a merge this could not trace to a flagged
 #     clone - and narrowing them is exactly what opened the bypass above.
@@ -254,18 +254,17 @@ fm_merge_forbidden_project() {
 #     trailing "/" has to come off before the ".git" behind it - and getting it wrong on
 #     THIS side is fail-open, because an origin the guard cannot resolve is a clone it
 #     cannot trace a merge to.
-#   - The whitespace blanking below has no counterpart in compose's pr_slug, but it is
+#   - The whitespace blanking below has no counterpart in the connector's pr_slug, but it is
 #     mechanical rather than behavioural: compose blanks whitespace on the REMOTE side
 #     instead (project_remote_repo), and same_repo_part needs both halves, so a
 #     whitespace-bearing name matches nothing on either side.
 #
-# Consolidating the two implementations is not possible across the repo boundary, so the
-# contract is stated once as DATA instead: tests/fixtures/pr-slug/ carries every one of
-# those shapes, the ones both sides read alike as agreements and each divergence as a
-# DECLARED one that asserts the peer's differing value. Narrowing this side back to
-# compose's therefore fails tests/fm-pr-slug-contract.test.sh rather than silently
-# reopening a bypass, and the logbook side reconciles against that same file rather than
-# against a reading of this comment. The forms fm_pr_url_parse actually admits are pinned
+# Every one of those shapes is stated once, as DATA, in tests/fixtures/pr-slug/, and
+# docs/architecture.md ("Cross-repo contracts are stated as fixtures") owns why the two
+# implementations share a fixture instead of being consolidated. What matters HERE is the
+# direction: each declared divergence asserts the connector's differing value, so narrowing
+# this side back to the connector's parse fails tests/fm-pr-slug-contract.test.sh rather
+# than silently reopening a bypass. The forms fm_pr_url_parse actually admits are pinned
 # end to end in tests/fm-pr-merge.test.sh as well, since the refusal is the property that
 # actually matters.
 FM_MERGE_SLUG_OWNER=""

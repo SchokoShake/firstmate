@@ -21,10 +21,9 @@
 #     captain_actionable fields. Repeated blocker tokens remain ordered; a blocker
 #     resolves only when its structured record is Done, and missing ids stay open.
 #     The item-line grammar backlog_json reads is stated as data in
-#     tests/fixtures/backlog-item-line/, because the same lines are read a second
-#     time out of tree by the logbook connector and the two readers cannot be
-#     consolidated across the repo boundary; that fixture is the contract both
-#     sides test against, and it also records where they disagree today.
+#     tests/fixtures/backlog-item-line/ and pinned by
+#     tests/fm-backlog-item-line-contract.test.sh; docs/architecture.md ("Cross-repo
+#     contracts are stated as fixtures") owns why that grammar is a shared fixture.
 #   tasks[]: one row per state/<id>.meta, sorted by id.
 #     current_state is parsed from bin/fm-crew-state.sh <id> and preserves
 #     state, source, detail, and raw line separately.
