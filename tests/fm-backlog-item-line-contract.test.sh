@@ -32,8 +32,8 @@ TMP_ROOT=$(fm_test_tmproot fm-backlog-item-line-tests)
 HOME_DIR="$TMP_ROOT/home"
 mkdir -p "$HOME_DIR/data" "$HOME_DIR/state"
 
-# The fixture is ordered; the sections are emitted in the order backlog_json
-# reads them, so record N of the snapshot is case N of the fixture.
+# Cases are placed under their own section; each is found again below by its
+# line, so the fixture may list them in any order.
 SECTIONS="In flight
 Queued
 Done"
@@ -60,24 +60,31 @@ GOT_N=$(jq '.backlog.records | length' "$SNAP")
   fail "the fixture states $WANT_N item lines but backlog_json produced $GOT_N records"
 [ "$WANT_N" -ge 20 ] || fail "the backlog fixture went thin: only $WANT_N cases"
 
-# The comparison is field-by-field against the fixture's own key set, so a field
-# ADDED to the record later does not fail every case, while a field the contract
-# names is compared exactly - including a null, which is a real answer here.
+# Each case is looked up by its line - the record whose raw equals it - and a
+# case that matches no record, or more than one, fails by name rather than being
+# skipped. The comparison is field-by-field against the fixture's own key set, so
+# a field ADDED to the record later does not fail every case, while a field the
+# contract names is compared exactly - including a null, which is a real answer
+# here.
 MISMATCH=$(jq -r --slurpfile snap "$SNAP" '
   ($snap[0].backlog.records) as $got
-  | .cases
-  | to_entries[]
-  | .key as $i | .value as $c
-  | ($got[$i]) as $r
-  | [ ( if ($r.raw != $c.line)
-        then "case \($c.name): raw is [\($r.raw)], want [\($c.line)]" else empty end ),
-      ( ($c.section | if . == "In flight" then "in_flight" elif . == "Queued" then "queued" else "done" end) as $want_state
-        | if ($r.state != $want_state)
-          then "case \($c.name): state is \($r.state), want \($want_state)" else empty end ),
-      ( $c.expect | to_entries[]
-        | select(($r[.key]) != .value)
-        | "case \($c.name): \(.key) is \($r[.key] | tojson), want \(.value | tojson)" )
-    ][]
+  | .cases[]
+  | . as $c
+  | ([ $got[] | select(.raw == $c.line) ]) as $hits
+  | if ($hits | length) == 0 then
+      "case \($c.name): no record has raw [\($c.line)]"
+    elif ($hits | length) > 1 then
+      "case \($c.name): \($hits | length) records share raw [\($c.line)]"
+    else
+      $hits[0] as $r
+      | [ ( ($c.section | if . == "In flight" then "in_flight" elif . == "Queued" then "queued" else "done" end) as $want_state
+            | if ($r.state != $want_state)
+              then "case \($c.name): state is \($r.state), want \($want_state)" else empty end ),
+          ( $c.expect | to_entries[]
+            | select(($r[.key]) != .value)
+            | "case \($c.name): \(.key) is \($r[.key] | tojson), want \(.value | tojson)" )
+        ][]
+    end
 ' "$FIXTURE")
 [ -z "$MISMATCH" ] || fail "backlog_json no longer matches the contract fixture:
 $MISMATCH"

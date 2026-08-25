@@ -278,8 +278,10 @@ fm_merge_slug() {
   case "$s" in
     *'/pull/'*)
       num=${s##*'/pull/'}
-      # Exactly the one optional trailing "/" parse_pr_url accepts, and no more, so this
-      # reads every url that reaches a merge and no url that does not.
+      # bin/fm-pr-lib.sh's fm_pr_url_parse decides which urls reach a merge, and it REJECTS
+      # a trailing "/" today. This strips exactly one anyway, and no more, because the guard
+      # stays deliberately WIDER than the merge path's own parse rather than tracking it: a
+      # later widening there must not be able to open a bypass here (see the header).
       num=${num%/}
       case "$num" in
         ''|*[!0-9]*) return 0 ;;
