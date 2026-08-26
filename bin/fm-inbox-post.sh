@@ -247,7 +247,9 @@ do_publish() {
 
 # --- notify ----------------------------------------------------------------
 
-# Read and revalidate the published record. Echoes "<socket> <pid>" on success.
+# Read and revalidate the published record. Echoes the socket on the first line
+# and the pid on the second, rather than one space-separated line, so a socket
+# path containing a space cannot be silently truncated by the caller's split.
 # Every failure here is the benign "nothing to notify" case.
 resolve_inbox() {
   local state=$1 record socket pid protocol entry live_protocol
@@ -279,7 +281,7 @@ resolve_inbox() {
     peer_protocol_supported "$live_protocol" \
       || { note "live session advertises unsupported peer protocol '${live_protocol:-none}'"; return 3; }
   fi
-  printf '%s %s\n' "$socket" "$pid"
+  printf '%s\n%s\n' "$socket" "$pid"
 }
 
 # Build the frame. The body is a fixed template; $1 is the already-validated
@@ -292,11 +294,15 @@ resolve_inbox() {
 # receiver logs "Failed to parse JSON line" and drops it in silence - so keep
 # any future wording inside the same character budget.
 notify_frame() {
-  local channel=$1 uuid body
-  uuid=$(frame_uuid) || return 1
+  local channel=$1 uuid body id
+  # msg_id is optional: the harness's own documented minimal frame carries none.
+  # A home with no uuid source therefore sends the frame without one rather than
+  # losing the push entirely, which is the outcome that would matter.
+  id=
+  uuid=$(frame_uuid) && id="\"msg_id\":\"$uuid\","
   body="Board answers are pending on the $channel channel. Run the ordinary board-answer handling now and drain whatever it finds, instead of waiting for the next scheduled poll - this notification carries no answer content, and the poll remains the only path the answers themselves travel."
-  printf '{"msgV":1,"msg_id":"%s","type":"user","message":{"role":"user","content":"<cross-session-message from-name=\\"%s\\">\\n%s\\n</cross-session-message>"},"priority":"next"}\n' \
-    "$uuid" "$FROM_NAME" "$body"
+  printf '{"msgV":1,%s"type":"user","message":{"role":"user","content":"<cross-session-message from-name=\\"%s\\">\\n%s\\n</cross-session-message>"},"priority":"next"}\n' \
+    "$id" "$FROM_NAME" "$body"
 }
 
 frame_uuid() {
@@ -367,7 +373,7 @@ do_notify() {
     return 2
   fi
   resolved=$(resolve_inbox "$state") || return 3
-  socket=${resolved%% *}
+  socket=$(printf '%s\n' "$resolved" | sed -n 1p)
   frame=$(notify_frame "$channel") || { note 'could not build the frame'; return 1; }
   write_frame "$socket" "$frame"
   rc=$?
@@ -414,7 +420,7 @@ inbound_user_setting() {
 do_status() {
   local state=$1 home=$2 resolved setting
   if resolved=$(resolve_inbox "$state" 2>/dev/null); then
-    printf 'inbox: live (pid %s)\n' "${resolved##* }"
+    printf 'inbox: live (pid %s)\n' "$(printf '%s\n' "$resolved" | sed -n 2p)"
   else
     printf 'inbox: none published for this home\n'
   fi

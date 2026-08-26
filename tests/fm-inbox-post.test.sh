@@ -177,8 +177,6 @@ frame = json.loads(open(os.environ["FM_T_CAP"], "rb").read().decode())
 assert frame["type"] == "user", frame.get("type")
 assert frame["msgV"] == 1, frame.get("msgV")
 assert frame["priority"] == "next", frame.get("priority")
-assert re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                frame["msg_id"]), frame["msg_id"]
 assert frame["message"]["role"] == "user", frame["message"].get("role")
 content = frame["message"]["content"]
 # The receiver matches an ORDERED attribute pattern; an out-of-order or
@@ -190,6 +188,9 @@ m = re.match(
     r">\n([\s\S]*)\n</cross-session-message>$",
     content)
 assert m, "envelope does not match the receiver pattern: %r" % content
+if "msg_id" in frame:
+    assert re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    frame["msg_id"]), frame["msg_id"]
 assert m.group(1), "the nudge must identify itself by name: %r" % content
 body = m.group(2)
 # chr(34)/chr(92) are the quote and backslash the body is never escaped for, so
@@ -221,6 +222,41 @@ pass 'the nudge names its channel, says to drain, and states that it carries non
 # channel: the two bodies must be identical once the channel token is removed.
 # Anything else that varied would be caller-supplied content riding along on a
 # transport whose whole safety argument is that it carries none.
+# The uuid-less fallback. msg_id is optional in the harness's own documented
+# minimal frame, so a home with no uuid source must still send a valid frame
+# rather than lose the push. Only assertable where the kernel uuid source can be
+# hidden; say so rather than passing having checked nothing.
+if [ -r /proc/sys/kernel/random/uuid ]; then
+  echo "skip: /proc uuid source cannot be hidden here, so the uuid-less frame is unverified"
+else
+  # Shadow uuidgen with a failing stub rather than restricting PATH, so every
+  # other tool - the transports included - still resolves and the fallback is
+  # what gets exercised instead of the no-transport decline.
+  command -v uuidgen >/dev/null 2>&1 \
+    || fail 'no uuidgen to shadow; the uuid-less fallback would go vacuous'
+  mkdir -p "$TMP_ROOT/nouuidbin"
+  printf '#!/bin/sh\nexit 1\n' > "$TMP_ROOT/nouuidbin/uuidgen"
+  chmod 0755 "$TMP_ROOT/nouuidbin/uuidgen"
+  rm -f "$CAPTURE"
+  start_listener
+  PATH="$TMP_ROOT/nouuidbin:$PATH" HOME="$TMP_ROOT" CLAUDE_CONFIG_DIR="$CFG_DIR" FM_HOME="$HOME_DIR" \
+    "$POST" --notify logbook || fail 'the uuid-less fallback did not send'
+  waited=0
+  while [ ! -s "$CAPTURE" ]; do
+    waited=$((waited + 1))
+    [ "$waited" -lt 200 ] || fail 'the uuid-less fallback posted nothing'
+    sleep 0.05
+  done
+  FM_T_CAP="$CAPTURE" python3 -c '
+import json, os
+frame = json.loads(open(os.environ["FM_T_CAP"], "rb").read().decode())
+assert "msg_id" not in frame, "expected the fallback to omit msg_id: %r" % frame
+assert frame["type"] == "user" and frame["msgV"] == 1, frame
+assert frame["message"]["content"].startswith("<cross-session-message "), frame
+' || fail 'the uuid-less fallback did not produce a valid frame'
+  pass 'a home with no uuid source still sends a valid frame instead of losing the push'
+fi
+
 body_b=$(capture_body board-2.x)
 norm_a=${body_a//logbook/CHANNEL}
 norm_b=${body_b//board-2.x/CHANNEL}
