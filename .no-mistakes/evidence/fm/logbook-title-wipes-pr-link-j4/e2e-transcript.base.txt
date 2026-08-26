@@ -1,0 +1,46 @@
+firstmate checkout: /tmp/fm-base-461bcc4 (exported tree)
+tasks-axi: 0.2.5   backlog: $FM_HOME/data/backlog.md (fresh)
+
+================ 1. THE DEFECT: a PR URL living in the title is wiped by a title change ================
+
+$ grep -- "- [ ] legacy-a1 - " data/backlog.md
+- [ ] legacy-a1 - ship the widget https://github.com/acme/widget/pull/42 (repo: widget) (kind: ship) (since 2026-08-26)
+
+$ tasks-axi show legacy-a1 --full | grep -E "^  (title|links):"
+  title: "ship the widget https://github.com/acme/widget/pull/42"
+  links: "pr:https://github.com/acme/widget/pull/42"
+
+$ grep -- "- [ ] legacy-a1 - " data/backlog.md
+- [ ] legacy-a1 - ship the widget, revised (repo: widget) (kind: ship) (since 2026-08-26)
+
+$ tasks-axi show legacy-a1 --full | grep -E "^  (title|links):"
+  title: "ship the widget, revised"
+  links: none
+^ the board card for legacy-a1 now has no PR link and therefore no Merge option
+
+================ 2. THE FIX: fm-pr-check.sh records the PR in the item's pr field ================
+
+$ bin/fm-pr-check.sh ship-k2 https://github.com/acme/widget/pull/42
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+armed: state/ship-k2.check.sh
+[exit 0]
+
+$ cat state/ship-k2.meta
+kind=ship
+mode=no-mistakes
+pr=https://github.com/acme/widget/pull/42
+
+$ grep -- "- [ ] ship-k2 - " data/backlog.md
+- [ ] ship-k2 - ship the widget (repo: widget) (kind: ship) (since 2026-08-26)
+
+$ tasks-axi show ship-k2 --full | grep -E "^  (title|links):"
+  title: ship the widget
+  links: none
+
+(bin/fm-backlog-pr.sh does not exist at this commit: no owner records the link on the item, so sections 3-6 cannot run)

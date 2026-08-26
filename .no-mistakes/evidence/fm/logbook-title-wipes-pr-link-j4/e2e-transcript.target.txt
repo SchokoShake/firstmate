@@ -1,0 +1,106 @@
+firstmate checkout: /Users/paulvaethjunker/.no-mistakes/worktrees/db3ef0c71307/01M0Z7AYJMMYQC2E341QD5X4AA (cbeda97)
+tasks-axi: 0.2.5   backlog: $FM_HOME/data/backlog.md (fresh)
+
+================ 1. THE DEFECT: a PR URL living in the title is wiped by a title change ================
+
+$ grep -- "- [ ] legacy-a1 - " data/backlog.md
+- [ ] legacy-a1 - ship the widget https://github.com/acme/widget/pull/42 (repo: widget) (kind: ship) (since 2026-08-26)
+
+$ tasks-axi show legacy-a1 --full | grep -E "^  (title|links):"
+  title: "ship the widget https://github.com/acme/widget/pull/42"
+  links: "pr:https://github.com/acme/widget/pull/42"
+
+$ grep -- "- [ ] legacy-a1 - " data/backlog.md
+- [ ] legacy-a1 - ship the widget, revised (repo: widget) (kind: ship) (since 2026-08-26)
+
+$ tasks-axi show legacy-a1 --full | grep -E "^  (title|links):"
+  title: "ship the widget, revised"
+  links: none
+^ the board card for legacy-a1 now has no PR link and therefore no Merge option
+
+================ 2. THE FIX: fm-pr-check.sh records the PR in the item's pr field ================
+
+$ bin/fm-pr-check.sh ship-k2 https://github.com/acme/widget/pull/42
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+recorded: ship-k2 pr=https://github.com/acme/widget/pull/42
+armed: state/ship-k2.check.sh
+[exit 0]
+
+$ cat state/ship-k2.meta
+kind=ship
+mode=no-mistakes
+pr=https://github.com/acme/widget/pull/42
+
+$ grep -- "- [ ] ship-k2 - " data/backlog.md
+- [ ] ship-k2 - ship the widget https://github.com/acme/widget/pull/42 (repo: widget) (kind: ship) (since 2026-08-26)
+
+$ tasks-axi show ship-k2 --full | grep -E "^  (title|links):"
+  title: "ship the widget https://github.com/acme/widget/pull/42"
+  links: "pr:https://github.com/acme/widget/pull/42"
+
+================ 3. THE GUARD: a title change through the owner keeps the link ================
+
+$ bin/fm-backlog-pr.sh retitle ship-k2 ship the widget, revised
+retitled: ship-k2 pr=https://github.com/acme/widget/pull/42
+[exit 0]
+
+$ grep -- "- [ ] ship-k2 - " data/backlog.md
+- [ ] ship-k2 - ship the widget, revised https://github.com/acme/widget/pull/42 (repo: widget) (kind: ship) (since 2026-08-26)
+
+$ tasks-axi show ship-k2 --full | grep -E "^  (title|links):"
+  title: "ship the widget, revised https://github.com/acme/widget/pull/42"
+  links: "pr:https://github.com/acme/widget/pull/42"
+^ title changed, pr link intact
+
+================ 4. COMPAT READ: a legacy title-embedded URL migrates into the pr field on the next touch ================
+
+$ grep -- "- [ ] legacy-b2 - " data/backlog.md
+- [ ] legacy-b2 - ship the gadget (see https://github.com/acme/widget/pull/42). (repo: gadget) (kind: ship) (since 2026-08-26)
+
+$ bin/fm-backlog-pr.sh retitle legacy-b2 ship the gadget, revised
+retitled: legacy-b2 pr=https://github.com/acme/widget/pull/42
+[exit 0]
+
+$ grep -- "- [ ] legacy-b2 - " data/backlog.md
+- [ ] legacy-b2 - ship the gadget, revised https://github.com/acme/widget/pull/42 (repo: gadget) (kind: ship) (since 2026-08-26)
+
+$ tasks-axi show legacy-b2 --full | grep -E "^  (title|links):"
+  title: "ship the gadget, revised https://github.com/acme/widget/pull/42"
+  links: "pr:https://github.com/acme/widget/pull/42"
+^ the URL is no longer title text; it is the item's pr link and survives further retitles
+
+================ 5. REPAIR: a link already lost (as in 1) comes back from the task's own pr= metadata ================
+
+$ bin/fm-backlog-pr.sh repair legacy-a1
+recorded: legacy-a1 pr=https://github.com/acme/widget/pull/42
+[exit 0]
+
+$ grep -- "- [ ] legacy-a1 - " data/backlog.md
+- [ ] legacy-a1 - ship the widget, revised https://github.com/acme/widget/pull/42 (repo: widget) (kind: ship) (since 2026-08-26)
+
+$ tasks-axi show legacy-a1 --full | grep -E "^  (title|links):"
+  title: "ship the widget, revised https://github.com/acme/widget/pull/42"
+  links: "pr:https://github.com/acme/widget/pull/42"
+
+================ 6. GITLAB: a merge request is reported, never written into the title ================
+
+$ bin/fm-backlog-pr.sh record ship-m4 https://gitlab.com/acme/widget/-/merge_requests/9
+skipped: tasks-axi stores only a GitHub pull request URL in the pr field, not https://gitlab.com/acme/widget/-/merge_requests/9
+[exit 0]
+
+$ grep -- "- [ ] ship-m4 - " data/backlog.md
+- [ ] ship-m4 - ship the gizmo (repo: gizmo) (kind: ship) (since 2026-08-26)
+
+$ bin/fm-backlog-pr.sh retitle ship-m4 ship the gizmo https://gitlab.com/acme/widget/-/merge_requests/9
+fm-backlog-pr: a URL in a title is a link, and the pr field can hold only a GitHub pull request URL: https://gitlab.com/acme/widget/-/merge_requests/9
+[exit 1]
+
+$ grep -- "- [ ] ship-m4 - " data/backlog.md
+- [ ] ship-m4 - ship the gizmo (repo: gizmo) (kind: ship) (since 2026-08-26)
+^ refused: a URL in title text is exactly the link the next title change would drop

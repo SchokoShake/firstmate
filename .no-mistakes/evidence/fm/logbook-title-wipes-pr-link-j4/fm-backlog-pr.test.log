@@ -1,0 +1,28 @@
+ok - a URL written into a title is silently dropped by an ordinary title update
+ok - record writes the PR URL through the pr field and repeats idempotently
+ok - a title change through the owner carries the recorded PR link with it
+ok - a URL pasted into a new title becomes the recorded link, not title text
+ok - a title change through the owner carries a scout's report link, alone and beside a PR link
+ok - a title change through the owner drops the item's doc link and reports it
+ok - a title change through the owner reports every doc link it drops
+ok - a comma-bearing doc link is reported whole when a title change drops it
+ok - a merge request sitting in a legacy title is dropped and reported, never carried
+ok - retitle refuses two different pasted pull request URLs and accepts one named twice
+ok - record drops an item's doc link when it writes the title and reports it
+ok - retitle refuses a pasted merge request rather than storing it as title text
+ok - a pull request URL pasted with sentence punctuation is recorded through the field and stripped cleanly
+ok - record cleans a legacy title's punctuated links out of the title text
+ok - retitle still refuses a punctuated merge request, doc URL, and second pull request
+ok - recording a different PR replaces the link instead of accumulating one
+ok - repair restores a lost backlog link from the task's own durable record
+ok - retitle changes the title of a GitLab task and keeps its other links
+ok - an item with accumulated PR links settles on the recorded or newest one through retitle and repair alike
+ok - retitle carries the item's own PR link when the recorded URL cannot be stored
+ok - record reports the backend opt-out rather than a tasks-axi field limitation
+ok - record reports an unusable tasks-axi rather than a backend opt-out
+ok - repair reports, rather than invents, a missing PR link
+ok - a merge request is reported as unstorable rather than glued into a title
+ok - a task firstmate tracks outside the backlog is skipped, not failed
+ok - a task id that looks like a flag is refused before it reaches tasks-axi
+ok - an invalid PR URL is refused before anything is written
+ok - fm-pr-check records the backlog PR link and it survives a later title change
