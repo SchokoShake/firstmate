@@ -335,7 +335,8 @@ while [ "$attempt" -lt "$ARM_ATTEMPTS" ]; do
 done
 
 # The need may have vanished while parked - the fleet was torn down, or Relay
-# was opted out. Nothing left to supervise, so end the turn quietly.
+# or a logbook board was opted out. Nothing left to supervise, so end the turn
+# quietly.
 if ! fm_supervision_needed "$STATE" "$GRACE"; then
   budget_reset_if_ours
   exit 0
