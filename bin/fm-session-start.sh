@@ -27,7 +27,10 @@
 # was bootstrap-then-lock):
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
-#                       mutating step runs.
+#                       mutating step runs. Holding it is also what authorizes
+#                       publishing this session's cross-session inbox
+#                       (bin/fm-inbox-post.sh --publish), so a board can nudge
+#                       the real primary rather than a sibling session.
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
 #                       when this session actually holds the lock. Detect-only
 #                       diagnostics always run. Bootstrap's six MUTATING sweeps
@@ -647,6 +650,16 @@ if [ "$READ_ONLY" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
   fi
   fm_trace_context_session_start "$CONFIG" "$STATE/.trace-context-effective"
+  # Publish this session's cross-session inbox so a board that records a
+  # captain's answer can nudge this session awake instead of leaving the answer
+  # for the next board poll. ONLY THE LOCK HOLDER PUBLISHES, which is why the
+  # call sits inside this block: several sessions can share one home's cwd and
+  # nothing in the harness registry distinguishes the real primary among them,
+  # so lock ownership is the one signal that already answers it. Silent and
+  # non-fatal on every path - a harness with no such inbox publishes nothing,
+  # and the board poll remains the answer's only content path either way
+  # (bin/fm-inbox-post.sh owns the record format and the wire frame).
+  "$SCRIPT_DIR/fm-inbox-post.sh" --publish >/dev/null 2>&1 || true
   # Every network call this session start owes is launched HERE, detached and
   # bounded, so it runs concurrently with the whole digest below instead of in
   # front of it. Step 7 harvests whatever it has finished, without ever waiting.

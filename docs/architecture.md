@@ -348,6 +348,11 @@ Each fixture carries three things: the documented contract, the edge cases eithe
 That third part is what makes the fixture worth having - a divergence written down with its direction fails the suite if this side quietly converges on the other, which is how a deliberate tolerance in a permission path stops being deliberate.
 Firstmate's answer is the authoritative one for the merge-policy slug, since `bin/fm-merge-policy-lib.sh` owns that decision; reconciling the other side is the other repo's work, against the same file.
 
+The board-answer nudge is the same problem solved a stronger way, and is the reason it needs no fixture.
+Rather than publishing a format for the connector to re-implement, firstmate publishes the finished command line in `state/logbook-notify-command` and the connector spawns it verbatim, so there is no second implementation to drift from.
+The board learns nothing about firstmate beyond "spawn this when a response is recorded", and firstmate learns nothing about the board beyond a channel name.
+See [`configuration.md`](configuration.md) for that contract and how the nudge composes with the poll it accelerates.
+
 ## Development notes
 
 The current watcher reliability work combines always-on bash triage with a durable queue for actionable wakes, generation-bound post-handling acknowledgement, deterministic re-arm recovery after watcher downtime, a race-proof singleton lock, duplicate self-eviction, drain-time liveness assertion, and a self-verifying tracked-child arm wrapper.
