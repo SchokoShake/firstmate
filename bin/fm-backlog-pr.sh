@@ -177,12 +177,16 @@ load_item() {  # <task-id>
   [ -n "$ITEM_SHOW" ] || skip "$1 is not an item in this home's backlog"
 }
 
-# tasks-axi stores only a GitHub pull-request URL in the field, so anything else
-# is reported rather than written somewhere it would be lost. Sets FM_PR_URL to
-# the canonical form.
+# tasks-axi stores only a GitHub pull-request URL in the field. Sets FM_PR_URL
+# to the canonical form when true.
+storable_url() {  # <raw-url>
+  fm_pr_url_parse "$1" && [ "$FM_PR_PROVIDER" = github ]
+}
+
+# Anything else is reported rather than written somewhere it would be lost.
 require_storable_url() {  # <raw-url>
   fm_pr_url_parse "$1" || fail "not a pull request or merge request URL: $1"
-  [ "$FM_PR_PROVIDER" = github ] \
+  storable_url "$1" \
     || skip "tasks-axi stores only a GitHub pull request URL in the pr field, not $FM_PR_URL"
 }
 
@@ -217,7 +221,7 @@ cmd_record() {  # <task-id> <pr-url>
 }
 
 cmd_retitle() {  # <task-id> <new-title>
-  local id=$1 title=$2 clean url report carried=
+  local id=$1 title=$2 clean pasted url report carried=
   case "$title" in
     ''|*$'\n'*|*$'\r'*) fail "a title must be one non-empty line" ;;
   esac
@@ -227,15 +231,23 @@ cmd_retitle() {  # <task-id> <new-title>
   clean=$(strip_links "$title" "$report")
   [ -n "$clean" ] || fail "the new title has no text left once its links are removed"
   # A URL the caller wrote into the new title is the link they meant to keep, so
-  # it wins over an older recorded one rather than being silently discarded.
-  url=$(printf '%s' "$title" | grep -Eo "$PR_URL_RE" | head -1)
-  [ -n "$url" ] || url=$(item_links "$ITEM_SHOW" pr | head -1)
-  [ -n "$url" ] || url=$(meta_pr_url "$id")
-  if [ -n "$url" ]; then
-    require_storable_url "$url"
+  # it wins outright. Otherwise firstmate's own durable record wins over whatever
+  # the item accumulated, the same order `repair` normalizes to, and a record
+  # tasks-axi cannot store (a merge request) simply means there is no PR link
+  # to carry: the title still changes, with the item's other links intact.
+  pasted=$(printf '%s' "$title" | grep -Eo "$PR_URL_RE" | head -1)
+  if [ -n "$pasted" ]; then
+    storable_url "$pasted" || fail "not a GitHub pull request URL, so it cannot be kept in the pr field: $pasted"
     url=$FM_PR_URL
-    carried="pr=$url"
+  else
+    url=$(meta_pr_url "$id")
+    [ -n "$url" ] || url=$(item_links "$ITEM_SHOW" pr | head -1)
+    if [ -n "$url" ]; then
+      fm_pr_url_parse "$url" || fail "not a pull request or merge request URL: $url"
+      if [ "$FM_PR_PROVIDER" = github ]; then url=$FM_PR_URL; else url=; fi
+    fi
   fi
+  [ -z "$url" ] || carried="pr=$url"
   [ -z "$report" ] || carried="${carried:+$carried }report=$report"
   write_item "$id" "$clean" "$url" "$report"
   printf 'retitled: %s %s\n' "$id" "${carried:-(no links)}"

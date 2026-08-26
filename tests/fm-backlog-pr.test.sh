@@ -228,6 +228,60 @@ test_repair_restores_a_lost_link_from_task_metadata() {
   pass "repair restores a lost backlog link from the task's own durable record"
 }
 
+# A task tracked on GitLab has a merge request in its meta that tasks-axi cannot
+# store, which means there is no PR link to carry, never that the title stays
+# as it was.
+test_retitle_changes_the_title_of_a_gitlab_task() {
+  local home out report=data/ship-m4/report.md
+  home=$(make_home retitle-gitlab)
+  tasks_in "$home" add ship-m4 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  tasks_in "$home" update ship-m4 --report "$report" >/dev/null || fail "could not record the report link"
+  fm_write_meta "$home/state/ship-m4.meta" "kind=ship" "mode=no-mistakes" \
+    "pr=https://gitlab.com/acme/widget/-/merge_requests/9"
+
+  out=$(run_backlog_pr "$home" retitle ship-m4 "ship the widget, second pass") \
+    || fail "retitle failed on a GitLab task"
+  assert_not_contains "$out" "skipped:" "retitle skipped a GitLab task instead of changing its title"
+  assert_contains "$out" "retitled: ship-m4 report=$report" "retitle did not report the carried report link"
+  assert_contains "$(recorded_title "$home" ship-m4)" "second pass" \
+    "the new title was not applied to a GitLab task"
+  assert_contains "$(recorded_links "$home" ship-m4)" "report:$report" \
+    "the report link did not survive retitling a GitLab task"
+  assert_no_grep "merge_requests" "$home/data/backlog.md" \
+    "the merge request URL was written into the backlog"
+  pass "retitle changes the title of a GitLab task and keeps its other links"
+}
+
+# An item that accumulated two PR links outside the owner must settle on the
+# same URL whichever subcommand touches it next, and that URL is the one
+# firstmate itself recorded, not the older of the two.
+test_accumulated_links_normalize_the_same_way_through_retitle_and_repair() {
+  local home id links
+  home=$(make_home accumulated)
+  for id in ship-n5 ship-n6; do
+    tasks_in "$home" add "$id" "ship the widget" --kind ship --repo widget --start >/dev/null \
+      || fail "could not seed $id"
+    tasks_in "$home" update "$id" --pr "$PR_A" >/dev/null || fail "could not record the first link on $id"
+    tasks_in "$home" update "$id" --pr "$PR_B" >/dev/null || fail "could not record the second link on $id"
+    links=$(recorded_links "$home" "$id")
+    assert_contains "$links" "pr:$PR_A" "$id did not accumulate the first link"
+    assert_contains "$links" "pr:$PR_B" "$id did not accumulate the second link"
+    fm_write_meta "$home/state/$id.meta" "kind=ship" "mode=no-mistakes" "pr=$PR_B"
+  done
+
+  run_backlog_pr "$home" retitle ship-n5 "ship the widget, revised" >/dev/null || fail "retitle failed"
+  run_backlog_pr "$home" repair ship-n6 >/dev/null || fail "repair failed"
+  for id in ship-n5 ship-n6; do
+    links=$(recorded_links "$home" "$id")
+    assert_contains "$links" "pr:$PR_B" "$id did not settle on the recorded link"
+    assert_not_contains "$links" "pr:$PR_A" "$id kept the stale accumulated link"
+  done
+  [ "$(recorded_links "$home" ship-n5)" = "$(recorded_links "$home" ship-n6)" ] \
+    || fail "retitle and repair normalized the same item differently"
+  pass "an item with accumulated PR links settles on the recorded one through retitle and repair alike"
+}
+
 test_repair_is_quiet_when_nothing_is_recorded() {
   local home out
   home=$(make_home repair-empty)
@@ -319,6 +373,8 @@ test_retitle_moves_a_pasted_url_into_the_field
 test_retitle_carries_a_report_link_across_a_title_change
 test_record_replaces_rather_than_accumulates
 test_repair_restores_a_lost_link_from_task_metadata
+test_retitle_changes_the_title_of_a_gitlab_task
+test_accumulated_links_normalize_the_same_way_through_retitle_and_repair
 test_repair_is_quiet_when_nothing_is_recorded
 test_a_merge_request_is_reported_not_written_into_the_title
 test_a_task_outside_the_backlog_is_skipped_not_failed
