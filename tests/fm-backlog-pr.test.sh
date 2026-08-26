@@ -54,23 +54,51 @@ recorded_title() {  # <home> <id>
   tasks_in "$1" show "$2" --full | sed -n 's/^  title: //p' | head -1 | tr -d '"'
 }
 
+# One unmistakable line naming the installed release, for a pinned upstream
+# behaviour that the installed tasks-axi no longer shows.
+upstream_notice() {  # <fact>
+  local version
+  version=$(tasks-axi --version 2>/dev/null | head -1)
+  printf 'notice: tasks-axi %s %s\n' "${version:-<unknown version>}" "$1"
+}
+
 # The loss-pin's retirement clause. After a raw `tasks-axi update --title`, the
 # installed tasks-axi either still drops a title-embedded link, which is the
 # defect this suite measures, or it has started preserving it upstream. In the
-# second case the pin no longer applies: say so in one unmistakable line naming
-# the release, and return 0 so the caller passes instead of failing with a
-# message that blames the wrong thing.
+# second case the pin no longer applies: say so, and return 0 so the caller
+# passes instead of failing with a message that blames the wrong thing.
 raw_title_update_now_preserves() {  # <home> <id> <link>
-  local version
   case "$(recorded_links "$1" "$2")" in
     *"$3"*)
-      version=$(tasks-axi --version 2>/dev/null | head -1)
-      printf 'notice: tasks-axi %s preserves links on --title; the loss-pin no longer applies - consider retiring fm-backlog-pr.sh'"'"'s retitle path\n' \
-        "${version:-<unknown version>}"
+      upstream_notice "preserves links on --title; the loss-pin no longer applies - consider retiring fm-backlog-pr.sh's retitle path"
       return 0
       ;;
   esac
   return 1
+}
+
+# The accumulation-pin's retirement clause. Two raw `--pr` calls with different
+# URLs leave both on the item in tasks-axi 0.2.5, which is what the owner has to
+# normalize. Should upstream start replacing instead, say so and stage the
+# two-URL item line by hand, in the persisted board line this suite already
+# reads through item_line, so retitle and repair are still measured against a
+# real accumulation.
+ensure_accumulated_links() {  # <home> <id> <older-url> <newer-url>
+  local links
+  links=$(recorded_links "$1" "$2")
+  case "$links" in
+    *"pr:$3"*) ;;
+    *)
+      upstream_notice "replaces the pr link on --pr; the accumulation-pin no longer applies - the two-link item is staged by hand"
+      if ! sed "s# $4# $3 $4#" "$1/data/backlog.md" > "$1/data/backlog.md.tmp" \
+        || ! mv "$1/data/backlog.md.tmp" "$1/data/backlog.md"; then
+        fail "could not stage the accumulated links by hand"
+      fi
+      links=$(recorded_links "$1" "$2")
+      ;;
+  esac
+  assert_contains "$links" "pr:$3" "$2 does not carry the older link"
+  assert_contains "$links" "pr:$4" "$2 does not carry the newer link"
 }
 
 # The defect, stated as the behavior that must not come back: with the URL living
@@ -254,32 +282,67 @@ test_retitle_changes_the_title_of_a_gitlab_task() {
 }
 
 # An item that accumulated two PR links outside the owner must settle on the
-# same URL whichever subcommand touches it next, and that URL is the one
-# firstmate itself recorded, not the older of the two.
+# same URL whichever subcommand touches it next: the one firstmate itself
+# recorded when there is one, else the newest of the two, never the stale one.
 test_accumulated_links_normalize_the_same_way_through_retitle_and_repair() {
   local home id links
   home=$(make_home accumulated)
-  for id in ship-n5 ship-n6; do
+  for id in ship-n5 ship-n6 ship-n7 ship-n8; do
     tasks_in "$home" add "$id" "ship the widget" --kind ship --repo widget --start >/dev/null \
       || fail "could not seed $id"
     tasks_in "$home" update "$id" --pr "$PR_A" >/dev/null || fail "could not record the first link on $id"
     tasks_in "$home" update "$id" --pr "$PR_B" >/dev/null || fail "could not record the second link on $id"
-    links=$(recorded_links "$home" "$id")
-    assert_contains "$links" "pr:$PR_A" "$id did not accumulate the first link"
-    assert_contains "$links" "pr:$PR_B" "$id did not accumulate the second link"
-    fm_write_meta "$home/state/$id.meta" "kind=ship" "mode=no-mistakes" "pr=$PR_B"
+    ensure_accumulated_links "$home" "$id" "$PR_A" "$PR_B"
   done
+  fm_write_meta "$home/state/ship-n5.meta" "kind=ship" "mode=no-mistakes" "pr=$PR_B"
+  fm_write_meta "$home/state/ship-n6.meta" "kind=ship" "mode=no-mistakes" "pr=$PR_B"
 
   run_backlog_pr "$home" retitle ship-n5 "ship the widget, revised" >/dev/null || fail "retitle failed"
   run_backlog_pr "$home" repair ship-n6 >/dev/null || fail "repair failed"
-  for id in ship-n5 ship-n6; do
+  run_backlog_pr "$home" retitle ship-n7 "ship the widget, revised" >/dev/null \
+    || fail "retitle failed without task metadata"
+  run_backlog_pr "$home" repair ship-n8 >/dev/null || fail "repair failed without task metadata"
+  for id in ship-n5 ship-n6 ship-n7 ship-n8; do
     links=$(recorded_links "$home" "$id")
-    assert_contains "$links" "pr:$PR_B" "$id did not settle on the recorded link"
+    assert_contains "$links" "pr:$PR_B" "$id did not settle on the current link"
     assert_not_contains "$links" "pr:$PR_A" "$id kept the stale accumulated link"
   done
-  [ "$(recorded_links "$home" ship-n5)" = "$(recorded_links "$home" ship-n6)" ] \
-    || fail "retitle and repair normalized the same item differently"
-  pass "an item with accumulated PR links settles on the recorded one through retitle and repair alike"
+  pass "an item with accumulated PR links settles on the recorded or newest one through retitle and repair alike"
+}
+
+# A recorded merge request tasks-axi cannot store does not mean the item's own
+# GitHub link may be dropped: the title changes and that link is carried.
+test_retitle_keeps_an_item_link_when_the_recorded_url_is_unstorable() {
+  local home out
+  home=$(make_home retitle-unstorable-meta)
+  tasks_in "$home" add ship-p9 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-p9 "$PR_A" >/dev/null || fail "record failed"
+  fm_write_meta "$home/state/ship-p9.meta" "kind=ship" "mode=no-mistakes" \
+    "pr=https://gitlab.com/acme/widget/-/merge_requests/9"
+
+  out=$(run_backlog_pr "$home" retitle ship-p9 "ship the widget, second pass") || fail "retitle failed"
+  assert_contains "$out" "retitled: ship-p9 pr=$PR_A" "retitle did not report the carried item link"
+  assert_contains "$(recorded_links "$home" ship-p9)" "pr:$PR_A" \
+    "the item's own PR link was dropped because the recorded URL was unstorable"
+  assert_contains "$(recorded_title "$home" ship-p9)" "second pass" "the new title was not applied"
+  pass "retitle carries the item's own PR link when the recorded URL cannot be stored"
+}
+
+# A home that never uses tasks-axi is told about its own opt-out, not about a
+# tasks-axi field limitation it will never meet.
+test_record_reports_the_backend_opt_out_before_the_field_limit() {
+  local home out
+  home=$(make_home manual-backend)
+  printf 'manual\n' > "$home/config/backlog-backend"
+  tasks_in "$home" add ship-q1 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  out=$(run_backlog_pr "$home" record ship-q1 "https://gitlab.com/acme/widget/-/merge_requests/9") \
+    || fail "record failed on a manual-backend home"
+  assert_contains "$out" "skipped: this home does not use tasks-axi" \
+    "record did not name the backend opt-out as the reason"
+  assert_not_contains "$out" "stores only" "record named a tasks-axi limitation on a home that opted out"
+  pass "record reports the backend opt-out rather than a tasks-axi field limitation"
 }
 
 test_repair_is_quiet_when_nothing_is_recorded() {
@@ -375,6 +438,8 @@ test_record_replaces_rather_than_accumulates
 test_repair_restores_a_lost_link_from_task_metadata
 test_retitle_changes_the_title_of_a_gitlab_task
 test_accumulated_links_normalize_the_same_way_through_retitle_and_repair
+test_retitle_keeps_an_item_link_when_the_recorded_url_is_unstorable
+test_record_reports_the_backend_opt_out_before_the_field_limit
 test_repair_is_quiet_when_nothing_is_recorded
 test_a_merge_request_is_reported_not_written_into_the_title
 test_a_task_outside_the_backlog_is_skipped_not_failed

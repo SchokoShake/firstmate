@@ -201,12 +201,34 @@ write_item() {  # <task-id> <title> <pr-url> <report-path>
   tasks_axi "${args[@]}" >/dev/null || fail "could not update $1 in the backlog"
 }
 
+# The PR link to carry for an item when the caller named none, in CARRIED_PR_URL
+# (empty when there is nothing to carry). Firstmate's own durable record wins
+# when tasks-axi can store it; otherwise the newest of the item's own links, so
+# an item that accumulated several settles on the current PR rather than the
+# stale one. An item link this script cannot parse is refused rather than
+# silently dropped: a link it cannot reason about is not one it may lose.
+CARRIED_PR_URL=
+load_carried_pr_url() {  # <task-id>
+  local url
+  CARRIED_PR_URL=
+  url=$(meta_pr_url "$1")
+  if [ -n "$url" ] && storable_url "$url"; then
+    CARRIED_PR_URL=$FM_PR_URL
+    return 0
+  fi
+  url=$(item_links "$ITEM_SHOW" pr | tail -1)
+  [ -n "$url" ] || return 0
+  storable_url "$url" || fail "not a GitHub pull request URL, so it cannot be carried in the pr field: $url"
+  CARRIED_PR_URL=$FM_PR_URL
+}
+
 cmd_record() {  # <task-id> <pr-url>
   local id=$1 url title clean links report
-  require_storable_url "$2"
-  url=$FM_PR_URL
+  fm_pr_url_parse "$2" || fail "not a pull request or merge request URL: $2"
   require_backlog_backend
   load_item "$id"
+  require_storable_url "$2"
+  url=$FM_PR_URL
   links=$(item_links "$ITEM_SHOW" pr | paste -sd, -)
   report=$(item_links "$ITEM_SHOW" report | head -1)
   title=$(unquoted_field "$(show_field "$ITEM_SHOW" title)")
@@ -231,21 +253,17 @@ cmd_retitle() {  # <task-id> <new-title>
   clean=$(strip_links "$title" "$report")
   [ -n "$clean" ] || fail "the new title has no text left once its links are removed"
   # A URL the caller wrote into the new title is the link they meant to keep, so
-  # it wins outright. Otherwise firstmate's own durable record wins over whatever
-  # the item accumulated, the same order `repair` normalizes to, and a record
-  # tasks-axi cannot store (a merge request) simply means there is no PR link
-  # to carry: the title still changes, with the item's other links intact.
+  # it wins outright. Otherwise the item carries whatever `repair` would settle
+  # on, and a record tasks-axi cannot store (a merge request) with no item link
+  # behind it simply means there is no PR link to carry: the title still
+  # changes, with the item's other links intact.
   pasted=$(printf '%s' "$title" | grep -Eo "$PR_URL_RE" | head -1)
   if [ -n "$pasted" ]; then
     storable_url "$pasted" || fail "not a GitHub pull request URL, so it cannot be kept in the pr field: $pasted"
     url=$FM_PR_URL
   else
-    url=$(meta_pr_url "$id")
-    [ -n "$url" ] || url=$(item_links "$ITEM_SHOW" pr | head -1)
-    if [ -n "$url" ]; then
-      fm_pr_url_parse "$url" || fail "not a pull request or merge request URL: $url"
-      if [ "$FM_PR_PROVIDER" = github ]; then url=$FM_PR_URL; else url=; fi
-    fi
+    load_carried_pr_url "$id"
+    url=$CARRIED_PR_URL
   fi
   [ -z "$url" ] || carried="pr=$url"
   [ -z "$report" ] || carried="${carried:+$carried }report=$report"
@@ -257,8 +275,9 @@ cmd_repair() {  # <task-id>
   local id=$1 url
   require_backlog_backend
   load_item "$id"
-  url=$(meta_pr_url "$id")
-  [ -n "$url" ] || url=$(item_links "$ITEM_SHOW" pr | head -1)
+  load_carried_pr_url "$id"
+  url=$CARRIED_PR_URL
+  [ -n "$url" ] || url=$(meta_pr_url "$id")
   [ -n "$url" ] || skip "no PR URL is recorded for $id"
   cmd_record "$id" "$url"
 }
