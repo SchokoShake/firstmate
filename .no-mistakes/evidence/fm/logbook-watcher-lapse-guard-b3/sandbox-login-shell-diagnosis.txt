@@ -1,0 +1,20 @@
+# Sandbox login-shell diagnosis (why codex-hook and OpenCode arm cases need a clean HOME here)
+
+Both the tracked .codex Stop hook and the OpenCode watch-arm plugin launch their child through 'bash -lc'.
+Under this sandbox's real HOME the login profile breaks PATH before either child can run; under an empty profile the same command works.
+
+$ bash -lc 'printf "PATH=%s
+" "$PATH"; command -v bash || echo "bash: NOT FOUND"; command -v dirname || echo "dirname: NOT FOUND"'
+/Users/paulvaethjunker/.bash_profile: line 72: dirname: command not found
+/Users/paulvaethjunker/.bash_profile: line 72: dirname: command not found
+PATH=/Users/paulvaethjunker/miniconda3/bin:/condabin:/usr/local/Cellar/dart/3.1.0/bin
+bash: NOT FOUND
+dirname: NOT FOUND
+
+$ HOME=/tmp/fm-home-01M0 bash -lc ...   # scratch HOME whose .bash_profile is empty
+PATH=/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/Library/Apple/usr/bin:/Library/TeX/texbin:/usr/local/share/dotnet:~/.dotnet/tools:/usr/local/go/bin:/opt/homebrew/bin:/Library/Frameworks/Mono.framework/Versions/Current/Commands:/Users/paulvaethjunker/.antigravity/antigravity/bin:/opt/homebrew/sbin:/Users/paulvaethjunker/.local/state/fnm_multishells/26426_1787222628433/bin:/Users/paulvaethjunker/.local/state/fnm_multishells/26417_1787222628423/bin:/Users/paulvaethjunker/.local/bin:/Users/paulvaethjunker/go/bin:/Users/paulvaethjunker/.cargo/bin:/Users/paulvaethjunker/bin:/usr/local/sbin:/Users/paulvaethjunker/.orbstack/bin:/Users/paulvaethjunker/.claude/plugins/cache/claude-plugins-official/clangd-lsp/1.0.0/bin:/Users/paulvaethjunker/.claude/skills/lookout/bin
+/bin/bash
+/usr/bin/dirname
+
+Base-commit (029964b) run of the unmodified tests/fm-turnend-guard.test.sh under the real HOME fails on the identical codex case, so the failure predates this branch:
+42:not ok - codex hook must use the hook process root (missing: 'guard=/private/var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T/fm-turnend-guard.clR5h3/codex-hook-root/bin/fm-turnend-guard.sh')

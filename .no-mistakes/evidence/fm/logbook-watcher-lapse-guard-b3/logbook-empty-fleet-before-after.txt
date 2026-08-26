@@ -1,0 +1,108 @@
+
+==================== before: base 029964b - throwaway home with a logbook board and NO task in flight ====================
+
+$ arm_board  # write state/logbook-watch.check.sh (0700) and bind it with bin/fm-check-register.sh logbook-watch
+registered: state/logbook-watch.check.sh
+registered
+
+$ ls -A /tmp/fm-e2e-01M0/home-before/state ; find state -name '*.meta' | wc -l
+logbook-watch.check-trust
+logbook-watch.check.sh
+meta files: 0
+
+$ fm_supervision_needed <state>   # the single owner in bin/fm-supervision-lib.sh
+not-needed  in_flight=0 sources=0 relay=<unset> logbook=<unset>
+
+$ bin/fm-guard.sh   # pull-based mid-turn warning (FM_ROOT_OVERRIDE neutral, FM_HOME=home)
+[exit 0]
+
+$ bin/fm-turnend-guard.sh   # default mode Stop hook, stdin {"stop_hook_active":false}
+[exit 0]
+
+$ bin/fm-turnend-guard.sh --claude   # Claude Stop-hook mode, no auto-arm owner present (FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200)
+[exit 0]
+
+==================== after: target f777661 - throwaway home with a logbook board and NO task in flight ====================
+
+$ arm_board  # write state/logbook-watch.check.sh (0700) and bind it with bin/fm-check-register.sh logbook-watch
+registered: state/logbook-watch.check.sh
+registered
+
+$ ls -A /tmp/fm-e2e-01M0/home-after/state ; find state -name '*.meta' | wc -l
+logbook-watch.check-trust
+logbook-watch.check.sh
+meta files: 0
+
+$ fm_supervision_needed <state>   # the single owner in bin/fm-supervision-lib.sh
+needed  in_flight=0 sources=0 relay=false logbook=true
+
+$ bin/fm-guard.sh   # pull-based mid-turn warning (FM_ROOT_OVERRIDE neutral, FM_HOME=home)
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  Logbook board polling needs supervision, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[exit 0]
+
+$ bin/fm-turnend-guard.sh   # default mode Stop hook, stdin {"stop_hook_active":false}
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  TURN WOULD END BLIND - SUPERVISION IS OFF
+●  Logbook board polling needs supervision, but no live watcher holds this home lock (last beat: never).
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[exit 2]
+
+$ bin/fm-turnend-guard.sh --claude   # Claude Stop-hook mode, no auto-arm owner present (FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200)
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  TURN WOULD END BLIND - SUPERVISION IS OFF
+●  Logbook board polling needs supervision, but no live watcher holds this home lock (last beat: never).
+●  The Stop-owned auto-arm did not claim this home either, so recovery is NOT already under way.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[exit 2]
+
+==================== after: the empty-fleet watcher cycle runs the board shim and the wake reaches the drain ====================
+
+$ find /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-e2e-logbook.KsW5vW/logbook-wake/state -name '*.meta' | wc -l   # fleet is empty
+0
+
+$ FM_HOME=<home> FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 bin/fm-watch.sh   # one supervision cycle, nothing in flight
+check: /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-e2e-logbook.KsW5vW/logbook-wake/state/logbook-watch.check.sh: logbook-response card-17
+[watcher exit 0]
+
+$ ls -A /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-e2e-logbook.KsW5vW/logbook-wake/state   # registered shim survived the watcher's startup migration (bin/fm-pr-check-migrate.sh)
+.heartbeat-streak
+.inactive-outcome-reconcile
+.last-check
+.last-heartbeat
+.last-watcher-beat
+.pr-check-migration-scan-v1
+.pr-check-migration-v1
+.wake-queue
+.wake-queue.seq
+.watch-deliveries.log
+.watcher-down
+logbook-watch.check-trust
+logbook-watch.check.sh
+terminal-outcomes
+
+$ FM_STATE_OVERRIDE=<state> bin/fm-wake-drain.sh   # the board answer is durably queued for the primary
+1787736182	1	check	/var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-e2e-logbook.KsW5vW/logbook-wake/state/logbook-watch.check.sh	check: /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-e2e-logbook.KsW5vW/logbook-wake/state/logbook-watch.check.sh: logbook-response card-17
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 64734.1787736182.T8NLFZ
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+[exit 0]
+
+==================== after: the same home once the board is disabled again goes quiet ====================
+
+$ rm state/logbook-watch.check.sh state/logbook-watch.check-trust state/.guard-watcher-stale-banner
+
+$ fm_supervision_needed <state>
+not-needed  in_flight=0 sources=0 relay=false logbook=false
+
+$ bin/fm-guard.sh
+[exit 0]
+
+$ bin/fm-turnend-guard.sh
+[exit 0]

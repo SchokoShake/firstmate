@@ -1,0 +1,31 @@
+# Regression evidence: the new logbook cases fail on base 029964b and pass on target f777661
+
+## tests/fm-turnend-guard.test.sh (codex-hook invocations skipped, see sandbox-login-shell-diagnosis.txt)
+base:
+8:not ok - logbook board poll did not register as supervision need
+target (full unfiltered script under a clean-profile HOME):
+8:ok - fm_supervision_needed: an enabled logbook board needs supervision on an empty fleet
+9:ok - fm_supervision_needed: the whole state/logbook-*.check.sh namespace counts
+10:ok - fm_supervision_needed: only the logbook-*.check.sh namespace triggers the board need
+22:ok - fm-turnend-guard: logbook-only supervision is guarded in default mode
+49:ok - .opencode watch-arm plugin: the shared supervision owner decides, so a logbook-only home arms
+50:ok - .opencode watch-arm plugin: an unreadable supervision owner arms rather than claiming nothing is needed
+55:ok - fm-turnend-guard --claude: logbook-only homes re-block when auto-arm recovery is absent
+67:ok - fm-turnend-guard --claude: logbook-only verified fail-open names the logbook board
+
+## tests/fm-watch-triage.test.sh
+target (bin/fm-test-run.sh):
+9:ok - fm_supervision_needed: an enabled logbook board needs supervision on an empty fleet
+10:ok - fm_supervision_needed: the whole state/logbook-*.check.sh namespace counts
+11:ok - fm_supervision_needed: only the logbook-*.check.sh namespace triggers the board need
+23:ok - fm-turnend-guard: logbook-only supervision is guarded in default mode
+104:ok - an enabled logbook board makes an empty fleet demand a watcher; removing it goes quiet again
+105:ok - a logbook board answer wakes the watcher and reaches the durable queue with no task in flight
+111:FM_TEST_END 2026-08-26T09:26:54Z tests/fm-watch-triage.test.sh exit=0 duration_ms=462707 gate_skip=false
+
+## tests/fm-claude-stop-autoarm.test.sh (new case added in this test phase)
+base:
+18:not ok - an enabled logbook board must keep the auto-arm active with zero tasks in flight: expected exit 2, got 0
+target:
+19:ok - auto-arm: an enabled logbook board arms the cycle even with no tasks in flight
+26:FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=64013
