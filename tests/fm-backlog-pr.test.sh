@@ -54,6 +54,25 @@ recorded_title() {  # <home> <id>
   tasks_in "$1" show "$2" --full | sed -n 's/^  title: //p' | head -1 | tr -d '"'
 }
 
+# The loss-pin's retirement clause. After a raw `tasks-axi update --title`, the
+# installed tasks-axi either still drops a title-embedded link, which is the
+# defect this suite measures, or it has started preserving it upstream. In the
+# second case the pin no longer applies: say so in one unmistakable line naming
+# the release, and return 0 so the caller passes instead of failing with a
+# message that blames the wrong thing.
+raw_title_update_now_preserves() {  # <home> <id> <link>
+  local version
+  case "$(recorded_links "$1" "$2")" in
+    *"$3"*)
+      version=$(tasks-axi --version 2>/dev/null | head -1)
+      printf 'notice: tasks-axi %s preserves links on --title; the loss-pin no longer applies - consider retiring fm-backlog-pr.sh'"'"'s retitle path\n' \
+        "${version:-<unknown version>}"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 # The defect, stated as the behavior that must not come back: with the URL living
 # in the title text, an ordinary title change takes the link with it. This pins
 # the loss so the rest of the suite is measuring against a real failure, not a
@@ -68,8 +87,12 @@ test_raw_title_update_loses_a_url_written_into_the_title() {
 
   tasks_in "$home" update legacy-a1 --title "ship the widget" >/dev/null \
     || fail "could not retitle the legacy item"
+  if raw_title_update_now_preserves "$home" legacy-a1 "pr:$PR_A"; then
+    pass "a raw title update no longer drops a title-embedded PR link, so the loss-pin is retired"
+    return 0
+  fi
   assert_contains "$(recorded_links "$home" legacy-a1)" none \
-    "a raw title update kept the PR link, so this suite is not measuring the real defect"
+    "a raw title update neither kept nor dropped the PR link, so this suite is not measuring the real defect"
   assert_no_grep "$PR_A" "$home/data/backlog.md" \
     "a raw title update kept the PR URL on the item line"
   pass "a URL written into a title is silently dropped by an ordinary title update"
@@ -130,6 +153,36 @@ test_retitle_moves_a_pasted_url_into_the_field() {
   pass "a URL pasted into a new title becomes the recorded link, not title text"
 }
 
+# A scout's report link lives in the same item line by the same mechanism, so a
+# title change through the owner has to carry it the same way: alone, and next
+# to the PR link once the scout is promoted and ships.
+test_retitle_carries_a_report_link_across_a_title_change() {
+  local home out links report=data/scout-l3/report.md
+  home=$(make_home retitle-report)
+  tasks_in "$home" add scout-l3 "scout the widget" --kind scout --repo widget --start >/dev/null \
+    || fail "could not seed the scout item"
+  tasks_in "$home" update scout-l3 --report "$report" >/dev/null \
+    || fail "could not record the report link"
+
+  out=$(run_backlog_pr "$home" retitle scout-l3 "scout the widget, second pass") \
+    || fail "retitle failed on a scout item"
+  assert_contains "$out" "retitled: scout-l3 report=$report" \
+    "retitle did not report the carried report link"
+  assert_contains "$(recorded_links "$home" scout-l3)" "report:$report" \
+    "the report link did not survive a title change through the owner"
+  assert_contains "$(recorded_title "$home" scout-l3)" "second pass" "the new title was not applied"
+
+  run_backlog_pr "$home" record scout-l3 "$PR_A" >/dev/null || fail "record failed on a scout item"
+  out=$(run_backlog_pr "$home" retitle scout-l3 "scout the widget, shipped") \
+    || fail "retitle failed once the scout carried both links"
+  assert_contains "$out" "retitled: scout-l3 pr=$PR_A report=$report" \
+    "retitle did not report both carried links"
+  links=$(recorded_links "$home" scout-l3)
+  assert_contains "$links" "pr:$PR_A" "the PR link did not survive a title change beside a report link"
+  assert_contains "$links" "report:$report" "the report link did not survive a title change beside a PR link"
+  pass "a title change through the owner carries a scout's report link, alone and beside a PR link"
+}
+
 # Recording a different PR replaces the link instead of accumulating a second
 # one, so the board never has to guess which of two URLs is current.
 test_record_replaces_rather_than_accumulates() {
@@ -158,7 +211,15 @@ test_repair_restores_a_lost_link_from_task_metadata() {
 
   tasks_in "$home" update ship-f6 --title "ship the widget" >/dev/null \
     || fail "could not simulate the raw title update"
-  assert_contains "$(recorded_links "$home" ship-f6)" none "the raw update did not lose the link"
+  if raw_title_update_now_preserves "$home" ship-f6 "pr:$PR_A"; then
+    # The loss repair exists for must then be staged by hand, in the item line
+    # the board reads, so repair is still measured against a real gap.
+    if ! sed "s# $PR_A##" "$home/data/backlog.md" > "$home/data/backlog.md.tmp" \
+      || ! mv "$home/data/backlog.md.tmp" "$home/data/backlog.md"; then
+      fail "could not stage the lost link by hand"
+    fi
+  fi
+  assert_contains "$(recorded_links "$home" ship-f6)" none "the link was not lost before repair ran"
 
   out=$(run_backlog_pr "$home" repair ship-f6) || fail "repair failed"
   assert_contains "$out" "recorded: ship-f6 pr=$PR_A" "repair did not report the restored link"
@@ -255,6 +316,7 @@ test_raw_title_update_loses_a_url_written_into_the_title
 test_record_keeps_the_url_out_of_the_title
 test_retitle_carries_the_pr_link_across_a_title_change
 test_retitle_moves_a_pasted_url_into_the_field
+test_retitle_carries_a_report_link_across_a_title_change
 test_record_replaces_rather_than_accumulates
 test_repair_restores_a_lost_link_from_task_metadata
 test_repair_is_quiet_when_nothing_is_recorded

@@ -12,7 +12,9 @@
 # <text>` replaces the whole title, drops the URL with it, and leaves the item
 # with no `pr` link at all. Recording through `--pr` while writing a title that
 # carries no URL keeps the link tasks-axi's to place, which is what lets
-# `retitle` carry it across a title change in the same call.
+# `retitle` carry it across a title change in the same call. A scout's report
+# link (`--report data/<id>/report.md`) lives in the same line by the same
+# mechanism, so every write here carries that one too.
 #
 # Usage:
 #   fm-backlog-pr.sh record <task-id> <pr-url>
@@ -25,11 +27,12 @@
 # ship task gets its backlog link when the PR is first recorded rather than at
 # completion.
 #
-# `retitle` sets a new title and re-asserts the item's recorded PR link in the
-# same tasks-axi call, so the link survives. Use it instead of a bare
-# `tasks-axi update <id> --title ...` on any task that has, or may later have, a
-# PR. A URL in <new-title> is taken as the intended link, stripped out of the
-# title, and recorded through the field.
+# `retitle` sets a new title and re-asserts every link the item carries, its
+# recorded PR link and its report link, in the same tasks-axi call, so they
+# survive. Use it instead of a bare `tasks-axi update <id> --title ...` on any
+# task that has, or may later have, a PR or a report. A URL in <new-title> is
+# taken as the intended link, stripped out of the title, and recorded through
+# the field.
 #
 # `repair` restores a link that was already lost, from the `pr=` line in this
 # home's task metadata - firstmate's own durable record, written by
@@ -89,10 +92,13 @@ tasks_axi() {
 # The pull-request URL shape tasks-axi itself recognizes inside an item line.
 PR_URL_RE='https?://[^[:space:]]*/pull/[0-9][0-9]*'
 
-# Drop every pull-request URL from a title and normalize the whitespace that
-# removing one leaves behind, so the rewritten title is the human sentence alone.
-strip_pr_urls() {  # <title>
-  printf '%s' "$1" |
+# Drop every pull-request URL, and the item's report path when it has one, from
+# a title and normalize the whitespace that removing them leaves behind, so the
+# rewritten title is the human sentence alone.
+strip_links() {  # <title> <report-path>
+  local title=$1
+  [ -z "$2" ] || title=${title//"$2"/}
+  printf '%s' "$title" |
     sed -E -e "s#$PR_URL_RE##g" -e 's/[[:space:]]+/ /g' -e 's/^ //' -e 's/ $//'
 }
 
@@ -130,13 +136,13 @@ unquoted_field() {  # <raw-field-value>
   esac
 }
 
-# The item's recorded PR links, newline separated, in the order tasks-axi reports
-# them. Empty when the item carries none.
-item_pr_links() {  # <show-output>
+# The item's recorded links of one kind (`pr` or `report`), newline separated,
+# in the order tasks-axi reports them. Empty when the item carries none.
+item_links() {  # <show-output> <kind>
   local links
   links=$(unquoted_field "$(show_field "$1" links)")
   [ -n "$links" ] && [ "$links" != none ] || return 0
-  printf '%s\n' "$links" | tr ',' '\n' | sed -n 's/^pr://p'
+  printf '%s\n' "$links" | tr ',' '\n' | sed -n "s/^$2://p"
 }
 
 # The URL firstmate itself recorded for the task, from the task metadata
@@ -180,54 +186,59 @@ require_storable_url() {  # <raw-url>
     || skip "tasks-axi stores only a GitHub pull request URL in the pr field, not $FM_PR_URL"
 }
 
-# The one write. <title> is always a title with no URL in it, and <url> always
-# reaches the item through --pr, in a single call so no intermediate state has
-# the link missing.
-write_item() {  # <task-id> <title> <url>
-  tasks_axi update "$1" --title "$2" --pr "$3" >/dev/null \
-    || fail "could not record the PR link on $1"
+# The one write. <title> is always a title with no link text in it, and every
+# link reaches the item through its own flag, in a single call so no
+# intermediate state has one missing. Either link may be empty.
+write_item() {  # <task-id> <title> <pr-url> <report-path>
+  local -a args
+  args=(update "$1" --title "$2")
+  [ -z "$3" ] || args+=(--pr "$3")
+  [ -z "$4" ] || args+=(--report "$4")
+  tasks_axi "${args[@]}" >/dev/null || fail "could not update $1 in the backlog"
 }
 
 cmd_record() {  # <task-id> <pr-url>
-  local id=$1 url title clean links
+  local id=$1 url title clean links report
   require_storable_url "$2"
   url=$FM_PR_URL
   require_backlog_backend
   load_item "$id"
-  links=$(item_pr_links "$ITEM_SHOW" | paste -sd, -)
+  links=$(item_links "$ITEM_SHOW" pr | paste -sd, -)
+  report=$(item_links "$ITEM_SHOW" report | head -1)
   title=$(unquoted_field "$(show_field "$ITEM_SHOW" title)")
-  clean=$(strip_pr_urls "$title")
+  clean=$(strip_links "$title" "$report")
   if [ "$links" = "$url" ]; then
     printf 'unchanged: %s pr=%s\n' "$id" "$url"
     return 0
   fi
-  [ -n "$clean" ] || fail "$id has no title left once its PR URL is removed"
-  write_item "$id" "$clean" "$url"
+  [ -n "$clean" ] || fail "$id has no title left once its links are removed"
+  write_item "$id" "$clean" "$url" "$report"
   printf 'recorded: %s pr=%s\n' "$id" "$url"
 }
 
 cmd_retitle() {  # <task-id> <new-title>
-  local id=$1 title=$2 clean url
+  local id=$1 title=$2 clean url report carried=
   case "$title" in
     ''|*$'\n'*|*$'\r'*) fail "a title must be one non-empty line" ;;
   esac
   require_backlog_backend
   load_item "$id"
-  clean=$(strip_pr_urls "$title")
-  [ -n "$clean" ] || fail "the new title is a PR URL and nothing else"
+  report=$(item_links "$ITEM_SHOW" report | head -1)
+  clean=$(strip_links "$title" "$report")
+  [ -n "$clean" ] || fail "the new title has no text left once its links are removed"
   # A URL the caller wrote into the new title is the link they meant to keep, so
   # it wins over an older recorded one rather than being silently discarded.
   url=$(printf '%s' "$title" | grep -Eo "$PR_URL_RE" | head -1)
-  [ -n "$url" ] || url=$(item_pr_links "$ITEM_SHOW" | head -1)
+  [ -n "$url" ] || url=$(item_links "$ITEM_SHOW" pr | head -1)
   [ -n "$url" ] || url=$(meta_pr_url "$id")
-  if [ -z "$url" ]; then
-    tasks_axi update "$id" --title "$clean" >/dev/null || fail "could not retitle $id"
-    printf 'retitled: %s (no pr link)\n' "$id"
-    return 0
+  if [ -n "$url" ]; then
+    require_storable_url "$url"
+    url=$FM_PR_URL
+    carried="pr=$url"
   fi
-  require_storable_url "$url"
-  write_item "$id" "$clean" "$FM_PR_URL"
-  printf 'retitled: %s pr=%s\n' "$id" "$FM_PR_URL"
+  [ -z "$report" ] || carried="${carried:+$carried }report=$report"
+  write_item "$id" "$clean" "$url" "$report"
+  printf 'retitled: %s %s\n' "$id" "${carried:-(no links)}"
 }
 
 cmd_repair() {  # <task-id>
@@ -235,7 +246,7 @@ cmd_repair() {  # <task-id>
   require_backlog_backend
   load_item "$id"
   url=$(meta_pr_url "$id")
-  [ -n "$url" ] || url=$(item_pr_links "$ITEM_SHOW" | head -1)
+  [ -n "$url" ] || url=$(item_links "$ITEM_SHOW" pr | head -1)
   [ -n "$url" ] || skip "no PR URL is recorded for $id"
   cmd_record "$id" "$url"
 }
