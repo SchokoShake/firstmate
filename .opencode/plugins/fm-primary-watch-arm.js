@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
@@ -101,14 +101,20 @@ async function isPrimaryRoot(root, home) {
   return gitDir.stdout.trim() === commonDir.stdout.trim();
 }
 
-function shouldArm(paths) {
+async function shouldArm(paths) {
   if (existsSync(`${paths.state}/.afk`)) return false;
-  if (existsSync(`${paths.config}/x-mode.env`)) return true;
-  try {
-    return readdirSync(paths.state).some((name) => name.endsWith(".meta"));
-  } catch {
-    return false;
-  }
+  // Supervision need has one owner, fm_supervision_needed in
+  // bin/fm-supervision-lib.sh; no per-consumer copy of what counts lives here.
+  // Only its exit 1 means "not needed": an unreadable or failing owner (exit 2)
+  // arms rather than letting a broken predicate read as an idle home.
+  const owner = await runProcess("bash", [
+    "-c",
+    '. "$1/bin/fm-supervision-lib.sh" || exit 2; fm_supervision_needed "$2"',
+    "_",
+    paths.root,
+    paths.state,
+  ]);
+  return owner.code !== 1;
 }
 
 async function sessionOwnsLock(paths) {
@@ -405,7 +411,7 @@ async function beginArm(paths, sessionID, client, predecessorArmPid) {
   if (!(await sessionOwnsLock(paths))) return { status: "read-only", armChild: null };
   if (child) return { status: "existing", armChild: child };
   if (retryTimer) return { status: "retrying", armChild: null };
-  if (!shouldArm(paths)) return { status: "not-needed", armChild: null };
+  if (!(await shouldArm(paths))) return { status: "not-needed", armChild: null };
   return { status: "spawned", armChild: spawnArm(paths, sessionID, client, predecessorArmPid) };
 }
 

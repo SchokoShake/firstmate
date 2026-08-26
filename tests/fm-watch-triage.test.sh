@@ -2149,6 +2149,83 @@ test_procevent_marker_failure_exits_and_replays() {
   pass "marker failure exits through the shared wake owner, releases its lock, and replays later"
 }
 
+# --- logbook boards: the one inbound channel an empty fleet still has -------
+#
+# A home with a logbook enabled and NOTHING in flight is the exposed case: the
+# board poll is the only way a card answer reaches firstmate, and the watcher's
+# own check sweep is the only thing that runs it. Before this pair, an empty
+# fleet asked for no watcher at all, so the watcher was free to lapse exactly
+# where the board was the sole inbound channel. The two cases below pin both
+# halves - the guard demands a watcher, and that watcher delivers the wake.
+
+# Arm one registered board poll under the reserved state/logbook-*.check.sh
+# namespace, the way the connector's enable step leaves it behind.
+arm_logbook_board() {  # <dir> <shim-id> <line-it-prints>
+  local dir=$1 id=$2 line=$3 state
+  state="$dir/state"
+  cat > "$state/$id.check.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "$line"
+EOF
+  chmod 0700 "$state/$id.check.sh" || return 1
+  FM_HOME="$dir" "$ROOT/bin/fm-check-register.sh" "$id" >/dev/null
+}
+
+test_logbook_only_home_demands_a_watcher() {
+  local dir state root out status
+  dir=$(make_case logbook-guard); state="$dir/state"
+  root="$dir/root"; mkdir -p "$root"
+  arm_logbook_board "$dir" logbook-watch 'logbook-response card-17' \
+    || fail "could not arm the logbook board poll fixture"
+  [ -z "$(find "$state" -maxdepth 1 -name '*.meta' -print -quit)" ] \
+    || fail "the logbook fixture must leave the fleet empty"
+
+  out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1); status=$?
+  expect_code 0 "$status" "the guard warns about a lapsed watcher, it never blocks"
+  assert_contains "$out" "WATCHER DOWN - SUPERVISION IS OFF" \
+    "an enabled logbook board with no watcher must raise the supervision alarm"
+  assert_contains "$out" "Logbook board polling needs supervision" \
+    "the alarm must name the board poll as the supervision need"
+  assert_not_contains "$out" "X-mode relay polling" \
+    "a logbook-only home must not be reported as a Relay home"
+
+  rm -f "$state/logbook-watch.check.sh" "$state/logbook-watch.check-trust" \
+    "$state/.guard-watcher-stale-banner"
+  out=$(FM_ROOT_OVERRIDE="$root" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-guard.sh" 2>&1)
+  [ -z "$out" ] || fail "the same empty home stayed loud after the board poll was removed: $out"
+  pass "an enabled logbook board makes an empty fleet demand a watcher; removing it goes quiet again"
+}
+
+test_logbook_board_wake_reaches_an_empty_fleet() {
+  local dir state out drain_out pid
+  dir=$(make_case logbook-wake); state="$dir/state"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"
+  arm_logbook_board "$dir" logbook-watch 'logbook-response card-17' \
+    || fail "could not arm the logbook board poll fixture"
+  [ -z "$(find "$state" -maxdepth 1 -name '*.meta' -print -quit)" ] \
+    || fail "the logbook fixture must leave the fleet empty"
+
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_CREW_STATE_BIN="$dir/fakebin/fm-crew-state.sh" \
+    FM_POLL=0.2 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=0 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || fail "the watcher never surfaced a board answer on an empty fleet: $(cat "$out")"
+  grep -F "check: $state/logbook-watch.check.sh: logbook-response card-17" "$out" >/dev/null \
+    || fail "the board poll did not run on the normal check cadence: $(cat "$out")"
+  # The watcher runs the non-executing legacy-check migration before it sweeps
+  # anything, so a registered board shim must come out the other side still
+  # armed - an unregistered one would be quarantined and take the supervision
+  # need down with it.
+  [ -f "$state/logbook-watch.check.sh" ] \
+    || fail "the registered board poll did not survive the watcher's startup migration"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null \
+    || fail "drain after the logbook wake failed"
+  grep "$(printf '\tcheck\t')" "$drain_out" | grep -F 'logbook-response card-17' >/dev/null \
+    || fail "the board answer was not durably queued for the drain: $(cat "$drain_out")"
+  pass "a logbook board answer wakes the watcher and reaches the durable queue with no task in flight"
+}
+
 # --- heartbeat: no-change absorbed, backstop surfaces a missed status --------
 
 test_heartbeat_no_change_absorbed() {
@@ -2326,6 +2403,8 @@ test_procevent_marker_keys_are_injective
 test_procevent_surface_serializes_with_drain
 test_procevent_surface_crash_boundaries
 test_procevent_marker_failure_exits_and_replays
+test_logbook_only_home_demands_a_watcher
+test_logbook_board_wake_reaches_an_empty_fleet
 test_heartbeat_no_change_absorbed
 test_heartbeat_backstop_surfaces_unsurfaced_status
 test_beacon_stays_fresh_while_absorbing

@@ -88,6 +88,39 @@ test_predicate_x_mode_needs_supervision() {
   pass "fm_supervision_needed: X-mode relay poll needs supervision"
 }
 
+test_predicate_logbook_needs_supervision() {
+  local state="$TMP_ROOT/pred-logbook/state"
+  mkdir -p "$state"
+  : > "$state/logbook-watch.check.sh"
+  fm_supervision_needed "$state" 300 || fail "logbook board poll did not register as supervision need"
+  [ "$FM_SUP_IN_FLIGHT" -eq 0 ] || fail "logbook board poll must not count as an in-flight task"
+  [ "$FM_SUP_LOGBOOK" = true ] || fail "logbook board poll must set FM_SUP_LOGBOOK"
+  [ "$FM_SUP_RELAY" = false ] || fail "a logbook-only home must not read as a Relay home"
+  fm_supervision_unhealthy "$state" 300 || fail "logbook board poll with no beacon must be unhealthy"
+  pass "fm_supervision_needed: an enabled logbook board needs supervision on an empty fleet"
+}
+
+test_predicate_logbook_extra_channel_shim() {
+  local state="$TMP_ROOT/pred-logbook-extra/state"
+  mkdir -p "$state"
+  : > "$state/logbook-cards.check.sh"
+  fm_supervision_needed "$state" 300 || fail "a second logbook channel shim did not register as supervision need"
+  [ "$FM_SUP_LOGBOOK" = true ] || fail "every state/logbook-*.check.sh shim must set FM_SUP_LOGBOOK"
+  pass "fm_supervision_needed: the whole state/logbook-*.check.sh namespace counts"
+}
+
+test_predicate_logbook_absent_stays_quiet() {
+  local state="$TMP_ROOT/pred-logbook-absent/state"
+  mkdir -p "$state"
+  : > "$state/notlogbook.check.sh"
+  : > "$state/logbook-watch.check-trust"
+  if fm_supervision_needed "$state" 300; then
+    fail "a home with no logbook board poll must not demand a watcher"
+  fi
+  [ "$FM_SUP_LOGBOOK" = false ] || fail "FM_SUP_LOGBOOK must stay false without a logbook-*.check.sh shim"
+  pass "fm_supervision_needed: only the logbook-*.check.sh namespace triggers the board need"
+}
+
 test_predicate_source_needs_supervision() {
   local state="$TMP_ROOT/pred-source/state"
   mkdir -p "$state/procevent"
@@ -400,6 +433,17 @@ test_hook_x_mode_only_blocks_in_default_mode() {
   expect_code 2 "$status" "default hook mode must block an X-mode-only blind turn"
   assert_contains "$out" "X-mode relay polling needs supervision" "X-mode-only blind stop must identify its supervision need"
   pass "fm-turnend-guard: X-mode-only supervision remains guarded in default mode"
+}
+
+test_hook_logbook_only_blocks_in_default_mode() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-logbook-only")
+  : > "$dir/state/logbook-watch.check.sh"
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" "default hook mode must block a logbook-only blind turn"
+  assert_contains "$out" "Logbook board polling needs supervision" "logbook-only blind stop must identify its supervision need"
+  assert_not_contains "$out" "X-mode relay polling" "a logbook-only home must not be reported as a Relay home"
+  pass "fm-turnend-guard: logbook-only supervision is guarded in default mode"
 }
 
 test_hook_ignores_repo_state_when_fm_home_set() {
@@ -972,6 +1016,80 @@ EOF
   pass ".opencode primary plugin: guard path is anchored to worktree, not directory"
 }
 
+# A primary-shaped checkout for the OpenCode watch-arm plugin: plain git repo,
+# AGENTS.md, a fake bin/fm-watch-arm.sh that reports a started watcher and then
+# holds until <stop-file> appears, plus the real shared supervision predicate.
+make_opencode_arm_root() {  # <dir> <stop-file>
+  local dir=$1 stop=$2
+  mkdir -p "$dir/bin"
+  git init -q "$dir"
+  : > "$dir/AGENTS.md"
+  cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
+  cat > "$dir/bin/fm-watch-arm.sh" <<SH
+#!/usr/bin/env bash
+printf 'arm\n' >> "\${FM_ARM_LOG:?}"
+printf 'watcher: started pid=%s (beacon fresh)\n' "\$\$"
+trap 'exit 0' TERM INT
+while [ ! -e "$stop" ]; do sleep 0.02; done
+SH
+  chmod +x "$dir/bin/fm-watch-arm.sh"
+}
+
+# Drive the plugin's real arm decision for <home> against <repo> and print the
+# status ensureArmed returned plus whether the arm actually ran.
+probe_opencode_arm() {  # <repo> <home> <arm-log> <stop-file>
+  local repo=$1 home=$2 log=$3 stop=$4
+  NODE_NO_WARNINGS=1 PLUGIN="$ROOT/.opencode/plugins/fm-primary-watch-arm.js" WORKTREE="$repo" \
+    FM_HOME="$home" FM_ARM_LOG="$log" FM_STOP_FILE="$stop" node 2>&1 <<'EOF'
+import { existsSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+const client = { session: { promptAsync: async () => {} } };
+await mod.FmPrimaryWatchArm({
+  client,
+  directory: process.env.WORKTREE,
+  worktree: process.env.WORKTREE,
+});
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const status = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+writeFileSync(process.env.FM_STOP_FILE, "");
+console.log(`status=${status} arm-ran=${existsSync(process.env.FM_ARM_LOG)}`);
+process.exit(0);
+EOF
+}
+
+test_opencode_watch_arm_arms_logbook_only_home() {
+  local repo home out
+  repo="$TMP_ROOT/opencode-arm-owner-root"
+  make_opencode_arm_root "$repo" "$TMP_ROOT/opencode-arm-owner.stop"
+  home="$TMP_ROOT/opencode-arm-logbook-home"
+  mkdir -p "$home/state" "$home/config"
+  : > "$home/state/logbook-watch.check.sh"
+  out=$(probe_opencode_arm "$repo" "$home" "$TMP_ROOT/opencode-arm-logbook.log" "$TMP_ROOT/opencode-arm-owner.stop")
+  [ "$out" = "status=armed arm-ran=true" ] \
+    || fail "OpenCode watch-arm plugin must arm a logbook-only home with no task in flight: $out"
+  home="$TMP_ROOT/opencode-arm-empty-home"
+  mkdir -p "$home/state" "$home/config"
+  out=$(probe_opencode_arm "$repo" "$home" "$TMP_ROOT/opencode-arm-empty.log" "$TMP_ROOT/opencode-arm-owner.stop")
+  [ "$out" = "status=not-needed arm-ran=false" ] \
+    || fail "OpenCode watch-arm plugin must honour the shared owner's not-needed answer on an idle home: $out"
+  pass ".opencode watch-arm plugin: the shared supervision owner decides, so a logbook-only home arms"
+}
+
+test_opencode_watch_arm_unreadable_owner_stays_conservative() {
+  local repo home out
+  repo="$TMP_ROOT/opencode-arm-no-owner-root"
+  make_opencode_arm_root "$repo" "$TMP_ROOT/opencode-arm-no-owner.stop"
+  rm -f "$repo/bin/fm-supervision-lib.sh"
+  home="$TMP_ROOT/opencode-arm-no-owner-home"
+  mkdir -p "$home/state" "$home/config"
+  out=$(probe_opencode_arm "$repo" "$home" "$TMP_ROOT/opencode-arm-no-owner.log" "$TMP_ROOT/opencode-arm-no-owner.stop")
+  [ "$out" = "status=armed arm-ran=true" ] \
+    || fail "an unreadable supervision owner must not be reported as not-needed: $out"
+  pass ".opencode watch-arm plugin: an unreadable supervision owner arms rather than claiming nothing is needed"
+}
+
 test_pi_extension_injects_once_per_logical_agent_run() {
   local repo home ext log out status
   repo="$TMP_ROOT/pi-logical-run-root"
@@ -1177,6 +1295,17 @@ test_hook_claude_mode_reblocks_x_mode_without_tasks() {
   assert_contains "$out" "X-mode relay polling needs supervision" "--claude X-mode re-block must name the active supervision need"
   [ -f "$dir/state/.turnend-claude-blocks" ] || fail "--claude X-mode re-block must consume the shared block budget"
   pass "fm-turnend-guard --claude: X-mode-only homes re-block when auto-arm recovery is absent"
+}
+
+test_hook_claude_mode_reblocks_logbook_without_tasks() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-logbook")
+  : > "$dir/state/logbook-watch.check.sh"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" "--claude mode must re-block a logbook-only stop when no auto-arm claims recovery"
+  assert_contains "$out" "Logbook board polling needs supervision" "--claude logbook re-block must name the active supervision need"
+  [ -f "$dir/state/.turnend-claude-blocks" ] || fail "--claude logbook re-block must consume the shared block budget"
+  pass "fm-turnend-guard --claude: logbook-only homes re-block when auto-arm recovery is absent"
 }
 
 test_hook_claude_mode_allows_when_autoarm_owner_alive() {
@@ -1502,6 +1631,20 @@ test_hook_claude_mode_verified_failure_alarm_is_loud_and_once() {
   pass "fm-turnend-guard --claude: verified fail-open is loud, bounded, attended, and non-repeating"
 }
 
+test_hook_claude_mode_fail_open_names_logbook_board() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hook-claude-logbook-fail-open")
+  : > "$dir/state/logbook-watch.check.sh"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 3
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" "a logbook-only home with verified failure and exhausted budget must take the bounded attended fail-open"
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN: logbook board enabled' "logbook-only fail-open alarm must name the enabled logbook board"
+  assert_not_contains "$out" 'X-mode relay polling' "a logbook-only fail-open alarm must not be reported as a Relay home"
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" "logbook-only fail-open did not consume the episode alarm"
+  pass "fm-turnend-guard --claude: logbook-only verified fail-open names the logbook board"
+}
+
 test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch() {
   local no_notice notice_only out status
   no_notice=$(make_primary_dir "$TMP_ROOT/hook-claude-alarm-no-notice")
@@ -1612,6 +1755,9 @@ test_predicate_healthy_fresh_beacon
 test_predicate_queue_pending_flag
 test_predicate_x_mode_needs_supervision
 test_predicate_source_needs_supervision
+test_predicate_logbook_needs_supervision
+test_predicate_logbook_extra_channel_shim
+test_predicate_logbook_absent_stays_quiet
 test_hook_silent_when_no_work_in_flight
 test_hook_blocks_when_fresh_beacon_has_no_live_lock
 test_hook_blocks_source_only_home
@@ -1623,6 +1769,7 @@ test_hook_blocks_when_unhealthy_in_primary
 test_hook_blocks_from_fm_home_state
 test_hook_x_mode_reason_leaves_cadence_to_the_launcher
 test_hook_x_mode_only_blocks_in_default_mode
+test_hook_logbook_only_blocks_in_default_mode
 test_hook_ignores_repo_state_when_fm_home_set
 test_hook_uses_state_override
 test_hook_loop_guard_allows_retry
@@ -1649,10 +1796,13 @@ test_tracked_claude_entries_inert_under_grok
 test_codex_hook_uses_process_pwd_when_payload_cwd_is_outside_root
 test_codex_hook_ignores_nested_git_root_guard
 test_opencode_plugin_anchors_guard_to_worktree
+test_opencode_watch_arm_arms_logbook_only_home
+test_opencode_watch_arm_unreadable_owner_stays_conservative
 test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
+test_hook_claude_mode_reblocks_logbook_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive
 test_hook_claude_mode_repeated_failed_to_arming_interleavings_reach_fail_open
 test_hook_claude_mode_terminal_boundary_excludes_starting_owner
@@ -1664,6 +1814,7 @@ test_hook_claude_mode_concurrent_recovery_resets_are_idempotent
 test_hook_claude_mode_stale_rewake_epoch_blocks
 test_hook_claude_mode_budget_without_verified_failure_keeps_blocking
 test_hook_claude_mode_verified_failure_alarm_is_loud_and_once
+test_hook_claude_mode_fail_open_names_logbook_board
 test_hook_claude_mode_fail_open_requires_notice_and_failure_epoch
 test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open
 test_hook_claude_mode_allow_resets_budget
