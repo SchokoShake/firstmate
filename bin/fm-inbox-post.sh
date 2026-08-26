@@ -34,13 +34,14 @@
 #
 # Exit status (silent by default - the board should ignore it):
 #   0  --notify delivered, or --publish wrote/refreshed the record
-#   3  nothing to notify: no record, stale record, dead session, unreachable
-#      socket, or unsupported peer protocol. Expected, benign, and exactly the
-#      case the board poll still covers. --publish also exits 3 when this
-#      session has no inbox to publish (any harness that is not claude).
+#   3  not nudged: no record, a stale one, a dead session, a socket that no
+#      longer accepts a connection, an unsupported peer protocol, or no
+#      transport installed. All benign, all exactly the case the board poll
+#      still covers, so none of them is an error the board should act on - run
+#      --status or --verbose to see which one it was. --publish also exits 3
+#      when this session has no inbox to publish (any harness that is not claude).
 #   2  usage error, including a channel name that fails validation
-#   1  an outcome that should not happen: a transport is present but the write
-#      itself failed
+#   1  --publish could not write this home's own state
 #
 # THE WIRE FRAME - THIS HEADER IS ITS ONE OWNER.
 # Transport is a one-shot AF_UNIX stream socket: connect, write, half-close.
@@ -315,6 +316,20 @@ frame_uuid() {
   return 1
 }
 
+# The transport write_frame would use, for --status. An operator whose home has
+# none would otherwise see a silent decline with no way to tell why.
+transport_name() {
+  if command -v socat >/dev/null 2>&1; then
+    printf 'socat\n'
+  elif command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q -- '-U'; then
+    printf 'nc -U\n'
+  elif command -v python3 >/dev/null 2>&1; then
+    printf 'python3\n'
+  else
+    printf 'none installed - the nudge cannot be sent from this home\n'
+  fi
+}
+
 # Write one already-built frame to $1. Prefers the two transports the harness
 # itself names in its injection recipe, then python3, so a home missing one
 # still pushes rather than silently falling back to poll-only latency.
@@ -361,8 +376,11 @@ do_notify() {
     return 3
   fi
   if [ "$rc" -ne 0 ]; then
-    note 'the inbox socket refused the write'
-    return 1
+    # A socket file outlives the session that bound it, so a refused connect is
+    # the same benign staleness as a missing record - not an error the board
+    # should act on. The poll covers it either way.
+    note 'the inbox socket did not accept the nudge'
+    return 3
   fi
   note "notified $socket about the \"$channel\" channel"
   return 0
@@ -408,6 +426,7 @@ do_status() {
       "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" ;;
     *) printf 'inbound: crossSessionInbound=%s - nudges are not delivered to this session\n' "$setting" ;;
   esac
+  printf 'transport: %s\n' "$(transport_name)"
   printf 'notify command: %s' "$(notify_command_line "$home")"
 }
 

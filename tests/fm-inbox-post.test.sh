@@ -300,6 +300,22 @@ code=$?
 assert_absent "$CAPTURE" 'a home with no published record still posted'
 pass 'a home that never published an inbox declines quietly'
 
+# A socket file outlives the session that bound it, so the record can look
+# entirely healthy while nothing is listening. That must read as the same benign
+# staleness as a missing record, not as an error a board would surface.
+CLAUDE_CODE_MESSAGING_SOCKET="$SOCK" run_post --publish || fail 're-publish failed'
+[ -z "$LISTENER_PID" ] || kill "$LISTENER_PID" 2>/dev/null || true
+[ -z "$LISTENER_PID" ] || wait "$LISTENER_PID" 2>/dev/null || true
+LISTENER_PID=
+rm -f "$SOCK"
+python3 -c 'import os,socket,sys; s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); s.bind(sys.argv[1]); s.close()' "$SOCK"
+[ -S "$SOCK" ] || fail 'could not stage an abandoned socket file'
+out=$(run_post --notify logbook 2>&1)
+code=$?
+[ "$code" -eq 3 ] || fail "an abandoned socket should decline with 3, got $code"
+[ -z "$out" ] || fail "an abandoned socket should stay silent, printed: $out"
+pass 'a socket file whose session is gone declines quietly instead of erroring'
+
 printf 'version=fm-inbox-v0\nsocket=%s\npid=%s\npeer_protocol=1\n' "$SOCK" "$LIVE_PID" \
   > "$HOME_DIR/state/primary-inbox"
 out=$(run_post --notify logbook 2>&1)
