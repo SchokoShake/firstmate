@@ -322,36 +322,37 @@ frame_uuid() {
   return 1
 }
 
-# The transport write_frame would use, for --status. An operator whose home has
-# none would otherwise see a silent decline with no way to tell why.
-transport_name() {
+# The one selector for how a frame reaches a socket, so --status can never name
+# a transport write_frame would not actually use. Prefers the two the harness
+# itself names in its injection recipe, then python3, so a home missing one
+# still pushes rather than falling back to poll-only latency. Echoes 'none' when
+# the home has no way to send at all.
+transport_kind() {
   if command -v socat >/dev/null 2>&1; then
     printf 'socat\n'
   elif command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q -- '-U'; then
-    printf 'nc -U\n'
+    printf 'nc\n'
   elif command -v python3 >/dev/null 2>&1; then
     printf 'python3\n'
   else
-    printf 'none installed - the nudge cannot be sent from this home\n'
+    printf 'none\n'
   fi
 }
 
-# Write one already-built frame to $1. Prefers the two transports the harness
-# itself names in its injection recipe, then python3, so a home missing one
-# still pushes rather than silently falling back to poll-only latency.
+# Write one already-built frame to $1. Exits 127 when the home has no transport,
+# which the caller reports as a quiet decline like every other benign case.
 write_frame() {
   local socket=$1 frame=$2
-  if command -v socat >/dev/null 2>&1; then
-    printf '%s\n' "$frame" | socat -t 5 - "UNIX-CONNECT:$socket" >/dev/null 2>&1
-    return
-  fi
-  if command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q -- '-U'; then
-    printf '%s\n' "$frame" | nc -U "$socket" >/dev/null 2>&1
-    return
-  fi
-  if command -v python3 >/dev/null 2>&1; then
-    FM_INBOX_SOCKET=$socket FM_INBOX_FRAME=$frame python3 -c '
-import os, socket, sys
+  case "$(transport_kind)" in
+    socat)
+      printf '%s\n' "$frame" | socat -t 5 - "UNIX-CONNECT:$socket" >/dev/null 2>&1
+      ;;
+    nc)
+      printf '%s\n' "$frame" | nc -U "$socket" >/dev/null 2>&1
+      ;;
+    python3)
+      FM_INBOX_SOCKET=$socket FM_INBOX_FRAME=$frame python3 -c '
+import os, socket
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.settimeout(5)
 try:
@@ -361,9 +362,9 @@ try:
 finally:
     s.close()
 ' >/dev/null 2>&1
-    return
-  fi
-  return 127
+      ;;
+    *) return 127 ;;
+  esac
 }
 
 do_notify() {
@@ -374,7 +375,7 @@ do_notify() {
   fi
   resolved=$(resolve_inbox "$state") || return 3
   socket=$(printf '%s\n' "$resolved" | sed -n 1p)
-  frame=$(notify_frame "$channel") || { note 'could not build the frame'; return 1; }
+  frame=$(notify_frame "$channel") || { note 'could not build the frame'; return 3; }
   write_frame "$socket" "$frame"
   rc=$?
   if [ "$rc" -eq 127 ]; then
@@ -418,7 +419,7 @@ inbound_user_setting() {
 }
 
 do_status() {
-  local state=$1 home=$2 resolved setting
+  local state=$1 home=$2 resolved setting transport
   if resolved=$(resolve_inbox "$state" 2>/dev/null); then
     printf 'inbox: live (pid %s)\n' "$(printf '%s\n' "$resolved" | sed -n 2p)"
   else
@@ -432,7 +433,12 @@ do_status() {
       "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" ;;
     *) printf 'inbound: crossSessionInbound=%s - nudges are not delivered to this session\n' "$setting" ;;
   esac
-  printf 'transport: %s\n' "$(transport_name)"
+  transport=$(transport_kind)
+  case "$transport" in
+    none) printf 'transport: none installed - the nudge cannot be sent from this home\n' ;;
+    nc) printf 'transport: nc -U\n' ;;
+    *) printf 'transport: %s\n' "$transport" ;;
+  esac
   printf 'notify command: %s' "$(notify_command_line "$home")"
 }
 
