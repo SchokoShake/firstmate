@@ -1011,7 +1011,7 @@ EOF
 # itself carries a notification only, and bin/fm-inbox-post.sh owns both that
 # frame and the published-inbox record it reads.
 logbook_notify_setup() {
-  local artifact command_file body armed board changed=0
+  local artifact command_file body armed board changed
   artifact="$STATE/logbook-notify-command"
 
   armed=0
@@ -1038,7 +1038,12 @@ logbook_notify_setup() {
   # `fm-inbox-post.sh --print-notify-command` can never show two different forms.
   body=$(FM_HOME="$FM_HOME" "$command_file" --print-notify-command) || return 0
   [ -n "$body" ] || return 0
-  bootstrap_artifact_present "$artifact" && cmp -s "$artifact" <(printf '%s\n' "$body") || changed=1
+  # Stay quiet on an unchanged artifact: this runs at every session start, and a
+  # line repeated every time is noise rather than an operator fact.
+  changed=1
+  if bootstrap_artifact_present "$artifact" && cmp -s "$artifact" <(printf '%s\n' "$body"); then
+    changed=0
+  fi
   bootstrap_artifact_write_if_changed "$artifact" "$body" 600 || {
     echo "BOOTSTRAP_INFO: logbook answer nudge unavailable - could not publish state/logbook-notify-command"
     return 0
