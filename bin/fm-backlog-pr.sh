@@ -14,10 +14,11 @@
 # carries no URL keeps the link tasks-axi's to place, which is what lets
 # `retitle` carry it across a title change in the same call. A scout's report
 # link (`--report data/<id>/report.md`) lives in the same line by the same
-# mechanism, so every write here carries that one too, and so does any other
-# URL tasks-axi already read from the line as a `doc:` link: that kind has no
-# flag of its own, so the one writer here re-appends the item's recorded doc
-# URLs to the title it writes rather than letting a title change drop them.
+# mechanism, so every write here carries that one too. Any other URL tasks-axi
+# read from the line is a `doc:` link with no flag of its own, and no write
+# here puts a URL back into title text, so a doc link is not carried: every
+# write reports each one it drops as `dropped doc=<url>`, so that loss is
+# visible rather than silent.
 #
 # Usage:
 #   fm-backlog-pr.sh record <task-id> <pr-url>
@@ -30,15 +31,14 @@
 # ship task gets its backlog link when the PR is first recorded rather than at
 # completion.
 #
-# `retitle` sets a new title and re-asserts every link the item carries, its
-# recorded PR link, its report link, and its doc links, in the same tasks-axi
-# call, so they survive. Use it instead of a bare `tasks-axi update <id>
-# --title ...` on any task that has, or may later have, a PR or a report. A
-# GitHub pull request URL in <new-title> is taken as the intended link,
-# stripped out of the title, and recorded through the field; any other URL in
-# <new-title> is refused, because a URL a caller pastes into title text is
-# exactly the link the next title change would drop, while the doc links the
-# item already carries are re-appended and reported as `kept doc=<url>`.
+# `retitle` sets a new title and re-asserts the item's recorded PR link and
+# report link in the same tasks-axi call, so they survive. Use it instead of a
+# bare `tasks-axi update <id> --title ...` on any task that has, or may later
+# have, a PR or a report. One GitHub pull request URL in <new-title> is taken
+# as the intended link, stripped out of the title, and recorded through the
+# field; two different ones, or any other URL in <new-title>, are refused,
+# because a URL a caller pastes into title text is exactly the link the next
+# title change would drop.
 #
 # `repair` restores a link that was already lost, from the `pr=` line in this
 # home's task metadata - firstmate's own durable record, written by
@@ -146,10 +146,21 @@ unquoted_field() {  # <raw-field-value>
 # The item's recorded links of one kind (`pr` or `report`), newline separated,
 # in the order tasks-axi reports them. Empty when the item carries none.
 item_links() {  # <show-output> <kind>
-  local links
+  local links nl=$'\n'
   links=$(unquoted_field "$(show_field "$1" links)")
   [ -n "$links" ] && [ "$links" != none ] || return 0
-  printf '%s\n' "$links" | tr ',' '\n' | sed -n "s/^$2://p"
+  printf '%s\n' "$links" | sed -E "s/,(pr|report|doc):/\\$nl\\1:/g" | sed -n "s/^$2://p"
+}
+
+# The item's doc links, as the ` dropped doc=<url>` suffix a write's report
+# line carries for each one, since no write here keeps them. Empty when the
+# item carries none.
+dropped_doc_report() {  # <show-output>
+  local doc out=
+  while IFS= read -r doc; do
+    [ -z "$doc" ] || out="$out dropped doc=$doc"
+  done < <(item_links "$1" doc)
+  printf '%s' "$out"
 }
 
 # The URL firstmate itself recorded for the task, from the task metadata
@@ -200,15 +211,12 @@ require_storable_url() {  # <raw-url>
     || skip "tasks-axi stores only a GitHub pull request URL in the pr field, not $FM_PR_URL"
 }
 
-# The one write. <title> is always a title with no link text in it; the PR and
-# report links reach the item through their own flags, and <doc-urls>, the
-# item's recorded doc links space-separated in their recorded order, are
-# re-appended to the title because tasks-axi has no flag for that kind. All in
-# a single call so no intermediate state has a link missing. Any link may be
-# empty.
-write_item() {  # <task-id> <title> <pr-url> <report-path> <doc-urls>
+# The one write. <title> is always a title with no link text in it, and every
+# link reaches the item through its own flag, in a single call so no
+# intermediate state has one missing. Either link may be empty.
+write_item() {  # <task-id> <title> <pr-url> <report-path>
   local -a args
-  args=(update "$1" --title "$2${5:+ $5}")
+  args=(update "$1" --title "$2")
   [ -z "$3" ] || args+=(--pr "$3")
   [ -z "$4" ] || args+=(--report "$4")
   tasks_axi "${args[@]}" >/dev/null || fail "could not update $1 in the backlog"
@@ -236,7 +244,7 @@ load_carried_pr_url() {  # <task-id>
 }
 
 cmd_record() {  # <task-id> <pr-url>
-  local id=$1 url title clean links report docs
+  local id=$1 url title clean links report
   fm_pr_url_parse "$2" || fail "not a pull request or merge request URL: $2"
   require_backlog_backend
   load_item "$id"
@@ -244,7 +252,6 @@ cmd_record() {  # <task-id> <pr-url>
   url=$FM_PR_URL
   links=$(item_links "$ITEM_SHOW" pr | paste -sd, -)
   report=$(item_links "$ITEM_SHOW" report | head -1)
-  docs=$(item_links "$ITEM_SHOW" doc | paste -sd' ' -)
   title=$(unquoted_field "$(show_field "$ITEM_SHOW" title)")
   clean=$(strip_links "$title" "$report")
   if [ "$links" = "$url" ]; then
@@ -252,48 +259,45 @@ cmd_record() {  # <task-id> <pr-url>
     return 0
   fi
   [ -n "$clean" ] || fail "$id has no title left once its links are removed"
-  write_item "$id" "$clean" "$url" "$report" "$docs"
-  printf 'recorded: %s pr=%s\n' "$id" "$url"
+  write_item "$id" "$clean" "$url" "$report"
+  printf 'recorded: %s pr=%s%s\n' "$id" "$url" "$(dropped_doc_report "$ITEM_SHOW")"
 }
 
 cmd_retitle() {  # <task-id> <new-title>
-  local id=$1 title=$2 clean pasted token url report docs doc carried=
+  local id=$1 title=$2 clean pasted='' token url report carried=''
   case "$title" in
     ''|*$'\n'*|*$'\r'*) fail "a title must be one non-empty line" ;;
   esac
   require_backlog_backend
   load_item "$id"
   # Every URL in the new title is a link, and the only link the field can hold
-  # is a GitHub pull request URL; anything else is refused rather than stored
+  # is one GitHub pull request URL; anything else is refused rather than stored
   # as title text, where the next title change would drop it.
   while IFS= read -r token; do
     storable_url "$token" \
       || fail "a URL in a title is a link, and the pr field can hold only a GitHub pull request URL: $token"
+    [ -z "$pasted" ] || [ "$pasted" = "$FM_PR_URL" ] \
+      || fail "the pr field holds one pull request URL, and the title names two: $pasted and $FM_PR_URL"
+    pasted=$FM_PR_URL
   done < <(printf '%s' "$title" | grep -Eo "$URL_RE")
   report=$(item_links "$ITEM_SHOW" report | head -1)
-  docs=$(item_links "$ITEM_SHOW" doc | paste -sd' ' -)
   clean=$(strip_links "$title" "$report")
   [ -n "$clean" ] || fail "the new title has no text left once its links are removed"
   # A URL the caller wrote into the new title is the link they meant to keep, so
   # it wins outright. Otherwise the item carries whatever `repair` would settle
   # on, and a record tasks-axi cannot store (a merge request) with no item link
   # behind it simply means there is no PR link to carry: the title still
-  # changes, with the item's other links intact.
-  pasted=$(printf '%s' "$title" | grep -Eo "$URL_RE" | head -1)
+  # changes, with the item's report link intact.
   if [ -n "$pasted" ]; then
-    storable_url "$pasted" || fail "not a GitHub pull request URL, so it cannot be kept in the pr field: $pasted"
-    url=$FM_PR_URL
+    url=$pasted
   else
     load_carried_pr_url "$id"
     url=$CARRIED_PR_URL
   fi
   [ -z "$url" ] || carried="pr=$url"
   [ -z "$report" ] || carried="${carried:+$carried }report=$report"
-  for doc in $docs; do
-    carried="${carried:+$carried }kept doc=$doc"
-  done
-  write_item "$id" "$clean" "$url" "$report" "$docs"
-  printf 'retitled: %s %s\n' "$id" "${carried:-(no links)}"
+  write_item "$id" "$clean" "$url" "$report"
+  printf 'retitled: %s %s%s\n' "$id" "${carried:-(no links)}" "$(dropped_doc_report "$ITEM_SHOW")"
 }
 
 cmd_repair() {  # <task-id>
