@@ -30,9 +30,10 @@
 # `retitle` sets a new title and re-asserts every link the item carries, its
 # recorded PR link and its report link, in the same tasks-axi call, so they
 # survive. Use it instead of a bare `tasks-axi update <id> --title ...` on any
-# task that has, or may later have, a PR or a report. A URL in <new-title> is
-# taken as the intended link, stripped out of the title, and recorded through
-# the field.
+# task that has, or may later have, a PR or a report. A GitHub pull request URL
+# in <new-title> is taken as the intended link, stripped out of the title, and
+# recorded through the field; any other URL is refused, because a URL left in
+# title text is exactly the link the next title change would drop.
 #
 # `repair` restores a link that was already lost, from the `pr=` line in this
 # home's task metadata - firstmate's own durable record, written by
@@ -89,8 +90,10 @@ tasks_axi() {
   (cd "$FM_HOME" && tasks-axi "$@")
 }
 
-# The pull-request URL shape tasks-axi itself recognizes inside an item line.
+# The pull-request URL shape tasks-axi itself recognizes inside an item line,
+# and the broader shape of anything that would be read as a link at all.
 PR_URL_RE='https?://[^[:space:]]*/pull/[0-9][0-9]*'
+URL_RE='https?://[^[:space:]]+'
 
 # Drop every pull-request URL, and the item's report path when it has one, from
 # a title and normalize the whitespace that removing them leaves behind, so the
@@ -157,8 +160,11 @@ meta_pr_url() {  # <task-id>
 }
 
 require_backlog_backend() {
-  fm_tasks_axi_backend_available "$CONFIG" \
-    || skip "this home does not use tasks-axi for routine backlog mutations"
+  fm_tasks_axi_backend_available "$CONFIG" && return 0
+  if fm_backlog_backend_manual "$CONFIG"; then
+    skip "this home does not use tasks-axi for routine backlog mutations"
+  fi
+  skip "tasks-axi is absent or older than $FM_TASKS_AXI_MIN, so the backlog was not written"
 }
 
 # Loads the item's `tasks-axi show <id> --full` output into ITEM_SHOW, or skips
@@ -243,12 +249,19 @@ cmd_record() {  # <task-id> <pr-url>
 }
 
 cmd_retitle() {  # <task-id> <new-title>
-  local id=$1 title=$2 clean pasted url report carried=
+  local id=$1 title=$2 clean pasted token url report carried=
   case "$title" in
     ''|*$'\n'*|*$'\r'*) fail "a title must be one non-empty line" ;;
   esac
   require_backlog_backend
   load_item "$id"
+  # Every URL in the new title is a link, and the only link the field can hold
+  # is a GitHub pull request URL; anything else is refused rather than stored
+  # as title text, where the next title change would drop it.
+  while IFS= read -r token; do
+    storable_url "$token" \
+      || fail "a URL in a title is a link, and the pr field can hold only a GitHub pull request URL: $token"
+  done < <(printf '%s' "$title" | grep -Eo "$URL_RE")
   report=$(item_links "$ITEM_SHOW" report | head -1)
   clean=$(strip_links "$title" "$report")
   [ -n "$clean" ] || fail "the new title has no text left once its links are removed"
@@ -257,7 +270,7 @@ cmd_retitle() {  # <task-id> <new-title>
   # on, and a record tasks-axi cannot store (a merge request) with no item link
   # behind it simply means there is no PR link to carry: the title still
   # changes, with the item's other links intact.
-  pasted=$(printf '%s' "$title" | grep -Eo "$PR_URL_RE" | head -1)
+  pasted=$(printf '%s' "$title" | grep -Eo "$URL_RE" | head -1)
   if [ -n "$pasted" ]; then
     storable_url "$pasted" || fail "not a GitHub pull request URL, so it cannot be kept in the pr field: $pasted"
     url=$FM_PR_URL

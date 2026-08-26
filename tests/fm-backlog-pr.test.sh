@@ -90,7 +90,7 @@ ensure_accumulated_links() {  # <home> <id> <older-url> <newer-url>
     *"pr:$3"*) ;;
     *)
       upstream_notice "replaces the pr link on --pr; the accumulation-pin no longer applies - the two-link item is staged by hand"
-      if ! sed "s# $4# $3 $4#" "$1/data/backlog.md" > "$1/data/backlog.md.tmp" \
+      if ! sed "/^- \\[ \\] $2 - /s# $4# $3 $4#" "$1/data/backlog.md" > "$1/data/backlog.md.tmp" \
         || ! mv "$1/data/backlog.md.tmp" "$1/data/backlog.md"; then
         fail "could not stage the accumulated links by hand"
       fi
@@ -254,6 +254,47 @@ test_repair_restores_a_lost_link_from_task_metadata() {
   assert_contains "$(recorded_links "$home" ship-f6)" "pr:$PR_A" \
     "repair did not restore the link from the task metadata"
   pass "repair restores a lost backlog link from the task's own durable record"
+}
+
+# A merge request pasted into a new title can be stored nowhere but the title
+# text, which is exactly where the next title change would drop it, so the
+# retitle is refused outright and the item is left as it was.
+test_retitle_refuses_a_pasted_merge_request() {
+  local home before rc
+  home=$(make_home retitle-pasted-mr)
+  tasks_in "$home" add ship-r2 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-r2 "$PR_A" >/dev/null || fail "record failed"
+  before=$(item_line "$home" ship-r2)
+
+  run_backlog_pr "$home" retitle ship-r2 \
+    "ship the widget https://gitlab.com/acme/widget/-/merge_requests/9" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "retitle accepted a merge request pasted into the title"
+  [ "$(item_line "$home" ship-r2)" = "$before" ] || fail "the refused retitle still changed the item line"
+  assert_no_grep "merge_requests" "$home/data/backlog.md" "the merge request URL reached the backlog"
+  assert_contains "$(recorded_links "$home" ship-r2)" "pr:$PR_A" "the refused retitle lost the recorded PR link"
+  pass "retitle refuses a pasted merge request rather than storing it as title text"
+}
+
+# A home on the default backend whose tasks-axi is unusable is told that, not
+# that it opted out.
+test_record_reports_an_unusable_tasks_axi_rather_than_an_opt_out() {
+  local home out
+  home=$(make_home unusable-tasks-axi)
+  tasks_in "$home" add ship-s3 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  mkdir -p "$home/nobin"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$home/nobin/tasks-axi"
+  chmod +x "$home/nobin/tasks-axi"
+
+  out=$(PATH="$home/nobin:$PATH" run_backlog_pr "$home" record ship-s3 "$PR_A") \
+    || fail "record failed with an unusable tasks-axi"
+  assert_contains "$out" "skipped: tasks-axi is absent or older than" \
+    "record did not name the unusable tasks-axi as the reason"
+  assert_not_contains "$out" "does not use tasks-axi" "record reported an opt-out the home never made"
+  assert_not_contains "$(item_line "$home" ship-s3)" "$PR_A" "the backlog was written through an unusable tasks-axi"
+  pass "record reports an unusable tasks-axi rather than a backend opt-out"
 }
 
 # A task tracked on GitLab has a merge request in its meta that tasks-axi cannot
@@ -434,12 +475,14 @@ test_record_keeps_the_url_out_of_the_title
 test_retitle_carries_the_pr_link_across_a_title_change
 test_retitle_moves_a_pasted_url_into_the_field
 test_retitle_carries_a_report_link_across_a_title_change
+test_retitle_refuses_a_pasted_merge_request
 test_record_replaces_rather_than_accumulates
 test_repair_restores_a_lost_link_from_task_metadata
 test_retitle_changes_the_title_of_a_gitlab_task
 test_accumulated_links_normalize_the_same_way_through_retitle_and_repair
 test_retitle_keeps_an_item_link_when_the_recorded_url_is_unstorable
 test_record_reports_the_backend_opt_out_before_the_field_limit
+test_record_reports_an_unusable_tasks_axi_rather_than_an_opt_out
 test_repair_is_quiet_when_nothing_is_recorded
 test_a_merge_request_is_reported_not_written_into_the_title
 test_a_task_outside_the_backlog_is_skipped_not_failed
