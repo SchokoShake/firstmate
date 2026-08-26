@@ -26,6 +26,9 @@ Any session started with `--debug` prints the injection recipe at startup:
 That printed recipe is the reproduction path for a future version, and it is preferred over reading the binary because it is emitted by the build actually installed.
 It confirms the transport (one-shot AF_UNIX stream, newline-delimited JSON, optional auth line then one payload line), that the auth line is optional for an unauthenticated peer, that both `socat` and `nc -U` are supported senders, and that a connection sending no complete line within 30s is closed.
 
+The recipe's own example frame carries neither `msgV` nor `msg_id`, and a frame of exactly that minimal shape was posted and delivered during this verification.
+`msg_id` is therefore optional, which is what lets `bin/fm-inbox-post.sh` omit it on a home with no uuid source rather than losing the push entirely.
+
 A frame the receiver cannot parse is dropped with a debug-log warning and no diagnostic anywhere the sender can see:
 
 ```
