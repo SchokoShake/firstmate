@@ -47,6 +47,10 @@ Set the local, gitignored `config/backlog-backend` file to `manual` to force man
 Absent or `tasks-axi` selects the default tasks-axi backend.
 The file format is unchanged in both modes; tasks-axi and manual edits produce the same `## In flight`, `## Queued`, and `## Done` sections.
 
+A task's PR URL belongs to the item's `pr` field and never to its title, because the markdown backend keeps both in the same item line and a later `tasks-axi update <id> --title` replaces that line and drops the URL with it.
+[`bin/fm-backlog-pr.sh`](../bin/fm-backlog-pr.sh) is the single owner of that convention: it records the URL through `--pr` while writing a title with no URL in it, carries the recorded link across a title change, and restores a link that was already lost from the task's own `pr=` metadata.
+tasks-axi's `pr` field holds only a GitHub pull request URL, so a GitLab merge request stays in the task's `pr=` metadata and is reported as skipped rather than written into the backlog item at all.
+
 ## Runtime backend (config/backend / FM_BACKEND)
 
 For spawn-capable adapters, the runtime session-provider backend controls where task windows/endpoints are created, captured, sent to, watched, and killed.
