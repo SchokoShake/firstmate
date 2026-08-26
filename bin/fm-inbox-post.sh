@@ -294,7 +294,7 @@ resolve_inbox() {
 notify_frame() {
   local channel=$1 uuid body
   uuid=$(frame_uuid) || return 1
-  body="Board answers are pending on the $channel channel. Drain the stashed answers through the ordinary board-answer handling now - this notification carries no answer content, and the board poll remains the only content path."
+  body="Board answers are pending on the $channel channel. Run the ordinary board-answer handling now and drain whatever it finds, instead of waiting for the next scheduled poll - this notification carries no answer content, and the poll remains the only path the answers themselves travel."
   printf '{"msgV":1,"msg_id":"%s","type":"user","message":{"role":"user","content":"<cross-session-message from-name=\\"%s\\">\\n%s\\n</cross-session-message>"},"priority":"next"}\n' \
     "$uuid" "$FROM_NAME" "$body"
 }
