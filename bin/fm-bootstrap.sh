@@ -1034,7 +1034,10 @@ logbook_notify_setup() {
 
   command_file="$FM_ROOT/bin/fm-inbox-post.sh"
   [ -x "$command_file" ] || return 0
-  body="FM_HOME=$FM_HOME $command_file --notify <channel>"
+  # The command's own script is its one producer, so the published artifact and
+  # `fm-inbox-post.sh --print-notify-command` can never show two different forms.
+  body=$(FM_HOME="$FM_HOME" "$command_file" --print-notify-command) || return 0
+  [ -n "$body" ] || return 0
   bootstrap_artifact_present "$artifact" && cmp -s "$artifact" <(printf '%s\n' "$body") || changed=1
   bootstrap_artifact_write_if_changed "$artifact" "$body" 600 || {
     echo "BOOTSTRAP_INFO: logbook answer nudge unavailable - could not publish state/logbook-notify-command"

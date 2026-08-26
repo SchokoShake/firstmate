@@ -156,14 +156,25 @@ registry_dir() {
 }
 
 # Echo the registry entry path whose messagingSocketPath equals $1, if any.
+#
+# More than one entry can name the same socket: a session that died without
+# cleaning up leaves its entry behind, and the path is reused. Only a LIVE pid
+# can actually be listening, so dead entries are skipped rather than taken in
+# glob order - otherwise a stale neighbour decides this home's peer protocol and
+# pid, and the push stands down against a session that is running fine.
 registry_entry_for_socket() {
-  local want=$1 dir entry sock
+  local want=$1 dir entry sock pid
   dir=$(registry_dir)
   [ -d "$dir" ] || return 1
   for entry in "$dir"/*.json; do
     [ -f "$entry" ] || continue
     sock=$(registry_string_field "$entry" messagingSocketPath)
     [ "$sock" = "$want" ] || continue
+    pid=$(basename "$entry" .json)
+    case "$pid" in
+      '' | *[!0-9]*) continue ;;
+    esac
+    kill -0 "$pid" 2>/dev/null || continue
     printf '%s\n' "$entry"
     return 0
   done
@@ -359,8 +370,13 @@ do_notify() {
 
 # --- reporting -------------------------------------------------------------
 
+# The one producer of the command a board is configured to spawn. Bootstrap
+# publishes exactly this string into state/logbook-notify-command rather than
+# composing its own, so a board and a human are never shown two forms of it.
+# <channel> stays a placeholder: a board may watch several channels and
+# substitutes its own, and fm-inbox-post.sh validates whatever arrives.
 notify_command_line() {
-  printf 'FM_HOME=%s %s/bin/fm-inbox-post.sh --notify %s\n' "$1" "$FM_ROOT" "${2:-logbook}"
+  printf 'FM_HOME=%s %s/bin/fm-inbox-post.sh --notify <channel>\n' "$1" "$FM_ROOT"
 }
 
 # The operator's effective inbound setting, or empty when none is set.
@@ -432,6 +448,6 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 case "$MODE" in
   publish) do_publish "$STATE" ;;
   notify) do_notify "$STATE" "$CHANNEL" ;;
-  print-notify-command) notify_command_line "$FM_HOME" "${CHANNEL:-logbook}" ;;
+  print-notify-command) notify_command_line "$FM_HOME" ;;
   status) do_status "$STATE" "$FM_HOME" ;;
 esac

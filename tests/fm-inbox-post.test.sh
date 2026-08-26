@@ -58,6 +58,8 @@ write_registry_entry() {  # <pid> <socket> <peerProtocol>
 # exit. This is the receiving half of the real transport, so a frame that fails
 # to arrive here would have failed to arrive at a harness too.
 start_listener() {
+  [ -z "$LISTENER_PID" ] || kill "$LISTENER_PID" 2>/dev/null || true
+  [ -z "$LISTENER_PID" ] || wait "$LISTENER_PID" 2>/dev/null || true
   rm -f "$SOCK" "$CAPTURE"
   FM_T_SOCK="$SOCK" FM_T_OUT="$CAPTURE" python3 -c '
 import os, socket
@@ -74,7 +76,7 @@ while b"\n" not in data:
 with open(os.environ["FM_T_OUT"], "wb") as fh:
     fh.write(data.split(b"\n")[0])
 conn.close(); s.close()
-' &
+' 2>/dev/null &
   LISTENER_PID=$!
   local waited=0
   while [ ! -S "$SOCK" ]; do
@@ -261,7 +263,36 @@ assert_absent "$CAPTURE" 'a live protocol bump still posted a frame'
 pass 'a harness upgrade that bumps the peer protocol stands the push down'
 
 write_registry_entry "$LIVE_PID" "$SOCK" 1
+
+# A session that died without cleaning up leaves its registry entry behind while
+# a live session owns the same socket path. The dead neighbour must not decide
+# this home's pid or peer protocol, or the push stands down against a session
+# that is running fine.
+STALE_PID=$((LIVE_PID - 1))
+[ "$STALE_PID" -gt 1 ] || STALE_PID=$((LIVE_PID + 1))
+while kill -0 "$STALE_PID" 2>/dev/null; do STALE_PID=$((STALE_PID - 1)); done
+write_registry_entry "$STALE_PID" "$SOCK" 9
 rm -f "$HOME_DIR/state/primary-inbox"
+CLAUDE_CODE_MESSAGING_SOCKET="$SOCK" run_post --publish \
+  || fail 'a dead registry entry sharing the socket blocked publishing'
+assert_grep "pid=$LIVE_PID" "$HOME_DIR/state/primary-inbox" \
+  'publish took a dead session over the live one'
+assert_grep 'peer_protocol=1' "$HOME_DIR/state/primary-inbox" \
+  "publish took the dead entry's peer protocol"
+rm -f "$CAPTURE"
+start_listener
+run_post --notify logbook || fail 'a dead registry entry sharing the socket blocked the nudge'
+waited=0
+while [ ! -s "$CAPTURE" ]; do
+  waited=$((waited + 1))
+  [ "$waited" -lt 200 ] || fail 'a dead registry entry sharing the socket suppressed the nudge'
+  sleep 0.05
+done
+rm -f "$CFG_DIR/sessions/$STALE_PID.json"
+pass 'a dead session that still claims the socket does not speak for the live one'
+
+rm -f "$HOME_DIR/state/primary-inbox"
+start_listener
 out=$(run_post --notify logbook 2>&1)
 code=$?
 [ "$code" -eq 3 ] || fail "no published record should decline with 3, got $code"
@@ -281,7 +312,24 @@ pass 'a record written by a different record version is not acted on'
 
 line=$(run_post --print-notify-command)
 case "$line" in
-  *"FM_HOME=$HOME_DIR"*"/bin/fm-inbox-post.sh --notify logbook") ;;
-  *) fail "the published notify command is not runnable as printed: $line" ;;
+  *"FM_HOME=$HOME_DIR"*"/bin/fm-inbox-post.sh --notify <channel>") ;;
+  *) fail "the published notify command is not the form a board can configure: $line" ;;
 esac
-pass 'the notify command names the home and the channel the board must pass'
+pass 'the notify command names the home and leaves the channel for the board to fill in'
+
+# A board substitutes its own channel into that template, so the template must
+# actually run once it does. Prove it rather than assuming the shape is right.
+runnable=${line%<channel>}logbook
+CLAUDE_CODE_MESSAGING_SOCKET="$SOCK" run_post --publish || fail 're-publish failed'
+rm -f "$CAPTURE"
+start_listener
+evalout=$(eval "$runnable --verbose" 2>&1) \
+  || fail "the published notify command did not run: $runnable
+  reason: $evalout"
+waited=0
+while [ ! -s "$CAPTURE" ]; do
+  waited=$((waited + 1))
+  [ "$waited" -lt 200 ] || fail 'the published notify command posted nothing'
+  sleep 0.05
+done
+pass 'the published notify command delivers once a board fills in its channel'
