@@ -17,6 +17,8 @@ command -v tasks-axi >/dev/null 2>&1 || { echo "skip: tasks-axi not found"; exit
 
 PR_A=https://github.com/acme/widget/pull/42
 PR_B=https://github.com/acme/widget/pull/77
+DOC_A=https://example.com/docs
+DOC_B=https://example.org/spec
 
 make_home() {  # <name>
   local home="$TMP_ROOT/$1" fakebin
@@ -256,6 +258,79 @@ test_repair_restores_a_lost_link_from_task_metadata() {
   pass "repair restores a lost backlog link from the task's own durable record"
 }
 
+# Any other URL tasks-axi read from the item line is a doc link with no flag of
+# its own, so a title change through the owner carries it by re-appending it,
+# says so, and still applies the new title.
+test_retitle_keeps_a_doc_link() {
+  local home out
+  home=$(make_home retitle-doc)
+  tasks_in "$home" add ship-t4 "ship the widget see $DOC_A" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  assert_contains "$(recorded_links "$home" ship-t4)" "doc:$DOC_A" "the seed URL was not read as a doc link"
+
+  out=$(run_backlog_pr "$home" retitle ship-t4 "ship the widget, second pass") || fail "retitle failed"
+  assert_contains "$out" "retitled: ship-t4 kept doc=$DOC_A" "retitle did not report the kept doc link"
+  assert_contains "$(recorded_links "$home" ship-t4)" "doc:$DOC_A" \
+    "the doc link did not survive a title change through the owner"
+  assert_contains "$(recorded_title "$home" ship-t4)" "second pass" "the new title was not applied"
+  assert_not_contains "$(recorded_title "$home" ship-t4)" "see " "the old title text was kept"
+  pass "a title change through the owner keeps the item's doc link and says so"
+}
+
+test_retitle_keeps_two_doc_links_in_order() {
+  local home out
+  home=$(make_home retitle-two-docs)
+  tasks_in "$home" add ship-u5 "ship the widget see $DOC_A and $DOC_B" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+
+  out=$(run_backlog_pr "$home" retitle ship-u5 "ship the widget, second pass") || fail "retitle failed"
+  assert_contains "$out" "kept doc=$DOC_A kept doc=$DOC_B" "retitle did not report both kept doc links in order"
+  assert_contains "$(recorded_links "$home" ship-u5)" "doc:$DOC_A,doc:$DOC_B" \
+    "both doc links did not survive a title change in their recorded order"
+  assert_contains "$(recorded_title "$home" ship-u5)" "second pass" "the new title was not applied"
+  pass "a title change through the owner keeps every doc link in its recorded order"
+}
+
+test_retitle_keeps_doc_pr_and_report_links_together() {
+  local home out links report=data/ship-v6/report.md
+  home=$(make_home retitle-all-links)
+  tasks_in "$home" add ship-v6 "ship the widget see $DOC_A" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-v6 "$PR_A" >/dev/null || fail "record failed"
+  tasks_in "$home" update ship-v6 --report "$report" >/dev/null || fail "could not record the report link"
+
+  out=$(run_backlog_pr "$home" retitle ship-v6 "ship the widget, second pass") || fail "retitle failed"
+  assert_contains "$out" "retitled: ship-v6 pr=$PR_A report=$report kept doc=$DOC_A" \
+    "retitle did not report every carried link"
+  links=$(recorded_links "$home" ship-v6)
+  assert_contains "$links" "pr:$PR_A" "the PR link did not survive beside doc and report links"
+  assert_contains "$links" "report:$report" "the report link did not survive beside doc and PR links"
+  assert_contains "$links" "doc:$DOC_A" "the doc link did not survive beside PR and report links"
+  assert_contains "$(recorded_title "$home" ship-v6)" "second pass" "the new title was not applied"
+  pass "a title change through the owner keeps doc, PR, and report links together"
+}
+
+# record rewrites the item line, so keeping an existing doc link across it is a
+# property to hold deliberately, not an accident of the old title text.
+test_record_keeps_an_existing_doc_link() {
+  local home links
+  home=$(make_home record-doc)
+  tasks_in "$home" add ship-w7 "ship the widget see $DOC_A" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+
+  run_backlog_pr "$home" record ship-w7 "$PR_A" >/dev/null || fail "record failed"
+  links=$(recorded_links "$home" ship-w7)
+  assert_contains "$links" "pr:$PR_A" "record did not put the URL in the pr field"
+  assert_contains "$links" "doc:$DOC_A" "record dropped the item's doc link"
+
+  run_backlog_pr "$home" record ship-w7 "$PR_B" >/dev/null || fail "replacing record failed"
+  links=$(recorded_links "$home" ship-w7)
+  assert_contains "$links" "pr:$PR_B" "the replacement link was not recorded"
+  assert_not_contains "$links" "pr:$PR_A" "the superseded link was kept"
+  assert_contains "$links" "doc:$DOC_A" "replacing the PR link dropped the item's doc link"
+  pass "record keeps an item's existing doc link while it records or replaces the PR link"
+}
+
 # A merge request pasted into a new title can be stored nowhere but the title
 # text, which is exactly where the next title change would drop it, so the
 # retitle is refused outright and the item is left as it was.
@@ -475,6 +550,10 @@ test_record_keeps_the_url_out_of_the_title
 test_retitle_carries_the_pr_link_across_a_title_change
 test_retitle_moves_a_pasted_url_into_the_field
 test_retitle_carries_a_report_link_across_a_title_change
+test_retitle_keeps_a_doc_link
+test_retitle_keeps_two_doc_links_in_order
+test_retitle_keeps_doc_pr_and_report_links_together
+test_record_keeps_an_existing_doc_link
 test_retitle_refuses_a_pasted_merge_request
 test_record_replaces_rather_than_accumulates
 test_repair_restores_a_lost_link_from_task_metadata
