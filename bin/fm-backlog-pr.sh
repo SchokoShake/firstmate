@@ -35,10 +35,10 @@
 # report link in the same tasks-axi call, so they survive. Use it instead of a
 # bare `tasks-axi update <id> --title ...` on any task that has, or may later
 # have, a PR or a report. One GitHub pull request URL in <new-title> is taken
-# as the intended link, stripped out of the title, and recorded through the
-# field; two different ones, or any other URL in <new-title>, are refused,
-# because a URL a caller pastes into title text is exactly the link the next
-# title change would drop.
+# as the intended link, stripped out of the title together with the sentence
+# punctuation glued to it, and recorded through the field; two different ones,
+# or any other URL in <new-title>, are refused, because a URL a caller pastes
+# into title text is exactly the link the next title change would drop.
 #
 # `repair` restores a link that was already lost, from the `pr=` line in this
 # home's task metadata - firstmate's own durable record, written by
@@ -99,14 +99,72 @@ tasks_axi() {
 # kind: a pull-request URL, or any other URL, which it keeps as a `doc:` link.
 URL_RE='https?://[^[:space:]]+'
 
+# tasks-axi reads a URL out of a title without the sentence punctuation that
+# follows it, so a URL token is judged the same way: `(see <url>).` names the
+# same link as `<url>`.
+URL_TRAILING_PUNCTUATION='.,;:!?)]}>"'"'"
+
+url_token() {  # <raw-token>
+  local token=$1
+  while [ -n "$token" ] && [[ "$URL_TRAILING_PUNCTUATION" == *"${token: -1}"* ]]; do
+    token=${token%?}
+  done
+  printf '%s' "$token"
+}
+
 # Drop every URL, and the item's report path when it has one, from a title and
-# normalize the whitespace that removing them leaves behind, so the rewritten
-# title is the human sentence alone.
+# normalize what removing them leaves behind, so the rewritten title is the
+# human sentence alone. A URL goes together with the punctuation glued to it on
+# either side, and a bracket that only enclosed a URL does not stay behind
+# unpaired; a bracket the title left unpaired itself is kept as written.
 strip_links() {  # <title> <report-path>
   local title=$1
   [ -z "$2" ] || title=${title//"$2"/}
-  printf '%s' "$title" |
-    sed -E -e "s#$URL_RE##g" -e 's/[[:space:]]+/ /g' -e 's/^ //' -e 's/ $//'
+  printf '%s\n' "$title" | awk '
+    function count(s, ch,    n, i) {
+      n = 0
+      for (i = index(s, ch); i > 0; i = index(s, ch)) {
+        n++
+        s = substr(s, i + 1)
+      }
+      return n
+    }
+    function drop_unpaired(s, opener, closer,    i, c, depth, out) {
+      out = ""
+      depth = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == opener) depth++
+        else if (c == closer) { if (depth == 0) continue; depth-- }
+        out = out c
+      }
+      s = out
+      out = ""
+      depth = 0
+      for (i = length(s); i >= 1; i--) {
+        c = substr(s, i, 1)
+        if (c == closer) depth++
+        else if (c == opener) { if (depth == 0) continue; depth-- }
+        out = c out
+      }
+      return out
+    }
+    {
+      n = split($0, word, /[[:space:]]+/)
+      out = ""
+      for (i = 1; i <= n; i++) {
+        if (word[i] == "" || word[i] ~ /https?:\/\//) continue
+        out = out (out == "" ? "" : " ") word[i]
+      }
+      gsub(/\([[:space:]]*\)/, "", out)
+      gsub(/\[[[:space:]]*\]/, "", out)
+      if (count($0, "(") == count($0, ")")) out = drop_unpaired(out, "(", ")")
+      if (count($0, "[") == count($0, "]")) out = drop_unpaired(out, "[", "]")
+      gsub(/[[:space:]]+/, " ", out)
+      sub(/^ /, "", out)
+      sub(/ $/, "", out)
+      printf "%s", out
+    }'
 }
 
 show_field() {  # <show-output> <field>
@@ -274,7 +332,7 @@ cmd_retitle() {  # <task-id> <new-title>
   # is one GitHub pull request URL; anything else is refused rather than stored
   # as title text, where the next title change would drop it.
   while IFS= read -r token; do
-    storable_url "$token" \
+    storable_url "$(url_token "$token")" \
       || fail "a URL in a title is a link, and the pr field can hold only a GitHub pull request URL: $token"
     [ -z "$pasted" ] || [ "$pasted" = "$FM_PR_URL" ] \
       || fail "the pr field holds one pull request URL, and the title names two: $pasted and $FM_PR_URL"

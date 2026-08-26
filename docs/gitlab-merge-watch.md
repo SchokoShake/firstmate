@@ -2,6 +2,7 @@
 
 Empirical record for the merge watch on GitLab, alongside the existing GitHub watch.
 Every command below was run on 2026-07-21 and its output is reproduced exactly.
+The `skipped:` line each arming transcript shows was added on 2026-08-26, when arming began recording the backlog PR link through `bin/fm-backlog-pr.sh`; every other line is as recorded.
 
 ## Versions
 
@@ -75,12 +76,19 @@ Three tasks were armed, two against the fixture and one against the placeholder 
 
 ```
 $ fm-pr-check.sh e1 https://gitlab.com/KarotKris/gitlab-merge-watch-fixture/-/merge_requests/1
+skipped: e1 is not an item in this home's backlog
 armed: state/e1.check.sh
 $ fm-pr-check.sh e2 https://gitlab.com/KarotKris/gitlab-merge-watch-fixture/-/merge_requests/2
+skipped: e2 is not an item in this home's backlog
 armed: state/e2.check.sh
 $ fm-pr-check.sh e3 https://gitlab.example/group/subgroup/project/-/merge_requests/7
+skipped: e3 is not an item in this home's backlog
 armed: state/e3.check.sh
 ```
+
+The `skipped:` line comes from `bin/fm-backlog-pr.sh`, which arming calls to record the PR link on the task's backlog item; these scratch tasks have none.
+For a backlog item it would instead report `skipped: tasks-axi stores only a GitHub pull request URL in the pr field, not <url>`, because a merge request cannot be stored in that field and stays in the task's `pr=` metadata.
+Either way the line is a report, not a failure: the watch is armed regardless.
 
 The stored record for each, showing the host and the full project namespace as data:
 
@@ -159,6 +167,7 @@ A GitHub task is unaffected by a missing `glab`:
 
 ```
 $ PATH="$noglab" fm-pr-check.sh e6 https://github.com/kunchenguid/firstmate/pull/750
+skipped: e6 is not an item in this home's backlog
 armed: state/e6.check.sh
 ```
 

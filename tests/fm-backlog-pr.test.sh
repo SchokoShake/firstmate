@@ -56,6 +56,17 @@ recorded_title() {  # <home> <id>
   tasks_in "$1" show "$2" --full | sed -n 's/^  title: //p' | head -1 | tr -d '"'
 }
 
+# The sentence a write left on the item: its title with the named links, which
+# tasks-axi renders into the title, removed by exact match, so any punctuation
+# left glued to a link is still visible.
+title_text() {  # <home> <id> <url>...
+  local text
+  text=$(recorded_title "$1" "$2")
+  shift 2
+  for url; do text=${text//"$url"/}; done
+  printf '%s' "$text" | sed -E -e 's/[[:space:]]+/ /g' -e 's/^ //' -e 's/ $//'
+}
+
 # One unmistakable line naming the installed release, for a pinned upstream
 # behaviour that the installed tasks-axi no longer shows.
 upstream_notice() {  # <fact>
@@ -381,6 +392,81 @@ test_retitle_refuses_a_pasted_merge_request() {
   pass "retitle refuses a pasted merge request rather than storing it as title text"
 }
 
+# tasks-axi reads `(see <url>).` as the same link as `<url>`, so a title change
+# that pastes a pull request URL with sentence punctuation around it is
+# accepted, and neither the URL nor its punctuation stays in the title text.
+test_retitle_accepts_a_punctuated_pull_request_url() {
+  local home out links
+  home=$(make_home retitle-punctuated)
+  tasks_in "$home" add ship-v6 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-v6 "$PR_A" >/dev/null || fail "record failed"
+
+  out=$(run_backlog_pr "$home" retitle ship-v6 "ship the widget (see $PR_B).") \
+    || fail "retitle refused a pull request URL followed by sentence punctuation"
+  assert_contains "$out" "retitled: ship-v6 pr=$PR_B" "retitle did not report the pasted link"
+  links=$(recorded_links "$home" ship-v6)
+  [ "$links" = "pr:$PR_B" ] || fail "the punctuated URL was not recorded as the item's only link (links: $links)"
+  [ "$(title_text "$home" ship-v6 "$PR_B")" = "ship the widget see" ] \
+    || fail "the URL's punctuation leaked into the cleaned title: $(recorded_title "$home" ship-v6)"
+  assert_no_grep "$PR_B)" "$home/data/backlog.md" "the punctuation was written next to the stored link"
+
+  run_backlog_pr "$home" retitle ship-v6 "ship the widget ($PR_B), then $PR_B." >/dev/null \
+    || fail "retitle refused the same punctuated pull request named twice"
+  links=$(recorded_links "$home" ship-v6)
+  [ "$links" = "pr:$PR_B" ] || fail "the twice-named punctuated URL was not recorded once (links: $links)"
+  [ "$(title_text "$home" ship-v6 "$PR_B")" = "ship the widget then" ] \
+    || fail "the bracket around the URL leaked into the cleaned title: $(recorded_title "$home" ship-v6)"
+  pass "a pull request URL pasted with sentence punctuation is recorded through the field and stripped cleanly"
+}
+
+# A legacy title that carried its links inside sentence punctuation is cleaned
+# the same way when record rewrites it: the stored link is the bare URL and the
+# brackets that only enclosed a link do not stay behind.
+test_record_cleans_a_punctuated_legacy_title() {
+  local home out links
+  home=$(make_home record-punctuated)
+  tasks_in "$home" add ship-a7 "ship widget ($PR_A), see $DOC_A." --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the legacy item"
+  links=$(recorded_links "$home" ship-a7)
+  assert_contains "$links" "pr:$PR_A" "the punctuated URL was not read as the item's pr link"
+  assert_contains "$links" "doc:$DOC_A" "the punctuated doc URL was not read as a doc link"
+
+  out=$(run_backlog_pr "$home" record ship-a7 "$PR_B") || fail "record failed on the legacy item"
+  assert_contains "$out" "recorded: ship-a7 pr=$PR_B dropped doc=$DOC_A" \
+    "record did not report the new link and the dropped doc link"
+  links=$(recorded_links "$home" ship-a7)
+  [ "$links" = "pr:$PR_B" ] || fail "the legacy item did not settle on the recorded link alone (links: $links)"
+  [ "$(title_text "$home" ship-a7 "$PR_B")" = "ship widget see" ] \
+    || fail "the legacy punctuation leaked into the cleaned title: $(recorded_title "$home" ship-a7)"
+  pass "record cleans a legacy title's punctuated links out of the title text"
+}
+
+# Trimming the punctuation changes nothing about what the field can hold: a
+# merge request, any other URL, and a second pull request are refused as before.
+test_retitle_refuses_a_punctuated_non_storable_url() {
+  local home before title rc
+  home=$(make_home retitle-punctuated-refused)
+  tasks_in "$home" add ship-b8 "ship the widget" --kind ship --repo widget --start >/dev/null \
+    || fail "could not seed the item"
+  run_backlog_pr "$home" record ship-b8 "$PR_A" >/dev/null || fail "record failed"
+  before=$(item_line "$home" ship-b8)
+
+  for title in \
+    "ship the widget (see https://gitlab.com/acme/widget/-/merge_requests/9)." \
+    "ship the widget (see $DOC_A)." \
+    "ship the widget ($PR_B), then $PR_A."; do
+    run_backlog_pr "$home" retitle ship-b8 "$title" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -ne 0 ] || fail "retitle accepted a title it must refuse: $title"
+    [ "$(item_line "$home" ship-b8)" = "$before" ] || fail "the refused retitle still changed the item line: $title"
+  done
+  assert_no_grep "merge_requests" "$home/data/backlog.md" "the merge request URL reached the backlog"
+  assert_no_grep "$DOC_A" "$home/data/backlog.md" "the doc URL reached the backlog"
+  assert_contains "$(recorded_links "$home" ship-b8)" "pr:$PR_A" "a refused retitle lost the recorded PR link"
+  pass "retitle still refuses a punctuated merge request, doc URL, and second pull request"
+}
+
 # A home on the default backend whose tasks-axi is unusable is told that, not
 # that it opted out.
 test_record_reports_an_unusable_tasks_axi_rather_than_an_opt_out() {
@@ -586,6 +672,9 @@ test_retitle_drops_and_reports_a_legacy_merge_request
 test_retitle_refuses_two_distinct_pasted_pr_urls
 test_record_reports_a_dropped_doc_link
 test_retitle_refuses_a_pasted_merge_request
+test_retitle_accepts_a_punctuated_pull_request_url
+test_record_cleans_a_punctuated_legacy_title
+test_retitle_refuses_a_punctuated_non_storable_url
 test_record_replaces_rather_than_accumulates
 test_repair_restores_a_lost_link_from_task_metadata
 test_retitle_changes_the_title_of_a_gitlab_task
