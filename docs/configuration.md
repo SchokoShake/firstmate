@@ -161,10 +161,11 @@ Two artifacts wire it, both gitignored runtime state in the home:
 - `state/logbook-notify-command` is published by bootstrap whenever this home has an armed board poll, and holds the exact command line the board must be configured to spawn:
 
   ```
-  FM_HOME=<home> <code-root>/bin/fm-inbox-post.sh --notify <channel>
+  FM_HOME='<home>' '<code-root>/bin/fm-inbox-post.sh' --notify <channel>
   ```
 
   Substitute the board's own channel name for `<channel>`; it must be letters, digits, dot, dash or underscore, and is refused otherwise.
+  Both paths arrive single-quoted, so the line is correct as published for a home or checkout under a path holding a space or a quote, and a board that runs it through a shell spawns it verbatim.
   Removing every board poll removes the artifact, and a home with no board writes nothing at all.
 
 `bin/fm-inbox-post.sh --status` reports whether this home has a live inbox, prints that command line, and names the inbound posture below.

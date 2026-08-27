@@ -348,7 +348,7 @@ write_frame() {
       printf '%s\n' "$frame" | socat -t 5 - "UNIX-CONNECT:$socket" >/dev/null 2>&1
       ;;
     nc)
-      printf '%s\n' "$frame" | nc -U "$socket" >/dev/null 2>&1
+      printf '%s\n' "$frame" | nc -w 5 -U "$socket" >/dev/null 2>&1
       ;;
     python3)
       FM_INBOX_SOCKET=$socket FM_INBOX_FRAME=$frame python3 -c '
@@ -395,13 +395,19 @@ do_notify() {
 
 # --- reporting -------------------------------------------------------------
 
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\\\\''/g"
+  printf "'"
+}
+
 # The one producer of the command a board is configured to spawn. Bootstrap
 # publishes exactly this string into state/logbook-notify-command rather than
 # composing its own, so a board and a human are never shown two forms of it.
 # <channel> stays a placeholder: a board may watch several channels and
 # substitutes its own, and fm-inbox-post.sh validates whatever arrives.
 notify_command_line() {
-  printf 'FM_HOME=%s %s/bin/fm-inbox-post.sh --notify <channel>\n' "$1" "$FM_ROOT"
+  printf 'FM_HOME=%s %s --notify <channel>\n' "$(shell_quote "$1")" "$(shell_quote "$FM_ROOT/bin/fm-inbox-post.sh")"
 }
 
 # The operator's effective inbound setting, or empty when none is set.

@@ -364,7 +364,7 @@ pass 'a record written by a different record version is not acted on'
 
 line=$(run_post --print-notify-command)
 case "$line" in
-  *"FM_HOME=$HOME_DIR"*"/bin/fm-inbox-post.sh --notify <channel>") ;;
+  "FM_HOME='$HOME_DIR' '"*"/bin/fm-inbox-post.sh' --notify <channel>") ;;
   *) fail "the published notify command is not the form a board can configure: $line" ;;
 esac
 pass 'the notify command names the home and leaves the channel for the board to fill in'
@@ -385,3 +385,25 @@ while [ ! -s "$CAPTURE" ]; do
   sleep 0.05
 done
 pass 'the published notify command delivers once a board fills in its channel'
+
+# A home under a path holding a space or a quote is an ordinary path, and the
+# board runs the published line through a shell, so the line must survive both
+# or the nudge silently never fires.
+SPACED_HOME="$TMP_ROOT/my home's dir"
+mkdir -p "$SPACED_HOME/state"
+CLAUDE_CODE_MESSAGING_SOCKET="$SOCK" run_post --home "$SPACED_HOME" --publish \
+  || fail 'publish into a home whose path holds a space failed'
+line=$(run_post --home "$SPACED_HOME" --print-notify-command)
+runnable=${line%<channel>}logbook
+rm -f "$CAPTURE"
+start_listener
+evalout=$(eval "$runnable --verbose" 2>&1) \
+  || fail "the published notify command did not run for a home path holding a space: $runnable
+  reason: $evalout"
+waited=0
+while [ ! -s "$CAPTURE" ]; do
+  waited=$((waited + 1))
+  [ "$waited" -lt 200 ] || fail 'the published notify command posted nothing from a home path holding a space'
+  sleep 0.05
+done
+pass 'the published notify command survives a home path holding a space and a quote'
