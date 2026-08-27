@@ -3,12 +3,22 @@
 Maintainer-verification record for the board-answer nudge (`bin/fm-inbox-post.sh`).
 That script's header is the single owner of the frame, the published record, and the flags; this file records the empirical facts that guarantee is currently resting on, and the risk it is accepted under.
 
-Verified 2026-08-26 on macOS 24.6.0 (arm64), Claude Code 2.1.246, single OS user.
+Verified 2026-08-27 on macOS 24.6.0 (arm64), Claude Code 2.1.247, single OS user.
+The frame was first recovered from 2.1.228 on Linux/WSL and re-derived here on 2.1.246 on 2026-08-26; the 2.1.247 refresh ran the live guard green on all four of its claims with `peerProtocol` unchanged at `1`, which is why the peer-protocol guard in `bin/fm-inbox-post.sh` correctly does not stand the push down on this build.
 
 Refresh this file after every Claude Code upgrade by running the live guard, which is the command that reproduces every claim below:
 
 ```
 FM_INBOX_POST_LIVE_E2E=1 tests/fm-inbox-post-live-e2e.test.sh
+```
+
+Its most recent run, against 2.1.247 on 2026-08-27:
+
+```
+ok - a live 2.1.247 (Claude Code) session advertises an inbox on peer protocol 1
+ok - the real publisher accepts a live session and records its inbox
+ok - 2.1.247 (Claude Code) accepts and routes the nudge frame
+ok - 2.1.247 (Claude Code) delivers the nudge into the session under its own name
 ```
 
 ## The frame is self-documenting in the running build
@@ -48,8 +58,8 @@ The order is `from`, `from-session`, `hop-chain`, `from-name`, `from-mode`, each
 ## Versioning signals
 
 A live session advertises `peerProtocol` in its registry entry under `~/.claude/sessions/<pid>.json`, and the frame carries `msgV`.
-Both read `1` on 2.1.246, unchanged from the earlier 2.1.228 observation this work started from.
-2.1.246 additionally advertises `peerFeatures: ["notify_idle","artifact_yield"]`, which the nudge does not use.
+Both read `1` on 2.1.247 and on 2.1.246, unchanged from the earlier 2.1.228 observation this work started from.
+2.1.246 additionally advertises `peerFeatures: ["notify_idle","artifact_yield"]`, which the nudge does not use, and 2.1.247 advertises the same list.
 
 `bin/fm-inbox-post.sh` refuses to publish or post when a session advertises a `peerProtocol` it was not verified against, because a bumped protocol is the only advance signal available that the frame may have changed shape.
 Widen its supported list only together with a refreshed run of the live guard.
@@ -67,6 +77,7 @@ Verified by posting an unauthenticated, unattested frame into throwaway sessions
 | bypasses prompts | `accept` in the home's own `.claude/settings.json` | **held** - a repo setting may only tighten |
 
 The last row is the one that changed since the 2.1.228 scouting run, and it is the reason firstmate writes no such setting anywhere.
+The matrix was derived on 2.1.246; the 2.1.247 refresh re-proved its first row through the live guard, which posts into a prompting throwaway session with the setting unset, and did not re-derive the other rows.
 2.1.246 resolves `crossSessionInbound` from `policySettings`, `flagSettings`, and `userSettings` first, then lets `localSettings` and `projectSettings` apply only when they are MORE restrictive.
 An `accept` placed in a home's project settings is therefore inert, and writing one would read as protection while providing none.
 The receiver states this itself when a message is held:
@@ -98,3 +109,9 @@ Three things bound that risk, and all three must be kept:
 
 The live guard is the one that catches a vendor change, and CI cannot run it: it needs a real harness binary and credentials.
 Run it after every Claude Code upgrade.
+
+One surface the live guard does not cover is the hook-time environment: `bin/fm-session-start.sh` calls `--publish` from the SessionStart hook, and a publish that silently does not happen leaves no record and no diagnostic.
+Verified read-only on 2.1.247 on 2026-08-27 that a child process spawned by a live session carries `CLAUDE_CODE_MESSAGING_SOCKET`, that the path is a bound AF_UNIX socket, and that it equals the `messagingSocketPath` in that session's registry entry.
+Whether the listener is bound before SessionStart hooks fire remains unverified, and the live guard injects the socket path from the registry rather than letting a hook publish it, so this is an accepted gap.
+Its cost is bounded the same way as every failure above: a session that did not publish is never nudged, the board poll drains its answers at its ordinary latency, and no answer is lost or duplicated.
+`bin/fm-inbox-post.sh --status` run inside a live session reports `inbox: live` when the hook did publish, which is the quick check after an upgrade.

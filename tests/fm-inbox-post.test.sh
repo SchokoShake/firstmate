@@ -407,3 +407,10 @@ while [ ! -s "$CAPTURE" ]; do
   sleep 0.05
 done
 pass 'the published notify command survives a home path holding a space and a quote'
+
+# --status is read at a prompt and appended to files by scripts, so its last
+# line must end the way every other line does.
+run_post --status > "$TMP_ROOT/status" || fail '--status failed'
+[ "$(tail -c 1 "$TMP_ROOT/status" | wc -l)" -eq 1 ] \
+  || fail '--status output does not end with a newline'
+pass '--status ends its last line with a newline'

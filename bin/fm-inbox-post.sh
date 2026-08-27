@@ -445,7 +445,7 @@ do_status() {
     nc) printf 'transport: nc -U\n' ;;
     *) printf 'transport: %s\n' "$transport" ;;
   esac
-  printf 'notify command: %s' "$(notify_command_line "$home")"
+  printf 'notify command: %s\n' "$(notify_command_line "$home")"
 }
 
 # --- entry point -----------------------------------------------------------
