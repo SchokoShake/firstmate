@@ -1,0 +1,7 @@
+41:2026-08-27T08:34:08.765Z [INFO] [uds-messaging] Listening: /tmp/cc-socks/25215.sock
+42:2026-08-27T08:34:08.765Z [INFO] [uds-messaging] Inject messages (auth line optional here): { echo '{"type":"auth","token":"[REDACTED]"$CLAUDE_CODE_MESSAGING_TOKEN"'"}'; echo '{"type":"user","message":{"role":"user","content":"hello"}}'; } | socat - UNIX-CONNECT:/tmp/cc-socks/25215.sock
+43:2026-08-27T08:34:08.765Z [INFO] [uds-messaging] Connect when the data is ready (e.g. out=$(cmd); printf '%s\n' "$out" | nc -U "$CLAUDE_CODE_MESSAGING_SOCKET" — or the socat form above): a connection that sends no complete line within 30000 ms is closed
+221:2026-08-27T08:34:11.168Z [DEBUG] [uds-messaging] Client connected
+222:2026-08-27T08:34:11.169Z [DEBUG] "[uds-messaging] Routed user message to queue (priority=next): <cross-session-message from-name=\"firstmate-board\">\nBoard answers are pending on"
+231:2026-08-27T08:34:11.188Z [DEBUG] [uds-messaging] Client disconnected
+310:2026-08-27T08:34:20.370Z [DEBUG] [uds-messaging] Shutting down

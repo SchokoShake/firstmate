@@ -1,0 +1,5 @@
+ok - a live 2.1.247 (Claude Code) session advertises an inbox on peer protocol 1
+ok - the real publisher accepts a live session and records its inbox
+ok - 2.1.247 (Claude Code) accepts and routes the nudge frame
+ok - 2.1.247 (Claude Code) delivers the nudge into the session under its own name
+exit=0
