@@ -252,7 +252,7 @@ do_publish() {
 # path containing a space cannot be silently truncated by the caller's split.
 # Every failure here is the benign "nothing to notify" case.
 resolve_inbox() {
-  local state=$1 record socket pid protocol entry live_protocol
+  local state=$1 record socket pid protocol session_id entry live_protocol live_session
   record="$state/primary-inbox"
   [ -f "$record" ] && [ ! -L "$record" ] || { note 'no published inbox'; return 3; }
   [ "$(record_field "$record" version)" = "$RECORD_VERSION" ] \
@@ -260,6 +260,7 @@ resolve_inbox() {
   socket=$(record_field "$record" socket)
   pid=$(record_field "$record" pid)
   protocol=$(record_field "$record" peer_protocol)
+  session_id=$(record_field "$record" session_id)
   case "$socket" in
     /*) ;;
     *) note 'published inbox has no absolute socket path'; return 3 ;;
@@ -277,6 +278,9 @@ resolve_inbox() {
   if entry=$(registry_entry_for_socket "$socket"); then
     [ "$(basename "$entry" .json)" = "$pid" ] \
       || { note 'live registry disagrees with the published inbox'; return 3; }
+    live_session=$(registry_string_field "$entry" sessionId)
+    [ -n "$live_session" ] && [ "$live_session" = "$session_id" ] \
+      || { note 'live registry names a different session'; return 3; }
     live_protocol=$(registry_number_field "$entry" peerProtocol)
     peer_protocol_supported "$live_protocol" \
       || { note "live session advertises unsupported peer protocol '${live_protocol:-none}'"; return 3; }

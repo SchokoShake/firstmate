@@ -17,6 +17,8 @@
 #
 # It drives the real script end to end over a REAL AF_UNIX listener and REAL
 # live/dead pids, so the frame asserted here is the frame that goes on the wire.
+# It also drives the real bootstrap against a scratch home to pin how the
+# board's notify command is published and withdrawn.
 # It deliberately never asserts the script's own source text. The companion
 # tests/fm-inbox-post-live-e2e.test.sh proves the same frame is ACCEPTED by an
 # installed harness - a claim no harness-free test can make.
@@ -49,9 +51,9 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-write_registry_entry() {  # <pid> <socket> <peerProtocol>
-  printf '{"pid":%s,"sessionId":"11111111-2222-3333-4444-555555555555","cwd":"%s","version":"test","peerProtocol":%s,"kind":"interactive","messagingSocketPath":"%s","name":"fm-test"}\n' \
-    "$1" "$HOME_DIR" "$3" "$2" > "$CFG_DIR/sessions/$1.json"
+write_registry_entry() {  # <pid> <socket> <peerProtocol> [<sessionId>]
+  printf '{"pid":%s,"sessionId":"%s","cwd":"%s","version":"test","peerProtocol":%s,"kind":"interactive","messagingSocketPath":"%s","name":"fm-test"}\n' \
+    "$1" "${4:-11111111-2222-3333-4444-555555555555}" "$HOME_DIR" "$3" "$2" > "$CFG_DIR/sessions/$1.json"
 }
 
 # One-shot AF_UNIX listener: accept a single connection, store the first line,
@@ -327,6 +329,38 @@ done
 rm -f "$CFG_DIR/sessions/$STALE_PID.json"
 pass 'a dead session that still claims the socket does not speak for the live one'
 
+# A pid gets recycled: the primary exits, and an unrelated session of the same
+# OS user lands on its pid, binds the same pid-derived socket path, and writes
+# the same registry entry name. Every check so far passes for it, so only the
+# session id separates a nudge to this home's primary from one to a stranger.
+write_registry_entry "$LIVE_PID" "$SOCK" 1 99999999-8888-7777-6666-555555555555
+rm -f "$CAPTURE"
+start_listener
+out=$(run_post --notify logbook 2>&1)
+code=$?
+[ "$code" -eq 3 ] || fail "a recycled pid should decline with 3, got $code"
+[ -z "$out" ] || fail "a recycled pid should stay silent, printed: $out"
+assert_absent "$CAPTURE" 'a recycled pid still received the nudge'
+pass 'a recycled pid whose registry entry names another session is not nudged'
+
+# A registry entry that exposes no session id cannot vouch for the record, and
+# an empty id on both sides must read as no agreement rather than as a match.
+printf '{"pid":%s,"cwd":"%s","version":"test","peerProtocol":1,"kind":"interactive","messagingSocketPath":"%s","name":"fm-test"}\n' \
+  "$LIVE_PID" "$HOME_DIR" "$SOCK" > "$CFG_DIR/sessions/$LIVE_PID.json"
+rm -f "$HOME_DIR/state/primary-inbox"
+CLAUDE_CODE_MESSAGING_SOCKET="$SOCK" run_post --publish || fail 're-publish without a session id failed'
+rm -f "$CAPTURE"
+start_listener
+out=$(run_post --notify logbook 2>&1)
+code=$?
+[ "$code" -eq 3 ] || fail "a registry entry with no session id should decline with 3, got $code"
+[ -z "$out" ] || fail "a registry entry with no session id should stay silent, printed: $out"
+assert_absent "$CAPTURE" 'a registry entry with no session id still received the nudge'
+pass 'a registry entry that exposes no session id never counts as agreement'
+
+write_registry_entry "$LIVE_PID" "$SOCK" 1
+CLAUDE_CODE_MESSAGING_SOCKET="$SOCK" run_post --publish || fail 're-publish failed'
+
 rm -f "$HOME_DIR/state/primary-inbox"
 start_listener
 out=$(run_post --notify logbook 2>&1)
@@ -414,3 +448,82 @@ run_post --status > "$TMP_ROOT/status" || fail '--status failed'
 [ "$(tail -c 1 "$TMP_ROOT/status" | wc -l)" -eq 1 ] \
   || fail '--status output does not end with a newline'
 pass '--status ends its last line with a newline'
+
+# --- bootstrap wiring ------------------------------------------------------
+
+# Bootstrap publishes the board's notify command only while a board poll shim is
+# armed, so the artifact must track the shim: absent without one, published and
+# announced once when it appears, silent while unchanged, withdrawn when the
+# last shim goes. The real bootstrap runs against a scratch home for all of it.
+BOOT_HOME="$TMP_ROOT/boot-home"
+ARTIFACT="$BOOT_HOME/state/logbook-notify-command"
+mkdir -p "$BOOT_HOME/state"
+
+# The shim is staged the way the connector arms it - an executable check bound
+# by bin/fm-check-register.sh - so bootstrap's poll migration recognizes it as
+# intentional instead of quarantining an unbound stray before the nudge runs.
+arm_board_poll() {
+  printf '#!/bin/sh\nexit 0\n' > "$BOOT_HOME/state/logbook-watch.check.sh"
+  chmod 0700 "$BOOT_HOME/state/logbook-watch.check.sh"
+  FM_HOME="$BOOT_HOME" "$ROOT/bin/fm-check-register.sh" logbook-watch >/dev/null \
+    || fail 'could not register the board poll shim'
+}
+disarm_board_poll() {
+  rm -f "$BOOT_HOME/state/logbook-watch.check.sh" "$BOOT_HOME/state/logbook-watch.check-trust"
+}
+
+out=$(FM_HOME="$BOOT_HOME" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+assert_absent "$ARTIFACT" 'bootstrap published a notify command for a home with no board poll'
+assert_not_contains "$out" 'logbook answer nudge' 'bootstrap mentioned the nudge for a home with no board poll'
+assert_not_contains "$out" 'LOGBOOK_NOTIFY:' 'bootstrap raised a nudge diagnostic for a home with no board poll'
+pass 'bootstrap is inert on the nudge while no board poll is armed'
+
+arm_board_poll
+out=$(FM_HOME="$BOOT_HOME" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+assert_contains "$out" 'BOOTSTRAP_INFO: logbook answer nudge available' 'bootstrap did not announce the published notify command'
+assert_present "$ARTIFACT" 'bootstrap published no notify command for an armed board poll'
+if [ "$(uname)" = Darwin ]; then
+  mode=$(stat -f %Lp "$ARTIFACT")
+else
+  mode=$(stat -c %a "$ARTIFACT")
+fi
+[ "$mode" = 600 ] || fail "the notify command should be private, got mode $mode"
+cmp -s "$ARTIFACT" <(FM_HOME="$BOOT_HOME" "$POST" --print-notify-command) \
+  || fail "the published notify command differs from the one the script prints:
+  artifact: $(cat "$ARTIFACT")
+  script:   $(FM_HOME="$BOOT_HOME" "$POST" --print-notify-command)"
+pass 'an armed board poll publishes, once, the private notify command the script itself prints'
+
+out=$(FM_HOME="$BOOT_HOME" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+assert_not_contains "$out" 'logbook answer nudge' 'an unchanged notify command was announced again'
+assert_present "$ARTIFACT" 'a rerun withdrew an unchanged notify command'
+pass 'a rerun with an unchanged notify command stays silent'
+
+# The two failure branches are actionable, so they must not wear the benign
+# BOOTSTRAP_INFO class that tells firstmate nothing needs doing.
+rm -f "$ARTIFACT"
+mkdir "$ARTIFACT"
+out=$(FM_HOME="$BOOT_HOME" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+assert_contains "$out" 'LOGBOOK_NOTIFY: answer nudge unavailable - could not publish state/logbook-notify-command' \
+  'an unpublishable notify command was not reported as actionable'
+assert_not_contains "$out" 'BOOTSTRAP_INFO: logbook answer nudge' 'an unpublishable notify command was reported as a benign fact'
+pass 'a notify command that cannot be published is reported as actionable'
+
+disarm_board_poll
+out=$(FM_HOME="$BOOT_HOME" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+assert_contains "$out" 'LOGBOOK_NOTIFY: answer nudge off - could not remove stale state/logbook-notify-command' \
+  'an unremovable stale notify command was not reported as actionable'
+assert_not_contains "$out" 'BOOTSTRAP_INFO: logbook answer nudge' 'an unremovable stale notify command was reported as a benign fact'
+pass 'a stale notify command that cannot be removed is reported as actionable'
+
+rmdir "$ARTIFACT"
+arm_board_poll
+FM_HOME="$BOOT_HOME" "$ROOT/bin/fm-bootstrap.sh" >/dev/null 2>&1
+assert_present "$ARTIFACT" 'bootstrap did not republish once the path was clear'
+disarm_board_poll
+out=$(FM_HOME="$BOOT_HOME" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+assert_absent "$ARTIFACT" 'disarming the last board poll left the notify command behind'
+assert_contains "$out" 'BOOTSTRAP_INFO: logbook answer nudge off - no board poll is armed' 'withdrawing the notify command was not announced'
+out=$(FM_HOME="$BOOT_HOME" "$ROOT/bin/fm-bootstrap.sh" 2>/dev/null)
+assert_not_contains "$out" 'logbook answer nudge' 'an already-withdrawn notify command was announced again'
+pass 'disarming the last board poll withdraws the notify command and says so once'

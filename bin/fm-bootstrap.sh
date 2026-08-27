@@ -18,7 +18,9 @@
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
-#                 "FMX: X mode on ..." or "FMX: X mode off ...".
+#                 "FMX: X mode on ..." or "FMX: X mode off ...",
+#                 "BOOTSTRAP_INFO: logbook answer nudge available|off - <detail>",
+#                 "LOGBOOK_NOTIFY: answer nudge unavailable|off - could not publish|remove stale state/logbook-notify-command".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
 #          purely local fast-forward and never an origin fetch. Remote routes
@@ -1026,7 +1028,7 @@ logbook_notify_setup() {
       if bootstrap_artifact_remove "$artifact"; then
         echo "BOOTSTRAP_INFO: logbook answer nudge off - no board poll is armed; removed state/logbook-notify-command"
       else
-        echo "BOOTSTRAP_INFO: logbook answer nudge off - could not remove stale state/logbook-notify-command"
+        echo "LOGBOOK_NOTIFY: answer nudge off - could not remove stale state/logbook-notify-command"
       fi
     fi
     return 0
@@ -1045,7 +1047,7 @@ logbook_notify_setup() {
     changed=0
   fi
   bootstrap_artifact_write_if_changed "$artifact" "$body" 600 || {
-    echo "BOOTSTRAP_INFO: logbook answer nudge unavailable - could not publish state/logbook-notify-command"
+    echo "LOGBOOK_NOTIFY: answer nudge unavailable - could not publish state/logbook-notify-command"
     return 0
   }
   [ "$changed" -eq 1 ] || return 0
