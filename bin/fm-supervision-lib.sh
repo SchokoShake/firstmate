@@ -8,10 +8,12 @@
 # has a fresh liveness beacon (state/.last-watcher-beat, touched every poll
 # cycle, within the grace window).
 #
-# Relay and logbook are the two opt-ins whose ONLY inbound channel is the
-# watcher's own check sweep, so an empty fleet is exactly when they are most
-# exposed: with no state/<id>.meta anywhere, nothing else would ask for a
-# watcher and every board answer or public mention would sit unread. Both are
+# Relay and logbook are the two opt-ins whose ONLY inbound content channel is
+# the watcher's own check sweep (the board-answer nudge, bin/fm-inbox-post.sh,
+# only wakes the session to drain what that sweep fetched and carries no
+# answer), so an empty fleet is exactly when they are most exposed: with no
+# state/<id>.meta anywhere, nothing else would ask for a watcher and every
+# board answer or public mention would sit unread. Both are
 # therefore keyed on the poll shim the connector's enable step leaves in state/,
 # never on a config/ file. The shim is what the watcher actually runs, so its
 # presence is the same fact as "a wake can arrive here"; config/ is the operator

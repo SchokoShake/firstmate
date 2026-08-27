@@ -164,7 +164,7 @@ Two artifacts wire it, both gitignored runtime state in the home:
   FM_HOME='<home>' '<code-root>/bin/fm-inbox-post.sh' --notify <channel>
   ```
 
-  Substitute the board's own channel name for `<channel>`; it must be letters, digits, dot, dash or underscore, and is refused otherwise.
+  Substitute the board's own channel name for `<channel>`; it must be letters, digits, dot, dash or underscore, must start with a letter or digit, and must be at most 64 characters; anything else is refused.
   Both paths arrive single-quoted, so the line is correct as published for a home or checkout under a path holding a space or a quote, and a board that runs it through a shell spawns it verbatim.
   Removing every board poll removes the artifact, and a home with no board writes nothing at all.
 
