@@ -92,13 +92,23 @@
 #   pid=<session pid that owns the socket>
 #   session_id=<harness session id>
 #   peer_protocol=<integer the session advertised>
+#   registry=<sessions directory the publisher found its entry in>
+#
+# registry= is additive and optional, which is why the version stays
+# fm-inbox-v1: a record written without it is consumed against the notifier's
+# own default registry (${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions), exactly
+# as before the field existed. With it, a board spawned from an environment
+# that does not share the captain's CLAUDE_CONFIG_DIR still looks in the
+# registry the session actually registered in.
 #
 # ONLY THE LOCK HOLDER PUBLISHES. Several sessions can share one home's cwd and
 # nothing in the harness registry distinguishes the real primary among them, so
 # fm-session-start.sh calls --publish only on the path where it already holds
 # the per-home session lock. Staleness needs no cleanup because every consumer
-# revalidates: pid alive, socket present and connectable, and the live registry
-# entry still agreeing with the record. A stale record therefore fails quietly
+# revalidates: pid alive, socket present and connectable, and a live registry
+# entry for the socket that still agrees with the record on pid, session id and
+# peer protocol. Publishing required such an entry, so a record with none left
+# is as stale as any other and declines. A stale record therefore fails quietly
 # and the board poll covers the gap.
 
 set -u
@@ -164,8 +174,8 @@ registry_dir() {
 # glob order - otherwise a stale neighbour decides this home's peer protocol and
 # pid, and the push stands down against a session that is running fine.
 registry_entry_for_socket() {
-  local want=$1 dir entry sock pid
-  dir=$(registry_dir)
+  local want=$1 dir=${2:-} entry sock pid
+  [ -n "$dir" ] || dir=$(registry_dir)
   [ -d "$dir" ] || return 1
   for entry in "$dir"/*.json; do
     [ -f "$entry" ] || continue
@@ -200,7 +210,7 @@ record_field() {
 # --- publish ---------------------------------------------------------------
 
 do_publish() {
-  local state=$1 socket entry pid session_id protocol tmp
+  local state=$1 socket entry pid session_id protocol registry tmp
   socket=${CLAUDE_CODE_MESSAGING_SOCKET:-}
   if [ -z "$socket" ]; then
     # Every harness other than claude has no such socket. The whole feature
@@ -226,6 +236,7 @@ do_publish() {
     return 3
   fi
   session_id=$(registry_string_field "$entry" sessionId)
+  registry=$(registry_dir)
   [ -d "$state" ] && [ ! -L "$state" ] || { note 'state directory is unavailable'; return 1; }
 
   umask 077
@@ -237,6 +248,7 @@ do_publish() {
     printf 'pid=%s\n' "$pid"
     printf 'session_id=%s\n' "$session_id"
     printf 'peer_protocol=%s\n' "$protocol"
+    printf 'registry=%s\n' "$registry"
   } > "$tmp" || { note 'could not write the record'; return 1; }
   chmod 0600 "$tmp" || return 1
   mv -f -- "$tmp" "$state/primary-inbox" || { note 'could not publish the record'; return 1; }
@@ -252,7 +264,7 @@ do_publish() {
 # path containing a space cannot be silently truncated by the caller's split.
 # Every failure here is the benign "nothing to notify" case.
 resolve_inbox() {
-  local state=$1 record socket pid protocol session_id entry live_protocol live_session
+  local state=$1 record socket pid protocol session_id registry entry live_protocol live_session
   record="$state/primary-inbox"
   [ -f "$record" ] && [ ! -L "$record" ] || { note 'no published inbox'; return 3; }
   [ "$(record_field "$record" version)" = "$RECORD_VERSION" ] \
@@ -261,9 +273,15 @@ resolve_inbox() {
   pid=$(record_field "$record" pid)
   protocol=$(record_field "$record" peer_protocol)
   session_id=$(record_field "$record" session_id)
+  registry=$(record_field "$record" registry)
+  [ -n "$registry" ] || registry=$(registry_dir)
   case "$socket" in
     /*) ;;
     *) note 'published inbox has no absolute socket path'; return 3 ;;
+  esac
+  case "$registry" in
+    /*) ;;
+    *) note 'published inbox names no absolute registry directory'; return 3 ;;
   esac
   case "$pid" in
     '' | *[!0-9]*) note 'published inbox has no pid'; return 3 ;;
@@ -272,19 +290,21 @@ resolve_inbox() {
     || { note "published inbox advertises unsupported peer protocol '${protocol:-none}'"; return 3; }
   kill -0 "$pid" 2>/dev/null || { note "session $pid is gone"; return 3; }
   [ -S "$socket" ] || { note 'inbox socket is absent'; return 3; }
-  # Cross-check the live registry. This catches a recycled pid and, more
-  # importantly, a harness upgrade that bumped the protocol under a record this
-  # home published before the upgrade.
-  if entry=$(registry_entry_for_socket "$socket"); then
-    [ "$(basename "$entry" .json)" = "$pid" ] \
-      || { note 'live registry disagrees with the published inbox'; return 3; }
-    live_session=$(registry_string_field "$entry" sessionId)
-    [ -n "$live_session" ] && [ "$live_session" = "$session_id" ] \
-      || { note 'live registry names a different session'; return 3; }
-    live_protocol=$(registry_number_field "$entry" peerProtocol)
-    peer_protocol_supported "$live_protocol" \
-      || { note "live session advertises unsupported peer protocol '${live_protocol:-none}'"; return 3; }
-  fi
+  # Cross-check the live registry, in the directory the publisher found its
+  # entry in. This catches a recycled pid and, more importantly, a harness
+  # upgrade that bumped the protocol under a record this home published before
+  # the upgrade. Publishing required a live entry, so finding none now means
+  # something changed and is a decline, never a pass on liveness alone.
+  entry=$(registry_entry_for_socket "$socket" "$registry") \
+    || { note 'no live registry entry owns the inbox socket'; return 3; }
+  [ "$(basename "$entry" .json)" = "$pid" ] \
+    || { note 'live registry disagrees with the published inbox'; return 3; }
+  live_session=$(registry_string_field "$entry" sessionId)
+  [ -n "$live_session" ] && [ "$live_session" = "$session_id" ] \
+    || { note 'live registry names a different session'; return 3; }
+  live_protocol=$(registry_number_field "$entry" peerProtocol)
+  peer_protocol_supported "$live_protocol" \
+    || { note "live session advertises unsupported peer protocol '${live_protocol:-none}'"; return 3; }
   printf '%s\n%s\n' "$socket" "$pid"
 }
 

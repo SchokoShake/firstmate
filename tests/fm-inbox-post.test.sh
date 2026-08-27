@@ -118,6 +118,7 @@ assert_grep "socket=$SOCK" "$HOME_DIR/state/primary-inbox" 'record is missing th
 assert_grep "pid=$LIVE_PID" "$HOME_DIR/state/primary-inbox" 'record is missing the pid'
 assert_grep 'peer_protocol=1' "$HOME_DIR/state/primary-inbox" 'record is missing the peer protocol'
 assert_grep 'session_id=11111111-' "$HOME_DIR/state/primary-inbox" 'record is missing the session id'
+assert_grep "registry=$CFG_DIR/sessions" "$HOME_DIR/state/primary-inbox" 'record is missing the registry directory'
 if [ "$(uname)" = Darwin ]; then
   mode=$(stat -f %Lp "$HOME_DIR/state/primary-inbox")
 else
@@ -359,6 +360,61 @@ assert_absent "$CAPTURE" 'a registry entry with no session id still received the
 pass 'a registry entry that exposes no session id never counts as agreement'
 
 write_registry_entry "$LIVE_PID" "$SOCK" 1
+CLAUDE_CODE_MESSAGING_SOCKET="$SOCK" run_post --publish || fail 're-publish failed'
+
+# Publishing required a live registry entry, so a record with none left behind
+# it is stale by definition: liveness of the pid and presence of the socket
+# alone must never carry a nudge to whatever now holds them.
+rm -f "$CFG_DIR/sessions/$LIVE_PID.json"
+rm -f "$CAPTURE"
+start_listener
+out=$(run_post --notify logbook 2>&1)
+code=$?
+[ "$code" -eq 3 ] || fail "a socket with no live registry entry should decline with 3, got $code"
+[ -z "$out" ] || fail "a socket with no live registry entry should stay silent, printed: $out"
+assert_absent "$CAPTURE" 'a socket with no live registry entry still received the nudge'
+pass 'a record whose registry entry is gone declines instead of trusting liveness alone'
+
+write_registry_entry "$LIVE_PID" "$SOCK" 1
+
+# The board may be spawned from an environment that does not share the
+# captain's CLAUDE_CONFIG_DIR, so the record names the registry the publisher
+# used and the notifier must look there, not in its own default.
+ELSEWHERE="$TMP_ROOT/elsewhere"
+mkdir -p "$ELSEWHERE/sessions"
+rm -f "$CAPTURE"
+start_listener
+HOME="$TMP_ROOT" CLAUDE_CONFIG_DIR="$ELSEWHERE" FM_HOME="$HOME_DIR" "$POST" --notify logbook \
+  || fail 'a notifier with a different default registry could not use the recorded one'
+waited=0
+while [ ! -s "$CAPTURE" ]; do
+  waited=$((waited + 1))
+  [ "$waited" -lt 200 ] || fail 'a notifier with a different default registry posted nothing'
+  sleep 0.05
+done
+pass 'a notifier resolves the entry in the registry the record names, not its own default'
+
+# A record written before the registry field existed still resolves against
+# the notifier's own default registry, and only there.
+printf 'version=fm-inbox-v1\nsocket=%s\npid=%s\nsession_id=11111111-2222-3333-4444-555555555555\npeer_protocol=1\n' \
+  "$SOCK" "$LIVE_PID" > "$HOME_DIR/state/primary-inbox"
+rm -f "$CAPTURE"
+start_listener
+out=$(HOME="$TMP_ROOT" CLAUDE_CONFIG_DIR="$ELSEWHERE" FM_HOME="$HOME_DIR" "$POST" --notify logbook 2>&1)
+code=$?
+[ "$code" -eq 3 ] || fail "a field-less record with no entry in the default registry should decline with 3, got $code"
+assert_absent "$CAPTURE" 'a field-less record was nudged without any registry agreement'
+rm -f "$CAPTURE"
+start_listener
+run_post --notify logbook || fail 'a field-less record did not resolve against the default registry'
+waited=0
+while [ ! -s "$CAPTURE" ]; do
+  waited=$((waited + 1))
+  [ "$waited" -lt 200 ] || fail 'a field-less record posted nothing through the default registry'
+  sleep 0.05
+done
+pass 'a record without the registry field falls back to the default registry alone'
+
 CLAUDE_CODE_MESSAGING_SOCKET="$SOCK" run_post --publish || fail 're-publish failed'
 
 rm -f "$HOME_DIR/state/primary-inbox"

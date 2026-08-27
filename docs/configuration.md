@@ -155,7 +155,7 @@ Nothing in the answer-handling flow needs to know whether a given drain was trig
 
 Two artifacts wire it, both gitignored runtime state in the home:
 
-- `state/primary-inbox` records the session that should be nudged: its socket, pid, session id, and advertised peer protocol.
+- `state/primary-inbox` records the session that should be nudged: its socket, pid, session id, advertised peer protocol, and the registry directory it was published from.
   Only the lock holder publishes it, because several sessions can share a home's directory and nothing else distinguishes the real primary among them.
   It is rewritten at every locked session start and needs no cleanup, since every consumer revalidates it and a stale record declines quietly.
 - `state/logbook-notify-command` is published by bootstrap whenever this home has an armed board poll, and holds the exact command line the board must be configured to spawn:

@@ -63,6 +63,7 @@ Both read `1` on 2.1.247 and on 2.1.246, unchanged from the earlier 2.1.228 obse
 
 `bin/fm-inbox-post.sh` refuses to publish or post when a session advertises a `peerProtocol` it was not verified against, because a bumped protocol is the only advance signal available that the frame may have changed shape.
 Widen its supported list only together with a refreshed run of the live guard.
+The record also names the registry directory the publisher found its entry in, and a nudge resolves the live entry there rather than in the notifier's own `CLAUDE_CONFIG_DIR`, declining quietly when no live entry owns the socket, so a board spawned from an environment that cannot see the captain's registry either reaches the session that published or stands down.
 
 ## The inbound permission matrix
 
