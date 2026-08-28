@@ -142,6 +142,49 @@ No harness protocol asks the agent to source a carrier by hand, and a carrier is
 The cadence-transition rule is the Relay section's: `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start, so installing or removing a carrier takes effect when the home-scoped watcher next restarts through the emitted harness protocol.
 While away mode is active the daemon (`bin/fm-supervise-daemon.sh`) owns the watcher and applies no carrier; away-mode cadence remains the deferred follow-up the Relay section records.
 
+## Board-answer nudge (state/primary-inbox, state/logbook-notify-command)
+
+A logbook board holds a captain's answer, but firstmate has nothing running that notices it, so the answer waits for the board poll's next tick.
+The nudge closes that gap: when the board records a response it spawns a firstmate command that wakes the running session immediately.
+
+The push carries a NOTIFICATION ONLY.
+It names the channel and says the answers are pending; it never carries an answer.
+`state/logbook-inbox/`, the board poll shim, the answer drain, and its ack, resolve and delete ordering remain the single content path and are unchanged by this feature.
+That is what makes the two compose safely: the nudge only changes WHEN the existing drain runs, so a broken, held, or dropped nudge costs the poll's ordinary latency and can never lose or duplicate an answer.
+Nothing in the answer-handling flow needs to know whether a given drain was triggered by the poll or by a nudge.
+
+Two artifacts wire it, both gitignored runtime state in the home:
+
+- `state/primary-inbox` records the session that should be nudged: its socket, pid, session id, advertised peer protocol, and the registry directory it was published from.
+  Only the lock holder publishes it, because several sessions can share a home's directory and nothing else distinguishes the real primary among them.
+  It is rewritten at every locked session start and needs no cleanup, since every consumer revalidates it and a stale record declines quietly.
+- `state/logbook-notify-command` is published by bootstrap whenever this home has an armed board poll, and holds the exact command line the board must be configured to spawn:
+
+  ```
+  FM_HOME='<home>' '<code-root>/bin/fm-inbox-post.sh' --notify <channel>
+  ```
+
+  Substitute the board's own channel name for `<channel>`; it must be letters, digits, dot, dash or underscore, must start with a letter or digit, and must be at most 64 characters; anything else is refused.
+  Both paths arrive single-quoted, so the line is correct as published for a home or checkout under a path holding a space or a quote, and a board that runs it through a shell spawns it verbatim.
+  Removing every board poll removes the artifact, and a home with no board writes nothing at all.
+
+`bin/fm-inbox-post.sh --status` reports whether this home has a live inbox, prints that command line, and names the inbound posture below.
+Its header is the single owner of the wire frame, the record format, the flags, and the exit codes; [`verification/cross-session-messaging.md`](verification/cross-session-messaging.md) records the dated transport evidence and the stability risk the transport is accepted under.
+
+The feature is inert everywhere it cannot apply.
+Only Claude Code exposes such an inbox, so a home running any other harness publishes nothing and keeps the poll, with no branch in the operating instructions.
+
+### Inbound delivery posture (crossSessionInbound)
+
+Whether a nudge is delivered depends on the receiving session's permission class.
+A session that prompts for permissions receives it; a session started with `--dangerously-skip-permissions` holds it for approval instead, because firstmate deliberately does not assert a permission mode it does not have.
+A held nudge is not a lost answer, so this needs no action unless the stray approval prompt is unwanted.
+
+To pin delivery in both classes, set `crossSessionInbound` to `accept` in your own user-tier settings (`~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json`).
+Firstmate does not write this for you, and deliberately does not ship it in the repo's `.claude/settings.json`: a repo may only TIGHTEN this setting, so an `accept` placed there is inert and would read as protection while providing none.
+It is also a real widening of the trust surface, accepting peer messages from any local session of the same OS user, so it should be a deliberate choice rather than a side effect.
+The receiving-side guardrails still hold either way: a peer message can never approve a permission prompt or change configuration.
+
 ## Locally installed skills (.agents/skills/&lt;name&gt;/)
 
 An out-of-tree feature that needs firstmate to load an agent playbook installs it as an ordinary skill directory under `.agents/skills/<name>/`, carrying its own `.gitignore` whose single line is `*`.

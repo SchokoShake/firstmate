@@ -18,7 +18,9 @@
 #                 "BOOTSTRAP_INFO: nudged fm-<id> with '<message>'",
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
-#                 "FMX: X mode on ..." or "FMX: X mode off ...".
+#                 "FMX: X mode on ..." or "FMX: X mode off ...",
+#                 "BOOTSTRAP_INFO: logbook answer nudge available|off - <detail>",
+#                 "LOGBOOK_NOTIFY: answer nudge unavailable|off - could not publish|remove stale state/logbook-notify-command".
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
 #          purely local fast-forward and never an origin fetch. Remote routes
@@ -79,16 +81,18 @@
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the seven MUTATING sweeps
 #          (PR-check migration, secondmate_sync, secondmate_liveness_sweep,
-#          secondmate_handoff_resume, x_mode_setup, fleet_sync) while still
+#          secondmate_handoff_resume, x_mode_setup, logbook_notify_setup,
+#          fleet_sync) while still
 #          printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
 #          checkout command. Used by
 #          fm-session-start.sh's read-only path when another live session holds
 #          the fleet lock, so a second concurrent session never race-mutates
 #          PR-check artifacts, secondmate homes, pending handoff outboxes,
-#          X-mode artifacts, project clones, or repair instructions.
+#          X-mode artifacts, the logbook notify command, project clones, or
+#          repair instructions.
 #          Unset/0 (the default) runs every sweep exactly as before - this flag
 #          is purely additive.
 #          Set FM_BOOTSTRAP_NETWORK to split this run by whether a step talks to
@@ -836,7 +840,7 @@ tool_version_at_least() {  # <tool> <min-version>
   [ "$patch" -ge "$min_patch" ]
 }
 
-x_mode_write_if_changed() {
+bootstrap_artifact_write_if_changed() {
   local dest=$1 content=$2 mode=$3 parent tmp parent_device current_mode
   parent=${dest%/*}
   [ "$parent" != "$dest" ] || return 1
@@ -880,16 +884,16 @@ x_mode_write_if_changed() {
   fi
 }
 
-x_mode_artifact_present() {
+bootstrap_artifact_present() {
   [ -e "$1" ] || [ -L "$1" ]
 }
 
-x_mode_remove_artifact() {
+bootstrap_artifact_remove() {
   local artifact=$1 parent=${1%/*}
-  x_mode_artifact_present "$artifact" || return 0
+  bootstrap_artifact_present "$artifact" || return 0
   [ -d "$parent" ] && [ ! -L "$parent" ] || return 1
   rm -f -- "$artifact" 2>/dev/null || return 1
-  ! x_mode_artifact_present "$artifact"
+  ! bootstrap_artifact_present "$artifact"
 }
 
 # X mode (opt-in): when this home's .env carries a non-empty FMX_PAIRING_TOKEN,
@@ -918,8 +922,8 @@ x_mode_setup() {
 
   x_mode_remove_artifacts() {
     local failed=0
-    x_mode_remove_artifact "$shim" || failed=1
-    x_mode_remove_artifact "$cadence" || failed=1
+    bootstrap_artifact_remove "$shim" || failed=1
+    bootstrap_artifact_remove "$cadence" || failed=1
     [ "$failed" -eq 0 ]
   }
 
@@ -933,7 +937,7 @@ x_mode_setup() {
   if [ -z "$token" ]; then
     # Opt-out (or never opted in): drop any X artifacts; stay silent unless we
     # actually removed something.
-    if x_mode_artifact_present "$shim" || x_mode_artifact_present "$cadence"; then
+    if bootstrap_artifact_present "$shim" || bootstrap_artifact_present "$cadence"; then
       if x_mode_remove_artifacts; then
         echo "FMX: X mode off - removed relay poll shim and 30s cadence; default cadence applies on the next supervision cycle; $(x_mode_supervision_repair)"
       else
@@ -951,7 +955,7 @@ x_mode_setup() {
     fi
   done
   if [ "$missing" -ne 0 ]; then
-    if x_mode_artifact_present "$shim" || x_mode_artifact_present "$cadence"; then
+    if bootstrap_artifact_present "$shim" || bootstrap_artifact_present "$cadence"; then
       if x_mode_remove_artifacts; then
         echo "FMX: X mode off - missing relay poll dependencies; install them and rerun bootstrap"
       else
@@ -979,7 +983,7 @@ x_mode_setup() {
       ;;
   esac
   shim_body=$(fmx_poll_shim_content "$shim_home" "$FM_ROOT")
-  x_mode_write_if_changed "$shim" "$shim_body" 700 || { fmx_arm_failed; return 0; }
+  bootstrap_artifact_write_if_changed "$shim" "$shim_body" 700 || { fmx_arm_failed; return 0; }
   fmx_poll_shim_valid "$shim" "$shim_home" "$FM_ROOT" \
     || { fmx_arm_failed; return 0; }
 
@@ -991,9 +995,65 @@ x_mode_setup() {
 export FM_CHECK_INTERVAL=30
 EOF
 )
-  x_mode_write_if_changed "$cadence" "$cadence_body" 600 || { fmx_arm_failed; return 0; }
+  bootstrap_artifact_write_if_changed "$cadence" "$cadence_body" 600 || { fmx_arm_failed; return 0; }
 
   echo "FMX: X mode on - relay poll armed via state/x-watch.check.sh; 30s watcher cadence in config/x-mode.env"
+}
+
+# Logbook answer nudge (opt-in, and opted in by the board rather than here):
+# when this home has an armed board poll, publish the exact command the board
+# must spawn when it records a captain's answer, so the answer wakes the running
+# session instead of waiting for the poll's next tick.
+#
+# Firstmate does not own the board's configuration, so "wiring" here means
+# publishing the command line as a stable artifact the connector reads - the
+# same shape as the two firstmate contracts it already re-reads (see
+# docs/architecture.md). state/logbook-notify-command is gitignored, 0600, and
+# rewritten whenever it would change; opting out of every board removes it.
+#
+# Inert when no board is armed: nothing written, nothing printed. The command
+# itself carries a notification only, and bin/fm-inbox-post.sh owns both that
+# frame and the published-inbox record it reads.
+logbook_notify_setup() {
+  local artifact command_file body armed board changed
+  artifact="$STATE/logbook-notify-command"
+
+  armed=0
+  for board in "$STATE"/logbook-*.check.sh; do
+    [ -f "$board" ] || continue
+    armed=1
+    break
+  done
+
+  if [ "$armed" -eq 0 ]; then
+    if bootstrap_artifact_present "$artifact"; then
+      if bootstrap_artifact_remove "$artifact"; then
+        echo "BOOTSTRAP_INFO: logbook answer nudge off - no board poll is armed; removed state/logbook-notify-command"
+      else
+        echo "LOGBOOK_NOTIFY: answer nudge off - could not remove stale state/logbook-notify-command"
+      fi
+    fi
+    return 0
+  fi
+
+  command_file="$FM_ROOT/bin/fm-inbox-post.sh"
+  [ -x "$command_file" ] || return 0
+  # The command's own script is its one producer, so the published artifact and
+  # `fm-inbox-post.sh --print-notify-command` can never show two different forms.
+  body=$(FM_HOME="$FM_HOME" "$command_file" --print-notify-command) || return 0
+  [ -n "$body" ] || return 0
+  # Stay quiet on an unchanged artifact: this runs at every session start, and a
+  # line repeated every time is noise rather than an operator fact.
+  changed=1
+  if bootstrap_artifact_present "$artifact" && cmp -s "$artifact" <(printf '%s\n' "$body"); then
+    changed=0
+  fi
+  bootstrap_artifact_write_if_changed "$artifact" "$body" 600 || {
+    echo "LOGBOOK_NOTIFY: answer nudge unavailable - could not publish state/logbook-notify-command"
+    return 0
+  }
+  [ "$changed" -eq 1 ] || return 0
+  echo "BOOTSTRAP_INFO: logbook answer nudge available - board notify command published in state/logbook-notify-command"
 }
 
 crew_dispatch_validate() {
@@ -1244,6 +1304,8 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   fi
   # x_mode_setup writes local Relay artifacts only and never leaves the machine.
   local_phase && x_mode_setup
+  # logbook_notify_setup writes one local artifact only and never leaves the machine.
+  local_phase && logbook_notify_setup
   if network_phase && network_sweep_authorized 'project clone refresh'; then
     __fm_timing_stamp=$(fm_timing_now_ms)
     fleet_sync

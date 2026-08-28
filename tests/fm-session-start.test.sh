@@ -8,6 +8,9 @@
 #   - the lock-refusal read-only path: banner leads, every mutating step is
 #     skipped (including bootstrap's five mutating sweeps, verified by their
 #     ABSENCE), the digest still completes
+#   - the board-answer inbox record (state/primary-inbox) is published by the
+#     lock holder only: a read-only session and a session with no inbox socket
+#     both leave none
 #   - output section ordering: the safety preamble leads unchanged, live fleet
 #     state precedes the curated memory a truncated tail may take, and the
 #     read-once contract precedes both
@@ -823,6 +826,71 @@ EOF
   [ -s "$home/state/.wake-queue" ] || fail "lock publication failure allowed the wake queue to mutate"
 
   pass "session start stays read-only when lock ownership cannot be published"
+}
+
+# The board-answer nudge reaches whichever session published state/primary-inbox,
+# so the record must come from the lock holder and from nobody else: several
+# sessions can share a home's cwd and nothing in the harness registry
+# distinguishes the real primary among them. Drive the real digest against a
+# scratch registry naming a real live pid, and pin both halves of that rule.
+test_lock_holder_publishes_inbox_and_read_only_session_does_not() {
+  local rec root home fakebin cfg live_pid sock holder_pid out status
+  rec=$(new_world inbox-publish)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  # A real live pid and the registry entry a harness writes for it, in a
+  # scratch CLAUDE_CONFIG_DIR so the operator's own sessions are never read.
+  cfg="$TMP_ROOT/inbox-publish-cfg"
+  mkdir -p "$cfg/sessions"
+  sleep 300 &
+  live_pid=$!
+  sock="$TMP_ROOT/inbox-publish.sock"
+  printf '{"pid":%s,"sessionId":"11111111-2222-3333-4444-555555555555","peerProtocol":1,"messagingSocketPath":"%s","name":"fm-test"}\n' \
+    "$live_pid" "$sock" > "$cfg/sessions/$live_pid.json"
+
+  # Lock acquired: the digest publishes the record naming that session.
+  status=0
+  out=$(CLAUDE_CONFIG_DIR="$cfg" CLAUDE_CODE_MESSAGING_SOCKET="$sock" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 when it publishes the inbox"
+  assert_contains "$out" "lock acquired" "the publishing run did not hold the lock"
+  assert_present "$home/state/primary-inbox" "the lock holder published no inbox record"
+  assert_grep "socket=$sock" "$home/state/primary-inbox" "the record does not name the session socket"
+  assert_grep "pid=$live_pid" "$home/state/primary-inbox" "the record does not name the session pid"
+  assert_grep 'peer_protocol=1' "$home/state/primary-inbox" "the record does not carry the peer protocol"
+
+  # Lock refused by another live holder: the record is NOT written, so a
+  # sibling session in the same home can never redirect the nudge to itself.
+  rm -f "$home/state/primary-inbox"
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+  status=0
+  out=$(CLAUDE_CONFIG_DIR="$cfg" CLAUDE_CODE_MESSAGING_SOCKET="$sock" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 on a lock refusal"
+  assert_contains "$out" "READ-ONLY SESSION" "the refused run did not go read-only"
+  assert_absent "$home/state/primary-inbox" "a read-only session published an inbox record"
+
+  # No inbox in this environment (any harness but claude): the lock holder
+  # publishes nothing and the digest is otherwise unaffected.
+  rm -f "$home/state/.lock"
+  status=0
+  out=$(CLAUDE_CONFIG_DIR="$cfg" CLAUDE_CODE_MESSAGING_SOCKET='' \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  kill "$live_pid" 2>/dev/null || true
+  wait "$live_pid" 2>/dev/null || true
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 without an inbox to publish"
+  assert_contains "$out" "lock acquired" "the inbox-less run did not hold the lock"
+  assert_absent "$home/state/primary-inbox" "a session with no inbox socket published a record"
+
+  pass "only the lock holder publishes state/primary-inbox; a read-only or inbox-less session leaves none"
 }
 
 test_trace_context_effective_state_is_frozen_after_lock() {
@@ -2400,6 +2468,7 @@ EOF
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
+test_lock_holder_publishes_inbox_and_read_only_session_does_not
 test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner
 test_output_ordering_diagnostics_lead
