@@ -68,6 +68,7 @@ Deriving one of its own from the row's title, reason, or parsed options reintrod
 The revision is producer-owned and is 1 until firstmate deliberately re-asks.
 `data/ask-revisions` records it as one `<subject>=<revision>` line per re-asked subject, with `#` comments and blank lines ignored and the last line for a subject winning.
 An absent file and an absent line both mean revision 1, so the file stays empty until firstmate actually re-asks, and an entry whose key is not a slug or whose value is not a positive integer is ignored rather than repaired.
+A re-ask rewrites only its own subject's line, so comments and every other line a human wrote survive it.
 It is durable private fleet data rather than runtime state, because a subject that dropped back to an earlier revision would let an old answer settle a genuinely new question.
 
 [`bin/fm-ask.sh`](../bin/fm-ask.sh) is the only writer and the one command that re-asks: `fm-ask.sh again <task-id> --reason "<the new question>"` bumps the revision and writes the new reason together.

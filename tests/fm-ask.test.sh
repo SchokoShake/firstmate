@@ -65,6 +65,11 @@ compose_action_card() {  # <home> <id>
   axi "$home" hold "$id" --reason "confirm the rollout window" --kind captain >/dev/null
 }
 
+# One field of the row as tasks-axi itself reports it.
+shown_field() {  # <home> <id> <field>
+  axi "$1" show "$2" --full | sed -n "s/^  $3: //p" | head -1
+}
+
 # --- a reason rewrite preserves identity and revision ------------------------
 
 test_reason_rewrite_preserves_the_identity() {
@@ -140,6 +145,10 @@ test_again_refuses_without_a_new_question() {
   expect_code 1 "$rc" "a re-ask with no --reason"
   assert_contains "$out" "--reason is required" "a re-ask with no --reason must say what is missing"
 
+  rc=0; out=$(run_ask "$home" again "$id" --reason 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask whose --reason has no value"
+  assert_contains "$out" "--reason is required" "a trailing --reason with no value must say what is missing"
+
   rc=0; out=$(run_ask "$home" again "$id" --reason "confirm the rollout window" 2>&1) || rc=$?
   expect_code 1 "$rc" "a re-ask restating the same reason"
   assert_contains "$out" "is not a re-ask" "restating the same question must be refused as a nag"
@@ -193,6 +202,53 @@ test_concurrent_re_asks_keep_every_ledger_line() {
       || fail "$id lost its re-ask to a concurrent one; the ledger reads: $(cat "$home/data/ask-revisions")"
   done
   pass "concurrent re-asks in one home serialize on the ledger and none drops another's line"
+}
+
+test_again_keeps_the_hold_deadline() {
+  local home id row
+  home=$(make_home deadline)
+  id=placement-axes-p13
+  axi "$home" add "$id" "adopt the new placement axes" --kind ship --repo myapp --start >/dev/null
+  axi "$home" hold "$id" --reason "confirm the rollout window" --kind captain --until 2099-01-01 >/dev/null
+  [ "$(shown_field "$home" "$id" hold_until)" = 2099-01-01 ] || fail "the fixture lost its hold deadline"
+  run_ask "$home" again "$id" --reason "the Friday train closed; pick the next window" >/dev/null \
+    || fail "the re-ask of a dated hold failed"
+  [ "$(shown_field "$home" "$id" hold_until)" = 2099-01-01 ] || fail "the re-ask dropped the hold deadline"
+  row=$(grep -F -- "- [ ] $id " "$home/data/backlog.md") || fail "the re-asked dated row vanished from the backlog"
+  assert_contains "$row" "the Friday train closed" "the re-ask of a dated hold did not write the new question"
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the re-ask of a dated hold did not bump the revision"
+  pass "a re-ask carries the hold's existing deadline into the new question"
+}
+
+test_a_re_ask_keeps_human_annotations_in_the_ledger() {
+  local home expected
+  home=$(make_home annotated-ledger)
+  compose_action_card "$home" placement-axes-p11
+  compose_action_card "$home" placement-axes-p12
+  cat > "$home/data/ask-revisions" <<'EOF'
+# why p11 was re-asked: the Friday train closed
+
+placement-axes-p11=2
+other-subject=4
+a line the ledger does not recognize
+EOF
+  run_ask "$home" again placement-axes-p11 --reason "the next window slipped too" >/dev/null \
+    || fail "the re-ask of an annotated subject failed"
+  expected='# why p11 was re-asked: the Friday train closed
+
+placement-axes-p11=3
+other-subject=4
+a line the ledger does not recognize'
+  [ "$(cat "$home/data/ask-revisions")" = "$expected" ] \
+    || fail "the re-ask did not rewrite only its own line; the ledger reads:"$'\n'"$(cat "$home/data/ask-revisions")"
+  [ "$(run_ask "$home" revision placement-axes-p11)" = 3 ] || fail "the in-place rewrite did not record revision 3"
+
+  run_ask "$home" again placement-axes-p12 --reason "the rollout window moved" >/dev/null \
+    || fail "the re-ask of a subject with no line failed"
+  expected="$expected"$'\n''placement-axes-p12=2'
+  [ "$(cat "$home/data/ask-revisions")" = "$expected" ] \
+    || fail "a subject with no line was not appended after the annotations; the ledger reads:"$'\n'"$(cat "$home/data/ask-revisions")"
+  pass "a re-ask keeps every comment and unrecognized line and rewrites only its own subject"
 }
 
 # --- decision holds: a durable subject, re-asked by a new key ----------------
@@ -374,6 +430,8 @@ test_again_bumps_the_identity_and_writes_the_new_question
 test_again_refuses_without_a_new_question
 test_again_refuses_the_same_reason_when_tasks_axi_quotes_it
 test_concurrent_re_asks_keep_every_ledger_line
+test_again_keeps_the_hold_deadline
+test_a_re_ask_keeps_human_annotations_in_the_ledger
 test_decision_hold_identity_survives_its_reason_rewrite
 test_again_refuses_a_decision_hold
 test_close_paths_leave_the_revision_alone

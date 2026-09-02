@@ -23,6 +23,9 @@
 # untouched and therefore preserves the identity. That is the point: the safe path
 # is the one an author already takes.
 #
+# `again` carries the row's existing hold deadline into the rewritten hold, because
+# tasks-axi hold replaces the whole hold and would otherwise drop it.
+#
 # --reason is required, because a re-ask has to say what is now being asked. A
 # genuine re-ask of the identical sentence is a nag, not a new question, and
 # bumping for one would spend the captain's answer on nothing.
@@ -169,7 +172,8 @@ command_revision() {
 }
 
 command_again() {
-  local id=${1:-} reason='' show previous next
+  local id=${1:-} reason='' show until previous next
+  local -a hold_flags=()
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -177,7 +181,7 @@ command_again() {
       --reason) shift; reason=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
-    shift
+    [ "$#" -eq 0 ] || shift
   done
   [ -n "$reason" ] || fail "--reason is required; a re-ask must state what is now being asked"
   case "$reason" in
@@ -188,13 +192,18 @@ command_again() {
   refuse_decision_hold "$id" "$show"
   [ "$reason" != "$(show_field "$show" hold_reason)" ] \
     || fail "the reason is unchanged; rewriting the same question is not a re-ask"
+  until=$(show_field "$show" hold_until)
+  case "$until" in
+    ''|-) ;;
+    *) hold_flags=(--until "$until") ;;
+  esac
 
   fm_lock_acquire_wait "$LEDGER_LOCK"
   LEDGER_LOCK_HELD=1
   previous=$(fm_ask_revision "$LEDGER" "$id")
   next=$((previous + 1))
   fm_ask_write_revision "$LEDGER" "$id" "$next" || fail "could not record revision $next for $id"
-  if ! tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null; then
+  if ! tasks_axi hold "$id" --reason "$reason" --kind captain "${hold_flags[@]+"${hold_flags[@]}"}" >/dev/null; then
     fm_ask_write_revision "$LEDGER" "$id" "$previous" \
       || fail "could not write the new question on $id, and revision $next is now recorded with the old wording; re-run with the intended reason"
     fail "could not write the new question on $id; revision $previous is unchanged"

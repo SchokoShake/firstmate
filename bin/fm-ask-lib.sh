@@ -40,23 +40,35 @@
 # integer is ignored rather than repaired, so a hand-edit that went wrong degrades
 # to revision 1 - the board's behaviour before any of this existed - instead of
 # minting an identity from a malformed line.
+#
+# A re-ask rewrites only its own subject's line, so comments and every other line
+# a human wrote survive it.
 
 fm_ask_ledger_path() {  # [<data-dir>]
   local data=${1:-${FM_DATA_OVERRIDE:-${FM_HOME:-.}/data}}
   printf '%s/ask-revisions\n' "$data"
 }
 
+# The one reading of a ledger line, shared by every awk program below: fm_ask_pair
+# returns 1 and fills out["key"] and out["val"] for a valid pair, 0 otherwise.
+_FM_ASK_LEDGER_AWK='
+function fm_ask_pair(line, out,    f, n) {
+  if (line ~ /^[[:space:]]*(#|$)/) return 0
+  n = split(line, f, "=")
+  if (n < 2) return 0
+  out["key"] = f[1]; sub(/^[[:space:]]+/, "", out["key"]); sub(/[[:space:]]+$/, "", out["key"])
+  out["val"] = f[2]; sub(/^[[:space:]]+/, "", out["val"]); sub(/[[:space:]]+$/, "", out["val"])
+  if (out["key"] !~ /^[A-Za-z0-9._-]+$/ || out["val"] !~ /^[0-9]+$/ || out["val"] + 0 < 1) return 0
+  out["val"] = out["val"] + 0
+  return 1
+}
+'
+
 fm_ask_ledger_pairs() {  # <ledger-path>; prints "<subject>\t<revision>", sorted
   local ledger=$1
   [ -f "$ledger" ] || return 0
-  LC_ALL=C awk -F= '
-    /^[[:space:]]*(#|$)/ { next }
-    NF < 2 { next }
-    {
-      key = $1; sub(/^[[:space:]]+/, "", key); sub(/[[:space:]]+$/, "", key)
-      val = $2; sub(/^[[:space:]]+/, "", val); sub(/[[:space:]]+$/, "", val)
-      if (key ~ /^[A-Za-z0-9._-]+$/ && val ~ /^[0-9]+$/ && val + 0 >= 1) pairs[key] = val + 0
-    }
+  LC_ALL=C awk "$_FM_ASK_LEDGER_AWK"'
+    { if (fm_ask_pair($0, p)) pairs[p["key"]] = p["val"] }
     END { for (k in pairs) printf "%s\t%s\n", k, pairs[k] }
   ' "$ledger" | LC_ALL=C sort
 }
@@ -92,21 +104,39 @@ fm_ask_id() {  # <subject> <hold-kind> <revision>
   printf 'fm-ask/1:%s:%s:%s\n' "$1" "$2" "$3"
 }
 
-# Rewrite <ledger-path> so <subject> records <revision>, dropping the entry again
-# when it falls back to 1 so the ledger keeps naming exactly the re-asked subjects.
+# Rewrite <ledger-path> so <subject> records <revision>, touching only that
+# subject's own line: the last line naming it is rewritten in place, an earlier
+# duplicate is dropped, a subject with no line is appended, and a revision of 1
+# removes the line so the ledger keeps naming exactly the re-asked subjects.
 fm_ask_write_revision() {  # <ledger-path> <subject> <revision>
   local ledger=$1 subject=$2 revision=$3 tmp dir
   fm_ask_is_subject "$subject" || return 1
-  case "$revision" in ''|*[!0-9]*|0) return 1 ;; esac
+  case "$revision" in ''|*[!0-9]*) return 1 ;; esac
+  revision=$((10#$revision))
+  [ "$revision" -ge 1 ] || return 1
   dir=$(dirname "$ledger")
   [ -d "$dir" ] || return 1
   tmp=$(mktemp "$ledger.XXXXXX") || return 1
   {
-    printf '# Captain-ask revisions, written only by bin/fm-ask.sh again.\n'
-    printf '# An absent subject is revision 1; see bin/fm-ask-lib.sh.\n'
-    fm_ask_ledger_pairs "$ledger" \
-      | LC_ALL=C awk -F'\t' -v k="$subject" '$1 != k { printf "%s=%s\n", $1, $2 }'
-    [ "$revision" = 1 ] || printf '%s=%s\n' "$subject" "$revision"
+    if [ -f "$ledger" ]; then
+      LC_ALL=C awk -v k="$subject" -v r="$revision" "$_FM_ASK_LEDGER_AWK"'
+        {
+          line[NR] = $0
+          mine[NR] = (fm_ask_pair($0, p) && p["key"] == k)
+          if (mine[NR]) last = NR
+        }
+        END {
+          for (i = 1; i <= NR; i++) {
+            if (!mine[i]) print line[i]
+            else if (i == last && r != 1) printf "%s=%s\n", k, r
+          }
+          if (!last && r != 1) printf "%s=%s\n", k, r
+        }' "$ledger"
+    else
+      printf '# Captain-ask revisions, written only by bin/fm-ask.sh again.\n'
+      printf '# An absent subject is revision 1; see bin/fm-ask-lib.sh.\n'
+      [ "$revision" = 1 ] || printf '%s=%s\n' "$subject" "$revision"
+    fi
   } >"$tmp" || { rm -f "$tmp"; return 1; }
   mv "$tmp" "$ledger" || { rm -f "$tmp"; return 1; }
 }
