@@ -910,6 +910,20 @@ test_main_side_captain_hold_uses_the_same_default() {
   fi
   assert_no_grep "sample-absent-thread" "$home/data/backlog.md" \
     "a refused main-side hold created a backlog row"
+
+  # tasks-axi applies a hold to a done row too, and every surface that reports a
+  # captain hold requires a queued one, so holding a settled item asks a question
+  # nothing will ever show the captain.
+  tasks_in "$home" add sample-settled-thread "Sample settled thread" --kind captain --repo sample >/dev/null \
+    || fail "could not create the settled backlog fixture"
+  tasks_in "$home" "done" sample-settled-thread >/dev/null \
+    || fail "could not settle the backlog fixture"
+  if run_captain_hold "$home" sample-settled-thread --reason "captain reply pending" \
+    > "$home/settled-hold.out" 2> "$home/settled-hold.err"; then
+    fail "a main-side hold was written onto a done backlog item"
+  fi
+  assert_contains "$(tasks_in "$home" show sample-settled-thread --full)" 'hold_kind: "-"' \
+    "a refused main-side hold still wrote captain hold metadata onto a done item"
   HOLD_NOW=''
   pass "a main-side captain hold takes the same deadline default"
 }

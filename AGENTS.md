@@ -489,7 +489,7 @@ Mention cost as a courtesy when unusually much work is running, but never block 
 It tracks work items only, never agents; persistent secondmates never appear as backlog items.
 Work routed to a secondmate is recorded in that secondmate home's own backlog, not the main backlog.
 When a main-side thread such as a pending captain decision or relay reminder is worth durable tracking, file it as its own work item; use `bin/fm-captain-hold.sh` for a captain-gated thread.
-Every captain hold firstmate writes lapses on a deadline, so a question the captain has chosen not to answer stops competing with ones they have not seen; `bin/fm-captain-hold-lib.sh` owns the default window, the override, the rare no-deadline opt-out, and the rule that lapsing demotes a hold rather than answering or removing it.
+Every captain hold firstmate writes lapses on a deadline, so a question the captain has chosen not to answer stops competing with ones they have not seen; `bin/fm-captain-hold-lib.sh` owns the default window, the override, the rare no-deadline opt-out, and the rule that a lapsed hold stays held and never becomes dispatchable work.
 Unresolved decisions discovered by investigations or visual reviews follow `decision-hold-lifecycle`, which owns their mandatory backlog lifecycle.
 Update the backlog on every dispatch, completion, and decision for a work item.
 Re-evaluate queued work after every teardown and heartbeat, dispatching items only when dependencies and time gates have cleared.

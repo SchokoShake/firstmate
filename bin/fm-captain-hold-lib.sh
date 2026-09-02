@@ -24,12 +24,16 @@
 # "is this decision still open?" must therefore read hold_kind, never held.
 # Re-running `hold` on a lapsed row reactivates it with a fresh deadline, which
 # is how firstmate deliberately re-asks a question that went unanswered.
+# tasks-axi's own `ready` set counts a lapsed hold as dispatchable, so a reader
+# that offers work - bin/fm-session-start.sh's digest - asks
+# fm_captain_hold_lapsed_rows which of its queued rows are really unanswered
+# questions, and keeps them out of what it presents as dispatchable now.
 #
 # Dates are integer day numbers here rather than date(1) arithmetic: BSD and GNU
 # date disagree on every flag that would do this, and a deadline that silently
 # fails to compute is a hold that never lapses - the exact bug the default
 # exists to fix. The conversions assume proleptic Gregorian dates in positive
-# years, which every date reachable from `date -u +%Y-%m-%d` satisfies.
+# years, which every date reachable from `date +%Y-%m-%d` satisfies.
 
 # Seven days. The scout census that produced this default recorded eleven open
 # captain holds aged 47, 27, 15, 12, 9, 8, 6, 2, 1, 0 and 0 days, and named the
@@ -38,11 +42,14 @@
 # report calls the failure and leaves the five recent ones gating dispatch.
 FM_CAPTAIN_HOLD_DEFAULT_DAYS=7
 
+# The LOCAL date, because tasks-axi decides whether a hold is still gating from
+# the local date too. Reading UTC here would let a home east of it accept, write,
+# and immediately lapse the same deadline in the hours after local midnight.
 # FM_CAPTAIN_HOLD_NOW pins today's date so a test can assert an exact deadline.
 fm_captain_hold_today() {
   local today=${FM_CAPTAIN_HOLD_NOW:-}
   if [ -z "$today" ]; then
-    today=$(date -u +%Y-%m-%d) || return 1
+    today=$(date +%Y-%m-%d) || return 1
   fi
   case "$today" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
@@ -146,4 +153,77 @@ fm_captain_hold_resolve_until() {  # <value>
     none) ;;
     *) printf '%s\n' "$1" ;;
   esac
+}
+
+# fm_captain_hold_effective_until <explicit> <existing>
+#   The deadline to write. An explicit value always wins; otherwise a deadline
+#   the clock has not reached is kept rather than reset, so an idempotent re-hold
+#   cannot shorten a window the captain was already given.
+fm_captain_hold_effective_until() {  # <explicit> <existing>
+  if [ -z "$1" ] && fm_captain_hold_until_is_future "$2"; then
+    printf '%s\n' "$2"
+    return 0
+  fi
+  fm_captain_hold_resolve_until "$1"
+}
+
+# fm_captain_hold_contract_reject
+#   Prints a one-line reason when the installed tasks-axi cannot carry a captain
+#   hold with a deadline and nothing when it can, so each caller reports it with
+#   its own error prefix. Defense in depth for a stripped or forked build that
+#   advertises a compatible version without the flags.
+fm_captain_hold_contract_reject() {
+  local hold_help
+  hold_help=$(tasks-axi hold --help 2>&1) || {
+    printf '%s\n' "tasks-axi does not expose the hold contract"
+    return 0
+  }
+  printf '%s\n' "$hold_help" | grep -F -- '--kind captain' >/dev/null || {
+    printf '%s\n' "tasks-axi does not expose the captain-hold contract"
+    return 0
+  }
+  printf '%s\n' "$hold_help" | grep -F -- '--until' >/dev/null \
+    || printf '%s\n' "tasks-axi does not expose the hold deadline contract"
+}
+
+# fm_captain_hold_write <id> <reason> <until>
+#   Applies the hold in the active FM_HOME, with the deadline when there is one.
+#   An empty <until> is the deliberate open-ended hold, not a missing value.
+fm_captain_hold_write() {  # <id> <reason> <until>
+  if [ -n "$3" ]; then
+    (cd "$FM_HOME" && tasks-axi hold "$1" --reason "$2" --kind captain --until "$3" >/dev/null)
+  else
+    (cd "$FM_HOME" && tasks-axi hold "$1" --reason "$2" --kind captain >/dev/null)
+  fi
+}
+
+# The three fields that decide whether a captain hold has lapsed, appended after
+# any caller-chosen ones. They are last because none of them can contain a comma,
+# so a title or hold reason that does cannot shift them out of position.
+FM_CAPTAIN_HOLD_LAPSE_FIELDS=hold_kind,hold_until,held
+
+# fm_captain_hold_lapsed_rows <backlog-path> [<extra-fields>]
+#   Prints tasks-axi's own listing row for every queued row whose captain hold
+#   has lapsed. tasks-axi answers "has this deadline passed?" itself, so this
+#   reads its verdict rather than re-deriving the clock the hold was written
+#   against: past the date it reports `held: no` while hold_kind survives, and
+#   that pair exists on no other row.
+fm_captain_hold_lapsed_rows() {  # <backlog-path> [<extra-fields>]
+  local listing
+  listing=$(tasks-axi list --file "$1" --state queued \
+    --fields "${2:+$2,}$FM_CAPTAIN_HOLD_LAPSE_FIELDS" 2>&1) || {
+    printf '%s\n' "$listing"
+    return 1
+  }
+  printf '%s\n' "$listing" | awk '
+    /^help\[/ { exit }
+    /^tasks\[/ { rows = 1; next }
+    rows && /^[[:space:]]/ {
+      n = split($0, field, ",")
+      if (n >= 3 && field[n] == "no" && field[n - 2] == "captain" &&
+          field[n - 1] ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) print
+      next
+    }
+    { rows = 0 }
+  '
 }

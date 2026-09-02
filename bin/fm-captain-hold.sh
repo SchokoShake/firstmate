@@ -12,26 +12,14 @@
 # no hold firstmate had ever written carried one. tasks-axi has no configuration
 # surface for a default (.tasks.toml configures only the markdown backend's path,
 # archive and retention) and forking it is not on the table, so the default lives
-# in the one wrapper both firstmate hold paths go through. The rule and the
-# window are owned by bin/fm-captain-hold-lib.sh.
+# in the one wrapper both firstmate hold paths go through.
 #
 # Usage:
 #   fm-captain-hold.sh <id> --reason <reason> [--hold-until <YYYY-MM-DD>|none]
 #
-# The item must already exist; create it with `tasks-axi add` first. Holding is
-# idempotent: a deadline the clock has not reached is kept as it is, so a repeat
-# cannot quietly shorten a window the captain was already given. Repeating it on
-# a lapsed hold reactivates it with a fresh deadline, which is how firstmate
-# re-asks a question that went unanswered.
-#
-# --hold-until overrides the default date. --hold-until none writes no deadline
-# at all, for a genuinely open-ended question; it is the rare case, because a
-# hold with no deadline is a question that can never stop competing with the ones
-# the captain has not seen yet.
-#
-# Lapse is demotion, never deletion: past the deadline the row stops gating
-# dispatch and keeps its hold reason, kind and date, so it is still a captain
-# hold with an answer owed. Use `tasks-axi unhold` to actually release one.
+# The item must already exist and must still be open; create it with
+# `tasks-axi add` first. bin/fm-captain-hold-lib.sh owns the default window,
+# `--hold-until`, the `none` opt-out, and what lapsing does and does not mean.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -94,33 +82,26 @@ REJECT=$(fm_captain_hold_until_reject "$HOLD_UNTIL")
 [ -z "$REJECT" ] || fail "$REJECT"
 
 fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
-HOLD_HELP=$(tasks-axi hold --help 2>&1) || fail "tasks-axi does not expose the hold contract"
-printf '%s\n' "$HOLD_HELP" | grep -F -- '--kind captain' >/dev/null \
-  || fail "tasks-axi does not expose the captain-hold contract"
-printf '%s\n' "$HOLD_HELP" | grep -F -- '--until' >/dev/null \
-  || fail "tasks-axi does not expose the hold deadline contract"
+REJECT=$(fm_captain_hold_contract_reject)
+[ -z "$REJECT" ] || fail "$REJECT"
 
 SHOW=$(tasks_axi show "$ID" --full 2>/dev/null) \
   || fail "backlog item $ID does not exist in $FM_HOME/data/backlog.md; create it with tasks-axi add first"
-EXISTING_UNTIL=$(printf '%s\n' "$SHOW" | sed -n 's/^  hold_until: //p' | head -1)
+show_field() {  # <field>
+  printf '%s\n' "$SHOW" | sed -n "s/^  $1: //p" | head -1
+}
+# tasks-axi applies a hold to a done row too, and nothing surfaces it afterwards,
+# so the captain would never see the question.
+STATE=$(show_field state)
+[ "$STATE" != "done" ] \
+  || fail "backlog item $ID is already done; hold a new item for a new captain question"
 
-# An explicit deadline always wins. Otherwise a deadline the clock has not
-# reached is kept, so re-holding cannot silently shorten a window the captain was
-# already given; a lapsed or deadline-free hold takes the default, which is how a
-# re-ask puts a fresh clock on it.
-if [ -z "$HOLD_UNTIL" ] && fm_captain_hold_until_is_future "$EXISTING_UNTIL"; then
-  UNTIL_DATE=$EXISTING_UNTIL
-else
-  UNTIL_DATE=$(fm_captain_hold_resolve_until "$HOLD_UNTIL") \
-    || fail "could not compute the default captain-hold deadline"
-fi
-
+UNTIL_DATE=$(fm_captain_hold_effective_until "$HOLD_UNTIL" "$(show_field hold_until)") \
+  || fail "could not compute the default captain-hold deadline"
+fm_captain_hold_write "$ID" "$REASON" "$UNTIL_DATE" \
+  || fail "could not hold $ID for the captain"
 if [ -n "$UNTIL_DATE" ]; then
-  tasks_axi hold "$ID" --reason "$REASON" --kind captain --until "$UNTIL_DATE" >/dev/null \
-    || fail "could not hold $ID for the captain"
   printf 'held: %s until %s\n' "$ID" "$UNTIL_DATE"
 else
-  tasks_axi hold "$ID" --reason "$REASON" --kind captain >/dev/null \
-    || fail "could not hold $ID for the captain"
   printf 'held: %s with no deadline\n' "$ID"
 fi

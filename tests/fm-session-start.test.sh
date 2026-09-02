@@ -115,11 +115,15 @@ SH
 }
 
 # make_fake_tasks_axi_compact <fakebin>: a tasks-axi boundary that answers the
-# four group filters the startup listing composes (in-flight, held, blocked
-# queued, and the dispatchable ready set) and REFUSES anything the recovery
-# listing must never ask for: a body field, an unfiltered whole-backlog listing,
-# or done rows. FM_FAKE_TASKS_AXI_READY sizes the ready set so the queued bound
-# can be driven past its limit.
+# five group filters the startup listing composes (in-flight, held, blocked
+# queued, the queued rows the lapsed-hold check reads, and the dispatchable
+# ready set) and REFUSES anything the recovery listing must never ask for: a
+# body field, an unfiltered whole-backlog listing, or done rows.
+# FM_FAKE_TASKS_AXI_READY sizes the ready set so the queued bound can be driven
+# past its limit. FM_FAKE_TASKS_AXI_LAPSED names captain holds whose deadline has
+# passed, and reproduces what tasks-axi 0.2.5 really does with one: it leaves the
+# held group, keeps hold_kind and hold_until beside `held: no`, and turns up in
+# the dispatchable ready set.
 make_fake_tasks_axi_compact() {
   local fakebin=$1
   cat > "$fakebin/tasks-axi" <<'SH'
@@ -128,6 +132,7 @@ set -u
 log=${FM_FAKE_TASKS_AXI_LOG:-}
 [ -n "$log" ] && printf '%s\n' "$*" >> "$log"
 ready_count=${FM_FAKE_TASKS_AXI_READY:-2}
+lapsed_ids=${FM_FAKE_TASKS_AXI_LAPSED:-}
 require_file() {
   case "$*" in *'--file '*) return 0 ;; esac
   printf '%s\n' 'missing explicit backlog file' >&2
@@ -160,12 +165,17 @@ case "${1:-}" in
     ;;
   ready)
     require_file "$@"
-    printf 'count: %s\n' "$ready_count"
-    printf 'ready[%s]{id,state,kind,repo,title}:\n' "$ready_count"
+    lapsed_count=0
+    for lapsed in $lapsed_ids; do lapsed_count=$((lapsed_count + 1)); done
+    printf 'count: %s\n' "$((ready_count + lapsed_count))"
+    printf 'ready[%s]{id,state,kind,repo,title}:\n' "$((ready_count + lapsed_count))"
     i=1
     while [ "$i" -le "$ready_count" ]; do
       printf '  ready-%s,queued,ship,firstmate,Ready item %s\n' "$i" "$i"
       i=$((i + 1))
+    done
+    for lapsed in $lapsed_ids; do
+      printf '  %s,queued,captain,firstmate,Lapsed captain question %s\n' "$lapsed" "$lapsed"
     done
     printf 'ready_public_followups: 0 delivery-ready obligations\n'
     printf 'help[1]:\n'
@@ -196,6 +206,18 @@ case "${1:-}" in
       *'--state queued'*'--blocked'*)
         task_header 1
         printf '%s\n' '  blocked-followup,queued,scout,firstmate,Follow compact startup,compact-startup,"-","-"'
+        ;;
+      *'--state queued'*'hold_until,held'*)
+        lapsed_count=0
+        for lapsed in $lapsed_ids; do lapsed_count=$((lapsed_count + 1)); done
+        printf 'count: %s\n' "$((lapsed_count + 1))"
+        printf 'tasks[%s]{id,state,kind,repo,title,blocked_by,hold_reason,hold_kind,hold_until,held}:\n' \
+          "$((lapsed_count + 1))"
+        printf '%s\n' '  held-queued,queued,ship,firstmate,Held queued work,none,captain choice pending,captain,"-",yes'
+        for lapsed in $lapsed_ids; do
+          printf '  %s,queued,captain,firstmate,Lapsed captain question %s,none,captain choice pending,captain,2020-01-01,no\n' \
+            "$lapsed" "$lapsed"
+        done
         ;;
       *)
         printf '%s\n' 'startup recovery must not request an unfiltered whole-backlog listing' >&2
@@ -1765,7 +1787,7 @@ EOF
   out=$(FM_FAKE_TASKS_AXI_LOG="$log" FM_FAKE_TASKS_AXI_READY=3 \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to 20; task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, lapsed-hold, and blocked row shown in full; ready queued bounded to 20; task bodies omitted)" \
     "compatible tasks-axi backend did not render the compact backlog listing"
   assert_contains "$out" "tasks[1]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason}:" \
     "tasks-axi compact listing omitted the expected structured field header"
@@ -1803,6 +1825,59 @@ EOF
     "session start did not ask tasks-axi for the dispatchable queued set"
 
   pass "compatible tasks-axi backlog rendering drops done rows and keeps every in-flight, held, and blocked row"
+}
+
+# `tasks-axi ready` counts a captain hold as dispatchable the moment its deadline
+# passes, so the digest that composes this turn's queue has to hold it back
+# itself. Offering an agent a question the captain has never answered as work to
+# pick up is the one thing lapsing must never mean, and the queued bound could
+# then cut the same row away entirely.
+test_backlog_lapsed_captain_hold_stays_held_and_never_dispatchable() {
+  local rec root home fakebin out ready_group
+  rec=$(new_world backlog-lapsed-hold)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_tasks_axi_compact "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  write_long_body_backlog "$home/data/backlog.md"
+
+  out=$(FM_FAKE_TASKS_AXI_READY=2 \
+    FM_FAKE_TASKS_AXI_LAPSED="stale-captain-question older-captain-question" \
+    FM_SESSION_START_QUEUED_LIMIT=1 \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" "lapsed[2]{id,state,kind,repo,title,blocked_by,hold_reason,hold_kind,hold_until,held} (deadline passed; still an unanswered captain hold, never dispatchable):" \
+    "the digest did not present lapsed captain holds as still held"
+  assert_contains "$out" "stale-captain-question,queued,captain,firstmate,Lapsed captain question stale-captain-question,none,captain choice pending,captain,2020-01-01,no" \
+    "the digest dropped a lapsed captain hold's row or its hold metadata"
+  # The bound is one row wide here, so a lapsed hold that survives it is not
+  # merely listed - it is exempt from the cut, exactly as a held row is.
+  assert_contains "$out" "older-captain-question,queued,captain,firstmate,Lapsed captain question older-captain-question,none,captain choice pending,captain,2020-01-01,no" \
+    "the queued bound cut a lapsed captain hold out of the digest"
+
+  ready_group=$(printf '%s\n' "$out" | awk '
+    /^ready queued \(dispatchable now\):$/ { on = 1; next }
+    on && /^Full task bodies remain available/ { exit }
+    on
+  ')
+  assert_not_contains "$ready_group" "stale-captain-question" \
+    "an unanswered captain question was offered as dispatchable work"
+  assert_not_contains "$ready_group" "older-captain-question" \
+    "an unanswered captain question was offered as dispatchable work"
+  assert_contains "$ready_group" "ready-1,queued,ship,firstmate,Ready item 1" \
+    "withholding the lapsed holds also dropped genuinely dispatchable work"
+  assert_contains "$ready_group" "count: 2" \
+    "the dispatchable group kept a count that still includes the withheld captain holds"
+  assert_contains "$ready_group" "ready[2]{id,state,kind,repo,title}:" \
+    "the dispatchable group kept a header count that still includes the withheld captain holds"
+  assert_contains "$ready_group" "(shown 1 of 2 ready queued item(s))" \
+    "the dispatchable bound counted rows it never listed"
+  assert_contains "$ready_group" "(2 lapsed captain hold(s) withheld from this group and listed under held)" \
+    "the digest withheld lapsed captain holds without disclosing it"
+
+  pass "a lapsed captain hold stays in the held group and is never dispatchable work"
 }
 
 # The bound may only ever cut the dispatchable-now listing, and whatever it cuts
@@ -2635,6 +2710,7 @@ test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
+test_backlog_lapsed_captain_hold_stays_held_and_never_dispatchable
 test_backlog_queued_bound_discloses_its_remainder
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback

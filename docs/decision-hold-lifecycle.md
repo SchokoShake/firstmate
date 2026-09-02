@@ -13,9 +13,7 @@ The `hold` subcommand maps an originating work id and stable decision key to `<o
 It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry, with the lapse deadline owned by `bin/fm-captain-hold-lib.sh`.
 It rejects an identity collision, a changed title, attempts to reopen an already resolved identity, and a deadline that is not a future calendar date.
 
-Past its deadline a hold reports `held: no` while keeping `hold_reason`, `hold_kind` and `hold_until`, and `tasks-axi unhold` clears all three instead.
-Every gate therefore reads `hold_kind` rather than `held`, so a lapsed decision still counts as durably recorded for `complete` and `verify` and still accepts the captain's answer through `resolve` and `decline`.
-Repeating `hold` keeps a deadline the clock has not reached, so an idempotent retry cannot shorten a window the captain was already given, and reactivates a lapsed identity with a fresh deadline, which is how firstmate re-asks a question that went unanswered.
+Every gate reads `hold_kind` rather than `held`, so a lapsed decision still counts as durably recorded for `complete` and `verify` and still accepts the captain's answer through `resolve` and `decline`; [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) owns why, along with the keep-versus-reset rule a repeated `hold` follows.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.

@@ -53,6 +53,7 @@ tasks-axi's `pr` field holds only a GitHub pull request URL, so a GitLab merge r
 
 Every captain hold firstmate writes carries a lapse deadline by default, because a hold with none never lapses and keeps a question the captain has chosen not to answer in front of them forever.
 [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) is the single owner of the default window, the `--hold-until` override, the `none` opt-out for a genuinely open-ended question, and the rule that a lapsed hold is demoted rather than answered or removed; [`bin/fm-captain-hold.sh`](../bin/fm-captain-hold.sh) and [`bin/fm-decision-hold.sh`](../bin/fm-decision-hold.sh) are the two paths that write one.
+Because lapsing demotes a hold rather than answering it, [`bin/fm-session-start.sh`](../bin/fm-session-start.sh) lists a lapsed captain hold with the held rows and withholds it from the dispatchable-now group, where tasks-axi's own `ready` set would otherwise put it.
 
 ## Captain-ask identity and revisions (data/ask-revisions)
 

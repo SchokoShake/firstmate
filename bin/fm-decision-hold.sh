@@ -19,15 +19,10 @@
 # All backlog mutations run in the active FM_HOME, which keeps main-home and
 # secondmate-home ownership aligned with the work that discovered the decision.
 #
-# `hold` gives every decision a deadline by default; `--hold-until` overrides the
-# date and `--hold-until none` opts a genuinely open-ended question out of the
-# clock entirely. bin/fm-captain-hold-lib.sh owns the window and what lapsing
-# means. A lapsed hold is still an unanswered decision, so every gate below reads
-# hold_kind rather than held: `complete` and `verify` still accept one as durably
-# recorded, and `resolve` and `decline` still record the captain's answer on one.
-# Repeating `hold` keeps a deadline the clock has not reached, so retrying cannot
-# shorten a window the captain was given, and reactivates a lapsed decision with
-# a fresh deadline, which is how firstmate re-asks an unanswered question.
+# `hold` gives every decision a deadline by default, overridden by `--hold-until`
+# and opted out of by `--hold-until none`. bin/fm-captain-hold-lib.sh owns the
+# window and what lapsing means. Because a lapsed hold is still an unanswered
+# decision, every gate below reads hold_kind rather than held.
 #
 # Usage:
 #   fm-decision-hold.sh id <origin-id> <decision-key>
@@ -173,13 +168,10 @@ tasks_axi() {
 }
 
 require_tasks_axi() {
-  local hold_help
+  local reject
   fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
-  hold_help=$(tasks-axi hold --help 2>&1) || fail "tasks-axi does not expose the hold contract"
-  printf '%s\n' "$hold_help" | grep -F -- '--kind captain' >/dev/null \
-    || fail "tasks-axi does not expose the captain-hold contract"
-  printf '%s\n' "$hold_help" | grep -F -- '--until' >/dev/null \
-    || fail "tasks-axi does not expose the hold deadline contract"
+  reject=$(fm_captain_hold_contract_reject)
+  [ -z "$reject" ] || fail "$reject"
 }
 
 task_show() {  # <id>
@@ -298,7 +290,7 @@ EOF
 # An unanswered captain decision, whether its deadline has passed or not.
 # hold_kind is the field that survives a lapse and does not survive an unhold,
 # so it is what separates a question nobody has answered from a row somebody
-# released. Answering a decision must not depend on the captain's punctuality.
+# released.
 verify_hold_open() {  # <hold-id>
   local id=$1 show state kind hold_kind
   show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
@@ -416,23 +408,10 @@ command_hold() {
     tasks_axi add "$id" "$title" --kind captain --repo "$repo" --body "$body" >/dev/null \
       || fail "could not create captain decision item $id"
   fi
-  # An explicit deadline always wins. Otherwise a deadline the clock has not
-  # reached is kept, so repeating `hold` stays idempotent and cannot silently
-  # shorten a window the captain was already given; a lapsed or deadline-free
-  # hold takes the default, which is how a re-ask puts a fresh clock on it.
-  if [ -z "$hold_until" ] && fm_captain_hold_until_is_future "$existing_until"; then
-    until_date=$existing_until
-  else
-    until_date=$(fm_captain_hold_resolve_until "$hold_until") \
-      || fail "could not compute the default captain-hold deadline"
-  fi
-  if [ -n "$until_date" ]; then
-    tasks_axi hold "$id" --reason "$reason" --kind captain --until "$until_date" >/dev/null \
-      || fail "could not activate captain hold $id"
-  else
-    tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null \
-      || fail "could not activate captain hold $id"
-  fi
+  until_date=$(fm_captain_hold_effective_until "$hold_until" "$existing_until") \
+    || fail "could not compute the default captain-hold deadline"
+  fm_captain_hold_write "$id" "$reason" "$until_date" \
+    || fail "could not activate captain hold $id"
   verify_hold_active "$id"
   printf '%s\n' "$id"
 }
