@@ -149,49 +149,42 @@ test_again_refuses_without_a_new_question() {
   expect_code 1 "$rc" "a re-ask whose --reason has no value"
   assert_contains "$out" "--reason is required" "a trailing --reason with no value must say what is missing"
 
-  rc=0; out=$(run_ask "$home" again "$id" --reason "confirm the rollout window" 2>&1) || rc=$?
-  expect_code 1 "$rc" "a re-ask restating the same reason"
-  assert_contains "$out" "is not a re-ask" "restating the same question must be refused as a nag"
-
   [ "$before" = "$(run_ask "$home" id "$id")" ] || fail "a refused re-ask still moved the identity"
   assert_absent "$home/data/ask-revisions" "a refused re-ask wrote the revision ledger"
-  pass "a re-ask that states no new question is refused and moves nothing"
+  pass "a re-ask with no question to state is refused and moves nothing"
 }
 
-# tasks-axi stores a hold reason with its ends trimmed, so a padded restatement is
-# the same sentence and re-asking it is the nag the refusal exists to stop.
-test_padding_a_restated_reason_is_not_a_re_ask() {
-  local home id out rc
-  home=$(make_home padded-reason)
+# Running `again` is itself the declaration that this is a new question, so it
+# re-asks on the author's word rather than on how much the prose changed.
+test_again_re_asks_on_the_authors_word_not_on_changed_prose() {
+  local home id before after
+  home=$(make_home explicit-re-ask)
   id=placement-axes-p18
   compose_action_card "$home" "$id"
+  before=$(run_ask "$home" id "$id")
 
-  rc=0; out=$(run_ask "$home" again "$id" --reason "  confirm the rollout window  " 2>&1) || rc=$?
-  expect_code 1 "$rc" "a re-ask padding the current reason"
-  assert_contains "$out" "is not a re-ask" "padding a restatement must still be refused as a nag"
-  assert_absent "$home/data/ask-revisions" "a padded restatement wrote the revision ledger"
+  after=$(run_ask "$home" again "$id" --reason "confirm the rollout window") \
+    || fail "a re-ask restating the current reason was refused"
+  [ "$before" != "$after" ] || fail "the explicit re-ask did not move the identity"
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the explicit re-ask did not bump the revision"
+  [ "$(shown_field "$home" "$id" hold_reason)" = "confirm the rollout window" ] \
+    || fail "the re-ask changed the question it was told to ask again"
 
-  rc=0; out=$(run_ask "$home" again "$id" --reason "   " 2>&1) || rc=$?
-  expect_code 1 "$rc" "a re-ask whose reason is only whitespace"
-  assert_contains "$out" "--reason is required" "a whitespace-only reason states nothing and must say so"
+  # The safe path is unchanged: only the explicit command moves the revision.
+  axi "$home" hold "$id" --reason "confirm the rollout window" --kind captain >/dev/null
+  axi "$home" hold "$id" --reason "confirm the window before the Friday train" --kind captain >/dev/null
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "a hold rewrite moved the revision the author did not bump"
 
-  run_ask "$home" again "$id" --reason "  the Friday train closed; pick the next window  " >/dev/null \
-    || fail "a re-ask with a padded new question failed"
-  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the padded new question did not bump the revision"
-  [ "$(shown_field "$home" "$id" hold_reason)" = "the Friday train closed; pick the next window" ] \
-    || fail "the padded new question was not written as the reason tasks-axi stores"
-
-  rc=0; out=$(run_ask "$home" again "$id" --reason "  the Friday train closed; pick the next window  " 2>&1) || rc=$?
-  expect_code 1 "$rc" "repeating the padded re-ask verbatim"
-  assert_contains "$out" "is not a re-ask" "repeating a padded re-ask must be refused rather than bumping again"
-  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "repeating a padded re-ask bumped the revision again"
-  pass "trimming makes a padded restatement the same question, so it cannot re-ask"
+  run_ask "$home" again "$id" --reason "confirm the window before the Friday train" >/dev/null \
+    || fail "a second re-ask on unchanged wording was refused"
+  [ "$(run_ask "$home" revision "$id")" = 3 ] || fail "the second explicit re-ask did not bump the revision"
+  pass "a re-ask bumps on the explicit command, and only that command bumps it"
 }
 
 # tasks-axi renders a reason holding a quote, a backslash, or a colon as a quoted,
-# backslash-escaped TOON value, which must still compare equal to the same text.
-test_again_refuses_the_same_reason_when_tasks_axi_quotes_it() {
-  local home id reason before out rc
+# backslash-escaped TOON value, and a rewrite of one must still preserve the identity.
+test_a_quoted_reason_rewrites_without_re_asking() {
+  local home id reason before
   home=$(make_home quoted-reason)
   id=placement-axes-p9
   reason='ship "axes" from C:\builds\axes: this week'
@@ -199,17 +192,15 @@ test_again_refuses_the_same_reason_when_tasks_axi_quotes_it() {
   axi "$home" hold "$id" --reason "$reason" --kind captain >/dev/null
   before=$(run_ask "$home" id "$id")
 
-  rc=0; out=$(run_ask "$home" again "$id" --reason "$reason" 2>&1) || rc=$?
-  expect_code 1 "$rc" "a re-ask restating a reason tasks-axi renders quoted"
-  assert_contains "$out" "is not a re-ask" "restating a quoted reason verbatim must still be refused as a nag"
-  [ "$before" = "$(run_ask "$home" id "$id")" ] || fail "the refused quoted re-ask still moved the identity"
-  assert_absent "$home/data/ask-revisions" "a refused quoted re-ask wrote the revision ledger"
+  axi "$home" hold "$id" --reason 'ship "axes" from D:\builds\axes: this week' --kind captain >/dev/null
+  [ "$before" = "$(run_ask "$home" id "$id")" ] || fail "rewriting a quoted reason changed the question identity"
+  assert_absent "$home/data/ask-revisions" "rewriting a quoted reason wrote the revision ledger"
 
   run_ask "$home" again "$id" --reason 'ship "axes" from D:\builds\axes: next week' >/dev/null \
-    || fail "a re-ask with a genuinely new quoted reason failed"
-  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "a new quoted reason did not bump the revision"
-  assert_grep 'D:\builds\axes' "$home/data/backlog.md" "the new quoted reason was not written as the hold reason"
-  pass "a quoted reason is compared decoded, so restating it is refused and changing it re-asks"
+    || fail "a re-ask with a quoted reason failed"
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the re-ask of a quoted reason did not bump the revision"
+  assert_grep 'D:\builds\axes: next week' "$home/data/backlog.md" "the quoted reason was not written as the hold reason"
+  pass "a quoted reason rewrites without re-asking, and re-asks only on the explicit command"
 }
 
 test_concurrent_re_asks_keep_every_ledger_line() {
@@ -577,8 +568,8 @@ test_reason_rewrite_preserves_the_identity
 test_a_hold_refresh_preserves_the_identity
 test_again_bumps_the_identity_and_writes_the_new_question
 test_again_refuses_without_a_new_question
-test_padding_a_restated_reason_is_not_a_re_ask
-test_again_refuses_the_same_reason_when_tasks_axi_quotes_it
+test_again_re_asks_on_the_authors_word_not_on_changed_prose
+test_a_quoted_reason_rewrites_without_re_asking
 test_concurrent_re_asks_keep_every_ledger_line
 test_again_drops_the_hold_deadline
 test_a_lapsed_hold_stays_askable_and_re_asks_live

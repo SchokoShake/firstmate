@@ -39,11 +39,11 @@
 # read fails the command instead of answering 1: a subject silently dropped back to
 # revision 1 is how an old answer settles a genuinely new question.
 #
-# --reason is required, because a re-ask has to say what is now being asked. A
-# genuine re-ask of the identical sentence is a nag, not a new question, and
-# bumping for one would spend the captain's answer on nothing. The reason is
-# compared and written with its ends trimmed, which is what tasks-axi stores, so
-# padding a restatement cannot pass it off as a new question.
+# --reason is required, because a re-ask has to say what is now being asked. It is
+# never compared against the reason already on the row: running `again` IS the
+# declaration that this is a new question, so it re-asks even when the wording is
+# unchanged. Nothing else moves the revision, and no similarity test stands between
+# the author and a question they deliberately asked again.
 #
 # The bump lands BEFORE the reason. If the reason write then fails the revision is
 # restored, so an interrupted re-ask leaves the row exactly as it was; if the
@@ -180,7 +180,7 @@ command_revision() {
 }
 
 command_again() {
-  local id=${1:-} reason='' show previous next
+  local id=${1:-} reason='' previous next
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -195,13 +195,8 @@ command_again() {
     *$'\n'*|*$'\r'*) fail "reason must be one line" ;;
     *'('*|*')'*) fail "reason must not contain parentheses (tasks-axi hold contract)" ;;
   esac
-  reason=${reason#"${reason%%[![:space:]]*}"}
-  reason=${reason%"${reason##*[![:space:]]}"}
-  [ -n "$reason" ] || fail "--reason is required; a re-ask must state what is now being asked"
-  show=$(require_captain_ask "$id") || exit 1
+  require_captain_ask "$id" >/dev/null || exit 1
   refuse_decision_hold "$id"
-  [ "$reason" != "$(fm_tasks_axi_show_field "$show" hold_reason)" ] \
-    || fail "the reason is unchanged; rewriting the same question is not a re-ask"
 
   fm_lock_acquire_wait "$LEDGER_LOCK"
   LEDGER_LOCK_HELD=1
