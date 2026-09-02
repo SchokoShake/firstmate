@@ -183,6 +183,11 @@ case "${1:-}" in
     exit 0
     ;;
   list)
+    if [ "${2:-}" = --help ]; then
+      printf '%s\n' 'usage: tasks-axi list [flags]'
+      printf '%s\n' '  --fields <a,b,c>  (extra: blocked, blocked_by, body, closed, created, deps, held, hold_kind, hold_reason, hold_until, links, priority)'
+      exit 0
+    fi
     case "$*" in
       *'--fields '*'body'*|*'--fields='*'body'*)
         printf '%s\n' 'unexpected body field requested' >&2
@@ -1874,8 +1879,11 @@ EOF
     "the dispatchable group kept a header count that still includes the withheld captain holds"
   assert_contains "$ready_group" "(shown 1 of 2 ready queued item(s))" \
     "the dispatchable bound counted rows it never listed"
-  assert_contains "$ready_group" "(2 lapsed captain hold(s) withheld from this group and listed under held)" \
-    "the digest withheld lapsed captain holds without disclosing it"
+  # The disclosure has to point at a group this digest really renders, and the
+  # rows appear under its own lapsed header - tasks-axi has already dropped them
+  # from the held listing, so naming that one would resolve to nothing.
+  assert_contains "$ready_group" "(2 lapsed captain hold(s) withheld from this group; each is listed in full under lapsed above)" \
+    "the digest withheld lapsed captain holds without pointing at where it lists them"
 
   pass "a lapsed captain hold stays in the held group and is never dispatchable work"
 }

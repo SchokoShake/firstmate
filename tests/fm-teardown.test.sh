@@ -193,6 +193,11 @@ if [ "${1:-}" = mv ] && [ "${2:-}" = --help ]; then
   printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>'
   exit 0
 fi
+if [ "${1:-}" = list ] && [ "${2:-}" = --help ]; then
+  printf '%s\n' 'usage: tasks-axi list [flags]'
+  printf '%s\n' '  --fields <a,b,c>  (extra: blocked, blocked_by, body, closed, created, deps, held, hold_kind, hold_reason, hold_until, links, priority)'
+  exit 0
+fi
 exit 0
 SH
   chmod +x "$case_dir/fakebin/tasks-axi"

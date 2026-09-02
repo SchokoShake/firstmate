@@ -1100,6 +1100,7 @@ case "${1:-} ${2:-}" in
   "--version ") printf '%s\n' '0.2.4' ;;
   "update --help") printf '%s\n' 'usage: tasks-axi update <id> [flags]' '  --archive-body' ;;
   "mv --help") printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>' ;;
+  "list --help") printf '%s\n' 'usage: tasks-axi list [flags]' '  --fields <a,b,c>  (extra: blocked, blocked_by, body, closed, created, deps, held, hold_kind, hold_reason, hold_until, links, priority)' ;;
 esac
 exit 0
 SH

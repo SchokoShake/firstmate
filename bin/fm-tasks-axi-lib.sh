@@ -5,8 +5,12 @@
 #
 # Compatible means tasks-axi --version reports FM_TASKS_AXI_MIN or newer,
 # `tasks-axi update --help` exposes --archive-body for recoverable note rewrites,
-# and `tasks-axi mv --help` exposes [<id>...] for atomic multi-ID moves required
-# by secondmate handoffs.
+# `tasks-axi mv --help` exposes [<id>...] for atomic multi-ID moves required
+# by secondmate handoffs, and `tasks-axi list --help` offers held, hold_kind and
+# hold_until as --fields extras, which is what lets bin/fm-captain-hold-lib.sh
+# tell a lapsed captain hold from a dispatchable row. Without that last one the
+# only sanctioned reader of dispatchable work has no way to withhold an
+# unanswered captain question, so the build is refused rather than degraded.
 # FM_TASKS_AXI_MIN follows the axi-family floor policy owned beside the floor
 # constants in bin/fm-bootstrap.sh.
 # The feature probes are a separate concern and stay as defense in depth for
@@ -68,6 +72,13 @@ fm_tasks_axi_compatible() {
 }
 
 fm_tasks_axi_compatible_probe() {
+  fm_tasks_axi_meets_floor || return 1
+  fm_tasks_axi_update_has_archive_body \
+    && fm_tasks_axi_mv_has_multi_id \
+    && fm_tasks_axi_list_has_hold_fields
+}
+
+fm_tasks_axi_meets_floor() {
   local parts major minor patch extra
   local min_major min_minor min_patch min_extra
   parts=$(fm_tasks_axi_version_parts) || return 1
@@ -78,13 +89,11 @@ fm_tasks_axi_compatible_probe() {
   [ -n "$major" ] && [ -n "$minor" ] && [ -n "$patch" ] && [ -z "$extra" ] || return 1
   IFS='.' read -r min_major min_minor min_patch min_extra <<< "$FM_TASKS_AXI_MIN"
   [ -n "$min_major" ] && [ -n "$min_minor" ] && [ -n "$min_patch" ] && [ -z "$min_extra" ] || return 1
-  if [ "$major" -gt "$min_major" ] ||
-    { [ "$major" -eq "$min_major" ] && [ "$minor" -gt "$min_minor" ]; } ||
-    { [ "$major" -eq "$min_major" ] && [ "$minor" -eq "$min_minor" ] && [ "$patch" -ge "$min_patch" ]; }; then
-    fm_tasks_axi_update_has_archive_body && fm_tasks_axi_mv_has_multi_id
-    return $?
-  fi
-  return 1
+  [ "$major" -gt "$min_major" ] && return 0
+  [ "$major" -eq "$min_major" ] || return 1
+  [ "$minor" -gt "$min_minor" ] && return 0
+  [ "$minor" -eq "$min_minor" ] || return 1
+  [ "$patch" -ge "$min_patch" ]
 }
 
 fm_tasks_axi_update_has_archive_body() {
@@ -132,6 +141,44 @@ fm_tasks_axi_show_field() {  # <show-output> <field>
       ;;
   esac
   printf '%s' "$value"
+}
+
+# The --fields extras `tasks-axi list --help` advertises, read from its own
+# parenthesised list rather than from the whole help text, because `held` also
+# appears there as a --state value and would match a build that has the state but
+# not the field.
+fm_tasks_axi_list_has_hold_fields() {
+  local output fields want
+  command -v tasks-axi >/dev/null 2>&1 || return 1
+  output=$(tasks-axi list --help 2>&1) || return 1
+  fields=$(printf '%s\n' "$output" | sed -n 's/.*(extra:[[:space:]]*\([^)]*\)).*/\1/p' | head -1 | tr -d '[:space:]')
+  [ -n "$fields" ] || return 1
+  for want in held hold_kind hold_until; do
+    case ",$fields," in
+      *",$want,"*) ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# fm_tasks_axi_capability_reject
+#   Prints a one-line reason naming the first capability the installed tasks-axi
+#   is missing, and nothing when it has them all, so a caller that has already
+#   seen fm_tasks_axi_compatible fail can say which capability failed instead of
+#   only that some did. Runs the probes again, which only costs anything on the
+#   failure path.
+fm_tasks_axi_capability_reject() {
+  if ! command -v tasks-axi >/dev/null 2>&1; then
+    printf '%s\n' "tasks-axi is not installed"
+  elif ! fm_tasks_axi_meets_floor; then
+    printf '%s\n' "tasks-axi is older than $FM_TASKS_AXI_MIN; upgrade it"
+  elif ! fm_tasks_axi_update_has_archive_body; then
+    printf '%s\n' "tasks-axi does not expose 'update --archive-body'"
+  elif ! fm_tasks_axi_mv_has_multi_id; then
+    printf '%s\n' "tasks-axi does not expose a multi-id 'mv'"
+  elif ! fm_tasks_axi_list_has_hold_fields; then
+    printf '%s\n' "tasks-axi does not offer held, hold_kind and hold_until as list fields, so a lapsed captain hold cannot be told apart from dispatchable work; upgrade it"
+  fi
 }
 
 fm_backlog_backend_value() {

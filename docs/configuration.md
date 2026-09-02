@@ -41,7 +41,7 @@ Secondmate handoffs are separate and unconditional: `fm-backlog-handoff.sh` keep
 It moves in-scope `## Queued` items only and refuses `## In flight` and historical `## Done` records, which stay with their home for pruning or archiving.
 Handoff item bodies must use at least two leading spaces, and the helper refuses a selected item with a single-space or tab-indented continuation rather than risk orphaning it.
 Because bootstrap requires `tasks-axi` on `PATH` on every profile, that delegation works fleet-wide, and the `config/backlog-backend=manual` knob governs firstmate's own hand-editing of its backlog, not this validated helper.
-Compatible means the installed build passes the shared version and feature probe owned by [`bin/fm-tasks-axi-lib.sh`](../bin/fm-tasks-axi-lib.sh), including the atomic multi-ID move required by handoff delegation.
+Compatible means the installed build passes the shared version and feature probe owned by [`bin/fm-tasks-axi-lib.sh`](../bin/fm-tasks-axi-lib.sh), including the atomic multi-ID move required by handoff delegation and the `held`, `hold_kind` and `hold_until` list fields required to tell a lapsed captain hold from dispatchable work.
 Bootstrap requires compatible `tasks-axi` on every profile; see "Toolchain" below for missing-tool reporting and silent default-backend behavior.
 Set the local, gitignored `config/backlog-backend` file to `manual` to force manual backlog editing and suppress the verbose `BOOTSTRAP_INFO: tasks-axi available` fact, not missing-tool reporting.
 Absent or `tasks-axi` selects the default tasks-axi backend.
@@ -55,7 +55,8 @@ Every captain hold firstmate writes carries a lapse deadline by default, because
 [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) is the single owner of the default window, the `--hold-until` override, the `none` opt-out for a genuinely open-ended question, and the rule that a lapsed hold is demoted rather than answered or removed; [`bin/fm-captain-hold.sh`](../bin/fm-captain-hold.sh) and [`bin/fm-decision-hold.sh`](../bin/fm-decision-hold.sh) are the two paths that write one.
 Because lapsing demotes a hold rather than answering it, a lapsed captain hold is never dispatchable work at any reader.
 [`bin/fm-ready.sh`](../bin/fm-ready.sh) is firstmate's dispatchable-now set and the only supported answer to "what can be started?"; nothing reads `tasks-axi ready` directly, because tasks-axi counts a lapsed hold as ready and forking it is out of bounds.
-[`bin/fm-session-start.sh`](../bin/fm-session-start.sh) shares that one path and additionally lists the withheld rows beside its held group, marked lapsed, so a demoted question stays visible rather than disappearing.
+[`bin/fm-session-start.sh`](../bin/fm-session-start.sh) shares that one path and additionally lists the withheld rows under its own lapsed group, so a demoted question stays visible rather than disappearing.
+A build that cannot answer the lapse query is refused by name rather than degraded, because an unscreened ready listing is exactly what withholding exists to prevent.
 
 ## Captain-ask identity and revisions (data/ask-revisions)
 

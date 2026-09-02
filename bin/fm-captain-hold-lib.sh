@@ -30,8 +30,9 @@
 # every firstmate reader of ready work goes through - bin/fm-ready.sh for an
 # agent at a prompt, bin/fm-session-start.sh's digest for the startup queue.
 # Nothing may read raw `tasks-axi ready` instead. Withholding is presentation
-# only; a withheld row is still listed as a held row, marked lapsed, so lapsing
-# demotes a question rather than hiding or answering it.
+# only: the row stays queued with its reason, kind and deadline intact, and each
+# caller discloses how many it withheld together with where its own surface
+# shows them, so lapsing demotes a question rather than hiding or answering it.
 #
 # Dates are integer day numbers here rather than date(1) arithmetic: BSD and GNU
 # date disagree on every flag that would do this, and a deadline that silently
@@ -159,14 +160,32 @@ fm_captain_hold_resolve_until() {  # <value>
   esac
 }
 
-# fm_captain_hold_effective_until <explicit> <existing>
-#   The deadline to write. An explicit value always wins; otherwise a deadline
-#   the clock has not reached is kept rather than reset, so an idempotent re-hold
-#   cannot shorten a window the captain was already given.
-fm_captain_hold_effective_until() {  # <explicit> <existing>
-  if [ -z "$1" ] && fm_captain_hold_until_is_future "$2"; then
-    printf '%s\n' "$2"
+# fm_captain_hold_renewed_until <existing>
+#   THE KEEP-VERSUS-RESET RULE, for any write path that re-holds a row without
+#   being given a deadline: prints <existing> when the clock has not reached it,
+#   and a fresh default otherwise. An absent value, tasks-axi's `-` for an unset
+#   field, a lapsed date and a malformed one all take the default, so a re-ask
+#   cannot be reborn already lapsed and a hold that predates the default cannot
+#   stay deadline-free forever. Keeping a live deadline is what stops a retry
+#   silently shortening a window the captain was already given.
+#
+#   Every re-hold resolves the question here rather than reimplementing it,
+#   including a re-ask that rewrites a hold's wording.
+fm_captain_hold_renewed_until() {  # <existing>
+  if fm_captain_hold_until_is_future "${1:-}"; then
+    printf '%s\n' "$1"
     return 0
+  fi
+  fm_captain_hold_default_until
+}
+
+# fm_captain_hold_effective_until <explicit> <existing>
+#   The deadline to write. An explicit value always wins, including the `none`
+#   opt-out; with none given the keep-versus-reset rule decides.
+fm_captain_hold_effective_until() {  # <explicit> <existing>
+  if [ -z "$1" ]; then
+    fm_captain_hold_renewed_until "$2"
+    return $?
   fi
   fm_captain_hold_resolve_until "$1"
 }
@@ -240,14 +259,20 @@ fm_captain_hold_lapsed_row_ids() {  # <rows>
   printf '%s\n' "$1" | sed 's/^[[:space:]]*//; s/,.*//'
 }
 
-# fm_captain_hold_withhold_lapsed <lapsed-ids>
+# fm_captain_hold_withhold_lapsed <lapsed-ids> <where-listed>
 #   Reads a `tasks-axi ready` rendering on stdin and writes it back without the
 #   rows whose id is in <lapsed-ids>, with the tool's own count and ready[N]
 #   header restated so they describe what is actually listed, and one disclosure
 #   line after the rows so the withholding is never silent. Everything else the
 #   tool printed passes through untouched.
-fm_captain_hold_withhold_lapsed() {  # <lapsed-ids>
-  FM_CAPTAIN_HOLD_LAPSED_IDS="$1" awk '
+#
+#   <where-listed> completes that disclosure with where the caller's own surface
+#   really shows the withheld rows. Each surface differs - the startup digest
+#   lists them under its own header, a bare ready listing shows them nowhere -
+#   so the pointer belongs to the caller rather than to a single wording here
+#   that would be wrong on one of them.
+fm_captain_hold_withhold_lapsed() {  # <lapsed-ids> <where-listed>
+  FM_CAPTAIN_HOLD_LAPSED_IDS="$1" awk -v where="$2" '
     function row_id(line,   id) {
       id = line
       sub(/^[[:space:]]+/, "", id)
@@ -289,26 +314,31 @@ fm_captain_hold_withhold_lapsed() {  # <lapsed-ids>
           print line
         }
         if (withheld > 0 && i == last_row) {
-          printf "(%d lapsed captain hold(s) withheld from this group and listed under held)\n", withheld
+          printf "(%d lapsed captain hold(s) withheld from this group; %s)\n", withheld, where
         }
       }
     }
   '
 }
 
-# fm_captain_hold_ready <backlog-path> [<lapsed-ids>]
+# fm_captain_hold_ready <backlog-path> <where-listed> [<lapsed-ids>]
 #   Firstmate's dispatchable-now set: tasks-axi's own `ready` rendering with
 #   every lapsed captain hold withheld. This is the single owner of "a lapsed
 #   captain hold is never dispatchable work", so every firstmate reader of ready
-#   work calls it rather than `tasks-axi ready`. Pass <lapsed-ids> when the
-#   caller has already listed them for its own display; otherwise they are
-#   queried here.
-fm_captain_hold_ready() {  # <backlog-path> [<lapsed-ids>]
-  local path=$1 lapsed_ids=${2:-} rows ready
-  if [ "$#" -lt 2 ]; then
+#   work calls it rather than `tasks-axi ready`. <where-listed> is the caller's
+#   own pointer to where its surface shows the withheld rows. Pass <lapsed-ids>
+#   when the caller has already listed them for its own display; otherwise they
+#   are queried here.
+#
+#   A failed lapse query returns non-zero with the tool's own error rather than
+#   an empty withheld set, because a ready listing nobody could screen is the
+#   raw dispatchable set this function exists to replace.
+fm_captain_hold_ready() {  # <backlog-path> <where-listed> [<lapsed-ids>]
+  local path=$1 where=$2 lapsed_ids=${3:-} rows ready
+  if [ "$#" -lt 3 ]; then
     rows=$(fm_captain_hold_lapsed_rows "$path") || { printf '%s\n' "$rows"; return 1; }
     lapsed_ids=$(fm_captain_hold_lapsed_row_ids "$rows")
   fi
   ready=$(tasks-axi ready --file "$path" 2>&1) || { printf '%s\n' "$ready"; return 1; }
-  printf '%s\n' "$ready" | fm_captain_hold_withhold_lapsed "$lapsed_ids"
+  printf '%s\n' "$ready" | fm_captain_hold_withhold_lapsed "$lapsed_ids" "$where"
 }

@@ -17,10 +17,12 @@
 # the rule holds at every reader rather than in whichever one remembered it.
 #
 # WITHHOLDING IS PRESENTATION ONLY. Nothing here closes, unholds, resolves,
-# deletes or rewrites a hold. What is withheld is counted on its own line rather
-# than dropped silently, and it stays visible as a still-held row: session
-# start's digest lists it beside the held group marked lapsed, and
-# `tasks-axi show <id> --full` still reports its reason, kind and deadline.
+# deletes or rewrites a hold, and `tasks-axi show <id> --full` still reports the
+# reason, kind and deadline of every withheld row. What is withheld is counted on
+# its own line rather than dropped silently, and that line carries the query that
+# actually shows those rows, because this surface renders the dispatchable set
+# alone: tasks-axi has already dropped a lapsed hold from `--state held`, so
+# there is no held listing here to point at.
 #
 # Usage:
 #   fm-ready.sh [--file <backlog-path>]
@@ -65,8 +67,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -f "$BACKLOG" ] || fail "no backlog to read at $BACKLOG"
-fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
+if ! fm_tasks_axi_compatible; then
+  REJECT=$(fm_tasks_axi_capability_reject)
+  fail "${REJECT:-compatible tasks-axi is required}"
+fi
 
-READY=$(fm_captain_hold_ready "$BACKLOG") \
+READY=$(fm_captain_hold_ready "$BACKLOG" \
+  "each is still an unanswered captain hold - tasks-axi list --state queued --fields hold_kind,hold_until,held shows them") \
   || fail "could not read the dispatchable set from $BACKLOG: $READY"
 printf '%s\n' "$READY"

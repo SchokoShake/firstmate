@@ -404,6 +404,9 @@ BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason
 # The same identity fields for the lapsed-hold query, minus hold_kind, which
 # bin/fm-captain-hold-lib.sh appends beside the two other fields it decides on.
 LAPSED_FIELDS=blocked_by,hold_reason
+# Where THIS digest really shows a withheld row, which is its own lapsed group
+# rather than the held listing tasks-axi has already dropped it from.
+LAPSED_POINTER='each is listed in full under lapsed above'
 
 RULE='================================================================================'
 SUBRULE='--------------------------------------------------------------------------------'
@@ -532,7 +535,8 @@ print_backlog_tasks_axi_compact() {
     err=$blocked
   elif ! lapsed=$(fm_captain_hold_lapsed_rows "$path" "$LAPSED_FIELDS"); then
     err=$lapsed
-  elif ! ready=$(fm_captain_hold_ready "$path" "$(fm_captain_hold_lapsed_row_ids "$lapsed")"); then
+  elif ! ready=$(fm_captain_hold_ready "$path" "$LAPSED_POINTER" \
+    "$(fm_captain_hold_lapsed_row_ids "$lapsed")"); then
     err=$ready
   else
     printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, lapsed-hold, and blocked row shown in full; ready queued bounded to %s; task bodies omitted)\n' \

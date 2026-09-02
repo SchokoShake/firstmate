@@ -194,6 +194,7 @@ case "${1:-}:${2:-}" in
   --version:*) printf '0.2.4\n' ;;
   update:--help) printf '%s\n' --archive-body ;;
   mv:--help) printf '%s\n' 'usage: tasks-axi mv <id> [<id>...]' ;;
+  list:--help) printf '%s\n' '  --fields <a,b,c>  (extra: blocked, blocked_by, body, closed, created, deps, held, hold_kind, hold_reason, hold_until, links, priority)' ;;
 esac
 SH
   cat > "$CASE_BIN/treehouse" <<'SH'

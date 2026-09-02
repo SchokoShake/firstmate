@@ -10,7 +10,8 @@
 # are table-driven over the inputs that vary: whether `treehouse get --help`
 # advertises --lease, which (if any) tasks-axi version is on PATH, whether
 # tasks-axi update advertises --archive-body, whether its mv help advertises
-# multi-ID moves, whether quota-axi is on PATH,
+# multi-ID moves, whether its list help offers the hold fields the lapsed-hold
+# query needs, whether quota-axi is on PATH,
 # whether the local backend config opts out of tasks-axi backlog mutations,
 # which no-mistakes version is on PATH, which gh-axi version is on PATH, and
 # which lavish-axi version is on PATH.
@@ -104,11 +105,16 @@ SH
 }
 
 add_tasks_axi() {
-  local fakebin=$1 version=$2 archive_body=${3:-yes} multi_id=${4:-yes} archive_line mv_usage
+  local fakebin=$1 version=$2 archive_body=${3:-yes} multi_id=${4:-yes} hold_fields=${5:-yes}
+  local archive_line mv_usage list_extras
   archive_line=""
   [ "$archive_body" = yes ] && archive_line='  --archive-body'
   mv_usage='usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>'
   [ "$multi_id" = yes ] || mv_usage='usage: tasks-axi mv <id> --to <path-or-dir>'
+  # `held` is also a --state value, so a build that dropped the hold FIELDS still
+  # prints the word; only the (extra: ...) list distinguishes the two.
+  list_extras='blocked, blocked_by, body, closed, created, deps, held, hold_kind, hold_reason, hold_until, links, priority'
+  [ "$hold_fields" = yes ] || list_extras='blocked, blocked_by, body, closed, created, deps, links, priority'
   cat > "$fakebin/tasks-axi" <<SH
 #!/usr/bin/env bash
 if [ "\${1:-}" = --version ]; then
@@ -123,6 +129,12 @@ if [ "\${1:-}" = update ] && [ "\${2:-}" = --help ]; then
 fi
 if [ "\${1:-}" = mv ] && [ "\${2:-}" = --help ]; then
   printf '%s\n' '$mv_usage'
+  exit 0
+fi
+if [ "\${1:-}" = list ] && [ "\${2:-}" = --help ]; then
+  printf '%s\n' 'usage: tasks-axi list [flags]'
+  printf '%s\n' '  --state <queued|in_flight|done|held>, --repo <name>'
+  printf '%s\n' '  --limit <n>, --fields <a,b,c>  (extra: $list_extras)'
   exit 0
 fi
 exit 0
@@ -245,7 +257,7 @@ assert_timeout_report() {
 #   mode=exact -> output must equal <expect>
 #   mode=grep  -> output must contain <expect> (fixed string); <notcontains> must not appear
 test_bootstrap_reporting() {
-  local label lease tasks quota backend mode expect notcontains case_dir fakebin out n archive_body multi_id
+  local label lease tasks quota backend mode expect notcontains case_dir fakebin out n archive_body multi_id hold_fields
   n=0
   while IFS='^' read -r label lease tasks quota backend mode expect notcontains; do
     [ -n "$label" ] || continue
@@ -262,6 +274,7 @@ test_bootstrap_reporting() {
     else
       archive_body=yes
       multi_id=yes
+      hold_fields=yes
       case "$tasks" in
         *:noarchive)
           archive_body=no
@@ -274,7 +287,13 @@ test_bootstrap_reporting() {
           tasks=${tasks%:nomulti}
           ;;
       esac
-      add_tasks_axi "$fakebin" "$tasks" "$archive_body" "$multi_id"
+      case "$tasks" in
+        *:noholdfields)
+          hold_fields=no
+          tasks=${tasks%:noholdfields}
+          ;;
+      esac
+      add_tasks_axi "$fakebin" "$tasks" "$archive_body" "$multi_id" "$hold_fields"
     fi
     if [ "$quota" = "0" ]; then
       rm -f "$fakebin/quota-axi"
@@ -304,6 +323,7 @@ missing tasks-axi is required by default^1^-^1^-^exact^MISSING: tasks-axi (insta
 incompatible tasks-axi is required by default^1^0.1.0^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
 tasks-axi without archive-body is required by default^1^0.2.4:noarchive^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
 tasks-axi without multi-id mv is required by default^1^0.2.4:nomulti^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
+tasks-axi without the hold list fields is required by default^1^0.2.4:noholdfields^1^-^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
 missing quota-axi is required by default^1^0.2.4^0^manual^exact^MISSING: quota-axi (install: npm install -g quota-axi)^
 manual backlog backend still requires missing tasks-axi^1^-^1^manual^exact^MISSING: tasks-axi (install: npm install -g tasks-axi)^
 manual backlog backend suppresses tasks-axi availability^1^0.2.4^1^manual^empty^^
