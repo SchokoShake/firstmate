@@ -13,6 +13,9 @@
 # A hold identity is <origin-id>-decision-<decision-key>. Origin ids and decision
 # keys must already be privacy-safe slugs. Repeating `hold` with the same identity
 # is idempotent. A different decision key creates a different backlog identity.
+# That identity is also the durable subject of the captain-ask identity published
+# for this row (bin/fm-ask-lib.sh), so a new decision key is how a decision hold
+# re-asks: rewriting the reason here deliberately keeps the same question.
 # All backlog mutations run in the active FM_HOME, which keeps main-home and
 # secondmate-home ownership aligned with the work that discovered the decision.
 #

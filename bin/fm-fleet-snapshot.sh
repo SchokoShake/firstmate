@@ -18,8 +18,13 @@
 #     Structured rows preserve captain-hold metadata such as hold_kind and
 #     hold_reason when tasks-axi emits it. They also carry normalized current_role,
 #     requires_child_metadata, blocked_by_ids, unresolved_blocker_ids, and
-#     captain_actionable fields. Repeated blocker tokens remain ordered; a blocker
-#     resolves only when its structured record is Done, and missing ids stay open.
+#     captain_actionable fields, plus ask_id and ask_revision - the durable
+#     question identity of a row still being asked about, null on every other
+#     structured row. bin/fm-ask-lib.sh owns that identity and its revision, and
+#     a consumer takes ask_id as given rather than deriving a question identity
+#     from the row's title, reason, or the options it could parse out of them.
+#     Repeated blocker tokens remain ordered; a blocker resolves only when its
+#     structured record is Done, and missing ids stay open.
 #     The item-line grammar backlog_json reads is stated as data in
 #     tests/fixtures/backlog-item-line/ and pinned by
 #     tests/fm-backlog-item-line-contract.test.sh; docs/architecture.md ("Cross-repo
@@ -150,6 +155,9 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-ask-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-ask-lib.sh"  # the captain-ask identity published on backlog records
 # shellcheck source=bin/fm-ff-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-ff-lib.sh"  # validate_secondmate_home: shared seeded-home boundary checks
@@ -416,7 +424,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
                and .hold_reason != null and (.unresolved_blocker_ids | length) == 0)
         else . end)
     | del(.section,.order)
-  ' < "$backlog"
+  ' < "$backlog" | fm_ask_annotate_backlog_json "$(fm_ask_ledger_path "$(dirname "$backlog")")"
 }
 
 task_json_lines() {

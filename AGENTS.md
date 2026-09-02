@@ -77,6 +77,7 @@ config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitig
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; applied for you by whatever launches a watcher (bin/fm-cadence-lib.sh)
 data/                personal fleet records; LOCAL, gitignored as a whole
+  ask-revisions      captain-ask revisions; written only by bin/fm-ask.sh, absent until firstmate re-asks
   backlog.md         task queue, dependencies, history
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
   captain-shared.md  main-authoritative shared captain preferences propagated read-only to secondmate homes; LOCAL, gitignored, owned by secondmate-provisioning
@@ -496,6 +497,7 @@ Use compatible `tasks-axi` when the configured backend selects it and the docume
 `secondmate-provisioning` and `bin/fm-backlog-handoff.sh` own cross-home handoff safety.
 
 A task's PR URL belongs to the item's `pr` field and never to its title, because a later title change replaces the whole item line and drops a URL written into it; `bin/fm-backlog-pr.sh` owns that convention, and its `retitle` is how a title changes without losing the recorded link.
+A captain hold keeps one question identity through every rewrite of its reason, and firstmate re-asks only by deliberately bumping that row's revision with `bin/fm-ask.sh again`, which owns the identity, the revision, and the decision-hold case.
 Keep free-form notes free of temporary paths, moving versions, ephemeral identifiers, and copied state that will rot.
 Inspect the current task note before replacing its considered body, and archive the superseded body when recoverability matters rather than appending by default.
 Verify volatile details against their authoritative config, live system, or API before acting, and correct or delete stale prose immediately.
