@@ -99,12 +99,30 @@ tasks_in() {  # <home> <tasks-axi args...>
   (cd "$home" && tasks-axi "$@")
 }
 
+# HOLD_NOW pins the deadline clock so a test can assert an exact date. It has to
+# be a date the real clock has not passed, because tasks-axi decides whether a
+# hold is still gating from the system date and a hold born lapsed is refused.
+HOLD_NOW=''
+
 run_decisions() {  # <home> <command args...>
   local home=$1
   shift
   PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
     FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
-    FM_CONFIG_OVERRIDE="$home/config" "$ROOT/bin/fm-decision-hold.sh" "$@"
+    FM_CONFIG_OVERRIDE="$home/config" FM_CAPTAIN_HOLD_NOW="$HOLD_NOW" \
+    "$ROOT/bin/fm-decision-hold.sh" "$@"
+}
+
+run_captain_hold() {  # <home> <id> <args...>
+  local home=$1
+  shift
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+    FM_HOME="$home" FM_CONFIG_OVERRIDE="$home/config" FM_CAPTAIN_HOLD_NOW="$HOLD_NOW" \
+    "$ROOT/bin/fm-captain-hold.sh" "$@"
+}
+
+hold_row() {  # <home> <id>
+  grep -E "^- \[ \] $2 -" "$1/data/backlog.md"
 }
 
 write_origin_meta() {  # <home> <id> [kind]
@@ -770,6 +788,222 @@ test_unanswered_decision_still_blocks_completion_and_teardown() {
   pass "an unanswered decision still blocks completion and resists both unrouted close paths"
 }
 
+# The whole point of the default: before it, 0 of 77 captain holds carried a
+# deadline, so a question the captain had chosen not to answer sat in the
+# needs-you feed forever beside questions they had never seen. The clock is
+# pinned to a far-future date so the expected deadlines are literals here rather
+# than date arithmetic reimplemented from the code under test.
+test_captain_holds_carry_a_default_deadline() {
+  local home id row
+  home=$(make_home default-deadline)
+  id=sample-deadline-review
+  mkdir -p "$home/data/$id"
+  write_origin_meta "$home" "$id"
+  printf '# Sample deadline review\n\nFour choices remain.\n' > "$home/data/$id/report.md"
+
+  HOLD_NOW=2099-01-01
+  run_decisions "$home" hold "$id" route \
+    --title "Choose the sample route" --reason "captain route choice pending" --repo sample >/dev/null \
+    || fail "could not register a hold with the default deadline"
+  row=$(hold_row "$home" "$id-decision-route")
+  assert_contains "$row" "(hold-until: 2099-01-08)" \
+    "a captain hold was written without the default deadline"
+
+  run_decisions "$home" hold "$id" access \
+    --title "Choose the sample access level" --reason "captain access choice pending" --repo sample \
+    --hold-until 2099-06-30 >/dev/null \
+    || fail "could not register a hold with an explicit deadline"
+  row=$(hold_row "$home" "$id-decision-access")
+  assert_contains "$row" "(hold-until: 2099-06-30)" \
+    "an explicit --hold-until did not override the default"
+
+  run_decisions "$home" hold "$id" charter \
+    --title "Choose the sample charter" --reason "captain charter choice pending" --repo sample \
+    --hold-until none >/dev/null \
+    || fail "could not register an open-ended hold"
+  row=$(hold_row "$home" "$id-decision-charter")
+  assert_contains "$row" "(hold-kind: captain)" "the open-ended hold was not held for the captain"
+  case "$row" in
+    *hold-until*) fail "--hold-until none still wrote a deadline: $row" ;;
+  esac
+
+  # The default has to survive a month and a year boundary, because a wrong
+  # answer there is a deadline that lands in the past and a hold born lapsed.
+  HOLD_NOW=2099-12-28
+  run_decisions "$home" hold "$id" rollover \
+    --title "Choose the sample rollover" --reason "captain rollover choice pending" --repo sample >/dev/null \
+    || fail "could not register a hold across a year boundary"
+  assert_contains "$(hold_row "$home" "$id-decision-rollover")" "(hold-until: 2100-01-04)" \
+    "the default deadline did not roll over into the next year"
+
+  HOLD_NOW=2099-02-25
+  run_decisions "$home" hold "$id" calendar \
+    --title "Choose the sample calendar" --reason "captain calendar choice pending" --repo sample >/dev/null \
+    || fail "could not register a hold across a month boundary"
+  assert_contains "$(hold_row "$home" "$id-decision-calendar")" "(hold-until: 2099-03-04)" \
+    "the default deadline did not roll over into the next month"
+
+  # A retry with no flag must not quietly shorten a window the captain was given.
+  HOLD_NOW=2099-01-01
+  run_decisions "$home" hold "$id" access \
+    --title "Choose the sample access level" --reason "captain access choice pending" --repo sample >/dev/null \
+    || fail "could not retry a hold that already carries a deadline"
+  assert_contains "$(hold_row "$home" "$id-decision-access")" "(hold-until: 2099-06-30)" \
+    "an idempotent retry shortened an explicitly chosen deadline"
+  run_decisions "$home" hold "$id" access \
+    --title "Choose the sample access level" --reason "captain access choice pending" --repo sample \
+    --hold-until 2099-03-31 >/dev/null || fail "could not move an existing deadline explicitly"
+  assert_contains "$(hold_row "$home" "$id-decision-access")" "(hold-until: 2099-03-31)" \
+    "an explicit --hold-until could not move an existing deadline"
+
+  for bad in 2099-01-01 2098-12-31 2099-02-30 soon; do
+    if run_decisions "$home" hold "$id" rejected \
+      --title "Choose the rejected sample" --reason "captain rejected choice pending" --repo sample \
+      --hold-until "$bad" > "$home/rejected.out" 2> "$home/rejected.err"; then
+      fail "an unusable deadline was accepted: $bad"
+    fi
+    assert_no_grep "$id-decision-rejected" "$home/data/backlog.md" \
+      "a refused deadline still wrote a captain hold: $bad"
+  done
+  HOLD_NOW=''
+  pass "captain holds carry a default deadline, an override, and an opt-out"
+}
+
+# AGENTS.md section 10's other captain hold: a main-side thread with no
+# investigation behind it. It goes through the same default so the deadline is
+# not an option nobody passes.
+test_main_side_captain_hold_uses_the_same_default() {
+  local home row
+  home=$(make_home main-side-hold)
+  tasks_in "$home" add sample-relay-thread "Sample relay reminder" --kind captain --repo sample >/dev/null \
+    || fail "could not create the main-side backlog fixture"
+
+  HOLD_NOW=2099-01-01
+  run_captain_hold "$home" sample-relay-thread --reason "captain reply pending" >/dev/null \
+    || fail "could not hold a main-side thread for the captain"
+  row=$(hold_row "$home" sample-relay-thread)
+  assert_contains "$row" "(hold-kind: captain)" "the main-side thread was not held for the captain"
+  assert_contains "$row" "(hold-until: 2099-01-08)" \
+    "a main-side captain hold was written without the default deadline"
+
+  run_captain_hold "$home" sample-relay-thread --reason "captain reply pending" \
+    --hold-until 2099-05-05 >/dev/null || fail "could not re-hold with an explicit deadline"
+  assert_contains "$(hold_row "$home" sample-relay-thread)" "(hold-until: 2099-05-05)" \
+    "an explicit --hold-until did not override the main-side default"
+
+  run_captain_hold "$home" sample-relay-thread --reason "captain reply pending" \
+    --hold-until none >/dev/null || fail "could not re-hold without a deadline"
+  case "$(hold_row "$home" sample-relay-thread)" in
+    *hold-until*) fail "--hold-until none still wrote a main-side deadline" ;;
+  esac
+
+  run_captain_hold "$home" sample-relay-thread --reason "captain reply pending" \
+    --hold-until 2099-05-05 >/dev/null || fail "could not restore an explicit deadline"
+  run_captain_hold "$home" sample-relay-thread --reason "captain reply pending" >/dev/null \
+    || fail "could not re-hold a main-side thread that already carries a deadline"
+  assert_contains "$(hold_row "$home" sample-relay-thread)" "(hold-until: 2099-05-05)" \
+    "re-holding a main-side thread shortened an explicitly chosen deadline"
+
+  if run_captain_hold "$home" sample-absent-thread --reason "captain reply pending" \
+    > "$home/absent-hold.out" 2> "$home/absent-hold.err"; then
+    fail "a main-side hold was written for a backlog item that does not exist"
+  fi
+  assert_no_grep "sample-absent-thread" "$home/data/backlog.md" \
+    "a refused main-side hold created a backlog row"
+  HOLD_NOW=''
+  pass "a main-side captain hold takes the same deadline default"
+}
+
+# Lapse is demotion, never deletion. Past its deadline a hold stops gating
+# dispatch and keeps its reason, kind and date, so it is still a captain hold
+# with an answer owed: it must keep blocking teardown and must still be
+# answerable, and it must survive teardown exactly as an unlapsed hold does.
+# Giving holds a clock without this makes a late answer unrecordable.
+test_lapsed_hold_is_demoted_not_deleted() {
+  local home id show
+  home=$(make_home lapsed-hold)
+  id=sample-lapsed-review
+  mkdir -p "$home/data/$id"
+  write_origin_meta "$home" "$id"
+  printf '# Sample lapsed review\n\nOne choice remains.\n' > "$home/data/$id/report.md"
+  run_decisions "$home" hold "$id" route \
+    --title "Choose the lapsed sample route" --reason "captain route choice pending" --repo sample >/dev/null \
+    || fail "could not register the hold that is about to lapse"
+
+  tasks_in "$home" hold "$id-decision-route" --reason "captain route choice pending" \
+    --kind captain --until 2000-01-01 >/dev/null || fail "could not lapse the fixture hold"
+  show=$(tasks_in "$home" show "$id-decision-route" --full)
+  assert_contains "$show" "held: no" "the fixture hold did not lapse"
+  assert_contains "$show" "hold_kind: captain" "the lapsed hold lost its captain provenance"
+  assert_contains "$show" "hold_reason: captain route choice pending" \
+    "the lapsed hold lost its reason"
+  assert_contains "$show" "hold_until: 2000-01-01" "the lapsed hold lost its deadline"
+
+  run_decisions "$home" complete "$id" route >/dev/null \
+    || fail "a lapsed decision was not accepted as a durable inventory entry"
+  run_decisions "$home" verify "$id" >/dev/null \
+    || fail "a lapsed decision failed the teardown verification gate"
+  run_teardown "$home" "$id" >/dev/null 2> "$home/lapsed-teardown.err" \
+    || fail "reviewed teardown failed over a lapsed decision: $(cat "$home/lapsed-teardown.err")"
+  show=$(tasks_in "$home" show "$id-decision-route" --full)
+  assert_contains "$show" "hold_kind: captain" "teardown erased a lapsed captain hold"
+  assert_contains "$show" "hold_until: 2000-01-01" "teardown rewrote a lapsed hold's deadline"
+
+  HOLD_NOW=2099-01-01
+  run_decisions "$home" hold "$id" route \
+    --title "Choose the lapsed sample route" --reason "captain route choice pending" --repo sample >/dev/null \
+    || fail "a lapsed decision could not be re-asked"
+  assert_contains "$(hold_row "$home" "$id-decision-route")" "(hold-until: 2099-01-08)" \
+    "re-asking a lapsed decision did not give it a fresh deadline"
+  assert_contains "$(tasks_in "$home" show "$id-decision-route" --full)" "held: yes" \
+    "re-asking a lapsed decision did not put it back in front of the captain"
+  HOLD_NOW=''
+
+  tasks_in "$home" hold "$id-decision-route" --reason "captain route choice pending" \
+    --kind captain --until 2000-01-01 >/dev/null || fail "could not lapse the re-asked hold"
+  assert_contains "$(tasks_in "$home" show "$id-decision-route" --full)" "held: no" \
+    "the re-asked hold did not lapse again"
+  printf 'The captain finally chose route north.\n' > "$home/lapsed-decision.md"
+  run_decisions "$home" decline "$id" route --decision-file "$home/lapsed-decision.md" >/dev/null \
+    || fail "the captain's late answer could not be recorded on a lapsed hold"
+  assert_grep "Resolution recorded by fm-decision-hold" "$home/data/backlog.md" \
+    "answering a lapsed hold recorded no durable decision"
+  pass "a lapsed captain hold is demoted, survives teardown, and still takes an answer"
+}
+
+# A hold that predates the default carries no deadline at all. Nothing may
+# rewrite it, and every lifecycle path must keep working on it unchanged.
+test_existing_holds_without_a_deadline_are_untouched() {
+  local home id row before
+  home=$(make_home legacy-hold)
+  id=sample-legacy-review
+  mkdir -p "$home/data/$id"
+  write_origin_meta "$home" "$id"
+  printf '# Sample legacy review\n\nOne choice remains.\n' > "$home/data/$id/report.md"
+  tasks_in "$home" add "$id-decision-route" "Choose the legacy sample route" \
+    --kind captain --repo sample >/dev/null || fail "could not create the legacy fixture"
+  tasks_in "$home" hold "$id-decision-route" --reason "captain route choice pending" \
+    --kind captain >/dev/null || fail "could not hold the legacy fixture"
+  row=$(hold_row "$home" "$id-decision-route")
+  case "$row" in *hold-until*) fail "the legacy fixture was not deadline-free: $row" ;; esac
+
+  before=$(shasum -a 256 "$home/data/backlog.md" | awk '{print $1}')
+  run_decisions "$home" complete "$id" route >/dev/null \
+    || fail "a deadline-free hold failed the completion gate"
+  run_decisions "$home" verify "$id" >/dev/null \
+    || fail "a deadline-free hold failed the teardown verification gate"
+  [ "$before" = "$(shasum -a 256 "$home/data/backlog.md" | awk '{print $1}')" ] \
+    || fail "reviewing a deadline-free hold rewrote the backlog"
+  case "$(hold_row "$home" "$id-decision-route")" in
+    *hold-until*) fail "an existing deadline-free hold was given a deadline" ;;
+  esac
+
+  printf 'The captain chose route south.\n' > "$home/legacy-decision.md"
+  run_decisions "$home" decline "$id" route --decision-file "$home/legacy-decision.md" >/dev/null \
+    || fail "a deadline-free hold could not be closed with the captain's answer"
+  pass "captain holds written before the default keep working untouched"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -783,3 +1017,7 @@ test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
+test_captain_holds_carry_a_default_deadline
+test_main_side_captain_hold_uses_the_same_default
+test_lapsed_hold_is_demoted_not_deleted
+test_existing_holds_without_a_deadline_are_untouched

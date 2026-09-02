@@ -51,6 +51,9 @@ A task's PR URL belongs to the item's `pr` field and never to its title, because
 [`bin/fm-backlog-pr.sh`](../bin/fm-backlog-pr.sh) is the single owner of that convention: it records the URL through `--pr` while writing a title with no URL in it, carries the recorded link across a title change, and restores a link that was already lost from the task's own `pr=` metadata.
 tasks-axi's `pr` field holds only a GitHub pull request URL, so a GitLab merge request stays in the task's `pr=` metadata and is reported as skipped rather than written into the backlog item at all.
 
+Every captain hold firstmate writes carries a lapse deadline by default, because a hold with none never lapses and keeps a question the captain has chosen not to answer in front of them forever.
+[`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) is the single owner of the default window, the `--hold-until` override, the `none` opt-out for a genuinely open-ended question, and the rule that a lapsed hold is demoted rather than answered or removed; [`bin/fm-captain-hold.sh`](../bin/fm-captain-hold.sh) and [`bin/fm-decision-hold.sh`](../bin/fm-decision-hold.sh) are the two paths that write one.
+
 ## Captain-ask identity and revisions (data/ask-revisions)
 
 A captain-held backlog row is a question firstmate is putting to the captain, and any surface that raises it as a card needs to know when two sightings of that row are the same question.
@@ -644,6 +647,7 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
+FM_CAPTAIN_HOLD_NOW=     # pin today's date for captain-hold deadlines, mainly for tests
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"

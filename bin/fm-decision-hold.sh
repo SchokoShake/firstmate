@@ -19,10 +19,21 @@
 # All backlog mutations run in the active FM_HOME, which keeps main-home and
 # secondmate-home ownership aligned with the work that discovered the decision.
 #
+# `hold` gives every decision a deadline by default; `--hold-until` overrides the
+# date and `--hold-until none` opts a genuinely open-ended question out of the
+# clock entirely. bin/fm-captain-hold-lib.sh owns the window and what lapsing
+# means. A lapsed hold is still an unanswered decision, so every gate below reads
+# hold_kind rather than held: `complete` and `verify` still accept one as durably
+# recorded, and `resolve` and `decline` still record the captain's answer on one.
+# Repeating `hold` keeps a deadline the clock has not reached, so retrying cannot
+# shorten a window the captain was given, and reactivates a lapsed decision with
+# a fresh deadline, which is how firstmate re-asks an unanswered question.
+#
 # Usage:
 #   fm-decision-hold.sh id <origin-id> <decision-key>
 #   fm-decision-hold.sh hold <origin-id> <decision-key> \
-#     --title <title> --reason <reason> [--repo <repo>]
+#     --title <title> --reason <reason> [--repo <repo>] \
+#     [--hold-until <YYYY-MM-DD>|none]
 #   fm-decision-hold.sh complete <origin-id> (--none | <decision-key>...)
 #   fm-decision-hold.sh verify <origin-id>
 #   fm-decision-hold.sh resolve <origin-id> <decision-key> \
@@ -52,9 +63,9 @@
 #
 # `decline` is the unrouted path for a decision the captain answered with no
 # follow-up work. It takes no --routed-to task, records `(none)` as the routed
-# identities, and closes an actively held hold. It refuses while any task is still
-# blocked by the hold, because releasing routed work without recording it is
-# `resolve`'s job.
+# identities, and closes an open hold whether or not its deadline has passed. It
+# refuses while any task is still blocked by the hold, because releasing routed
+# work without recording it is `resolve`'s job.
 #
 # `repair` records the missing resolution block on a hold that was already closed
 # outside this script, so `verify` stops failing on an origin whose decision was
@@ -71,6 +82,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
+# shellcheck source=bin/fm-captain-hold-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-captain-hold-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"
@@ -159,9 +173,13 @@ tasks_axi() {
 }
 
 require_tasks_axi() {
+  local hold_help
   fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
-  tasks-axi hold --help 2>&1 | grep -F -- '--kind captain' >/dev/null \
+  hold_help=$(tasks-axi hold --help 2>&1) || fail "tasks-axi does not expose the hold contract"
+  printf '%s\n' "$hold_help" | grep -F -- '--kind captain' >/dev/null \
     || fail "tasks-axi does not expose the captain-hold contract"
+  printf '%s\n' "$hold_help" | grep -F -- '--until' >/dev/null \
+    || fail "tasks-axi does not expose the hold deadline contract"
 }
 
 task_show() {  # <id>
@@ -277,17 +295,28 @@ EOF
   printf '%s' "$found"
 }
 
-verify_hold_active() {  # <hold-id>
-  local id=$1 show state held kind hold_kind
+# An unanswered captain decision, whether its deadline has passed or not.
+# hold_kind is the field that survives a lapse and does not survive an unhold,
+# so it is what separates a question nobody has answered from a row somebody
+# released. Answering a decision must not depend on the captain's punctuality.
+verify_hold_open() {  # <hold-id>
+  local id=$1 show state kind hold_kind
   show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
   state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
   hold_kind=$(show_field "$show" hold_kind)
   [ "$state" = queued ] || fail "captain hold $id is not queued (state=$state)"
-  [ "$held" = yes ] || fail "captain hold $id is not active"
   [ "$kind" = captain ] || fail "backlog item $id is not kind captain"
   [ "$hold_kind" = captain ] || fail "backlog item $id is not held for the captain"
+}
+
+# Additionally still gating dispatch. Only the write path asserts this, so a
+# deadline that lands in the past is caught as a hold that was born lapsed.
+verify_hold_active() {  # <hold-id>
+  local id=$1 held
+  verify_hold_open "$id"
+  held=$(show_field "$(task_show "$id")" held)
+  [ "$held" = yes ] || fail "captain hold $id is not active"
 }
 
 verify_hold_resolved() {  # <hold-id>
@@ -302,14 +331,13 @@ verify_hold_resolved() {  # <hold-id>
 }
 
 verify_hold_durable() {  # <hold-id>
-  local id=$1 show state held kind hold_kind body
+  local id=$1 show state kind hold_kind body
   show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
   state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
   hold_kind=$(show_field "$show" hold_kind)
   body=$(show_field "$show" body)
-  if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
+  if [ "$state" = queued ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
     return 0
   fi
   if [ "$state" = "done" ] && [ "$kind" = captain ] && body_has_resolution_record "$body"; then
@@ -344,7 +372,8 @@ command_id() {
 }
 
 command_hold() {
-  local origin=${1:-} key=${2:-} title='' reason='' repo='' id show state kind existing_title body
+  local origin=${1:-} key=${2:-} title='' reason='' repo='' hold_until='' reject until_date
+  local id show state kind existing_title existing_until='' body
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
@@ -352,6 +381,7 @@ command_hold() {
       --title) shift; title=${1:-} ;;
       --reason) shift; reason=${1:-} ;;
       --repo) shift; repo=${1:-} ;;
+      --hold-until) shift; hold_until=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
@@ -361,6 +391,8 @@ command_hold() {
   validate_one_line title "$title"
   validate_one_line reason "$reason"
   case "$reason" in *'('*|*')'*) fail "reason must not contain parentheses (tasks-axi hold contract)" ;; esac
+  reject=$(fm_captain_hold_until_reject "$hold_until")
+  [ -z "$reject" ] || fail "$reject"
   require_tasks_axi
   origin_exists_here "$origin" || fail "origin $origin is not owned by the active home $FM_HOME"
   id=$(hold_id "$origin" "$key")
@@ -371,6 +403,7 @@ command_hold() {
     [ "$state" != "done" ] || fail "captain decision $id is already durably resolved; use a new decision key for a new decision"
     [ "$kind" = captain ] || fail "existing backlog identity $id is not kind captain"
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
+    existing_until=$(show_field "$show" hold_until)
   else
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)
@@ -383,8 +416,23 @@ command_hold() {
     tasks_axi add "$id" "$title" --kind captain --repo "$repo" --body "$body" >/dev/null \
       || fail "could not create captain decision item $id"
   fi
-  tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null \
-    || fail "could not activate captain hold $id"
+  # An explicit deadline always wins. Otherwise a deadline the clock has not
+  # reached is kept, so repeating `hold` stays idempotent and cannot silently
+  # shorten a window the captain was already given; a lapsed or deadline-free
+  # hold takes the default, which is how a re-ask puts a fresh clock on it.
+  if [ -z "$hold_until" ] && fm_captain_hold_until_is_future "$existing_until"; then
+    until_date=$existing_until
+  else
+    until_date=$(fm_captain_hold_resolve_until "$hold_until") \
+      || fail "could not compute the default captain-hold deadline"
+  fi
+  if [ -n "$until_date" ]; then
+    tasks_axi hold "$id" --reason "$reason" --kind captain --until "$until_date" >/dev/null \
+      || fail "could not activate captain hold $id"
+  else
+    tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null \
+      || fail "could not activate captain hold $id"
+  fi
   verify_hold_active "$id"
   printf '%s\n' "$id"
 }
@@ -524,7 +572,7 @@ command_resolve() {
     printf 'resolved: %s\n' "$id"
     return 0
   fi
-  verify_hold_active "$id"
+  verify_hold_open "$id"
   hold_show=$(task_show "$id")
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
@@ -597,7 +645,7 @@ command_decline() {
   state=$(show_field "$hold_show" state)
   [ "$state" != "done" ] \
     || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
-  verify_hold_active "$id"
+  verify_hold_open "$id"
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
