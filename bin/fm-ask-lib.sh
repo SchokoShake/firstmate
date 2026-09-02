@@ -69,14 +69,14 @@ function fm_ask_pair(line, out,    f, n) {
 }
 '
 
-fm_ask_ledger_pairs() {  # <ledger-path>; prints "<subject>\t<revision>", sorted
+fm_ask_ledger_pairs() {  # <ledger-path>; prints "<subject>\t<revision>", one per subject
   local ledger=$1 pairs
   [ -f "$ledger" ] || return 0
   pairs=$(LC_ALL=C awk "$_FM_ASK_LEDGER_AWK"'
     { if (fm_ask_pair($0, p)) pairs[p["key"]] = p["val"] }
     END { for (k in pairs) printf "%s\t%s\n", k, pairs[k] }
   ' "$ledger") || return 1
-  [ -z "$pairs" ] || printf '%s\n' "$pairs" | LC_ALL=C sort
+  [ -z "$pairs" ] || printf '%s\n' "$pairs"
 }
 
 fm_ask_is_subject() {  # <subject>

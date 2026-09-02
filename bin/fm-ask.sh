@@ -34,7 +34,8 @@
 # reinstating the lapsed date would demote it the moment it is asked. Whether it has
 # passed is read from the date itself, which is tasks-axi's own gate - a hold is
 # live only while its --until is strictly after today - rather than from any flag
-# derived from it.
+# derived from it. Such a re-ask passes no --until at all and takes whatever the
+# shared tasks-axi hold write applies by default, which today is no deadline.
 #
 # The revision is read before it is used, and a ledger that exists but cannot be
 # read fails the command instead of answering 1: a subject silently dropped back to
@@ -57,7 +58,8 @@
 # A decision hold re-asks by minting a NEW decision key through
 # bin/fm-decision-hold.sh, which is already one command and already refuses to
 # reopen a resolved decision. `again` refuses those rows rather than becoming a
-# second way to do the same thing.
+# second way to do the same thing, and recognizes them by the
+# <origin-id>-decision-<key> shape of the id itself.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -143,30 +145,35 @@ show_field() {  # <show-output> <field>
 
 # The show output of the row, once it is confirmed to be an open captain ask.
 require_captain_ask() {  # <task-id>
-  local id=$1 show state hold_kind
+  local id=$1 show state hold_reason hold_kind
   fm_ask_is_subject "$id" || fail "task id must be a non-empty privacy-safe slug: $id"
   require_tasks_axi
   show=$(tasks_axi show "$id" --full 2>/dev/null) \
     || fail "backlog item $id is absent from $DATA/backlog.md"
   state=$(show_field "$show" state)
+  hold_reason=$(show_field "$show" hold_reason)
   hold_kind=$(show_field "$show" hold_kind)
   [ "$state" != "done" ] || fail "backlog item $id is done; a closed row asks the captain nothing"
-  case "$hold_kind" in
+  case "$hold_reason" in
     ''|-) fail "backlog item $id is not held; only a held row is a question to the captain" ;;
+  esac
+  case "$hold_kind" in
+    ''|-) fail "backlog item $id is held without a hold kind, not for the captain" ;;
   esac
   [ "$hold_kind" = captain ] \
     || fail "backlog item $id is held for $hold_kind, not the captain"
   printf '%s' "$show"
 }
 
-# fm-decision-hold.sh writes "Decision key:" into the body when it creates the
-# hold, and only replaces that body when it CLOSES the decision, so an open
-# decision hold always still carries it.
-refuse_decision_hold() {  # <task-id> <show-output>
-  local id=$1 body
-  body=$(show_field "$2" body)
-  case "$body" in
-    *"Decision key:"*)
+# The <origin-id>-decision-<key> shape fm-decision-hold.sh mints is the durable
+# discriminator. A marker in the body is not: the close paths replace the body
+# wholesale before the row is Done, and AGENTS.md section 10 has an author replace a
+# considered body with an updated note, so either leaves an open decision hold
+# looking like an ordinary captain ask.
+refuse_decision_hold() {  # <task-id>
+  local id=$1
+  case "$id" in
+    ?*-decision-?*)
       fail "$id is a decision hold; re-ask it with a new decision key through fm-decision-hold.sh hold, which mints a new durable identity"
       ;;
   esac
@@ -210,7 +217,7 @@ command_again() {
     *'('*|*')'*) fail "reason must not contain parentheses (tasks-axi hold contract)" ;;
   esac
   show=$(require_captain_ask "$id") || exit 1
-  refuse_decision_hold "$id" "$show"
+  refuse_decision_hold "$id"
   [ "$reason" != "$(show_field "$show" hold_reason)" ] \
     || fail "the reason is unchanged; rewriting the same question is not a re-ask"
   until=$(show_field "$show" hold_until)

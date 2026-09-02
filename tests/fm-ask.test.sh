@@ -360,7 +360,37 @@ test_again_refuses_a_decision_hold() {
   assert_contains "$out" "fm-decision-hold.sh hold" \
     "refusing a decision hold must name the command that re-asks it"
   [ "$before" = "$(run_ask "$home" id "$id")" ] || fail "the refused decision-hold re-ask still moved the identity"
+
+  # The close paths replace the hold body before the row is Done, and AGENTS.md
+  # section 10 has an author replace a considered body with an updated note, so the
+  # body cannot be what tells a decision hold apart from an ordinary captain ask.
+  axi "$home" update "$id" --body "note: the guard question is still open" >/dev/null
+  rc=0; out=$(run_ask "$home" again "$id" --reason "a third question about the guard" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask aimed at a decision hold whose body was rewritten"
+  assert_contains "$out" "fm-decision-hold.sh hold" \
+    "a rewritten body must not turn a decision hold into a re-askable captain ask"
+  assert_absent "$home/data/ask-revisions" "the refused decision-hold re-ask wrote the revision ledger"
   pass "a decision hold is re-asked with a new decision key, not by bumping a revision"
+}
+
+# The refusal has to say which state it found, because "not held" sends an operator
+# looking for a hold that is right there.
+test_a_refusal_names_the_hold_it_found() {
+  local home out rc
+  home=$(make_home refusal-diagnostics)
+  axi "$home" add kindless-hold-k1 "waiting on something" --kind ship --repo myapp --start >/dev/null
+  axi "$home" hold kindless-hold-k1 --reason "held with no kind at all" >/dev/null
+  rc=0; out=$(run_ask "$home" id kindless-hold-k1 2>&1) || rc=$?
+  expect_code 1 "$rc" "an identity asked of a hold with no kind"
+  assert_not_contains "$out" "is not held" "a row that is held must not be refused as unheld"
+  assert_contains "$out" "not for the captain" "a kindless hold must be refused for not being the captain's"
+
+  axi "$home" add vendor-hold-v1 "waiting on a vendor" --kind ship --repo myapp --start >/dev/null
+  axi "$home" hold vendor-hold-v1 --reason "vendor has not shipped the SDK" --kind external >/dev/null
+  rc=0; out=$(run_ask "$home" id vendor-hold-v1 2>&1) || rc=$?
+  expect_code 1 "$rc" "an identity asked of an external hold"
+  assert_contains "$out" "held for external" "a non-captain hold must name the kind it is held for"
+  pass "a refusal names the hold state the row is actually in"
 }
 
 # --- resolve, decline and repair leave it alone ------------------------------
@@ -503,6 +533,7 @@ test_an_unreadable_ledger_never_answers_revision_one
 test_a_re_ask_keeps_human_annotations_in_the_ledger
 test_decision_hold_identity_survives_its_reason_rewrite
 test_again_refuses_a_decision_hold
+test_a_refusal_names_the_hold_it_found
 test_close_paths_leave_the_revision_alone
 test_snapshot_publishes_an_identity_only_for_an_open_captain_ask
 test_a_malformed_ledger_entry_degrades_to_revision_one

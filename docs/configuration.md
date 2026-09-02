@@ -78,8 +78,10 @@ It is durable private fleet data rather than runtime state, because a subject th
 
 [`bin/fm-ask.sh`](../bin/fm-ask.sh) is the only writer and the one command that re-asks: `fm-ask.sh again <task-id> --reason "<the new question>"` bumps the revision and writes the new reason together.
 It carries the row's existing hold deadline into the new question, and drops a deadline that has already passed so a deliberate re-ask comes back live rather than lapsed.
+Such a re-ask passes no deadline at all and is written through the same `tasks-axi hold` call as any other, so it takes whatever that command applies by default.
+Today that default is no deadline, so the re-asked question stays live until it is answered or given a deadline of its own.
 Every other way of changing a hold - `tasks-axi hold --reason`, a hold refresh, a resync, a restart, and `fm-decision-hold.sh`'s own `resolve`, `decline`, and `repair` - leaves the ledger untouched and therefore preserves the identity, so the safe path is the one an author already takes.
-A decision hold re-asks by minting a new decision key through `fm-decision-hold.sh hold` instead, which is already one command and already refuses to reopen a resolved decision; `fm-ask.sh again` refuses those rows and says so.
+A decision hold re-asks by minting a new decision key through `fm-decision-hold.sh hold` instead, which is already one command and already refuses to reopen a resolved decision; `fm-ask.sh again` refuses any row whose id has the `<origin-id>-decision-<key>` shape and says so.
 
 ## Runtime backend (config/backend / FM_BACKEND)
 
