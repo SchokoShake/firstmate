@@ -55,7 +55,7 @@ fm_ask_ledger_pairs() {  # <ledger-path>; prints "<subject>\t<revision>", sorted
     {
       key = $1; sub(/^[[:space:]]+/, "", key); sub(/[[:space:]]+$/, "", key)
       val = $2; sub(/^[[:space:]]+/, "", val); sub(/[[:space:]]+$/, "", val)
-      if (key ~ /^[A-Za-z0-9._-]+$/ && val ~ /^[0-9]+$/ && val + 0 >= 1) pairs[key] = val
+      if (key ~ /^[A-Za-z0-9._-]+$/ && val ~ /^[0-9]+$/ && val + 0 >= 1) pairs[key] = val + 0
     }
     END { for (k in pairs) printf "%s\t%s\n", k, pairs[k] }
   ' "$ledger" | LC_ALL=C sort
@@ -128,7 +128,8 @@ fm_ask_write_revision() {  # <ledger-path> <subject> <revision>
 # Both payloads reach jq on stdin, never as an argument: the annotated document is
 # unbounded, and the map grows with the fleet's captain holds.
 fm_ask_annotate_backlog_json() {  # [<ledger-path>]
-  local ledger=${1:-$(fm_ask_ledger_path)} parsed pairs subject revision entries='' sep=''
+  local ledger=${1:-$(fm_ask_ledger_path)} parsed pairs subject revision entries='' sep='' ask_row
+  ask_row='def ask_row: .structured == true and .state != "done" and .hold_kind == "captain" and .hold_reason != null and .id != null;'
   parsed=$(cat)
   pairs=$(fm_ask_ledger_pairs "$ledger")
   while IFS= read -r subject; do
@@ -137,21 +138,17 @@ fm_ask_annotate_backlog_json() {  # [<ledger-path>]
     entries="$entries$sep\"$subject\":{\"ask_id\":\"$(fm_ask_id "$subject" captain "$revision")\",\"ask_revision\":$revision}"
     sep=','
   done <<EOF
-$(printf '%s' "$parsed" | jq -r '
-    .records[]?
-    | select(.structured == true and .state != "done")
-    | select(.hold_kind == "captain" and .hold_reason != null and .id != null)
-    | .id')
+$(printf '%s' "$parsed" | jq -r "$ask_row"' .records[]? | select(ask_row) | .id')
 EOF
   {
     printf '{%s}\n' "$entries"
     printf '%s\n' "$parsed"
-  } | jq -s '
+  } | jq -s "$ask_row"'
     .[0] as $asks
     | .[1]
     | .records |= map(
         if .structured == true then
-          . + {ask_id: null, ask_revision: null} + ($asks[.id // ""] // {})
+          . + {ask_id: null, ask_revision: null} + (if ask_row then ($asks[.id] // {}) else {} end)
         else . end)
   '
 }

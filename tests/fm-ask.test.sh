@@ -149,6 +149,52 @@ test_again_refuses_without_a_new_question() {
   pass "a re-ask that states no new question is refused and moves nothing"
 }
 
+# tasks-axi renders a reason holding a quote, a backslash, or a colon as a quoted,
+# backslash-escaped TOON value, which must still compare equal to the same text.
+test_again_refuses_the_same_reason_when_tasks_axi_quotes_it() {
+  local home id reason before out rc
+  home=$(make_home quoted-reason)
+  id=placement-axes-p9
+  reason='ship "axes" from C:\builds\axes: this week'
+  axi "$home" add "$id" "adopt the new placement axes" --kind ship --repo myapp --start >/dev/null
+  axi "$home" hold "$id" --reason "$reason" --kind captain >/dev/null
+  before=$(run_ask "$home" id "$id")
+
+  rc=0; out=$(run_ask "$home" again "$id" --reason "$reason" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask restating a reason tasks-axi renders quoted"
+  assert_contains "$out" "is not a re-ask" "restating a quoted reason verbatim must still be refused as a nag"
+  [ "$before" = "$(run_ask "$home" id "$id")" ] || fail "the refused quoted re-ask still moved the identity"
+  assert_absent "$home/data/ask-revisions" "a refused quoted re-ask wrote the revision ledger"
+
+  run_ask "$home" again "$id" --reason 'ship "axes" from D:\builds\axes: next week' >/dev/null \
+    || fail "a re-ask with a genuinely new quoted reason failed"
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "a new quoted reason did not bump the revision"
+  assert_grep 'D:\builds\axes' "$home/data/backlog.md" "the new quoted reason was not written as the hold reason"
+  pass "a quoted reason is compared decoded, so restating it is refused and changing it re-asks"
+}
+
+test_concurrent_re_asks_keep_every_ledger_line() {
+  local home i id pid
+  local -a pids=()
+  home=$(make_home concurrent)
+  for i in 1 2 3 4 5 6; do
+    compose_action_card "$home" "placement-axes-c$i"
+  done
+  for i in 1 2 3 4 5 6; do
+    run_ask "$home" again "placement-axes-c$i" --reason "train $i closed; pick the next window" >/dev/null 2>&1 &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || fail "a concurrent re-ask failed"
+  done
+  for i in 1 2 3 4 5 6; do
+    id="placement-axes-c$i"
+    [ "$(run_ask "$home" revision "$id")" = 2 ] \
+      || fail "$id lost its re-ask to a concurrent one; the ledger reads: $(cat "$home/data/ask-revisions")"
+  done
+  pass "concurrent re-asks in one home serialize on the ledger and none drops another's line"
+}
+
 # --- decision holds: a durable subject, re-asked by a new key ----------------
 
 test_decision_hold_identity_survives_its_reason_rewrite() {
@@ -286,14 +332,54 @@ EOF
   pass "a malformed ledger entry is ignored rather than minting an identity"
 }
 
+test_a_leading_zero_revision_is_read_as_its_number() {
+  local home id
+  home=$(make_home leading-zero)
+  id=placement-axes-p10
+  compose_action_card "$home" "$id"
+  printf '%s=08\n' "$id" > "$home/data/ask-revisions"
+  [ "$(run_ask "$home" revision "$id")" = 8 ] || fail "a hand-written 08 was not read as revision 8"
+  [ "$(published_ask_id "$home" "$id")" = "fm-ask/1:$id:captain:8" ] \
+    || fail "the published identity kept the leading zero"
+  [ "$(published_ask_revision "$home" "$id")" = 8 ] || fail "the published revision kept the leading zero"
+  run_ask "$home" again "$id" --reason "the Friday train closed; pick the next window" >/dev/null \
+    || fail "a re-ask after a hand-written 08 failed"
+  [ "$(run_ask "$home" revision "$id")" = 9 ] || fail "the re-ask after 08 did not reach revision 9"
+  assert_grep "$id=9" "$home/data/ask-revisions" "the ledger did not normalize the hand-written 08"
+  pass "a hand-written leading zero reads as its number and a re-ask bumps from it"
+}
+
+# data/backlog.md is hand-maintainable, so one id can appear on a Done row and on
+# an open row at once; only the open row is a question to the captain.
+test_snapshot_publishes_no_identity_on_a_done_row_sharing_an_open_rows_id() {
+  local home id row rows
+  home=$(make_home duplicate-id)
+  id=twice-listed-t1
+  compose_action_card "$home" "$id"
+  axi "$home" "done" "$id" >/dev/null
+  row="- [ ] $id - asked again under a reused id (repo: myapp) (kind: ship) (since 2026-09-02) (hold: confirm the rollout window) (hold-kind: captain)"
+  awk -v line="$row" '{ print } /^## In flight/ { print line }' "$home/data/backlog.md" > "$home/data/backlog.md.new" \
+    && mv "$home/data/backlog.md.new" "$home/data/backlog.md"
+
+  rows=$(FM_HOME="$home" "$SNAPSHOT" --json | jq -c --arg id "$id" '
+    [ .backlog.records[] | select(.id == $id) | {state, ask_id} ] | sort_by(.state)')
+  [ "$rows" = "[{\"state\":\"done\",\"ask_id\":null},{\"state\":\"in_flight\",\"ask_id\":\"fm-ask/1:$id:captain:1\"}]" ] \
+    || fail "a Done row sharing an open row's id published the wrong identities: $rows"
+  pass "a Done row publishes no identity even when an open row shares its id"
+}
+
 test_reason_rewrite_preserves_the_identity
 test_a_hold_refresh_preserves_the_identity
 test_again_bumps_the_identity_and_writes_the_new_question
 test_again_refuses_without_a_new_question
+test_again_refuses_the_same_reason_when_tasks_axi_quotes_it
+test_concurrent_re_asks_keep_every_ledger_line
 test_decision_hold_identity_survives_its_reason_rewrite
 test_again_refuses_a_decision_hold
 test_close_paths_leave_the_revision_alone
 test_snapshot_publishes_an_identity_only_for_an_open_captain_ask
 test_a_malformed_ledger_entry_degrades_to_revision_one
+test_a_leading_zero_revision_is_read_as_its_number
+test_snapshot_publishes_no_identity_on_a_done_row_sharing_an_open_rows_id
 
 echo "# fm-ask.test.sh: all assertions passed"

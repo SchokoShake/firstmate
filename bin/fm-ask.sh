@@ -33,6 +33,10 @@
 # is the recoverable direction - the captain sees a question twice instead of a new
 # question being silently settled by an old answer.
 #
+# The bump, the reason write, and the restore run under one per-home lock,
+# state/.ask-revisions.lock, so two re-asks racing in the same home cannot drop
+# each other's ledger line.
+#
 # A decision hold re-asks by minting a NEW decision key through
 # bin/fm-decision-hold.sh, which is already one command and already refuses to
 # reopen a resolved decision. `again` refuses those rows rather than becoming a
@@ -42,6 +46,7 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-ask-lib.sh
@@ -50,8 +55,21 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-wake-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-wake-lib.sh"
 
 LEDGER=$(fm_ask_ledger_path "$DATA")
+LEDGER_LOCK="$STATE/.ask-revisions.lock"
+LEDGER_LOCK_HELD=0
+
+release_ledger_lock() {
+  if [ "$LEDGER_LOCK_HELD" = 1 ]; then
+    fm_lock_release "$LEDGER_LOCK" || true
+    LEDGER_LOCK_HELD=0
+  fi
+}
+trap release_ledger_lock EXIT
 
 usage() {
   awk '
@@ -74,12 +92,34 @@ require_tasks_axi() {
   fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
 }
 
-# tasks-axi quotes a field whose value needs it, so a compared value is unwrapped.
+# tasks-axi quotes a field whose value needs it and backslash-escapes inside the
+# quotes, so a compared value is unwrapped and decoded.
 show_field() {  # <show-output> <field>
   local value
   value=$(printf '%s\n' "$1" | sed -n "s/^  $2: //p" | head -1)
   case "$value" in
-    '"'*'"') value=${value#\"}; value=${value%\"} ;;
+    '"'*'"')
+      value=${value#\"}
+      value=${value%\"}
+      value=$(printf '%s' "$value" | awk '{
+        out = ""
+        n = length($0)
+        i = 1
+        while (i <= n) {
+          c = substr($0, i, 1)
+          if (c == "\\" && i < n) {
+            i++
+            c = substr($0, i, 1)
+            if (c == "n") c = "\n"
+            else if (c == "r") c = "\r"
+            else if (c == "t") c = "\t"
+          }
+          out = out c
+          i++
+        }
+        printf "%s", out
+      }')
+      ;;
   esac
   printf '%s' "$value"
 }
@@ -149,6 +189,8 @@ command_again() {
   [ "$reason" != "$(show_field "$show" hold_reason)" ] \
     || fail "the reason is unchanged; rewriting the same question is not a re-ask"
 
+  fm_lock_acquire_wait "$LEDGER_LOCK"
+  LEDGER_LOCK_HELD=1
   previous=$(fm_ask_revision "$LEDGER" "$id")
   next=$((previous + 1))
   fm_ask_write_revision "$LEDGER" "$id" "$next" || fail "could not record revision $next for $id"
@@ -157,6 +199,7 @@ command_again() {
       || fail "could not write the new question on $id, and revision $next is now recorded with the old wording; re-run with the intended reason"
     fail "could not write the new question on $id; revision $previous is unchanged"
   fi
+  release_ledger_lock
   fm_ask_id "$id" captain "$next"
 }
 
