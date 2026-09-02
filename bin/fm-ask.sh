@@ -10,8 +10,13 @@
 #   fm-ask.sh revision <task-id>
 #   fm-ask.sh again <task-id> --reason <reason>
 #
-# `id` and `revision` are read-only and answer for a row that is currently held
-# for the captain; a row that is not being asked about has no question identity.
+# `id` and `revision` are read-only and answer for a row carrying a captain hold
+# that is not yet Done; a row that is not being asked about has no question
+# identity. A hold whose deadline has passed is still one of those rows: tasks-axi
+# reports it as held: no while keeping its hold markers, and a lapse is neither an
+# answer nor a new question, so the identity must not move and the row stays
+# askable. Demoting a lapsed row out of a needs-you feed is the consuming board's
+# decision, not something firstmate encodes in the identity.
 # bin/fm-fleet-snapshot.sh publishes the same two values on every structured
 # backlog record as ask_id and ask_revision, which is how a board consumes them
 # without re-deriving anything from the row's title or prose.
@@ -24,7 +29,9 @@
 # is the one an author already takes.
 #
 # `again` carries the row's existing hold deadline into the rewritten hold, because
-# tasks-axi hold replaces the whole hold and would otherwise drop it.
+# tasks-axi hold replaces the whole hold and would otherwise drop it. A deadline
+# that has already passed is NOT carried: the re-ask is a live question again, and
+# reinstating the lapsed date would demote it the moment it is asked.
 #
 # --reason is required, because a re-ask has to say what is now being asked. A
 # genuine re-ask of the identical sentence is a nag, not a new question, and
@@ -129,16 +136,17 @@ show_field() {  # <show-output> <field>
 
 # The show output of the row, once it is confirmed to be an open captain ask.
 require_captain_ask() {  # <task-id>
-  local id=$1 show state held hold_kind
+  local id=$1 show state hold_kind
   fm_ask_is_subject "$id" || fail "task id must be a non-empty privacy-safe slug: $id"
   require_tasks_axi
   show=$(tasks_axi show "$id" --full 2>/dev/null) \
     || fail "backlog item $id is absent from $DATA/backlog.md"
   state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
   hold_kind=$(show_field "$show" hold_kind)
   [ "$state" != "done" ] || fail "backlog item $id is done; a closed row asks the captain nothing"
-  [ "$held" = yes ] || fail "backlog item $id is not held; only a held row is a question to the captain"
+  case "$hold_kind" in
+    ''|-) fail "backlog item $id is not held; only a held row is a question to the captain" ;;
+  esac
   [ "$hold_kind" = captain ] \
     || fail "backlog item $id is held for $hold_kind, not the captain"
   printf '%s' "$show"
@@ -192,11 +200,13 @@ command_again() {
   refuse_decision_hold "$id" "$show"
   [ "$reason" != "$(show_field "$show" hold_reason)" ] \
     || fail "the reason is unchanged; rewriting the same question is not a re-ask"
-  until=$(show_field "$show" hold_until)
-  case "$until" in
-    ''|-) ;;
-    *) hold_flags=(--until "$until") ;;
-  esac
+  if [ "$(show_field "$show" held)" = yes ]; then
+    until=$(show_field "$show" hold_until)
+    case "$until" in
+      ''|-) ;;
+      *) hold_flags=(--until "$until") ;;
+    esac
+  fi
 
   fm_lock_acquire_wait "$LEDGER_LOCK"
   LEDGER_LOCK_HELD=1

@@ -61,7 +61,9 @@ So the identity names the subject and re-asking is a deliberate act.
 The subject is the backlog item id, which for a decision hold is the durable `<origin-id>-decision-<key>` that [`bin/fm-decision-hold.sh`](../bin/fm-decision-hold.sh) mints and keeps through every rewrite of the reason.
 Nothing about the reason, the title, the options a reader could parse out of the prose, or a consuming board's own card kind is in the identity.
 
-[`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) publishes it: every structured `backlog.records[]` entry carries `ask_id` and `ask_revision`, filled for a row that is held for the captain and not yet Done, and `null` on every other row.
+[`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) publishes it: every structured `backlog.records[]` entry carries `ask_id` and `ask_revision`, filled for a row that carries a captain hold and is not yet Done, and `null` on every other row.
+A hold whose `hold-until` deadline has passed is one of those rows and keeps exactly the same `ask_id` and `ask_revision`, because a lapse is neither an answer nor a new question.
+Demoting a lapsed row out of a needs-you feed is the consuming board's decision, made from the hold metadata on that same record rather than from the identity, so the lapsed flag is `bin/fm-fleet-snapshot.sh`'s to publish and this contract stays silent about carding.
 A consumer takes `ask_id` as the question identity as given.
 Deriving one of its own from the row's title, reason, or parsed options reintroduces exactly the coupling this removes, and a row whose id falls outside the privacy-safe slug alphabet publishes `null` rather than an identity, which is the same "no identity" answer a consumer must already handle.
 
@@ -72,6 +74,7 @@ A re-ask rewrites only its own subject's line, so comments and every other line 
 It is durable private fleet data rather than runtime state, because a subject that dropped back to an earlier revision would let an old answer settle a genuinely new question.
 
 [`bin/fm-ask.sh`](../bin/fm-ask.sh) is the only writer and the one command that re-asks: `fm-ask.sh again <task-id> --reason "<the new question>"` bumps the revision and writes the new reason together.
+It carries the row's existing hold deadline into the new question, and drops a deadline that has already passed so a deliberate re-ask comes back live rather than lapsed.
 Every other way of changing a hold - `tasks-axi hold --reason`, a hold refresh, a resync, a restart, and `fm-decision-hold.sh`'s own `resolve`, `decline`, and `repair` - leaves the ledger untouched and therefore preserves the identity, so the safe path is the one an author already takes.
 A decision hold re-asks by minting a new decision key through `fm-decision-hold.sh hold` instead, which is already one command and already refuses to reopen a resolved decision; `fm-ask.sh again` refuses those rows and says so.
 

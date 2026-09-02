@@ -145,9 +145,11 @@ fm_ask_write_revision() {  # <ledger-path> <subject> <revision>
 # document read on stdin, printing the annotated document. Both fields are null on
 # a record that carries no captain ask, so a consumer always finds the key.
 #
-# A row is a captain ask when it is held for the captain and not yet Done. A Done
-# row keeps its "(hold: ...) (hold-kind: captain)" markers on the item line, so the
-# Done test is what stops an answered card from still publishing a live identity.
+# A row is a captain ask when it carries a captain hold and is not yet Done, which
+# includes a hold whose deadline has lapsed: a lapse is neither an answer nor a new
+# question, so it must not move the identity. A Done row keeps its
+# "(hold: ...) (hold-kind: captain)" markers on the item line, so the Done test is
+# what stops an answered card from still publishing a live identity.
 #
 # The identity itself is composed here in shell rather than in jq, so the form
 # above has exactly one writer. The subject alphabet is also what makes the

@@ -348,6 +348,7 @@ Each fixture carries three things: the documented contract, the edge cases eithe
 That third part is what makes the fixture worth having - a divergence written down with its direction fails the suite if this side quietly converges on the other, which is how a deliberate tolerance in a permission path stops being deliberate.
 Firstmate's answer is the authoritative one for the merge-policy slug, since `bin/fm-merge-policy-lib.sh` owns that decision; reconciling the other side is the other repo's work, against the same file.
 The board-session fixture is the newest of the four and records no divergence yet, because the board is being built against it rather than reconciled with it.
+The one part of the item line a connector no longer has to re-derive is the question identity of a captain hold, which `bin/fm-fleet-snapshot.sh` publishes as `ask_id` on every structured backlog record; see [`configuration.md`](configuration.md) ("Captain-ask identity and revisions") for that contract.
 
 The board-answer nudge is the same problem solved a stronger way, and is the reason it needs no fixture.
 Rather than publishing a format for the connector to re-implement, firstmate publishes the finished command line in `state/logbook-notify-command` and the connector spawns it verbatim, so there is no second implementation to drift from.
