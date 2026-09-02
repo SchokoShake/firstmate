@@ -28,14 +28,12 @@
 # untouched and therefore preserves the identity. That is the point: the safe path
 # is the one an author already takes.
 #
-# `again` carries the row's existing hold deadline into the rewritten hold, because
-# tasks-axi hold replaces the whole hold and would otherwise drop it. A deadline
-# that has already passed is NOT carried: the re-ask is a live question again, and
-# reinstating the lapsed date would demote it the moment it is asked. Whether it has
-# passed is read from the date itself, which is tasks-axi's own gate - a hold is
-# live only while its --until is strictly after today - rather than from any flag
-# derived from it. Such a re-ask passes no --until at all and takes whatever the
-# shared tasks-axi hold write applies by default, which today is no deadline.
+# `again` never carries the row's existing hold deadline into the rewritten hold. A
+# re-ask is a new instance of the same question, so it passes no --until at all and
+# takes whatever the shared tasks-axi hold write applies by default, which today is
+# no deadline. Carrying the old date forward would re-ask a lapsed question into a
+# card that is demoted the moment it is asked, and inventing one here would put a
+# second owner on a deadline this script does not own.
 #
 # The revision is read before it is used, and a ledger that exists but cannot be
 # read fails the command instead of answering 1: a subject silently dropped back to
@@ -111,55 +109,34 @@ require_tasks_axi() {
   fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
 }
 
-# tasks-axi quotes a field whose value needs it and backslash-escapes inside the
-# quotes, so a compared value is unwrapped and decoded.
-show_field() {  # <show-output> <field>
-  local value
-  value=$(printf '%s\n' "$1" | sed -n "s/^  $2: //p" | head -1)
-  case "$value" in
-    '"'*'"')
-      value=${value#\"}
-      value=${value%\"}
-      value=$(printf '%s' "$value" | awk '{
-        out = ""
-        n = length($0)
-        i = 1
-        while (i <= n) {
-          c = substr($0, i, 1)
-          if (c == "\\" && i < n) {
-            i++
-            c = substr($0, i, 1)
-            if (c == "n") c = "\n"
-            else if (c == "r") c = "\r"
-            else if (c == "t") c = "\t"
-          }
-          out = out c
-          i++
-        }
-        printf "%s", out
-      }')
-      ;;
+# tasks-axi renders an absent hold field and a hold field whose value is literally
+# "-" the same way, and "-" is a legal reason and a legal kind. Only a row where
+# every hold field reads that way at once has no hold at all.
+hold_field_unset() {  # <field-value>
+  case "${1:-}" in
+    ''|-) return 0 ;;
   esac
-  printf '%s' "$value"
+  return 1
 }
 
 # The show output of the row, once it is confirmed to be an open captain ask.
 require_captain_ask() {  # <task-id>
-  local id=$1 show state hold_reason hold_kind
+  local id=$1 show state hold_reason hold_kind hold_until
   fm_ask_is_subject "$id" || fail "task id must be a non-empty privacy-safe slug: $id"
   require_tasks_axi
   show=$(tasks_axi show "$id" --full 2>/dev/null) \
     || fail "backlog item $id is absent from $DATA/backlog.md"
-  state=$(show_field "$show" state)
-  hold_reason=$(show_field "$show" hold_reason)
-  hold_kind=$(show_field "$show" hold_kind)
+  state=$(fm_tasks_axi_show_field "$show" state)
+  hold_reason=$(fm_tasks_axi_show_field "$show" hold_reason)
+  hold_kind=$(fm_tasks_axi_show_field "$show" hold_kind)
+  hold_until=$(fm_tasks_axi_show_field "$show" hold_until)
   [ "$state" != "done" ] || fail "backlog item $id is done; a closed row asks the captain nothing"
-  case "$hold_reason" in
-    ''|-) fail "backlog item $id is not held; only a held row is a question to the captain" ;;
-  esac
-  case "$hold_kind" in
-    ''|-) fail "backlog item $id is held without a hold kind, not for the captain" ;;
-  esac
+  if hold_field_unset "$hold_reason" && hold_field_unset "$hold_kind" && hold_field_unset "$hold_until"; then
+    fail "backlog item $id is not held; only a held row is a question to the captain"
+  fi
+  if hold_field_unset "$hold_kind"; then
+    fail "backlog item $id is held without a hold kind, not for the captain"
+  fi
   [ "$hold_kind" = captain ] \
     || fail "backlog item $id is held for $hold_kind, not the captain"
   printf '%s' "$show"
@@ -200,8 +177,7 @@ command_revision() {
 }
 
 command_again() {
-  local id=${1:-} reason='' show until previous next
-  local -a hold_flags=()
+  local id=${1:-} reason='' show previous next
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -218,23 +194,15 @@ command_again() {
   esac
   show=$(require_captain_ask "$id") || exit 1
   refuse_decision_hold "$id"
-  [ "$reason" != "$(show_field "$show" hold_reason)" ] \
+  [ "$reason" != "$(fm_tasks_axi_show_field "$show" hold_reason)" ] \
     || fail "the reason is unchanged; rewriting the same question is not a re-ask"
-  until=$(show_field "$show" hold_until)
-  case "$until" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
-      if [[ "$until" > "$(date +%F)" ]]; then
-        hold_flags=(--until "$until")
-      fi
-      ;;
-  esac
 
   fm_lock_acquire_wait "$LEDGER_LOCK"
   LEDGER_LOCK_HELD=1
   previous=$(read_revision "$id") || exit 1
   next=$((previous + 1))
   fm_ask_write_revision "$LEDGER" "$id" "$next" || fail "could not record revision $next for $id"
-  if ! tasks_axi hold "$id" --reason "$reason" --kind captain "${hold_flags[@]+"${hold_flags[@]}"}" >/dev/null; then
+  if ! tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null; then
     fm_ask_write_revision "$LEDGER" "$id" "$previous" \
       || fail "could not write the new question on $id, and revision $next is now recorded with the old wording; re-run with the intended reason"
     fail "could not write the new question on $id; revision $previous is unchanged"

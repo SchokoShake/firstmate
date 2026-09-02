@@ -167,45 +167,11 @@ strip_links() {  # <title> <report-path>
     }'
 }
 
-show_field() {  # <show-output> <field>
-  printf '%s\n' "$1" | sed -n "s/^  $2: //p" | head -1
-}
-
-# tasks-axi quotes a field that needs it and backslash-escapes inside the quotes.
-# Titles are single-line, so unescaping every `\<char>` to `<char>` covers the
-# `\\` and `\"` it can emit.
-unquoted_field() {  # <raw-field-value>
-  local raw=$1
-  case "$raw" in
-    '"'*'"')
-      raw=${raw#\"}
-      raw=${raw%\"}
-      printf '%s' "$raw" | awk '{
-        out = ""
-        i = 1
-        n = length($0)
-        while (i <= n) {
-          c = substr($0, i, 1)
-          if (c == "\\" && i < n) {
-            i++
-            out = out substr($0, i, 1)
-          } else {
-            out = out c
-          }
-          i++
-        }
-        printf "%s", out
-      }'
-      ;;
-    *) printf '%s' "$raw" ;;
-  esac
-}
-
 # The item's recorded links of one kind (`pr` or `report`), newline separated,
 # in the order tasks-axi reports them. Empty when the item carries none.
 item_links() {  # <show-output> <kind>
   local links nl=$'\n'
-  links=$(unquoted_field "$(show_field "$1" links)")
+  links=$(fm_tasks_axi_show_field "$1" links)
   [ -n "$links" ] && [ "$links" != none ] || return 0
   printf '%s\n' "$links" | sed -E "s/,(pr|report|doc):/\\$nl\\1:/g" | sed -n "s/^$2://p"
 }
@@ -310,7 +276,7 @@ cmd_record() {  # <task-id> <pr-url>
   url=$FM_PR_URL
   links=$(item_links "$ITEM_SHOW" pr | paste -sd, -)
   report=$(item_links "$ITEM_SHOW" report | head -1)
-  title=$(unquoted_field "$(show_field "$ITEM_SHOW" title)")
+  title=$(fm_tasks_axi_show_field "$ITEM_SHOW" title)
   clean=$(strip_links "$title" "$report")
   if [ "$links" = "$url" ]; then
     printf 'unchanged: %s pr=%s\n' "$id" "$url"

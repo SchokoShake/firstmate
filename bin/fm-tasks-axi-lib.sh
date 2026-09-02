@@ -17,7 +17,9 @@
 # back to manual mutation when the tool is not compatible.
 #
 # This file is the single owner of FM_TASKS_AXI_MIN. bin/fm-bootstrap.sh turns a
-# failing check into the operator-facing MISSING diagnostic.
+# failing check into the operator-facing MISSING diagnostic. It is also the single
+# owner of reading one field out of `tasks-axi show --full`, so two callers cannot
+# decode the same encoded value differently.
 #
 # COMPATIBILITY VERDICT REUSE. fm_tasks_axi_compatible costs three tasks-axi
 # subprocesses, and one session start needs the same verdict twice: once in
@@ -97,6 +99,39 @@ fm_tasks_axi_mv_has_multi_id() {
   command -v tasks-axi >/dev/null 2>&1 || return 1
   output=$(tasks-axi mv --help 2>&1) || return 1
   printf '%s\n' "$output" | grep -F -- '[<id>...]' >/dev/null
+}
+
+# `tasks-axi show <id> --full` prints TOON: a value that needs it is wrapped in
+# quotes, with `\\`, `\"`, `\n`, `\r` and `\t` escaped inside them. The value is
+# returned decoded, so a comparison against the text that was written matches.
+fm_tasks_axi_show_field() {  # <show-output> <field>
+  local value
+  value=$(printf '%s\n' "$1" | sed -n "s/^  $2: //p" | head -1)
+  case "$value" in
+    '"'*'"')
+      value=${value#\"}
+      value=${value%\"}
+      value=$(printf '%s' "$value" | awk '{
+        out = ""
+        n = length($0)
+        i = 1
+        while (i <= n) {
+          c = substr($0, i, 1)
+          if (c == "\\" && i < n) {
+            i++
+            c = substr($0, i, 1)
+            if (c == "n") c = "\n"
+            else if (c == "r") c = "\r"
+            else if (c == "t") c = "\t"
+          }
+          out = out c
+          i++
+        }
+        printf "%s", out
+      }')
+      ;;
+  esac
+  printf '%s' "$value"
 }
 
 fm_backlog_backend_value() {

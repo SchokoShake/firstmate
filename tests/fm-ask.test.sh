@@ -204,7 +204,9 @@ test_concurrent_re_asks_keep_every_ledger_line() {
   pass "concurrent re-asks in one home serialize on the ledger and none drops another's line"
 }
 
-test_again_keeps_the_hold_deadline() {
+# A re-ask is a new instance of the same question, so it must not inherit the
+# deadline the previous instance was given, and must not mint one of its own.
+test_again_drops_the_hold_deadline() {
   local home id row
   home=$(make_home deadline)
   id=placement-axes-p13
@@ -213,11 +215,30 @@ test_again_keeps_the_hold_deadline() {
   [ "$(shown_field "$home" "$id" hold_until)" = 2099-01-01 ] || fail "the fixture lost its hold deadline"
   run_ask "$home" again "$id" --reason "the Friday train closed; pick the next window" >/dev/null \
     || fail "the re-ask of a dated hold failed"
-  [ "$(shown_field "$home" "$id" hold_until)" = 2099-01-01 ] || fail "the re-ask dropped the hold deadline"
+  [ "$(shown_field "$home" "$id" hold_until)" != 2099-01-01 ] \
+    || fail "the re-ask carried the previous question's deadline into the new one"
+  [ "$(shown_field "$home" "$id" held)" = yes ] || fail "the re-asked dated question is not a live hold"
   row=$(grep -F -- "- [ ] $id " "$home/data/backlog.md") || fail "the re-asked dated row vanished from the backlog"
   assert_contains "$row" "the Friday train closed" "the re-ask of a dated hold did not write the new question"
   [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the re-ask of a dated hold did not bump the revision"
-  pass "a re-ask carries the hold's existing deadline into the new question"
+  pass "a re-ask drops the deadline the previous question carried"
+}
+
+# "-" is a legal hold reason as well as how tasks-axi renders an absent field, and
+# the row it makes is a captain question like any other.
+test_a_hold_whose_reason_is_a_dash_is_still_a_question() {
+  local home id before
+  home=$(make_home dash-reason)
+  id=placement-axes-p17
+  axi "$home" add "$id" "adopt the new placement axes" --kind ship --repo myapp --start >/dev/null
+  axi "$home" hold "$id" --reason "-" --kind captain >/dev/null
+  before=$(run_ask "$home" id "$id") || fail "fm-ask.sh id refused a captain hold whose reason is a dash"
+  [ "$before" = "$(published_ask_id "$home" "$id")" ] \
+    || fail "fm-ask.sh and the published snapshot disagree about a dash-reason hold"
+  run_ask "$home" again "$id" --reason "say what the window actually is" >/dev/null \
+    || fail "the re-ask of a dash-reason hold failed"
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the re-ask of a dash-reason hold did not bump the revision"
+  pass "a captain hold whose reason is a dash is askable and re-askable"
 }
 
 # tasks-axi gates a dated hold by that date, so a hold whose --until has passed is
@@ -249,7 +270,8 @@ test_a_lapsed_hold_stays_askable_and_re_asks_live() {
   [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the re-ask of a lapsed hold did not bump the revision"
   [ "$(shown_field "$home" "$id" hold_until)" != 2020-01-01 ] \
     || fail "the re-ask carried the lapsed deadline back, so the new question is asked already demoted"
-  [ "$(shown_field "$home" "$id" held)" = yes ] || fail "the re-asked question is not a live hold"
+  [ "$(shown_field "$home" "$id" held)" = yes ] \
+    || fail "the re-asked question is not a live hold; it was asked already lapsed"
   pass "a lapsed captain hold keeps its identity, stays askable, and re-asks as a live question"
 }
 
@@ -527,8 +549,9 @@ test_again_bumps_the_identity_and_writes_the_new_question
 test_again_refuses_without_a_new_question
 test_again_refuses_the_same_reason_when_tasks_axi_quotes_it
 test_concurrent_re_asks_keep_every_ledger_line
-test_again_keeps_the_hold_deadline
+test_again_drops_the_hold_deadline
 test_a_lapsed_hold_stays_askable_and_re_asks_live
+test_a_hold_whose_reason_is_a_dash_is_still_a_question
 test_an_unreadable_ledger_never_answers_revision_one
 test_a_re_ask_keeps_human_annotations_in_the_ledger
 test_decision_hold_identity_survives_its_reason_rewrite
