@@ -36,6 +36,11 @@
 # makes "a reason rewrite never re-asks" true by construction rather than by
 # remembering to preserve something: no rewrite path touches this file at all.
 #
+# A ledger that exists but cannot be read is NOT the same as an absent one: the read
+# reports failure, bin/fm-ask.sh refuses rather than answering 1, and the snapshot
+# publishes no identity for any row. Answering 1 for a subject already recorded
+# higher would hand an old answer a genuinely new question.
+#
 # An entry whose key is not a privacy-safe slug or whose value is not a positive
 # integer is ignored rather than repaired, so a hand-edit that went wrong degrades
 # to revision 1 - the board's behaviour before any of this existed - instead of
@@ -65,12 +70,13 @@ function fm_ask_pair(line, out,    f, n) {
 '
 
 fm_ask_ledger_pairs() {  # <ledger-path>; prints "<subject>\t<revision>", sorted
-  local ledger=$1
+  local ledger=$1 pairs
   [ -f "$ledger" ] || return 0
-  LC_ALL=C awk "$_FM_ASK_LEDGER_AWK"'
+  pairs=$(LC_ALL=C awk "$_FM_ASK_LEDGER_AWK"'
     { if (fm_ask_pair($0, p)) pairs[p["key"]] = p["val"] }
     END { for (k in pairs) printf "%s\t%s\n", k, pairs[k] }
-  ' "$ledger" | LC_ALL=C sort
+  ' "$ledger") || return 1
+  [ -z "$pairs" ] || printf '%s\n' "$pairs" | LC_ALL=C sort
 }
 
 fm_ask_is_subject() {  # <subject>
@@ -97,7 +103,9 @@ EOF
 }
 
 fm_ask_revision() {  # <ledger-path> <subject>
-  fm_ask_revision_in "$(fm_ask_ledger_pairs "$1")" "$2"
+  local pairs
+  pairs=$(fm_ask_ledger_pairs "$1") || return 1
+  fm_ask_revision_in "$pairs" "$2"
 }
 
 fm_ask_id() {  # <subject> <hold-kind> <revision>
@@ -159,19 +167,24 @@ fm_ask_write_revision() {  # <ledger-path> <subject> <revision>
 #
 # Both payloads reach jq on stdin, never as an argument: the annotated document is
 # unbounded, and the map grows with the fleet's captain holds.
+#
+# A ledger that cannot be read leaves every record null, which is the same "no
+# identity" answer a consumer already handles for an out-of-alphabet id, rather than
+# a published revision 1 the ledger never said.
 fm_ask_annotate_backlog_json() {  # [<ledger-path>]
   local ledger=${1:-$(fm_ask_ledger_path)} parsed pairs subject revision entries='' sep='' ask_row
   ask_row='def ask_row: .structured == true and .state != "done" and .hold_kind == "captain" and .hold_reason != null and .id != null;'
   parsed=$(cat)
-  pairs=$(fm_ask_ledger_pairs "$ledger")
-  while IFS= read -r subject; do
-    fm_ask_is_subject "$subject" || continue
-    revision=$(fm_ask_revision_in "$pairs" "$subject")
-    entries="$entries$sep\"$subject\":{\"ask_id\":\"$(fm_ask_id "$subject" captain "$revision")\",\"ask_revision\":$revision}"
-    sep=','
-  done <<EOF
+  if pairs=$(fm_ask_ledger_pairs "$ledger"); then
+    while IFS= read -r subject; do
+      fm_ask_is_subject "$subject" || continue
+      revision=$(fm_ask_revision_in "$pairs" "$subject")
+      entries="$entries$sep\"$subject\":{\"ask_id\":\"$(fm_ask_id "$subject" captain "$revision")\",\"ask_revision\":$revision}"
+      sep=','
+    done <<EOF
 $(printf '%s' "$parsed" | jq -r "$ask_row"' .records[]? | select(ask_row) | .id')
 EOF
+  fi
   {
     printf '{%s}\n' "$entries"
     printf '%s\n' "$parsed"

@@ -12,11 +12,11 @@
 #
 # `id` and `revision` are read-only and answer for a row carrying a captain hold
 # that is not yet Done; a row that is not being asked about has no question
-# identity. A hold whose deadline has passed is still one of those rows: tasks-axi
-# reports it as held: no while keeping its hold markers, and a lapse is neither an
-# answer nor a new question, so the identity must not move and the row stays
-# askable. Demoting a lapsed row out of a needs-you feed is the consuming board's
-# decision, not something firstmate encodes in the identity.
+# identity. A hold whose deadline has passed is still one of those rows: it keeps
+# its hold markers, and a lapse is neither an answer nor a new question, so the
+# identity must not move and the row stays askable. Demoting a lapsed row out of a
+# needs-you feed is the consuming board's decision, not something firstmate encodes
+# in the identity.
 # bin/fm-fleet-snapshot.sh publishes the same two values on every structured
 # backlog record as ask_id and ask_revision, which is how a board consumes them
 # without re-deriving anything from the row's title or prose.
@@ -31,7 +31,14 @@
 # `again` carries the row's existing hold deadline into the rewritten hold, because
 # tasks-axi hold replaces the whole hold and would otherwise drop it. A deadline
 # that has already passed is NOT carried: the re-ask is a live question again, and
-# reinstating the lapsed date would demote it the moment it is asked.
+# reinstating the lapsed date would demote it the moment it is asked. Whether it has
+# passed is read from the date itself, which is tasks-axi's own gate - a hold is
+# live only while its --until is strictly after today - rather than from any flag
+# derived from it.
+#
+# The revision is read before it is used, and a ledger that exists but cannot be
+# read fails the command instead of answering 1: a subject silently dropped back to
+# revision 1 is how an old answer settles a genuinely new question.
 #
 # --reason is required, because a re-ask has to say what is now being asked. A
 # genuine re-ask of the identical sentence is a nag, not a new question, and
@@ -165,18 +172,24 @@ refuse_decision_hold() {  # <task-id> <show-output>
   esac
 }
 
+read_revision() {  # <task-id>
+  fm_ask_revision "$LEDGER" "$1" \
+    || fail "could not read the revision ledger $LEDGER; $1 has a recorded revision this cannot answer for"
+}
+
 command_id() {
-  local id=${1:-}
+  local id=${1:-} revision
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   require_captain_ask "$id" >/dev/null || exit 1
-  fm_ask_id "$id" captain "$(fm_ask_revision "$LEDGER" "$id")"
+  revision=$(read_revision "$id") || exit 1
+  fm_ask_id "$id" captain "$revision"
 }
 
 command_revision() {
   local id=${1:-}
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   require_captain_ask "$id" >/dev/null || exit 1
-  fm_ask_revision "$LEDGER" "$id"
+  read_revision "$id"
 }
 
 command_again() {
@@ -200,17 +213,18 @@ command_again() {
   refuse_decision_hold "$id" "$show"
   [ "$reason" != "$(show_field "$show" hold_reason)" ] \
     || fail "the reason is unchanged; rewriting the same question is not a re-ask"
-  if [ "$(show_field "$show" held)" = yes ]; then
-    until=$(show_field "$show" hold_until)
-    case "$until" in
-      ''|-) ;;
-      *) hold_flags=(--until "$until") ;;
-    esac
-  fi
+  until=$(show_field "$show" hold_until)
+  case "$until" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+      if [[ "$until" > "$(date +%F)" ]]; then
+        hold_flags=(--until "$until")
+      fi
+      ;;
+  esac
 
   fm_lock_acquire_wait "$LEDGER_LOCK"
   LEDGER_LOCK_HELD=1
-  previous=$(fm_ask_revision "$LEDGER" "$id")
+  previous=$(read_revision "$id") || exit 1
   next=$((previous + 1))
   fm_ask_write_revision "$LEDGER" "$id" "$next" || fail "could not record revision $next for $id"
   if ! tasks_axi hold "$id" --reason "$reason" --kind captain "${hold_flags[@]+"${hold_flags[@]}"}" >/dev/null; then

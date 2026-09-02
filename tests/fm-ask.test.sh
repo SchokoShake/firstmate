@@ -220,8 +220,8 @@ test_again_keeps_the_hold_deadline() {
   pass "a re-ask carries the hold's existing deadline into the new question"
 }
 
-# tasks-axi gates a dated hold by that date and reports the row as held: no once it
-# passes, while the item line keeps its hold markers. The row is still the same
+# tasks-axi gates a dated hold by that date, so a hold whose --until has passed is
+# lapsed while the item line keeps its hold markers. The row is still the same
 # unanswered question, so both surfaces must still answer for it.
 test_a_lapsed_hold_stays_askable_and_re_asks_live() {
   local home id unheld before out rc
@@ -229,7 +229,8 @@ test_a_lapsed_hold_stays_askable_and_re_asks_live() {
   id=placement-axes-p14
   axi "$home" add "$id" "adopt the new placement axes" --kind ship --repo myapp --start >/dev/null
   axi "$home" hold "$id" --reason "confirm the rollout window" --kind captain --until 2020-01-01 >/dev/null
-  [ "$(shown_field "$home" "$id" held)" = no ] || fail "the fixture's dated hold did not lapse"
+  [ "$(shown_field "$home" "$id" hold_until)" = 2020-01-01 ] \
+    || fail "the fixture lost the past deadline that makes it lapsed"
 
   before=$(run_ask "$home" id "$id") || fail "fm-ask.sh id refused a lapsed captain hold"
   [ "$before" = "$(published_ask_id "$home" "$id")" ] \
@@ -246,9 +247,44 @@ test_a_lapsed_hold_stays_askable_and_re_asks_live() {
   run_ask "$home" again "$id" --reason "the rollout window lapsed; pick the next one" >/dev/null \
     || fail "the deliberate re-ask of a lapsed hold failed"
   [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the re-ask of a lapsed hold did not bump the revision"
-  [ "$(shown_field "$home" "$id" held)" = yes ] \
+  [ "$(shown_field "$home" "$id" hold_until)" != 2020-01-01 ] \
     || fail "the re-ask carried the lapsed deadline back, so the new question is asked already demoted"
+  [ "$(shown_field "$home" "$id" held)" = yes ] || fail "the re-asked question is not a live hold"
   pass "a lapsed captain hold keeps its identity, stays askable, and re-asks as a live question"
+}
+
+# The one direction the design guards against: a subject dropping back to an earlier
+# revision lets an old answer settle a genuinely new question. An unreadable ledger
+# is not an empty one.
+test_an_unreadable_ledger_never_answers_revision_one() {
+  local home id out rc published
+  home=$(make_home unreadable-ledger)
+  id=placement-axes-p16
+  compose_action_card "$home" "$id"
+  run_ask "$home" again "$id" --reason "the Friday train closed; pick the next window" >/dev/null \
+    || fail "the re-ask that gives the ledger its content failed"
+  [ "$(published_ask_revision "$home" "$id")" = 2 ] || fail "the re-asked subject is not published at revision 2"
+
+  chmod 000 "$home/data/ask-revisions"
+  if [ -r "$home/data/ask-revisions" ]; then
+    chmod 600 "$home/data/ask-revisions"
+    pass "skipped: this user reads a mode-000 ledger anyway"
+    return 0
+  fi
+
+  rc=0; out=$(run_ask "$home" revision "$id" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a revision read of an unreadable ledger"
+  assert_contains "$out" "could not read the revision ledger" \
+    "an unreadable ledger must say so rather than answer 1"
+  rc=0; out=$(run_ask "$home" id "$id" 2>&1) || rc=$?
+  expect_code 1 "$rc" "an identity read of an unreadable ledger"
+  published=$(published_ask_id "$home" "$id" 2>/dev/null)
+  [ "$published" = null ] \
+    || fail "an unreadable ledger published an identity instead of null: $published"
+
+  chmod 600 "$home/data/ask-revisions"
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the readable ledger no longer answers revision 2"
+  pass "an unreadable ledger refuses and publishes no identity instead of reverting to revision 1"
 }
 
 test_a_re_ask_keeps_human_annotations_in_the_ledger() {
@@ -463,6 +499,7 @@ test_again_refuses_the_same_reason_when_tasks_axi_quotes_it
 test_concurrent_re_asks_keep_every_ledger_line
 test_again_keeps_the_hold_deadline
 test_a_lapsed_hold_stays_askable_and_re_asks_live
+test_an_unreadable_ledger_never_answers_revision_one
 test_a_re_ask_keeps_human_annotations_in_the_ledger
 test_decision_hold_identity_survives_its_reason_rewrite
 test_again_refuses_a_decision_hold

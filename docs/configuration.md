@@ -63,13 +63,16 @@ Nothing about the reason, the title, the options a reader could parse out of the
 
 [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) publishes it: every structured `backlog.records[]` entry carries `ask_id` and `ask_revision`, filled for a row that carries a captain hold and is not yet Done, and `null` on every other row.
 A hold whose `hold-until` deadline has passed is one of those rows and keeps exactly the same `ask_id` and `ask_revision`, because a lapse is neither an answer nor a new question.
-Demoting a lapsed row out of a needs-you feed is the consuming board's decision, made from the hold metadata on that same record rather than from the identity, so the lapsed flag is `bin/fm-fleet-snapshot.sh`'s to publish and this contract stays silent about carding.
+Demoting a lapsed row out of a needs-you feed is the consuming board's decision rather than the identity's, so this contract stays silent about carding.
+No field on the record carries that lapse signal today: a structured record's hold metadata is `hold_reason` and `hold_kind` only.
+Publishing the lapsed flag needs the item line's `(hold-until: ...)` marker, which `bin/fm-fleet-snapshot.sh` does not read yet and which the `fm-hold-default-deadline` task owns, so that task is where the flag comes from.
 A consumer takes `ask_id` as the question identity as given.
 Deriving one of its own from the row's title, reason, or parsed options reintroduces exactly the coupling this removes, and a row whose id falls outside the privacy-safe slug alphabet publishes `null` rather than an identity, which is the same "no identity" answer a consumer must already handle.
 
 The revision is producer-owned and is 1 until firstmate deliberately re-asks.
 `data/ask-revisions` records it as one `<subject>=<revision>` line per re-asked subject, with `#` comments and blank lines ignored and the last line for a subject winning.
 An absent file and an absent line both mean revision 1, so the file stays empty until firstmate actually re-asks, and an entry whose key is not a slug or whose value is not a positive integer is ignored rather than repaired.
+A ledger that exists but cannot be read is not treated as an empty one: `fm-ask.sh` refuses instead of answering 1, and the snapshot publishes `null` for every row rather than a revision it could not read.
 A re-ask rewrites only its own subject's line, so comments and every other line a human wrote survive it.
 It is durable private fleet data rather than runtime state, because a subject that dropped back to an earlier revision would let an old answer settle a genuinely new question.
 
