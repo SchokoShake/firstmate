@@ -589,8 +589,14 @@ test_teardown_prompts_tasks_axi_done_when_compatible() {
   out=$(run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
   printf '%s\n' "$out" | grep -F 'tasks-axi done task-x1 --pr https://github.com/example/repo/pull/7' >/dev/null \
     || fail "teardown did not prompt tasks-axi done: $out"
+  # Teardown is the fleet's most frequent dispatch trigger, so it is the reader
+  # that most needs firstmate's own ready path: `tasks-axi ready` hands back a
+  # lapsed captain hold as dispatchable work, and this nudge would otherwise
+  # affirmatively tell the agent to start it.
+  printf '%s\n' "$out" | grep -F 'bin/fm-ready.sh' >/dev/null \
+    || fail "teardown did not prompt firstmate's own dispatchable set: $out"
   printf '%s\n' "$out" | grep -F 'tasks-axi ready' >/dev/null \
-    || fail "teardown did not prompt tasks-axi ready: $out"
+    && fail "teardown sent the dispatcher to the unfiltered ready set: $out"
   printf '%s\n' "$out" | grep -F 'check date gates' >/dev/null \
     || fail "teardown did not preserve date-gate check: $out"
   printf '%s\n' "$out" | grep -F 'keep Done to the 10 most recent' >/dev/null \

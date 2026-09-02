@@ -1901,8 +1901,12 @@ EOF
   assert_not_contains "$out" "ready-4,queued" "the queued bound did not actually bound the ready listing"
   assert_contains "$out" "(shown 3 of 7 ready queued item(s))" \
     "the bounded queued listing did not report what it showed"
-  assert_contains "$out" "(4 more queued - tasks-axi ready --file $home/data/backlog.md)" \
+  assert_contains "$out" "(4 more queued - bin/fm-ready.sh --file $home/data/backlog.md)" \
     "the bounded queued listing did not disclose an exact remainder and how to see it"
+  # The pointer to the rest may not send the reader back to the raw ready set,
+  # which would hand back the lapsed captain holds this group withholds.
+  assert_not_contains "$out" "more queued - tasks-axi ready" \
+    "the queued remainder pointer sent the reader to the unfiltered ready set"
 
   # The bound is for dispatchable work only: held and blocked rows stay whole.
   assert_contains "$out" "held-queued,queued,ship,firstmate,Held queued work,none,captain,captain choice pending" \

@@ -121,6 +121,14 @@ run_captain_hold() {  # <home> <id> <args...>
     "$ROOT/bin/fm-captain-hold.sh" "$@"
 }
 
+run_ready() {  # <home> <args...>
+  local home=$1
+  shift
+  PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" \
+    FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+    "$ROOT/bin/fm-ready.sh" "$@"
+}
+
 hold_row() {  # <home> <id>
   grep -E "^- \[ \] $2 -" "$1/data/backlog.md"
 }
@@ -1018,6 +1026,106 @@ test_existing_holds_without_a_deadline_are_untouched() {
   pass "captain holds written before the default keep working untouched"
 }
 
+# Giving every hold a clock makes lapsing reachable, and tasks-axi's own `ready`
+# set counts a lapsed captain hold as startable work. Forking tasks-axi is out of
+# bounds, so firstmate withholds it on its own side, in one owned ready path that
+# every reader of dispatchable work goes through. Withholding is presentation
+# only: the hold stays queued, keeps its reason, kind and deadline, and is
+# disclosed rather than dropped silently.
+test_lapsed_hold_is_never_offered_as_dispatchable_work() {
+  local home before raw ready show
+  home=$(make_home ready-withholding)
+  tasks_in "$home" add sample-ready-work "Ship the sample route" --kind ship --repo sample >/dev/null \
+    || fail "could not create the dispatchable fixture"
+  tasks_in "$home" add sample-live-question "Choose the live sample route" \
+    --kind captain --repo sample >/dev/null || fail "could not create the live-hold fixture"
+  tasks_in "$home" add sample-lapsed-question "Choose the lapsed sample route, and more" \
+    --kind captain --repo sample >/dev/null || fail "could not create the lapsed-hold fixture"
+  run_captain_hold "$home" sample-live-question --reason "captain live choice pending" >/dev/null \
+    || fail "could not hold the live question"
+  tasks_in "$home" hold sample-lapsed-question --reason "captain lapsed choice pending" \
+    --kind captain --until 2000-01-01 >/dev/null || fail "could not lapse the fixture hold"
+
+  # The defect, reproduced against the real tool rather than assumed: `ready`
+  # offers the unanswered question. If this ever stops holding, the withholding
+  # below has stopped proving anything.
+  raw=$(cd "$home" && tasks-axi ready --file "$home/data/backlog.md") \
+    || fail "could not read the raw dispatchable set"
+  assert_contains "$raw" "sample-lapsed-question" \
+    "tasks-axi no longer offers a lapsed captain hold, so this fixture proves nothing"
+
+  before=$(shasum -a 256 "$home/data/backlog.md" | awk '{print $1}')
+  ready=$(run_ready "$home") || fail "firstmate's dispatchable set failed: $ready"
+  assert_contains "$ready" "sample-ready-work,queued,ship,sample,Ship the sample route" \
+    "withholding the lapsed hold also dropped genuinely dispatchable work"
+  assert_not_contains "$ready" "sample-lapsed-question" \
+    "an unanswered captain question was offered as dispatchable work"
+  assert_not_contains "$ready" "sample-live-question" \
+    "a live captain hold was offered as dispatchable work"
+  assert_contains "$ready" "count: 1" "the dispatchable count still included the withheld hold"
+  assert_contains "$ready" "ready[1]{" "the dispatchable header still counted the withheld hold"
+  assert_contains "$ready" "(1 lapsed captain hold(s) withheld from this group and listed under held)" \
+    "the dispatchable set withheld a lapsed hold without disclosing it"
+
+  [ "$before" = "$(shasum -a 256 "$home/data/backlog.md" | awk '{print $1}')" ] \
+    || fail "reading the dispatchable set rewrote the backlog"
+  show=$(tasks_in "$home" show sample-lapsed-question --full)
+  assert_contains "$show" "state: queued" "the withheld hold was closed rather than demoted"
+  assert_contains "$show" "hold_kind: captain" "the withheld hold lost its captain provenance"
+  assert_contains "$show" "hold_reason: captain lapsed choice pending" \
+    "the withheld hold lost its reason"
+  assert_contains "$show" "hold_until: 2000-01-01" "the withheld hold lost its deadline"
+  pass "a lapsed captain hold stays held and is never offered as dispatchable work"
+}
+
+# Under `set -eu` a flag typed as the final token consumes the shift meant for
+# its own value, so the loop-bottom shift fails and the script dies with exit 1
+# and no diagnostic at all, before its own validation can report the real
+# mistake. Every flag on both hold paths must report instead.
+test_a_flag_without_its_value_reports_rather_than_exiting_mute() {
+  local home id
+  home=$(make_home flag-without-value)
+  id=sample-flag-review
+  mkdir -p "$home/data/$id"
+  write_origin_meta "$home" "$id"
+  printf '# Sample flag review\n\nOne choice remains.\n' > "$home/data/$id/report.md"
+  tasks_in "$home" add sample-flag-thread "Sample flag reminder" --kind captain --repo sample >/dev/null \
+    || fail "could not create the main-side backlog fixture"
+
+  if run_captain_hold "$home" sample-flag-thread --reason \
+    > "$home/no-reason.out" 2> "$home/no-reason.err"; then
+    fail "a main-side hold accepted --reason with no value"
+  fi
+  assert_grep "--reason requires a value" "$home/no-reason.err" \
+    "a main-side --reason with no value exited without saying why"
+
+  if run_captain_hold "$home" sample-flag-thread --reason "captain reply pending" --hold-until \
+    > "$home/no-until.out" 2> "$home/no-until.err"; then
+    fail "a main-side hold accepted --hold-until with no value"
+  fi
+  assert_grep "--hold-until requires a value" "$home/no-until.err" \
+    "a main-side --hold-until with no value exited without saying why"
+  assert_no_grep "hold-kind: captain" "$home/data/backlog.md" \
+    "a refused flag still wrote a captain hold"
+
+  if run_decisions "$home" hold "$id" route --reason "captain route choice pending" --title \
+    > "$home/no-title.out" 2> "$home/no-title.err"; then
+    fail "a decision hold accepted --title with no value"
+  fi
+  assert_grep "--title requires a value" "$home/no-title.err" \
+    "a decision --title with no value exited without saying why"
+
+  if run_decisions "$home" hold "$id" route --title "Choose the sample route" --hold-until \
+    > "$home/no-decision-until.out" 2> "$home/no-decision-until.err"; then
+    fail "a decision hold accepted --hold-until with no value"
+  fi
+  assert_grep "--hold-until requires a value" "$home/no-decision-until.err" \
+    "a decision --hold-until with no value exited without saying why"
+  assert_no_grep "$id-decision-route" "$home/data/backlog.md" \
+    "a refused flag still created a captain decision item"
+  pass "a flag missing its value fails with a diagnostic instead of exiting mute"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -1035,3 +1143,5 @@ test_captain_holds_carry_a_default_deadline
 test_main_side_captain_hold_uses_the_same_default
 test_lapsed_hold_is_demoted_not_deleted
 test_existing_holds_without_a_deadline_are_untouched
+test_lapsed_hold_is_never_offered_as_dispatchable_work
+test_a_flag_without_its_value_reports_rather_than_exiting_mute

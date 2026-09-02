@@ -60,13 +60,21 @@ shift
 
 REASON=''
 HOLD_UNTIL=''
+# A flag typed as the last token would otherwise consume the shift meant for its
+# own value, leaving `set -e` to kill the script on the next one with no
+# diagnostic at all, before any of the checks below can report the real mistake.
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --reason) shift; REASON=${1:-} ;;
-    --hold-until) shift; HOLD_UNTIL=${1:-} ;;
+    --reason|--hold-until)
+      [ "$#" -ge 2 ] || fail "$1 requires a value"
+      case "$1" in
+        --reason) REASON=$2 ;;
+        *) HOLD_UNTIL=$2 ;;
+      esac
+      shift 2
+      ;;
     *) usage >&2; exit 2 ;;
   esac
-  shift
 done
 
 case "$ID" in

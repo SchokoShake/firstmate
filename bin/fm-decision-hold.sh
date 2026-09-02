@@ -128,6 +128,14 @@ validate_one_line() {  # <label> <value>
   esac
 }
 
+# A flag typed as the last token would otherwise consume the shift meant for its
+# own value, leaving `set -e` to kill the script on the next one with no
+# diagnostic at all, before any of this script's own validation can report the
+# real mistake. Every flag loop below asks this before reading a value.
+require_flag_value() {  # <flag> <remaining-arg-count>
+  [ "$2" -ge 2 ] || fail "$1 requires a value"
+}
+
 sha256_text() {  # <text>
   if command -v shasum >/dev/null 2>&1; then
     printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
@@ -291,9 +299,14 @@ EOF
 # hold_kind is the field that survives a lapse and does not survive an unhold,
 # so it is what separates a question nobody has answered from a row somebody
 # released.
-verify_hold_open() {  # <hold-id>
-  local id=$1 show state kind hold_kind
-  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+#
+# The show output is passed in by a caller that already has it, so one check
+# never costs a second `tasks-axi show --full` on the hold write path.
+verify_hold_open() {  # <hold-id> [<show-output>]
+  local id=$1 show=${2:-} state kind hold_kind
+  if [ "$#" -lt 2 ]; then
+    show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  fi
   state=$(show_field "$show" state)
   kind=$(show_field "$show" kind)
   hold_kind=$(show_field "$show" hold_kind)
@@ -305,9 +318,10 @@ verify_hold_open() {  # <hold-id>
 # Additionally still gating dispatch. Only the write path asserts this, so a
 # deadline that lands in the past is caught as a hold that was born lapsed.
 verify_hold_active() {  # <hold-id>
-  local id=$1 held
-  verify_hold_open "$id"
-  held=$(show_field "$(task_show "$id")" held)
+  local id=$1 show held
+  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  verify_hold_open "$id" "$show"
+  held=$(show_field "$show" held)
   [ "$held" = yes ] || fail "captain hold $id is not active"
 }
 
@@ -370,13 +384,12 @@ command_hold() {
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --title) shift; title=${1:-} ;;
-      --reason) shift; reason=${1:-} ;;
-      --repo) shift; repo=${1:-} ;;
-      --hold-until) shift; hold_until=${1:-} ;;
+      --title) require_flag_value "$1" "$#"; title=$2; shift 2 ;;
+      --reason) require_flag_value "$1" "$#"; reason=$2; shift 2 ;;
+      --repo) require_flag_value "$1" "$#"; repo=$2; shift 2 ;;
+      --hold-until) require_flag_value "$1" "$#"; hold_until=$2; shift 2 ;;
       *) usage >&2; exit 2 ;;
     esac
-    shift
   done
   validate_slug origin-id "$origin"
   validate_slug decision-key "$key"
@@ -530,11 +543,15 @@ command_resolve() {
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --decision-file) shift; decision_file=${1:-} ;;
-      --routed-to) shift; validate_slug routed-task "${1:-}"; routed="${routed}${routed:+ }${1:-}" ;;
+      --decision-file) require_flag_value "$1" "$#"; decision_file=$2; shift 2 ;;
+      --routed-to)
+        require_flag_value "$1" "$#"
+        validate_slug routed-task "$2"
+        routed="${routed}${routed:+ }$2"
+        shift 2
+        ;;
       *) usage >&2; exit 2 ;;
     esac
-    shift
   done
   validate_slug origin-id "$origin"
   validate_slug decision-key "$key"
@@ -551,8 +568,8 @@ command_resolve() {
     printf 'resolved: %s\n' "$id"
     return 0
   fi
-  verify_hold_open "$id"
-  hold_show=$(task_show "$id")
+  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  verify_hold_open "$id" "$hold_show"
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
@@ -595,10 +612,9 @@ parse_decision_only_flags() {  # <args...>; prints the --decision-file value
   local decision_file=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --decision-file) shift; decision_file=${1:-} ;;
+      --decision-file) require_flag_value "$1" "$#"; decision_file=$2; shift 2 ;;
       *) usage >&2; exit 2 ;;
     esac
-    shift
   done
   printf '%s' "$decision_file"
 }
@@ -624,7 +640,7 @@ command_decline() {
   state=$(show_field "$hold_show" state)
   [ "$state" != "done" ] \
     || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
-  verify_hold_open "$id"
+  verify_hold_open "$id" "$hold_show"
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)

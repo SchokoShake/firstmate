@@ -845,6 +845,76 @@
           "repo": "myapp, merged 2026-08-23"
         }
       }
+    },
+    {
+      "name": "captain-hold-with-future-deadline",
+      "section": "Queued",
+      "line": "- [ ] cap-hold-future - Choose the sample route (repo: sample) (kind: captain) (since 2026-09-02) (hold: captain route choice pending) (hold-kind: captain) (hold-until: 2099-01-08)",
+      "expect": {
+        "structured": true,
+        "id": "cap-hold-future",
+        "checked": false,
+        "title": "Choose the sample route",
+        "repo": "sample",
+        "kind": "captain",
+        "priority": null,
+        "hold_reason": "captain route choice pending",
+        "hold_kind": "captain",
+        "hold_until": "2099-01-08",
+        "held": true,
+        "lapsed": false,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": "2026-09-02",
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": true,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "agree",
+        "note": "the shape every captain hold now carries, with the deadline marker LAST: the connector reads the title from tasks-axi show, which understands its own hold-until marker and hands over an already-clean title, and its peel_title only strips trailing pr/report tokens on top of that"
+      }
+    },
+    {
+      "name": "captain-hold-with-passed-deadline",
+      "section": "Queued",
+      "line": "- [ ] cap-hold-lapsed - Choose the sample access level (repo: sample) (kind: captain) (since 2026-09-02) (hold: captain access choice pending) (hold-kind: captain) (hold-until: 2000-01-01)",
+      "expect": {
+        "structured": true,
+        "id": "cap-hold-lapsed",
+        "checked": false,
+        "title": "Choose the sample access level",
+        "repo": "sample",
+        "kind": "captain",
+        "priority": null,
+        "hold_reason": "captain access choice pending",
+        "hold_kind": "captain",
+        "hold_until": "2000-01-01",
+        "held": true,
+        "lapsed": true,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": "2026-09-02",
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": true,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "agree",
+        "note": "the same line once the deadline has passed: lapsing is demotion, so the row still parses as held and captain-actionable on both sides and only the lapsed flag changes"
+      }
     }
   ]
 }

@@ -15,16 +15,22 @@
 #     data/backlog.md and cover In flight, Queued, and Done.
 #     Canonical tasks-axi rows are structured; free-form non-empty lines in
 #     those sections are preserved as unstructured records.
-#     Structured rows preserve captain-hold metadata such as hold_kind and
-#     hold_reason when tasks-axi emits it. They also carry normalized current_role,
-#     requires_child_metadata, blocked_by_ids, unresolved_blocker_ids, and
-#     captain_actionable fields, plus ask_id and ask_revision - the durable
+#     Structured rows preserve captain-hold metadata such as hold_kind,
+#     hold_reason and hold_until when tasks-axi emits it. They also carry
+#     normalized current_role, requires_child_metadata, blocked_by_ids,
+#     unresolved_blocker_ids, captain_actionable, held and lapsed fields.
+#     held is any surviving hold marker, so a hold written without a kind still
+#     reads as held exactly as tasks-axi reports it. held and lapsed are then
+#     published SIDE BY SIDE: lapsed says a hold's deadline has passed, which
+#     demotes the question rather than answering it, so a lapsed row is still
+#     held and still captain-actionable and lapsed never suppresses held.
+#     They also carry ask_id and ask_revision - the durable
 #     question identity of a row still being asked about, null on every other
 #     structured row. bin/fm-ask-lib.sh owns that identity and its revision, and
 #     a consumer takes ask_id as given rather than deriving a question identity
 #     from the row's title, reason, or the options it could parse out of them.
-#     Repeated blocker tokens remain ordered; a blocker resolves only when its
-#     structured record is Done, and missing ids stay open.
+#     Repeated blocker tokens remain ordered; a blocker
+#     resolves only when its structured record is Done, and missing ids stay open.
 #     The item-line grammar backlog_json reads is stated as data in
 #     tests/fixtures/backlog-item-line/ and pinned by
 #     tests/fm-backlog-item-line-contract.test.sh; docs/architecture.md ("Cross-repo
@@ -164,6 +170,9 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-timeout-lib.sh"  # fm_run_timed: the shared hard bound
+# shellcheck source=bin/fm-captain-hold-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-captain-hold-lib.sh"  # fm_captain_hold_today: the date basis a hold lapses on
 
 usage() {
   cat <<'EOF'
@@ -278,14 +287,21 @@ first_pr_url_in_file() {  # <file>
 }
 
 backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
-  local backlog=${1:-$BACKLOG}
+  local backlog=${1:-$BACKLOG} today
   if [ ! -f "$backlog" ]; then
     jq -n --arg path "$backlog" '{path:$path,present:false,records:[]}'
     return 0
   fi
 
+  # A hold's deadline is a LOCAL calendar date, and tasks-axi decides hold
+  # activity from the local date too, so the board's lapsed verdict and the
+  # tool's own cannot disagree for a home east of UTC. SNAPSHOT_NOW is UTC and is
+  # deliberately not the basis here. An unreadable date leaves every row
+  # unlapsed rather than guessing one is.
+  today=$(fm_captain_hold_today) || today=''
+
   # shellcheck disable=SC2094
-  jq -Rn --arg path "$backlog" '
+  jq -Rn --arg path "$backlog" --arg today "$today" '
     def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
     def section_state:
       if . == "In flight" then "in_flight"
@@ -423,6 +439,10 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
           | .captain_actionable =
               (.state == "queued" and .kind == "captain" and .hold_kind == "captain"
                and .hold_reason != null and (.unresolved_blocker_ids | length) == 0)
+          | .held = (.hold_reason != null or .hold_kind != null)
+          | .lapsed = (.held and $today != "" and .hold_until != null
+                       and (.hold_until | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))
+                       and .hold_until <= $today)
         else . end)
     | del(.section,.order)
   ' < "$backlog" | fm_ask_annotate_backlog_json "$(fm_ask_ledger_path "$(dirname "$backlog")")"

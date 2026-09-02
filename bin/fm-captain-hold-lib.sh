@@ -24,10 +24,14 @@
 # "is this decision still open?" must therefore read hold_kind, never held.
 # Re-running `hold` on a lapsed row reactivates it with a fresh deadline, which
 # is how firstmate deliberately re-asks a question that went unanswered.
-# tasks-axi's own `ready` set counts a lapsed hold as dispatchable, so a reader
-# that offers work - bin/fm-session-start.sh's digest - asks
-# fm_captain_hold_lapsed_rows which of its queued rows are really unanswered
-# questions, and keeps them out of what it presents as dispatchable now.
+# tasks-axi's own `ready` set counts a lapsed hold as dispatchable, and forking
+# tasks-axi is not on the table, so firstmate withholds it on its own side. That
+# happens in exactly one place: fm_captain_hold_ready, the dispatchable-now set
+# every firstmate reader of ready work goes through - bin/fm-ready.sh for an
+# agent at a prompt, bin/fm-session-start.sh's digest for the startup queue.
+# Nothing may read raw `tasks-axi ready` instead. Withholding is presentation
+# only; a withheld row is still listed as a held row, marked lapsed, so lapsing
+# demotes a question rather than hiding or answering it.
 #
 # Dates are integer day numbers here rather than date(1) arithmetic: BSD and GNU
 # date disagree on every flag that would do this, and a deadline that silently
@@ -226,4 +230,85 @@ fm_captain_hold_lapsed_rows() {  # <backlog-path> [<extra-fields>]
     }
     { rows = 0 }
   '
+}
+
+# fm_captain_hold_lapsed_row_ids <rows>
+#   The ids of an fm_captain_hold_lapsed_rows listing, one per line, so a caller
+#   that already has the rows does not query the same verdict twice.
+fm_captain_hold_lapsed_row_ids() {  # <rows>
+  [ -n "$1" ] || return 0
+  printf '%s\n' "$1" | sed 's/^[[:space:]]*//; s/,.*//'
+}
+
+# fm_captain_hold_withhold_lapsed <lapsed-ids>
+#   Reads a `tasks-axi ready` rendering on stdin and writes it back without the
+#   rows whose id is in <lapsed-ids>, with the tool's own count and ready[N]
+#   header restated so they describe what is actually listed, and one disclosure
+#   line after the rows so the withholding is never silent. Everything else the
+#   tool printed passes through untouched.
+fm_captain_hold_withhold_lapsed() {  # <lapsed-ids>
+  FM_CAPTAIN_HOLD_LAPSED_IDS="$1" awk '
+    function row_id(line,   id) {
+      id = line
+      sub(/^[[:space:]]+/, "", id)
+      sub(/,.*/, "", id)
+      return id
+    }
+    BEGIN {
+      count = split(ENVIRON["FM_CAPTAIN_HOLD_LAPSED_IDS"], id_list, "\n")
+      for (i = 1; i <= count; i++) if (id_list[i] != "") lapsed[id_list[i]] = 1
+    }
+    {
+      buffer[++lines] = $0
+      if (in_help) next
+      if ($0 ~ /^help\[/) { in_help = 1; rows = 0; next }
+      if ($0 ~ /^ready\[/) { rows = 1; next }
+      if (rows && $0 ~ /^[[:space:]]/) {
+        last_row = lines
+        if (row_id($0) in lapsed) { withheld_line[lines] = 1; withheld++ }
+        next
+      }
+      rows = 0
+    }
+    END {
+      for (i = 1; i <= lines; i++) {
+        if (!(i in withheld_line)) {
+          line = buffer[i]
+          if (withheld > 0) {
+            if (line ~ /^count: [0-9]+$/) {
+              listed = line
+              sub(/^count: /, "", listed)
+              line = "count: " (listed - withheld)
+            } else if (line ~ /^ready\[[0-9]+\]/) {
+              listed = line
+              sub(/^ready\[/, "", listed)
+              sub(/\].*/, "", listed)
+              sub(/^ready\[[0-9]+\]/, "ready[" (listed - withheld) "]", line)
+            }
+          }
+          print line
+        }
+        if (withheld > 0 && i == last_row) {
+          printf "(%d lapsed captain hold(s) withheld from this group and listed under held)\n", withheld
+        }
+      }
+    }
+  '
+}
+
+# fm_captain_hold_ready <backlog-path> [<lapsed-ids>]
+#   Firstmate's dispatchable-now set: tasks-axi's own `ready` rendering with
+#   every lapsed captain hold withheld. This is the single owner of "a lapsed
+#   captain hold is never dispatchable work", so every firstmate reader of ready
+#   work calls it rather than `tasks-axi ready`. Pass <lapsed-ids> when the
+#   caller has already listed them for its own display; otherwise they are
+#   queried here.
+fm_captain_hold_ready() {  # <backlog-path> [<lapsed-ids>]
+  local path=$1 lapsed_ids=${2:-} rows ready
+  if [ "$#" -lt 2 ]; then
+    rows=$(fm_captain_hold_lapsed_rows "$path") || { printf '%s\n' "$rows"; return 1; }
+    lapsed_ids=$(fm_captain_hold_lapsed_row_ids "$rows")
+  fi
+  ready=$(tasks-axi ready --file "$path" 2>&1) || { printf '%s\n' "$ready"; return 1; }
+  printf '%s\n' "$ready" | fm_captain_hold_withhold_lapsed "$lapsed_ids"
 }

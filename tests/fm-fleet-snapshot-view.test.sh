@@ -830,7 +830,61 @@ BACKLOG
     | ($rows | map(select(.id == "lapsed-hold")) | first).captain_actionable == true
       and ($rows | map(select(.id == "deadline-hold")) | first).captain_actionable == true
   ' >/dev/null || fail "a lapsed captain hold stopped being captain-actionable: $out"
+
+  # The board demotes a lapsed question from the needs-you feed, and it can only
+  # do that if the row publishes lapsed BESIDE held rather than instead of it.
+  printf '%s' "$out" | jq -e '
+    (.backlog.records // []) as $rows
+    | ($rows | map(select(.id == "deadline-hold")) | first) as $future
+    | ($rows | map(select(.id == "lapsed-hold")) | first) as $lapsed
+    | ($rows | map(select(.id == "plain-hold")) | first) as $plain
+    | $future.held == true and $future.lapsed == false
+      and $lapsed.held == true and $lapsed.lapsed == true
+      and $plain.held == true and $plain.lapsed == false
+  ' >/dev/null || fail "the snapshot did not publish held beside lapsed: $out"
   pass "a captain hold with a deadline parses a clean title and stays actionable once lapsed"
+}
+
+# tasks-axi decides whether a hold is still gating from the LOCAL date, so the
+# snapshot's lapsed verdict has to read the same basis. Reading the UTC
+# SNAPSHOT_NOW instead would let a home east of UTC publish lapsed on a hold
+# tasks-axi still reports as active in the hours after local midnight. The
+# boundary is exact: a hold is inactive ON its deadline, not the day after.
+test_lapsed_flag_reads_the_local_date_basis() {
+  local home fakebin out
+  home=$(make_home hold-until-local-date)
+  cat > "$home/data/backlog.md" <<'BACKLOG'
+# Backlog
+
+## In flight
+## Queued
+- [ ] due-today - Choose the sample route (repo: sample) (kind: captain) (hold: captain route choice pending) (hold-kind: captain) (hold-until: 2026-03-14)
+- [ ] due-tomorrow - Choose the sample access level (repo: sample) (kind: captain) (hold: captain access choice pending) (hold-kind: captain) (hold-until: 2026-03-15)
+- [ ] kindless-hold - Wait for the sample release (repo: sample) (kind: ship) (hold: waiting on release)
+- [ ] not-held - Ship the sample route (repo: sample) (kind: ship)
+## Done
+BACKLOG
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" \
+    FM_SNAPSHOT_NOW=2026-03-13T23:00:00Z FM_CAPTAIN_HOLD_NOW=2026-03-14 "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.backlog.records // []) as $rows
+    | ($rows | map(select(.id == "due-today")) | first) as $today
+    | ($rows | map(select(.id == "due-tomorrow")) | first) as $tomorrow
+    | $today.held == true and $today.lapsed == true
+      and $tomorrow.held == true and $tomorrow.lapsed == false
+  ' >/dev/null || fail "the lapsed verdict did not follow the local date basis: $out"
+
+  # `tasks-axi hold <id> --reason ...` with no --kind writes only a hold marker
+  # and still reports held: yes, so held may not be read off hold-kind alone.
+  printf '%s' "$out" | jq -e '
+    (.backlog.records // []) as $rows
+    | ($rows | map(select(.id == "kindless-hold")) | first) as $kindless
+    | ($rows | map(select(.id == "not-held")) | first) as $open
+    | $kindless.held == true and $kindless.lapsed == false
+      and $open.held == false and $open.lapsed == false
+  ' >/dev/null || fail "held did not follow the row's surviving hold markers: $out"
+  pass "the snapshot's lapsed flag reads the same local date tasks-axi lapses a hold on"
 }
 
 test_empty_fleet_json
@@ -881,3 +935,4 @@ test_backlog_tasks_axi_forms_and_overrides
 test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
 test_held_row_with_a_deadline_parses_a_clean_title
+test_lapsed_flag_reads_the_local_date_basis
