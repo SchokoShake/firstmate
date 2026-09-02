@@ -158,6 +158,36 @@ test_again_refuses_without_a_new_question() {
   pass "a re-ask that states no new question is refused and moves nothing"
 }
 
+# tasks-axi stores a hold reason with its ends trimmed, so a padded restatement is
+# the same sentence and re-asking it is the nag the refusal exists to stop.
+test_padding_a_restated_reason_is_not_a_re_ask() {
+  local home id out rc
+  home=$(make_home padded-reason)
+  id=placement-axes-p18
+  compose_action_card "$home" "$id"
+
+  rc=0; out=$(run_ask "$home" again "$id" --reason "  confirm the rollout window  " 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask padding the current reason"
+  assert_contains "$out" "is not a re-ask" "padding a restatement must still be refused as a nag"
+  assert_absent "$home/data/ask-revisions" "a padded restatement wrote the revision ledger"
+
+  rc=0; out=$(run_ask "$home" again "$id" --reason "   " 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask whose reason is only whitespace"
+  assert_contains "$out" "--reason is required" "a whitespace-only reason states nothing and must say so"
+
+  run_ask "$home" again "$id" --reason "  the Friday train closed; pick the next window  " >/dev/null \
+    || fail "a re-ask with a padded new question failed"
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the padded new question did not bump the revision"
+  [ "$(shown_field "$home" "$id" hold_reason)" = "the Friday train closed; pick the next window" ] \
+    || fail "the padded new question was not written as the reason tasks-axi stores"
+
+  rc=0; out=$(run_ask "$home" again "$id" --reason "  the Friday train closed; pick the next window  " 2>&1) || rc=$?
+  expect_code 1 "$rc" "repeating the padded re-ask verbatim"
+  assert_contains "$out" "is not a re-ask" "repeating a padded re-ask must be refused rather than bumping again"
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "repeating a padded re-ask bumped the revision again"
+  pass "trimming makes a padded restatement the same question, so it cannot re-ask"
+}
+
 # tasks-axi renders a reason holding a quote, a backslash, or a colon as a quoted,
 # backslash-escaped TOON value, which must still compare equal to the same text.
 test_again_refuses_the_same_reason_when_tasks_axi_quotes_it() {
@@ -547,6 +577,7 @@ test_reason_rewrite_preserves_the_identity
 test_a_hold_refresh_preserves_the_identity
 test_again_bumps_the_identity_and_writes_the_new_question
 test_again_refuses_without_a_new_question
+test_padding_a_restated_reason_is_not_a_re_ask
 test_again_refuses_the_same_reason_when_tasks_axi_quotes_it
 test_concurrent_re_asks_keep_every_ledger_line
 test_again_drops_the_hold_deadline

@@ -41,7 +41,9 @@
 #
 # --reason is required, because a re-ask has to say what is now being asked. A
 # genuine re-ask of the identical sentence is a nag, not a new question, and
-# bumping for one would spend the captain's answer on nothing.
+# bumping for one would spend the captain's answer on nothing. The reason is
+# compared and written with its ends trimmed, which is what tasks-axi stores, so
+# padding a restatement cannot pass it off as a new question.
 #
 # The bump lands BEFORE the reason. If the reason write then fails the revision is
 # restored, so an interrupted re-ask leaves the row exactly as it was; if the
@@ -110,8 +112,9 @@ require_tasks_axi() {
 }
 
 # tasks-axi renders an absent hold field and a hold field whose value is literally
-# "-" the same way, and "-" is a legal reason and a legal kind. Only a row where
-# every hold field reads that way at once has no hold at all.
+# "-" the same way, and "-" is a legal hold reason. It is never a legal hold kind,
+# so for hold_kind it can only mean absent. Only a row where every hold field reads
+# that way at once has no hold at all.
 hold_field_unset() {  # <field-value>
   case "${1:-}" in
     ''|-) return 0 ;;
@@ -192,6 +195,9 @@ command_again() {
     *$'\n'*|*$'\r'*) fail "reason must be one line" ;;
     *'('*|*')'*) fail "reason must not contain parentheses (tasks-axi hold contract)" ;;
   esac
+  reason=${reason#"${reason%%[![:space:]]*}"}
+  reason=${reason%"${reason##*[![:space:]]}"}
+  [ -n "$reason" ] || fail "--reason is required; a re-ask must state what is now being asked"
   show=$(require_captain_ask "$id") || exit 1
   refuse_decision_hold "$id"
   [ "$reason" != "$(fm_tasks_axi_show_field "$show" hold_reason)" ] \
