@@ -46,10 +46,13 @@
 # the author and a question they deliberately asked again.
 #
 # The bump lands BEFORE the reason. If the reason write then fails the revision is
-# restored, so an interrupted re-ask leaves the row exactly as it was; if the
-# restore also fails, this reports the row as re-asked with its old wording, which
-# is the recoverable direction - the captain sees a question twice instead of a new
-# question being silently settled by an old answer.
+# restored and the failure carries what tasks-axi said, so an interrupted re-ask
+# leaves the row exactly as it was and names why it could not be asked. A ledger
+# that this attempt created is removed again, because the file's presence is what
+# says firstmate has re-asked in this home. If the restore also fails, this reports
+# the row as re-asked with its old wording, which is the recoverable direction - the
+# captain sees a question twice instead of a new question being silently settled by
+# an old answer.
 #
 # The bump, the reason write, and the restore run under one per-home lock,
 # state/.ask-revisions.lock, so two re-asks racing in the same home cannot drop
@@ -122,7 +125,7 @@ hold_field_unset() {  # <field-value>
   return 1
 }
 
-# The show output of the row, once it is confirmed to be an open captain ask.
+# Refuse anything that is not an open captain ask, naming what the row is instead.
 require_captain_ask() {  # <task-id>
   local id=$1 show state hold_reason hold_kind hold_until
   fm_ask_is_subject "$id" || fail "task id must be a non-empty privacy-safe slug: $id"
@@ -142,7 +145,6 @@ require_captain_ask() {  # <task-id>
   fi
   [ "$hold_kind" = captain ] \
     || fail "backlog item $id is held for $hold_kind, not the captain"
-  printf '%s' "$show"
 }
 
 # The <origin-id>-decision-<key> shape fm-decision-hold.sh mints is the durable
@@ -167,7 +169,7 @@ read_revision() {  # <task-id>
 command_id() {
   local id=${1:-} revision
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
-  require_captain_ask "$id" >/dev/null || exit 1
+  require_captain_ask "$id" || exit 1
   revision=$(read_revision "$id") || exit 1
   fm_ask_id "$id" captain "$revision"
 }
@@ -175,12 +177,12 @@ command_id() {
 command_revision() {
   local id=${1:-}
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
-  require_captain_ask "$id" >/dev/null || exit 1
+  require_captain_ask "$id" || exit 1
   read_revision "$id"
 }
 
 command_again() {
-  local id=${1:-} reason='' previous next
+  local id=${1:-} reason='' previous next ledger_existed=0 hold_error pairs
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -190,23 +192,30 @@ command_again() {
     esac
     [ "$#" -eq 0 ] || shift
   done
-  [ -n "$reason" ] || fail "--reason is required; a re-ask must state what is now being asked"
+  case "$reason" in
+    *[![:space:]]*) ;;
+    *) fail "--reason is required; a re-ask must state what is now being asked" ;;
+  esac
   case "$reason" in
     *$'\n'*|*$'\r'*) fail "reason must be one line" ;;
     *'('*|*')'*) fail "reason must not contain parentheses (tasks-axi hold contract)" ;;
   esac
-  require_captain_ask "$id" >/dev/null || exit 1
+  require_captain_ask "$id" || exit 1
   refuse_decision_hold "$id"
 
   fm_lock_acquire_wait "$LEDGER_LOCK"
   LEDGER_LOCK_HELD=1
+  [ ! -f "$LEDGER" ] || ledger_existed=1
   previous=$(read_revision "$id") || exit 1
   next=$((previous + 1))
   fm_ask_write_revision "$LEDGER" "$id" "$next" || fail "could not record revision $next for $id"
-  if ! tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null; then
+  if ! hold_error=$(tasks_axi hold "$id" --reason "$reason" --kind captain 2>&1); then
     fm_ask_write_revision "$LEDGER" "$id" "$previous" \
-      || fail "could not write the new question on $id, and revision $next is now recorded with the old wording; re-run with the intended reason"
-    fail "could not write the new question on $id; revision $previous is unchanged"
+      || fail "could not write the new question on $id, and revision $next is now recorded with the old wording; re-run with the intended reason. tasks-axi said:"$'\n'"$hold_error"
+    if [ "$ledger_existed" = 0 ] && pairs=$(fm_ask_ledger_pairs "$LEDGER") && [ -z "$pairs" ]; then
+      rm -f "$LEDGER"
+    fi
+    fail "could not write the new question on $id; revision $previous is unchanged. tasks-axi said:"$'\n'"$hold_error"
   fi
   release_ledger_lock
   fm_ask_id "$id" captain "$next"

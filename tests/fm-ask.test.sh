@@ -154,6 +154,40 @@ test_again_refuses_without_a_new_question() {
   pass "a re-ask with no question to state is refused and moves nothing"
 }
 
+# The one write this script owns can fail for reasons only tasks-axi knows, and the
+# ledger's presence is what says firstmate has re-asked in this home.
+test_a_failed_re_ask_reports_why_and_leaves_the_ledger_as_it_found_it() {
+  local home id other out rc before
+  home=$(make_home write-failure)
+  id=placement-axes-p19
+  compose_action_card "$home" "$id"
+
+  rc=0; out=$(run_ask "$home" again "$id" --reason "   " 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask whose reason is only whitespace"
+  assert_contains "$out" "--reason is required" "a blank reason states nothing and must say so"
+  assert_absent "$home/data/ask-revisions" "a blank re-ask wrote the revision ledger"
+
+  # tasks-axi refuses a reason that begins with -- and says why on stdout.
+  rc=0; out=$(run_ask "$home" again "$id" --reason "--kind" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask whose reason tasks-axi refuses"
+  assert_contains "$out" "could not write the new question" "a failed re-ask must name what it could not do"
+  assert_contains "$out" "VALIDATION_ERROR" "a failed re-ask must carry what tasks-axi said about it"
+  [ "$(run_ask "$home" revision "$id")" = 1 ] || fail "the failed re-ask left the revision bumped"
+  assert_absent "$home/data/ask-revisions" \
+    "a failed first re-ask left a revision ledger in a home that has never re-asked"
+
+  other=placement-axes-p20
+  compose_action_card "$home" "$other"
+  run_ask "$home" again "$other" --reason "the window moved; pick another" >/dev/null \
+    || fail "the re-ask that gives the ledger its content failed"
+  before=$(cat "$home/data/ask-revisions")
+  rc=0; run_ask "$home" again "$id" --reason "--kind" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "a failed re-ask in a home that has re-asked before"
+  [ "$before" = "$(cat "$home/data/ask-revisions")" ] \
+    || fail "a failed re-ask changed a ledger it did not create"
+  pass "a re-ask that cannot be written says why and leaves the ledger as it found it"
+}
+
 # Running `again` is itself the declaration that this is a new question, so it
 # re-asks on the author's word rather than on how much the prose changed.
 test_again_re_asks_on_the_authors_word_not_on_changed_prose() {
@@ -569,6 +603,7 @@ test_a_hold_refresh_preserves_the_identity
 test_again_bumps_the_identity_and_writes_the_new_question
 test_again_refuses_without_a_new_question
 test_again_re_asks_on_the_authors_word_not_on_changed_prose
+test_a_failed_re_ask_reports_why_and_leaves_the_ledger_as_it_found_it
 test_a_quoted_reason_rewrites_without_re_asking
 test_concurrent_re_asks_keep_every_ledger_line
 test_again_drops_the_hold_deadline
