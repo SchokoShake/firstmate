@@ -129,6 +129,20 @@ run_ready() {  # <home> <args...>
     "$ROOT/bin/fm-ready.sh" "$@"
 }
 
+# bin/fm-captain-hold-lib.sh is a sourced shell API, so the deadline policy it
+# owns is exercised by calling its functions with the clock pinned, the same way
+# HOLD_NOW pins the clock for the scripts above. LIB_NOW is that pin.
+LIB_NOW=''
+
+hold_lib() {  # <function> <args...>
+  FM_CAPTAIN_HOLD_NOW="$LIB_NOW" bash -c '
+    . "$1/bin/fm-captain-hold-lib.sh"
+    fn=$2
+    shift 2
+    "$fn" "$@"
+  ' _ "$ROOT" "$@"
+}
+
 hold_row() {  # <home> <id>
   grep -E "^- \[ \] $2 -" "$1/data/backlog.md"
 }
@@ -1213,6 +1227,113 @@ SH
   pass "a tasks-axi below the floor refuses the dispatchable set, never degrades into it"
 }
 
+# The deadline policy every producer above routes through, exercised directly.
+# The clock is pinned so each expectation is a literal date rather than the same
+# arithmetic reimplemented from the code under test.
+test_default_window_is_seven_days_ahead_of_the_pinned_clock() {
+  LIB_NOW=2099-01-01
+  [ "$(hold_lib fm_captain_hold_default_until)" = 2099-01-08 ] \
+    || fail "the default window is not seven days ahead: $(hold_lib fm_captain_hold_default_until)"
+
+  # A deadline that silently fails to compute is a hold that never lapses, which
+  # is the exact bug the default exists to fix, so the arithmetic is pinned at
+  # every boundary the calendar has.
+  local case now want got
+  for case in \
+    "2099-01-28 2099-02-04" \
+    "2099-12-28 2100-01-04" \
+    "2096-02-22 2096-02-29" \
+    "2096-02-26 2096-03-04" \
+    "2100-02-26 2100-03-05"; do
+    now=${case%% *}
+    want=${case##* }
+    LIB_NOW=$now
+    got=$(hold_lib fm_captain_hold_default_until)
+    [ "$got" = "$want" ] || fail "default from $now should be $want, got $got"
+  done
+  LIB_NOW=''
+  pass "the default deadline lands seven days on across month, year and leap boundaries"
+}
+
+# A deadline the script cannot use has to be refused before anything is written,
+# because fm-decision-hold.sh would otherwise exit non-zero after mutating the
+# backlog. Each refusal names the value so the caller can report it.
+test_unusable_deadlines_are_refused_with_a_reason() {
+  local value reason
+  LIB_NOW=2099-01-01
+
+  for value in '' none 2099-01-02 2100-01-01; do
+    reason=$(hold_lib fm_captain_hold_until_reject "$value")
+    [ -z "$reason" ] || fail "[$value] should be usable as a deadline, got: $reason"
+  done
+
+  reason=$(hold_lib fm_captain_hold_until_reject soon)
+  assert_contains "$reason" "must be a YYYY-MM-DD date or none: soon" \
+    "a non-date was not refused as one"
+  reason=$(hold_lib fm_captain_hold_until_reject 2099-1-2)
+  assert_contains "$reason" "must be a YYYY-MM-DD date or none: 2099-1-2" \
+    "an unpadded date was not refused"
+
+  # 2099-02-30 never existed, and 2100 is a century year that is NOT a leap year,
+  # so its 29 February is the same class of non-date.
+  reason=$(hold_lib fm_captain_hold_until_reject 2099-02-30)
+  assert_contains "$reason" "is not a real calendar date: 2099-02-30" \
+    "a date that never existed was accepted"
+  reason=$(hold_lib fm_captain_hold_until_reject 2100-02-29)
+  assert_contains "$reason" "is not a real calendar date: 2100-02-29" \
+    "29 February of a non-leap century year was accepted"
+
+  # tasks-axi holds are inactive ON the deadline, so today is already lapsed.
+  reason=$(hold_lib fm_captain_hold_until_reject 2099-01-01)
+  assert_contains "$reason" "must be later than 2099-01-01: 2099-01-01" \
+    "a hold born lapsed today was accepted"
+  reason=$(hold_lib fm_captain_hold_until_reject 2098-12-31)
+  assert_contains "$reason" "must be later than 2099-01-01: 2098-12-31" \
+    "a deadline the clock had already passed was accepted"
+  LIB_NOW=''
+  pass "a malformed, impossible or already-reached deadline is refused by name"
+}
+
+# What each caller-supplied value resolves to on the wire: an empty value is the
+# default rather than a missing one, and `none` is the deliberate open-ended
+# question that writes no --until at all.
+test_empty_takes_the_default_and_none_is_the_opt_out() {
+  LIB_NOW=2099-01-01
+  [ "$(hold_lib fm_captain_hold_resolve_until '')" = 2099-01-08 ] \
+    || fail "an empty value did not take the default deadline"
+  [ -z "$(hold_lib fm_captain_hold_resolve_until none)" ] \
+    || fail "none did not resolve to an open-ended hold with no deadline"
+  [ "$(hold_lib fm_captain_hold_resolve_until 2099-05-05)" = 2099-05-05 ] \
+    || fail "an explicit date was not passed through unchanged"
+  LIB_NOW=''
+  pass "an empty deadline takes the default and none opts out of one entirely"
+}
+
+# The keep-versus-reset rule every re-hold asks: a window the captain still has
+# is never shortened, and anything else is renewed so the question lapses again
+# rather than staying lapsed or deadline-free forever.
+test_keep_versus_reset_keeps_a_live_window_and_renews_the_rest() {
+  local existing
+  LIB_NOW=2099-01-01
+
+  [ "$(hold_lib fm_captain_hold_effective_until '' 2099-06-30)" = 2099-06-30 ] \
+    || fail "a deadline the clock has not reached was not kept"
+
+  # An absent field, tasks-axi's `-` for an unset one, a lapsed date, today's
+  # date and a malformed one all mean "no live window", so all take the default.
+  for existing in '' - '"-"' 2000-01-01 2099-01-01 soon 2099-02-30; do
+    [ "$(hold_lib fm_captain_hold_effective_until '' "$existing")" = 2099-01-08 ] \
+      || fail "existing [$existing] did not renew to a fresh default deadline"
+  done
+
+  [ "$(hold_lib fm_captain_hold_effective_until 2099-03-31 2099-06-30)" = 2099-03-31 ] \
+    || fail "an explicit deadline did not override a live existing one"
+  [ -z "$(hold_lib fm_captain_hold_effective_until none 2099-06-30)" ] \
+    || fail "an explicit none did not override a live existing deadline"
+  LIB_NOW=''
+  pass "keep-versus-reset keeps a live window, renews every other, and yields to an explicit value"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -1234,3 +1355,7 @@ test_lapsed_hold_is_never_offered_as_dispatchable_work
 test_a_flag_without_its_value_reports_rather_than_exiting_mute
 test_reholding_a_lapsed_question_comes_back_with_a_fresh_clock
 test_a_build_below_the_tasks_axi_floor_refuses_rather_than_degrades
+test_default_window_is_seven_days_ahead_of_the_pinned_clock
+test_unusable_deadlines_are_refused_with_a_reason
+test_empty_takes_the_default_and_none_is_the_opt_out
+test_keep_versus_reset_keeps_a_live_window_and_renews_the_rest
