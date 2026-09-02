@@ -404,9 +404,10 @@ BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason
 # The same identity fields for the lapsed-hold query, minus hold_kind, which
 # bin/fm-captain-hold-lib.sh appends beside the two other fields it decides on.
 LAPSED_FIELDS=blocked_by,hold_reason
-# Where THIS digest really shows a withheld row, which is its own lapsed group
-# rather than the held listing tasks-axi has already dropped it from.
-LAPSED_POINTER='each is listed in full under lapsed above'
+# Where THIS digest really shows a withheld row: its own lapsed listing, which it
+# renders inside the held group rather than in the `--state held` set tasks-axi
+# has already dropped a lapsed row from.
+LAPSED_POINTER='each is listed in full under lapsed in the held group above'
 
 RULE='================================================================================'
 SUBRULE='--------------------------------------------------------------------------------'

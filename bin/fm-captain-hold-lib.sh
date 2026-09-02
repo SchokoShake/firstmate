@@ -160,32 +160,15 @@ fm_captain_hold_resolve_until() {  # <value>
   esac
 }
 
-# fm_captain_hold_renewed_until <existing>
-#   THE KEEP-VERSUS-RESET RULE, for any write path that re-holds a row without
-#   being given a deadline: prints <existing> when the clock has not reached it,
-#   and a fresh default otherwise. An absent value, tasks-axi's `-` for an unset
-#   field, a lapsed date and a malformed one all take the default, so a re-ask
-#   cannot be reborn already lapsed and a hold that predates the default cannot
-#   stay deadline-free forever. Keeping a live deadline is what stops a retry
-#   silently shortening a window the captain was already given.
-#
-#   Every re-hold resolves the question here rather than reimplementing it,
-#   including a re-ask that rewrites a hold's wording.
-fm_captain_hold_renewed_until() {  # <existing>
-  if fm_captain_hold_until_is_future "${1:-}"; then
-    printf '%s\n' "$1"
-    return 0
-  fi
-  fm_captain_hold_default_until
-}
-
 # fm_captain_hold_effective_until <explicit> <existing>
-#   The deadline to write. An explicit value always wins, including the `none`
-#   opt-out; with none given the keep-versus-reset rule decides.
+#   The deadline to write. An explicit value always wins; otherwise a deadline
+#   the clock has not reached is kept rather than reset, so an idempotent re-hold
+#   cannot shorten a window the captain was already given, while an absent,
+#   lapsed or unreadable one takes the default.
 fm_captain_hold_effective_until() {  # <explicit> <existing>
-  if [ -z "$1" ]; then
-    fm_captain_hold_renewed_until "$2"
-    return $?
+  if [ -z "$1" ] && fm_captain_hold_until_is_future "$2"; then
+    printf '%s\n' "$2"
+    return 0
   fi
   fm_captain_hold_resolve_until "$1"
 }

@@ -19,10 +19,11 @@
 # WITHHOLDING IS PRESENTATION ONLY. Nothing here closes, unholds, resolves,
 # deletes or rewrites a hold, and `tasks-axi show <id> --full` still reports the
 # reason, kind and deadline of every withheld row. What is withheld is counted on
-# its own line rather than dropped silently, and that line carries the query that
-# actually shows those rows, because this surface renders the dispatchable set
-# alone: tasks-axi has already dropped a lapsed hold from `--state held`, so
-# there is no held listing here to point at.
+# its own line rather than dropped silently, and that line names the surfaces
+# that really show those rows: session start's held group, and a query carrying
+# the SAME backlog this run filtered, so it resolves from any directory and for
+# a --file or FM_DATA_OVERRIDE home rather than whichever backlog the cwd
+# happens to select.
 #
 # Usage:
 #   fm-ready.sh [--file <backlog-path>]
@@ -67,12 +68,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -f "$BACKLOG" ] || fail "no backlog to read at $BACKLOG"
-if ! fm_tasks_axi_compatible; then
-  REJECT=$(fm_tasks_axi_capability_reject)
-  fail "${REJECT:-compatible tasks-axi is required}"
-fi
+fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
 
 READY=$(fm_captain_hold_ready "$BACKLOG" \
-  "each is still an unanswered captain hold - tasks-axi list --state queued --fields hold_kind,hold_until,held shows them") \
+  "each is still an unanswered captain hold, shown in session start's held group and by tasks-axi list --file $BACKLOG --state queued --fields hold_kind,hold_until,held") \
   || fail "could not read the dispatchable set from $BACKLOG: $READY"
 printf '%s\n' "$READY"

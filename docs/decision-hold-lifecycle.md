@@ -14,6 +14,9 @@ It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold
 It rejects an identity collision, a changed title, attempts to reopen an already resolved identity, and a deadline that is not a future calendar date.
 
 Every gate reads `hold_kind` rather than `held`, so a lapsed decision still counts as durably recorded for `complete` and `verify` and still accepts the captain's answer through `resolve` and `decline`; [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) owns why, along with the keep-versus-reset rule a repeated `hold` follows.
+A retry of `hold` keeps a deadline the clock has not reached, so it cannot silently shorten a window the captain was already given, while a lapsed or absent one takes the default.
+A RE-ASK is the other case and takes the opposite rule: re-asking a question never carries the old deadline forward, so the default supplies a fresh one and the re-asked question lapses again on its own clock rather than being reborn already lapsed.
+Adopting that at the re-ask call site is a follow-up on the sibling `fm-reask-explicit-revision` branch, which owns `bin/fm-ask.sh`.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.

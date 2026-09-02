@@ -180,7 +180,7 @@ add_compatible_tasks_axi() {
   cat > "$case_dir/fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' '0.2.4'
+  printf '%s\n' '0.2.5'
   exit 0
 fi
 if [ "${1:-}" = update ] && [ "${2:-}" = --help ]; then
@@ -191,11 +191,6 @@ if [ "${1:-}" = update ] && [ "${2:-}" = --help ]; then
 fi
 if [ "${1:-}" = mv ] && [ "${2:-}" = --help ]; then
   printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path-or-dir>'
-  exit 0
-fi
-if [ "${1:-}" = list ] && [ "${2:-}" = --help ]; then
-  printf '%s\n' 'usage: tasks-axi list [flags]'
-  printf '%s\n' '  --fields <a,b,c>  (extra: blocked, blocked_by, body, closed, created, deps, held, hold_kind, hold_reason, hold_until, links, priority)'
   exit 0
 fi
 exit 0

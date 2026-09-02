@@ -19,11 +19,15 @@
 #     hold_reason and hold_until when tasks-axi emits it. They also carry
 #     normalized current_role, requires_child_metadata, blocked_by_ids,
 #     unresolved_blocker_ids, captain_actionable, held and lapsed fields.
-#     held is any surviving hold marker, so a hold written without a kind still
-#     reads as held exactly as tasks-axi reports it. held and lapsed are then
-#     published SIDE BY SIDE: lapsed says a hold's deadline has passed, which
-#     demotes the question rather than answering it, so a lapsed row is still
-#     held and still captain-actionable and lapsed never suppresses held.
+#     held is a LIVE row - queued or in flight - that still carries a hold
+#     marker. Closing a captain decision leaves its hold, hold-kind and
+#     hold-until markers on the Done line, so marker presence alone would publish
+#     an ANSWERED question as an unanswered one; on that class held agrees with
+#     the `held: no` tasks-axi reports for a closed row. held and lapsed are then
+#     published SIDE BY SIDE: lapsed says a live hold's deadline has passed,
+#     which demotes the question rather than answering it, so a lapsed row stays
+#     held here and stays captain-actionable even though tasks-axi has stopped
+#     counting it as gating, and lapsed never suppresses held.
 #     They also carry ask_id and ask_revision - the durable
 #     question identity of a row still being asked about, null on every other
 #     structured row. bin/fm-ask-lib.sh owns that identity and its revision, and
@@ -439,7 +443,8 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
           | .captain_actionable =
               (.state == "queued" and .kind == "captain" and .hold_kind == "captain"
                and .hold_reason != null and (.unresolved_blocker_ids | length) == 0)
-          | .held = (.hold_reason != null or .hold_kind != null)
+          | .held = ((.state == "queued" or .state == "in_flight")
+                     and (.hold_reason != null or .hold_kind != null))
           | .lapsed = (.held and $today != "" and .hold_until != null
                        and (.hold_until | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))
                        and .hold_until <= $today)

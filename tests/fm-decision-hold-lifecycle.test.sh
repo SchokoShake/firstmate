@@ -129,15 +129,6 @@ run_ready() {  # <home> <args...>
     "$ROOT/bin/fm-ready.sh" "$@"
 }
 
-run_ready_helper() {  # <fn> <args...>
-  FM_CAPTAIN_HOLD_NOW="$HOLD_NOW" bash -c '
-    . "$1/bin/fm-captain-hold-lib.sh"
-    fn=$2
-    shift 2
-    "$fn" "$@"
-  ' _ "$ROOT" "$@"
-}
-
 hold_row() {  # <home> <id>
   grep -E "^- \[ \] $2 -" "$1/data/backlog.md"
 }
@@ -1042,7 +1033,7 @@ test_existing_holds_without_a_deadline_are_untouched() {
 # only: the hold stays queued, keeps its reason, kind and deadline, and is
 # disclosed rather than dropped silently.
 test_lapsed_hold_is_never_offered_as_dispatchable_work() {
-  local home before raw ready show
+  local home before raw ready show disclosed
   home=$(make_home ready-withholding)
   tasks_in "$home" add sample-ready-work "Ship the sample route" --kind ship --repo sample >/dev/null \
     || fail "could not create the dispatchable fixture"
@@ -1073,17 +1064,17 @@ test_lapsed_hold_is_never_offered_as_dispatchable_work() {
     "a live captain hold was offered as dispatchable work"
   assert_contains "$ready" "count: 1" "the dispatchable count still included the withheld hold"
   assert_contains "$ready" "ready[1]{" "the dispatchable header still counted the withheld hold"
-  # This surface renders the dispatchable set alone, so the disclosure must
-  # carry the query that really shows the withheld rows rather than claiming a
-  # held listing that is not here - and that tasks-axi has already dropped them
-  # from anyway.
-  assert_contains "$ready" "(1 lapsed captain hold(s) withheld from this group; each is still an unanswered captain hold - tasks-axi list --state queued --fields hold_kind,hold_until,held shows them)" \
+  # The disclosure must name surfaces that really show the withheld rows, and its
+  # query must carry the SAME backlog this run filtered so it resolves from any
+  # directory rather than whichever backlog the cwd happens to select.
+  assert_contains "$ready" "(1 lapsed captain hold(s) withheld from this group; each is still an unanswered captain hold, shown in session start's held group and by tasks-axi list --file $home/data/backlog.md --state queued --fields hold_kind,hold_until,held)" \
     "the dispatchable set withheld a lapsed hold without a pointer that resolves"
-  assert_not_contains "$ready" "listed under held" \
-    "the ready surface pointed at a held listing it does not render"
-  # The pointer has to be a command that actually works from here.
-  assert_contains "$(cd "$home" && tasks-axi list --state queued --fields hold_kind,hold_until,held)" \
-    "sample-lapsed-question" "the disclosed query did not show the withheld hold"
+  # Run the disclosed query verbatim from an unrelated directory: it has to show
+  # the withheld row from there, with no cd and no reliance on FM_HOME.
+  disclosed=$(cd / && tasks-axi list --file "$home/data/backlog.md" --state queued \
+    --fields hold_kind,hold_until,held)
+  assert_contains "$disclosed" "sample-lapsed-question" \
+    "the disclosed query did not show the withheld hold from another directory"
 
   [ "$before" = "$(shasum -a 256 "$home/data/backlog.md" | awk '{print $1}')" ] \
     || fail "reading the dispatchable set rewrote the backlog"
@@ -1144,33 +1135,6 @@ test_a_flag_without_its_value_reports_rather_than_exiting_mute() {
   pass "a flag missing its value fails with a diagnostic instead of exiting mute"
 }
 
-# The keep-versus-reset rule is the answer every write path that re-holds a row
-# needs, including a re-ask that only rewrites a question's wording. Exposing it
-# as one helper is what stops the next such path carrying a past deadline
-# forward - which reblesses the question already lapsed - or passing no deadline
-# at all and leaving a hold that can never lapse.
-test_keep_versus_reset_is_one_answer_every_rehold_can_ask() {
-  local renewed
-  HOLD_NOW=2099-01-01
-
-  renewed=$(run_ready_helper fm_captain_hold_renewed_until 2099-06-30) \
-    || fail "the keep-versus-reset helper failed on a live deadline"
-  [ "$renewed" = 2099-06-30 ] \
-    || fail "a deadline the clock has not reached was not kept: $renewed"
-
-  # Every shape that is not a live deadline must come back as a fresh default,
-  # so the row lapses again rather than being reborn lapsed or deadline-free.
-  local existing
-  for existing in 2000-01-01 '' - '"-"' 2099-01-01 soon 2099-02-30; do
-    renewed=$(run_ready_helper fm_captain_hold_renewed_until "$existing") \
-      || fail "the keep-versus-reset helper failed on [$existing]"
-    [ "$renewed" = 2099-01-08 ] \
-      || fail "[$existing] did not take a fresh default deadline: $renewed"
-  done
-  HOLD_NOW=''
-  pass "the keep-versus-reset rule keeps a live deadline and renews every other"
-}
-
 # The same rule through a real write path: re-holding a lapsed question puts it
 # back in front of the captain with a fresh clock, and re-holding one that
 # predates the default finally gives it one.
@@ -1211,32 +1175,26 @@ test_reholding_a_lapsed_question_comes_back_with_a_fresh_clock() {
   pass "re-holding a lapsed or deadline-free question gives it a fresh clock"
 }
 
-# The lapse query needs held, hold_kind and hold_until as list fields. A build
-# that clears the version floor without them cannot tell a lapsed captain hold
-# from dispatchable work, and this is the ONLY sanctioned reader of that set, so
-# it has to name the missing capability rather than fail vaguely - and it may
-# never fall back to the raw ready set, which is exactly the unscreened listing
-# it exists to replace.
-test_a_build_that_cannot_screen_lapsed_holds_is_refused_by_name() {
+# The lapse query needs held, hold_kind and hold_until as list fields, which the
+# tasks-axi floor in bin/fm-tasks-axi-lib.sh is what guarantees. A build under
+# that floor must refuse rather than hand back a dispatchable listing nothing
+# screened, because an unscreened ready set is exactly what this path replaces.
+test_a_build_below_the_tasks_axi_floor_refuses_rather_than_degrades() {
   local home out rc
-  home=$(make_home no-hold-fields)
+  home=$(make_home below-floor)
   tasks_in "$home" add sample-ready-work "Ship the sample route" --kind ship --repo sample >/dev/null \
     || fail "could not create the dispatchable fixture"
-  # At the floor, with both existing feature probes satisfied, and without the
-  # list fields: the exact build the version check alone would wave through.
+  tasks_in "$home" add sample-lapsed-question "Choose the lapsed sample route" \
+    --kind captain --repo sample >/dev/null || fail "could not create the lapsed-hold fixture"
+  tasks_in "$home" hold sample-lapsed-question --reason "captain choice pending" \
+    --kind captain --until 2000-01-01 >/dev/null || fail "could not lapse the fixture hold"
+  # Everything else about this build is fine; only its version is under the floor.
   cat > "$home/fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
-case "${1:-}:${2:-}" in
-  --version:*) printf '%s\n' '0.2.4'; exit 0 ;;
-  update:--help) printf '%s\n' 'usage: tasks-axi update <id> [flags]' '  --archive-body'; exit 0 ;;
-  mv:--help) printf '%s\n' 'usage: tasks-axi mv <id> [<id>...] --to <path>'; exit 0 ;;
-  list:--help)
-    printf '%s\n' 'usage: tasks-axi list [flags]'
-    printf '%s\n' '  --state <queued|in_flight|done|held>'
-    printf '%s\n' '  --fields <a,b,c>  (extra: blocked, blocked_by, body, created, deps, links, priority)'
-    exit 0
-    ;;
-esac
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' '0.2.4'
+  exit 0
+fi
 exec "$REAL_TASKS_AXI" "$@"
 SH
   chmod +x "$home/fakebin/tasks-axi"
@@ -1245,12 +1203,14 @@ SH
   out=$(run_ready "$home" 2>&1)
   rc=$?
   set -e
-  [ "$rc" -ne 0 ] || fail "a build that cannot screen lapsed holds was accepted: $out"
-  assert_contains "$out" "hold_kind" "the refusal did not name the missing list fields: $out"
-  assert_contains "$out" "upgrade it" "the refusal was not actionable: $out"
+  [ "$rc" -ne 0 ] || fail "a build below the tasks-axi floor was accepted: $out"
+  assert_contains "$out" "compatible tasks-axi is required" \
+    "the refusal did not say what was wrong: $out"
   assert_not_contains "$out" "sample-ready-work" \
-    "the refused build still emitted an unscreened dispatchable listing"
-  pass "a tasks-axi that cannot answer the lapse query is refused by name, never degraded"
+    "the refused build still emitted a dispatchable listing"
+  assert_not_contains "$out" "sample-lapsed-question" \
+    "the refused build degraded into an unscreened ready set"
+  pass "a tasks-axi below the floor refuses the dispatchable set, never degrades into it"
 }
 
 test_uninventoried_report_decision_refuses_completion
@@ -1272,6 +1232,5 @@ test_lapsed_hold_is_demoted_not_deleted
 test_existing_holds_without_a_deadline_are_untouched
 test_lapsed_hold_is_never_offered_as_dispatchable_work
 test_a_flag_without_its_value_reports_rather_than_exiting_mute
-test_keep_versus_reset_is_one_answer_every_rehold_can_ask
 test_reholding_a_lapsed_question_comes_back_with_a_fresh_clock
-test_a_build_that_cannot_screen_lapsed_holds_is_refused_by_name
+test_a_build_below_the_tasks_axi_floor_refuses_rather_than_degrades

@@ -845,6 +845,53 @@ BACKLOG
   pass "a captain hold with a deadline parses a clean title and stays actionable once lapsed"
 }
 
+# Closing a captain decision does NOT clear its hold markers: `tasks-axi done`
+# leaves hold, hold-kind and hold-until on the Done line, and both close paths in
+# bin/fm-decision-hold.sh finish with done and never unhold, so this is the end
+# state of every answered question. Reading held off marker presence alone
+# therefore published an ANSWERED question as an unanswered lapsed hold, which
+# the board would demote as if nobody had replied. tasks-axi reports held: no for
+# such a row and the snapshot has to agree.
+test_an_answered_hold_publishes_as_answered_not_lapsed() {
+  local home fakebin out
+  home=$(make_home hold-until-answered)
+  cat > "$home/data/backlog.md" <<'BACKLOG'
+# Backlog
+
+## In flight
+## Queued
+- [ ] live-future - Choose the sample route (repo: sample) (kind: captain) (since 2026-07-01) (hold: captain route choice pending) (hold-kind: captain) (hold-until: 2099-01-08)
+- [ ] live-lapsed - Choose the sample access level (repo: sample) (kind: captain) (since 2026-07-01) (hold: captain access choice pending) (hold-kind: captain) (hold-until: 2000-01-01)
+## Done
+- [x] cap-x - Settle me (repo: sample) (kind: captain) (done 2026-09-02) (hold: captain choice pending) (hold-kind: captain) (hold-until: 2099-01-08)
+- [x] cap-late - Settle me late (repo: sample) (kind: captain) (done 2026-09-02) (hold: captain choice pending) (hold-kind: captain) (hold-until: 2000-01-01)
+BACKLOG
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.backlog.records // []) as $rows
+    | ($rows | map(select(.id == "cap-x")) | first) as $answered
+    | ($rows | map(select(.id == "cap-late")) | first) as $answered_late
+    | ($rows | map(select(.id == "live-future")) | first) as $future
+    | ($rows | map(select(.id == "live-lapsed")) | first) as $lapsed
+    | $answered.state == "done" and $answered.held == false and $answered.lapsed == false
+      and $answered_late.state == "done" and $answered_late.held == false
+      and $answered_late.lapsed == false
+      and $future.held == true and $future.lapsed == false
+      and $lapsed.held == true and $lapsed.lapsed == true
+  ' >/dev/null || fail "an answered captain decision published as an unanswered lapsed hold: $out"
+
+  # The markers themselves must survive on the closed row: bin/fm-decision-hold.sh
+  # repair depends on hold_kind outliving a close.
+  printf '%s' "$out" | jq -e '
+    (.backlog.records // []) as $rows
+    | ($rows | map(select(.id == "cap-late")) | first)
+    | .hold_kind == "captain" and .hold_until == "2000-01-01"
+      and .hold_reason == "captain choice pending"
+  ' >/dev/null || fail "closing a hold dropped the markers repair depends on: $out"
+  pass "an answered captain decision publishes as answered even with its hold markers intact"
+}
+
 # tasks-axi decides whether a hold is still gating from the LOCAL date, so the
 # snapshot's lapsed verdict has to read the same basis. Reading the UTC
 # SNAPSHOT_NOW instead would let a home east of UTC publish lapsed on a hold
@@ -936,3 +983,4 @@ test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
 test_held_row_with_a_deadline_parses_a_clean_title
 test_lapsed_flag_reads_the_local_date_basis
+test_an_answered_hold_publishes_as_answered_not_lapsed
