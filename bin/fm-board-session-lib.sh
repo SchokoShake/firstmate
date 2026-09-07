@@ -41,7 +41,7 @@ fm_board_session_field() {  # <entry> <name>
 # malformed JSON.
 fm_board_session_plain() {  # <value>
   case "$1" in
-    *[\"\\]* | *[![:print:]]*) return 1 ;;
+    *[\"\\]* | *[[:cntrl:]]*) return 1 ;;
   esac
   return 0
 }
@@ -61,16 +61,17 @@ fm_board_session_json_field() {  # <key> <value>
 # The registry entry at <entry> for <pid> is live, by the three tests the
 # registry's own readers apply: the pid exists, its start time still matches the
 # recorded one, and the record was written in this pid namespace. The last two
-# read /proc and are skipped where it is unreadable, degrading to pid existence
-# alone off Linux - weaker rather than broken, and the same degradation
-# bridge-axi documents for its own wake.
+# read /proc and /etc/machine-id and are skipped where those are unreadable,
+# degrading to pid existence alone off Linux or in a container without a machine
+# id - weaker rather than broken, and the same degradation bridge-axi documents
+# for its own wake.
 #
 # The start-time test is the one that matters here. Without it, a corpse entry
 # left behind by a dead session whose pid this session was later assigned would
 # be published as this session's identity, and every wake aimed at it would
 # silently reach nothing - the exact failure this record exists to end.
 fm_board_session_entry_live() {  # <entry> <pid>
-  local entry=$1 pid=$2 want_start want_domain stat rest have_start have_domain
+  local entry=$1 pid=$2 want_start want_domain stat rest have_start have_domain machine_id
   kill -0 "$pid" 2>/dev/null || return 1
 
   want_start=$(fm_board_session_field "$entry" procStart)
@@ -83,9 +84,10 @@ fm_board_session_entry_live() {  # <entry> <pid>
   fi
 
   want_domain=$(fm_board_session_field "$entry" pidDomain)
-  have_domain=$(readlink /proc/self/ns/pid 2>/dev/null) || have_domain=
-  if [ -n "$want_domain" ] && [ -n "$have_domain" ]; then
-    [ "$want_domain" = "linux:$(cat /etc/machine-id 2>/dev/null):$have_domain" ] || return 1
+  if [ -n "$want_domain" ] \
+    && machine_id=$(cat /etc/machine-id 2>/dev/null) && [ -n "$machine_id" ] \
+    && have_domain=$(readlink /proc/self/ns/pid 2>/dev/null) && [ -n "$have_domain" ]; then
+    [ "$want_domain" = "linux:$machine_id:$have_domain" ] || return 1
   fi
   return 0
 }

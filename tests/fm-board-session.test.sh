@@ -12,6 +12,11 @@
 #     the lock's when that process is not running
 #   - the liveness rule, driven against real processes: a matching start time
 #     publishes, a corpse entry whose pid was recycled does not
+#   - the pid-domain half of that rule: this machine's own domain publishes, a
+#     foreign one is refused, and a host whose machine id cannot be read skips
+#     the test rather than refusing every entry
+#   - registry values: non-ASCII text publishes whatever the locale, a control
+#     character is refused
 #   - refusal leaves any prior record untouched and no temp file behind
 #   - the record is written atomically and mode 0600
 #   - the registry directory resolves from CLAUDE_CONFIG_DIR
@@ -336,7 +341,118 @@ test_the_named_session_process_is_preferred_and_a_dead_one_is_dropped() {
   pass "a running named session process is preferred, and a dead one falls back to the lock's pid"
 }
 
+# The pid domain pins an entry to the machine and pid namespace it was written
+# in, so a matching one publishes and a foreign one is a record from somewhere
+# else and is refused. A host whose machine id cannot be read - a container,
+# typically - cannot evaluate that test at all, so it must fall back to the other
+# two rather than refuse every entry that carries a domain as stale.
+test_pid_domain_pins_this_machine_and_degrades_without_a_machine_id() {
+  local dir state pid machine_id ns fakebin real_cat status reason
+  dir="$TMP_ROOT/domain-registry"
+  state="$TMP_ROOT/domain-state"
+  fakebin="$TMP_ROOT/domain-fakebin"
+  mkdir -p "$dir" "$state" "$fakebin"
+  machine_id=$(cat /etc/machine-id 2>/dev/null) || machine_id=
+  ns=$(readlink /proc/self/ns/pid 2>/dev/null) || ns=
+  start_live_process
+  pid=$LIVE_PID
+
+  if [ -n "$machine_id" ] && [ -n "$ns" ]; then
+    printf '{"pid":%s,"sessionId":"aaaa1111-0000-4000-8000-000000000001","kind":"interactive","pidDomain":"linux:%s:%s"}\n' \
+      "$pid" "$machine_id" "$ns" > "$dir/$pid.json"
+    fm_board_session_publish "$state" "$pid" "$dir" >/dev/null \
+      || fail "an entry recorded in this machine's own pid domain was refused"
+    assert_grep 'aaaa1111-0000-4000-8000-000000000001' "$state/board-session.json" \
+      "the record does not name the session recorded in this pid domain"
+    pass "an entry recorded in this machine's own pid domain is published"
+
+    printf '{"pid":%s,"sessionId":"bbbb1111-0000-4000-8000-000000000002","kind":"interactive","pidDomain":"linux:%s:%s"}\n' \
+      "$pid" "00000000000000000000000000000000" "$ns" > "$dir/$pid.json"
+    status=0
+    reason=$(fm_board_session_publish "$state" "$pid" "$dir") || status=$?
+    [ "$status" -ne 0 ] || fail "an entry recorded on another machine was published"
+    assert_contains "$reason" "stale" "the refusal does not say the entry is stale"
+    assert_grep 'aaaa1111-0000-4000-8000-000000000001' "$state/board-session.json" \
+      "a refused foreign-domain entry replaced or removed the standing record"
+    pass "an entry recorded in another machine's pid domain is refused as stale"
+  else
+    echo "skip: this host's machine id or pid namespace is unreadable, so only the degraded half runs"
+  fi
+
+  # The same foreign domain on a host that cannot read its machine id: the
+  # comparison has nothing to be made against, so it is skipped and the entry
+  # stands on the pid and start-time tests alone.
+  printf '{"pid":%s,"sessionId":"cccc1111-0000-4000-8000-000000000003","kind":"interactive","pidDomain":"linux:%s:%s"}\n' \
+    "$pid" "00000000000000000000000000000000" "${ns:-pid:[0]}" > "$dir/$pid.json"
+  if [ -n "$machine_id" ]; then
+    real_cat=$(command -v cat)
+    cat > "$fakebin/cat" <<SH
+#!/usr/bin/env bash
+for argument in "\$@"; do [ "\$argument" = /etc/machine-id ] && exit 1; done
+exec $real_cat "\$@"
+SH
+    chmod +x "$fakebin/cat"
+    "$fakebin/cat" /etc/machine-id >/dev/null 2>&1 \
+      && fail "the fixture that hides the machine id still reads it"
+    status=0
+    reason=$(PATH="$fakebin:$PATH" fm_board_session_publish "$state" "$pid" "$dir") || status=$?
+  else
+    status=0
+    reason=$(fm_board_session_publish "$state" "$pid" "$dir") || status=$?
+  fi
+  expect_code 0 "$status" "an entry carrying a pid domain was refused on a host whose machine id cannot be read ($reason)"
+  assert_grep 'cccc1111-0000-4000-8000-000000000003' "$state/board-session.json" \
+    "the record does not name the session published without a readable machine id"
+  pass "an entry carrying a pid domain still publishes when the machine id cannot be read"
+}
+
+# A registry cwd is a path, and the derived name is that path's basename, so a
+# home under a directory with a non-ASCII character in its name must register
+# whatever locale the SessionStart hook runs under; the C locale, where every
+# non-ASCII byte is non-printable, is the one to drive. A control character is
+# the case the narrow reader cannot represent, and stays refused.
+test_non_ascii_registry_values_publish_and_control_characters_refuse() {
+  local dir state pid status reason
+  dir="$TMP_ROOT/charset-registry"
+  state="$TMP_ROOT/charset-state"
+  mkdir -p "$dir" "$state"
+  start_live_process
+  pid=$LIVE_PID
+
+  printf '{"pid":%s,"sessionId":"dddd1111-0000-4000-8000-000000000004","cwd":"/home/jörg/firstmate","kind":"interactive","name":"firstmate-ö7c","nameSource":"derived"}\n' \
+    "$pid" > "$dir/$pid.json"
+  status=0
+  reason=$( (export LC_ALL=C; fm_board_session_publish "$state" "$pid" "$dir") ) || status=$?
+  expect_code 0 "$status" "an entry whose cwd holds a non-ASCII character was refused under the C locale ($reason)"
+  assert_grep '"cwd":"/home/jörg/firstmate"' "$state/board-session.json" \
+    "the record does not carry the non-ASCII path as the registry wrote it"
+  assert_grep '"name":"firstmate-ö7c"' "$state/board-session.json" \
+    "the record does not carry the non-ASCII name as the registry wrote it"
+  jq -e . "$state/board-session.json" >/dev/null 2>&1 \
+    || fail "the record holding non-ASCII text is not valid JSON: $(cat "$state/board-session.json")"
+  rm -f "$state/board-session.json"
+  fm_board_session_publish "$state" "$pid" "$dir" >/dev/null \
+    || fail "an entry whose cwd holds a non-ASCII character was refused under the suite's own locale"
+  assert_grep 'dddd1111-0000-4000-8000-000000000004' "$state/board-session.json" \
+    "the record does not name the session with the non-ASCII path"
+  pass "an entry holding non-ASCII text is published under the C locale and under the suite's own"
+
+  printf '{"pid":%s,"sessionId":"eeee1111-0000-4000-8000-000000000005","cwd":"/home/captain/first\tmate","kind":"interactive"}\n' \
+    "$pid" > "$dir/$pid.json"
+  status=0
+  reason=$(fm_board_session_publish "$state" "$pid" "$dir") || status=$?
+  [ "$status" -ne 0 ] || fail "an entry whose cwd holds a control character was published"
+  assert_contains "$reason" "cannot represent" "the refusal does not say the value cannot be represented"
+  assert_grep 'dddd1111-0000-4000-8000-000000000004' "$state/board-session.json" \
+    "a refused control-character entry replaced or removed the standing record"
+  assert_no_grep 'eeee1111-0000-4000-8000-000000000005' "$state/board-session.json" \
+    "a refused control-character entry reached the record"
+  pass "an entry holding a control character is refused and leaves the standing record intact"
+}
+
 test_start_time_separates_this_session_from_a_recycled_pid
+test_pid_domain_pins_this_machine_and_degrades_without_a_machine_id
+test_non_ascii_registry_values_publish_and_control_characters_refuse
 test_a_dead_pid_is_refused
 test_the_named_session_process_is_preferred_and_a_dead_one_is_dropped
 test_a_missing_entry_is_refused_and_names_where_it_looked

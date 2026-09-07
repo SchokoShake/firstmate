@@ -144,6 +144,8 @@
 # up in the Claude session registry. When neither answers, this writes nothing
 # and prints what it could not confirm. Nothing removes the file - a reader
 # detects a stale one from the pid and the session id.
+# The file exists only on a Claude-harness home, the one harness with such a
+# registry; every other harness neither writes it nor reports its absence.
 # bin/fm-board-session-lib.sh owns both routes and the registry liveness rule.
 #
 # BACKLOG DIGEST: the startup listing is a RECOVERY input, not a reporting
@@ -690,10 +692,12 @@ if [ "$READ_ONLY" -eq 0 ]; then
   # Register this session's identity for the same board, for the same reason and
   # under the same lock-holder-only rule (see the record's contract in the header
   # above). A decline prints what could not be confirmed and writes nothing.
-  if ! BOARD_SESSION_OUT=$(fm_board_session_publish \
-    "$STATE" "$SESSION_HARNESS_PID" 2>/dev/null); then
-    printf 'BOOTSTRAP_INFO: this session is not registered for board wake-ups: %s\n' \
-      "${BOARD_SESSION_OUT:-the session registry could not be read}"
+  if [ "$PRIMARY_HARNESS" = claude ]; then
+    if ! BOARD_SESSION_OUT=$(fm_board_session_publish \
+      "$STATE" "$SESSION_HARNESS_PID" 2>/dev/null); then
+      printf 'BOOTSTRAP_INFO: this session is not registered for board wake-ups: %s\n' \
+        "${BOARD_SESSION_OUT:-the session registry could not be read}"
+    fi
   fi
   # Every network call this session start owes is launched HERE, detached and
   # bounded, so it runs concurrently with the whole digest below instead of in

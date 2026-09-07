@@ -198,6 +198,7 @@ Its header is the single owner of the wire frame, the record format, the flags, 
 
 The feature is inert everywhere it cannot apply.
 Only Claude Code exposes such an inbox and such a session registry, so a home running any other harness publishes neither artifact and keeps the poll, with no branch in the operating instructions.
+`state/board-session.json` therefore exists only on a Claude-harness home, and a session start on any other harness neither writes it nor reports that the session is unregistered.
 
 ### Inbound delivery posture (crossSessionInbound)
 

@@ -12,8 +12,8 @@
 #     lock holder only: a read-only session and a session with no inbox socket
 #     both leave none
 #   - the board wake-up registration (state/board-session.json) follows the same
-#     lock-holder-only rule, and an unregisterable session says so and writes
-#     nothing
+#     lock-holder-only rule, an unregisterable session says so and writes
+#     nothing, and a primary on any other harness writes and says nothing
 #   - output section ordering: the safety preamble leads unchanged, live fleet
 #     state precedes the curated memory a truncated tail may take, and the
 #     read-once contract precedes both
@@ -1000,6 +1000,39 @@ EOF
     "the environment route reported itself as unregistered"
 
   pass "only the lock holder registers this session for board wake-ups, by either route, and an unregisterable one says so"
+}
+
+# The registry the registration reads exists only on Claude Code, so a primary
+# on any other harness neither registers nor reports itself unregistered: that
+# line would name a directory the harness never writes, on every start, with
+# nothing anyone could do about it. Drive a locked codex primary against the
+# very registry entry a Claude primary registers from, so the harness is the
+# only thing that separates the two outcomes.
+test_a_non_claude_primary_registers_nothing_for_board_wakeups() {
+  local rec root home fakebin cfg out status
+  rec=$(new_world board-session-codex)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" codex
+  cfg="$TMP_ROOT/board-session-codex-cfg"
+  mkdir -p "$cfg/sessions"
+  printf '{"pid":%s,"sessionId":"9a8b7c6d-0000-4000-8000-fedcbafedcba","cwd":"%s","kind":"interactive","name":"firstmate-2e","nameSource":"derived"}\n' \
+    "$SESSION_START_TEST_HARNESS_PID" "$home" \
+    > "$cfg/sessions/$SESSION_START_TEST_HARNESS_PID.json"
+
+  status=0
+  out=$(CLAUDE_CONFIG_DIR="$cfg" \
+    run_named_harness_session_start codex "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 on a codex primary"
+  assert_contains "$out" "lock acquired" "the codex run did not hold the lock"
+  assert_contains "$out" "primary harness: codex" "the fixture did not run as a codex primary"
+  assert_absent "$home/state/board-session.json" "a codex primary registered itself for board wake-ups"
+  assert_not_contains "$out" "not registered for board wake-ups" \
+    "a codex primary reported a registration it can never have"
+
+  pass "a locked non-Claude primary neither registers for board wake-ups nor reports itself unregistered"
 }
 
 test_trace_context_effective_state_is_frozen_after_lock() {
@@ -2579,6 +2612,7 @@ test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_lock_holder_publishes_inbox_and_read_only_session_does_not
 test_lock_holder_registers_this_session_for_board_wakeups
+test_a_non_claude_primary_registers_nothing_for_board_wakeups
 test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner
 test_output_ordering_diagnostics_lead
