@@ -1,0 +1,45 @@
+
+# Real bin/fm-session-start.sh driven against a scratch FM_HOME (/tmp/fm-board-session-demo.DTni19/board-session-demo/home)
+
+# The lock's harness pid is this driver (3171529); the scratch registry (CLAUDE_CONFIG_DIR=/tmp/fm-board-session-demo.DTni19/cfg) gets the entry Claude Code would have written for it.
+
+$ printf ... > "$cfg/sessions/$$.json"; cat "$cfg/sessions/$$.json"
+{"pid":3171529,"sessionId":"7f3d1a2b-0000-4000-8000-abcdefabcdef","cwd":"/tmp/fm-board-session-demo.DTni19/board-session-demo/home","kind":"interactive","name":"firstmate-7c","nameSource":"derived"}
+
+## 1. LOCKED start, registry route (no CLAUDE_CODE_SESSION_ID / CLAUDE_PID in the environment)
+
+$ CLAUDE_CONFIG_DIR=$cfg FM_HOME=$home bin/fm-session-start.sh   # digest saved to session-start-digest-1-locked-registry.txt
+rc=0
+8:lock acquired: harness pid 3171529
+
+$ cat state/board-session.json; stat -c %a state/board-session.json
+{"schema":"fm-board-session.v1","session_id":"7f3d1a2b-0000-4000-8000-abcdefabcdef","pid":3171529,"cwd":"/tmp/fm-board-session-demo.DTni19/board-session-demo/home","kind":"interactive","registered_at":"2026-09-07T17:03:08Z","name":"firstmate-7c","name_source":"derived","source":"registry"}
+600
+
+## 2. LOCKED start, environment route (the session states its own id inside the tool call; no registry entry at all)
+
+$ CLAUDE_CODE_SESSION_ID=4c1f9e70-1111-4000-8000-0123456789ab CLAUDE_PID=$$ CLAUDE_CONFIG_DIR=$cfg FM_HOME=$home bin/fm-session-start.sh   # digest-2
+rc=0
+8:lock acquired: harness pid 3171529
+
+$ cat state/board-session.json
+{"schema":"fm-board-session.v1","session_id":"4c1f9e70-1111-4000-8000-0123456789ab","pid":3171529,"cwd":null,"kind":null,"registered_at":"2026-09-07T17:03:11Z","name":null,"name_source":null,"source":"environment"}
+
+## 3. LOCKED start, identity NOT findable (no registry entry, no environment): nothing written, one BOOTSTRAP_INFO line
+
+$ CLAUDE_CONFIG_DIR=$cfg FM_HOME=$home bin/fm-session-start.sh   # digest-3
+rc=0
+8:lock acquired: harness pid 3171529
+9:BOOTSTRAP_INFO: this session is not registered for board wake-ups: no session registry entry for this session in /tmp/fm-board-session-demo.DTni19/cfg/sessions
+
+$ ls -A state/ | grep board-session || echo "(no board-session.json)"
+(no board-session.json)
+
+## 4. READ-ONLY start (lock held by another live claude holder), registry entry present: no write
+
+$ echo <other live holder pid> > state/.lock; CLAUDE_CONFIG_DIR=$cfg FM_HOME=$home bin/fm-session-start.sh   # digest-4
+rc=0
+10:●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED
+
+$ ls -A state/ | grep board-session || echo "(no board-session.json)"
+(no board-session.json)

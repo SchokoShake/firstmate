@@ -1,0 +1,46 @@
+# Real-session transcript: bin/fm-board-session-lib.sh against the live Claude session registry
+# host: Linux 6.18.26.1-microsoft-standard-WSL2 x86_64; harness: 2.1.263 (Claude Code); date: 2026-09-07T17:02:00Z
+
+$ printenv CLAUDE_CODE_SESSION_ID CLAUDE_PID
+3347a92d-ebd5-4baa-9572-f9681c1c202d
+3067398
+
+$ cat ~/.claude/sessions/$CLAUDE_PID.json   # the registry entry the harness wrote for this very session
+{"pid":3067398,"sessionId":"3347a92d-ebd5-4baa-9572-f9681c1c202d","cwd":"/home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M1YBEPJ14GPN7FCTF7904CZ7","startedAt":1788800413878,"procStart":"3562617","version":"2.1.263","peerProtocol":1,"peerFeatures":["notify_idle","reply_across_default_dirs","artifact_yield"],"kind":"interactive","entrypoint":"sdk-cli","pidDomain":"linux:5cd8debcb2d94b098d85348a43b2c943:pid:[4026532219]","messagingSocketPath":"/run/user/1000/cc-socks/3067398.sock","name":"01m1ybepj14gpn7fctf7904cz7-c7","nameSource":"derived","nameSince":1788800413878}
+
+$ . bin/fm-board-session-lib.sh
+
+## Route 1: environment (preferred). Lock pid deliberately 1, so the pid in the record can only have come from CLAUDE_PID.
+$ fm_board_session_publish "$DEMO/state-env" 1; echo "rc=$?"
+rc=0
+$ cat "$DEMO/state-env/board-session.json"
+{"schema":"fm-board-session.v1","session_id":"3347a92d-ebd5-4baa-9572-f9681c1c202d","pid":3067398,"cwd":"/home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M1YBEPJ14GPN7FCTF7904CZ7","kind":"interactive","registered_at":"2026-09-07T17:02:00Z","name":"01m1ybepj14gpn7fctf7904cz7-c7","name_source":"derived","source":"environment"}
+$ stat -c "%a %n" "$DEMO/state-env/board-session.json"; wc -l < "$DEMO/state-env/board-session.json"; ls -A "$DEMO/state-env"
+600 /tmp/fm-board-session-demo.ABXe7t/state-env/board-session.json
+1
+board-session.json
+$ jq -r ".session_id == env.CLAUDE_CODE_SESSION_ID and .pid == (env.CLAUDE_PID|tonumber)" "$DEMO/state-env/board-session.json"
+true
+
+## Route 2: registry (fallback). Both variables dropped; the lock pid is this session's harness pid, as bin/fm-lock.sh would have written it.
+$ LOCK_PID=$CLAUDE_PID; unset CLAUDE_CODE_SESSION_ID CLAUDE_PID; fm_board_session_publish "$DEMO/state-reg" "$LOCK_PID"; echo "rc=$?"
+rc=0
+$ cat "$DEMO/state-reg/board-session.json"
+{"schema":"fm-board-session.v1","session_id":"3347a92d-ebd5-4baa-9572-f9681c1c202d","pid":3067398,"cwd":"/home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M1YBEPJ14GPN7FCTF7904CZ7","kind":"interactive","registered_at":"2026-09-07T17:02:00Z","name":"01m1ybepj14gpn7fctf7904cz7-c7","name_source":"derived","source":"registry"}
+$ diff <(jq -S "del(.registered_at,.source)" "$DEMO/state-env/board-session.json") <(jq -S "del(.registered_at,.source)" "$DEMO/state-reg/board-session.json") && echo "both routes agree on every field but source/registered_at"
+both routes agree on every field but source/registered_at
+
+## Decline: no registry entry for the lock pid (empty registry dir) - nothing written, one reason printed.
+$ fm_board_session_publish "$DEMO/state-none" "$LOCK_PID" "$DEMO/empty-registry"; echo "rc=$?"; ls -A "$DEMO/state-none"
+no session registry entry for this session in /tmp/fm-board-session-demo.ABXe7t/empty-registry
+rc=1
+
+## Decline: environment names one id, a LIVE entry for the same pid names another - refused, nothing written.
+$ jq -c ".sessionId=\"00000000-0000-4000-8000-000000000000\"" ~/.claude/sessions/$LOCK_PID.json > "$DEMO/drift-registry/$LOCK_PID.json"
+$ CLAUDE_CODE_SESSION_ID=$REAL_SID CLAUDE_PID=$LOCK_PID fm_board_session_publish "$DEMO/state-drift" 1 "$DEMO/drift-registry"; echo "rc=$?"; ls -A "$DEMO/state-drift"
+this session names one id and its registry entry names another
+rc=1
+
+## Sourcing left no umask behind
+$ umask
+0002
