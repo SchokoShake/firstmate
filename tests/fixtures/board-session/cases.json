@@ -1,0 +1,278 @@
+{
+  "contract": "state/board-session.json, as bin/fm-session-start.sh publishes it at every locked session start (bin/fm-session-start.sh's header is the contract's owner). Each case gives the environment the session start ran in and the Claude session-registry entry the harness wrote for this session; expect is the record they must produce, or null when the identity must be refused and no record written. source names which route produced the session id: environment when the session stated it in CLAUDE_CODE_SESSION_ID, registry when it was read back out of the registry under the session lock's harness pid. {{PID}} stands for the live harness pid, substituted by both sides before comparing. registered_at is asserted for presence and ISO-8601 UTC shape only, never for a value. Entries here carry no procStart or pidDomain, whose liveness rule is exercised against real processes in tests/fm-board-session.test.sh rather than pinned as data.",
+  "peer_implementation": "logbook's board wake path, which reads this record and selects the session with bridge-axi agent-wake --session. Recorded 2026-09-07, while that side is being built against this file; no case has a divergence to record yet.",
+  "cases": [
+    {
+      "name": "registry-route-derived-name",
+      "note": "the fallback route, and the ordinary session it was written for: nobody named it, so the name carries a random byte redrawn on every start and is informational only.",
+      "env": {},
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "c2ab71a2-8c39-41da-9fc8-6d500c3d0547",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-7c",
+        "nameSource": "derived"
+      },
+      "expect": {
+        "schema": "fm-board-session.v1",
+        "session_id": "c2ab71a2-8c39-41da-9fc8-6d500c3d0547",
+        "pid": "{{PID}}",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-7c",
+        "name_source": "derived",
+        "source": "registry"
+      },
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "registry-route-user-named",
+      "note": "a person ran claude --name or /rename. The name would have been a valid selector, and the record still carries the session id, so the reader never has to decide.",
+      "env": {},
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "e7c7f7ad-6b1e-4b0c-b876-fbbc7a3c9871",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate",
+        "nameSource": "user"
+      },
+      "expect": {
+        "schema": "fm-board-session.v1",
+        "session_id": "e7c7f7ad-6b1e-4b0c-b876-fbbc7a3c9871",
+        "pid": "{{PID}}",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate",
+        "name_source": "user",
+        "source": "registry"
+      },
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "registry-route-name-set-through-the-environment",
+      "note": "CLAUDE_CODE_SESSION_NAME writes the name and omits nameSource entirely. name_source is null, and null must not be read as 'nobody named it' - this name is as stable as a user one.",
+      "env": {},
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "11111111-2222-3333-4444-555555555555",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-primary"
+      },
+      "expect": {
+        "schema": "fm-board-session.v1",
+        "session_id": "11111111-2222-3333-4444-555555555555",
+        "pid": "{{PID}}",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-primary",
+        "name_source": null,
+        "source": "registry"
+      },
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "registry-route-no-name-and-no-cwd",
+      "note": "every informational field is optional and absent becomes null, never an empty string. The session id alone is what a wake needs.",
+      "env": {},
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "22222222-3333-4444-5555-666666666666",
+        "kind": "interactive"
+      },
+      "expect": {
+        "schema": "fm-board-session.v1",
+        "session_id": "22222222-3333-4444-5555-666666666666",
+        "pid": "{{PID}}",
+        "cwd": null,
+        "kind": "interactive",
+        "name": null,
+        "name_source": null,
+        "source": "registry"
+      },
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "registry-route-non-interactive-kind-is-recorded-not-filtered",
+      "note": "kind is reported as the registry states it. Firstmate publishes the session that holds the lock whatever its class; whether to wake a non-interactive one is the reader's call, and it can only make it if the value survives.",
+      "env": {},
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "33333333-4444-5555-6666-777777777777",
+        "cwd": "/home/captain/firstmate",
+        "kind": "bg",
+        "name": "firstmate-bg",
+        "nameSource": "auto"
+      },
+      "expect": {
+        "schema": "fm-board-session.v1",
+        "session_id": "33333333-4444-5555-6666-777777777777",
+        "pid": "{{PID}}",
+        "cwd": "/home/captain/firstmate",
+        "kind": "bg",
+        "name": "firstmate-bg",
+        "name_source": "auto",
+        "source": "registry"
+      },
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "registry-route-no-session-id",
+      "note": "the session id is the selector the record exists to carry, so an entry without one, and no environment to fall back from, is refused outright rather than published as a record a reader cannot act on.",
+      "env": {},
+      "entry": {
+        "pid": "{{PID}}",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-7c",
+        "nameSource": "derived"
+      },
+      "expect": null,
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "registry-route-session-id-outside-the-selector-charset",
+      "note": "a session id carrying anything but letters, digits, dot, dash or underscore is refused. It would be interpolated into this record and then into a wake selector, so it is validated rather than escaped.",
+      "env": {},
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "44444444 4444\">evil",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive"
+      },
+      "expect": null,
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "registry-route-informational-field-this-reader-cannot-represent",
+      "note": "a cwd holding a quote is read back truncated by the narrow field reader, so the whole entry is refused rather than published as malformed JSON.",
+      "env": {},
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "55555555-6666-7777-8888-999999999999",
+        "cwd": "/home/captain/odd\"path",
+        "kind": "interactive"
+      },
+      "expect": null,
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "environment-route",
+      "note": "the preferred route: inside a tool call the session states its own id, so there is no lookup to miss. The registry entry for the pid the harness names still supplies the informational fields.",
+      "env": {
+        "CLAUDE_CODE_SESSION_ID": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        "CLAUDE_PID": "{{PID}}"
+      },
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-7c",
+        "nameSource": "derived"
+      },
+      "expect": {
+        "schema": "fm-board-session.v1",
+        "session_id": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        "pid": "{{PID}}",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-7c",
+        "name_source": "derived",
+        "source": "environment"
+      },
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "environment-route-with-no-registry-entry",
+      "note": "the environment names the session, and there is no entry to enrich it from. The record is still published, because the session id is what a wake needs and the rest is informational.",
+      "env": {
+        "CLAUDE_CODE_SESSION_ID": "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+        "CLAUDE_PID": "{{PID}}"
+      },
+      "entry": null,
+      "expect": {
+        "schema": "fm-board-session.v1",
+        "session_id": "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+        "pid": "{{PID}}",
+        "cwd": null,
+        "kind": null,
+        "name": null,
+        "name_source": null,
+        "source": "environment"
+      },
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "environment-route-disagreeing-with-a-live-entry",
+      "note": "the live entry under this pid is that process's own record, not a corpse, so naming a different session is drift between two vendor sources rather than staleness. Neither is trusted over the other: nothing is written, because an unregistered session is a board that keeps polling, where a wrong session id is a wake sent confidently into nothing.",
+      "env": {
+        "CLAUDE_CODE_SESSION_ID": "88888888-9999-aaaa-bbbb-cccccccccccc",
+        "CLAUDE_PID": "{{PID}}"
+      },
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "99999999-aaaa-bbbb-cccc-dddddddddddd",
+        "cwd": "/home/captain/somewhere-else",
+        "kind": "interactive",
+        "name": "other-session",
+        "nameSource": "derived"
+      },
+      "expect": null,
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "environment-session-id-outside-the-selector-charset-falls-back",
+      "note": "an unusable environment id is not fatal: the registry route still answers, and the record says so. The same charset rule applies whichever route offered the value.",
+      "env": {
+        "CLAUDE_CODE_SESSION_ID": "not a session id",
+        "CLAUDE_PID": "{{PID}}"
+      },
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-7c",
+        "nameSource": "derived"
+      },
+      "expect": {
+        "schema": "fm-board-session.v1",
+        "session_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "pid": "{{PID}}",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-7c",
+        "name_source": "derived",
+        "source": "registry"
+      },
+      "peer": {
+        "status": "pending"
+      }
+    }
+  ]
+}

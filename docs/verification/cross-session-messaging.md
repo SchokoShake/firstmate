@@ -92,6 +92,38 @@ The accepted values are `accept`, `hold`, and `refuse`.
 
 An attested `from-mode` that does not match the receiver's class is held as a mismatch on this version, so attesting is not a workaround; it is a second way to be held, on top of being a false claim by a process that has no permission class.
 
+## The session states its own identity, and the registry agrees (2026-09-07, 2.1.263)
+
+`state/board-session.json` exists because a session name is not a handle: it counts as one only when a person set it, and the derived name a session gets otherwise carries a random byte redrawn on every start, so a board configured against it fails as a quiet `no_match`.
+The record carries the session id instead, and it resolves that id by two routes whose agreement is the fact worth verifying.
+
+Measured against Claude Code 2.1.263 on Linux under WSL 2, by `tests/fm-board-session-live-e2e.test.sh`: a throwaway named session was started, made to run `printenv` from a real tool call, and its output compared to the registry entry that same session wrote.
+
+```
+$ FM_BOARD_SESSION_LIVE_E2E=1 tests/fm-board-session-live-e2e.test.sh
+ok - a live 2.1.263 (Claude Code) tool call states the same session id and pid the registry records
+ok - the real publisher registers a live session from its own environment
+```
+
+Inside a tool call `CLAUDE_CODE_SESSION_ID` equals the registry's `sessionId` and `CLAUDE_PID` equals the pid its entry is keyed by, so the preferred environment route needs no lookup at all.
+Separately confirmed the same day on the same build that the harness pid `bin/fm-lock.sh` writes into a home's session lock, derived from the ancestry walk, is that same registry pid, which is what the fallback route depends on:
+
+```
+$ cat ~/firstmate/state/.lock
+3821
+$ python3 -c 'import json;d=json.load(open("~/.claude/sessions/3821.json"));print(d["pid"],d["sessionId"],d["nameSource"])'
+3821 e7c7f7ad-6b1e-4b0c-b876-fbbc7a3c9871 derived
+```
+
+That entry's `nameSource` is `derived`, which is the bug the record answers: this home's own primary session had no name a board could have selected on.
+
+The registry's liveness rule is adopted as bridge-axi's `docs/wake.md` documents it, and both halves were confirmed against a live process on the same build: `procStart` is `/proc/<pid>/stat` field 22, and `pidDomain` is `linux:<contents of /etc/machine-id>:<readlink /proc/self/ns/pid>`.
+Without the `procStart` check a corpse entry under a recycled pid would be published as this session's identity.
+
+Neither variable is documented as meaning what it was measured to mean here, so the runtime does not trust one over the other: when a live entry for the same pid names a different session, that is drift between two vendor sources and the record is refused rather than guessed.
+The cost of that refusal is bounded exactly like a dropped nudge - the board keeps polling - where publishing a wrong session id would send every wake confidently into nothing.
+Re-run the guard above after every Claude Code upgrade.
+
 ## Why a held or dropped nudge is acceptable
 
 Held is not lost.
@@ -107,6 +139,8 @@ Three things bound that risk, and all three must be kept:
 - The push carries no content, so a break degrades to poll latency rather than a lost or duplicated answer.
 - The peer-protocol guard refuses an unverified protocol instead of guessing.
 - `tests/fm-inbox-post.test.sh` pins the produced frame portably in CI, and the live guard above proves an installed harness still accepts it.
+
+`state/board-session.json` rests on the same kind of undocumented surface and is bounded the same way: `tests/fm-board-session.test.sh` pins both routes portably in CI, `tests/fm-board-session-live-e2e.test.sh` settles the vendor half against a real harness, and a disagreement between the two sources refuses rather than guesses.
 
 The live guard is the one that catches a vendor change, and CI cannot run it: it needs a real harness binary and credentials.
 Run it after every Claude Code upgrade.
