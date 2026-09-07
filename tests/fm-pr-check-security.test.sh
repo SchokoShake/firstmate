@@ -78,6 +78,10 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case " $* " in
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
+  *" baseRefName "*)
+    [ "${FM_TEST_GH_BASE_ABSENT:-0}" = 0 ] || exit 1
+    printf '%s\n' "${FM_TEST_GH_BASE:-main}"
+    ;;
   *" state "*)
     [ "${FM_TEST_GH_FAIL:-0}" = 0 ] || exit 1
     [ "${FM_TEST_GH_SLEEP:-0}" = 0 ] || sleep "$FM_TEST_GH_SLEEP"
@@ -659,6 +663,56 @@ run_watcher_bounded() {
   perl -e 'my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm 10; waitpid $pid, 0; alarm 0; exit($? >> 8)' \
     env FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" FM_CHECK_TIMEOUT=1 \
       FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 PATH="$fakebin:$BASE_PATH" "$WATCH" "$@"
+}
+
+# pr_base is the branch the PR merges into: recorded when the forge supplies a
+# plain branch name, refreshed on a rerun because a restack moves a PR's base,
+# and simply absent otherwise. It is asked for separately from the head, so a
+# forge that cannot answer one still answers the other.
+test_pr_base_recording() {
+  local dir count
+
+  dir=$(make_case pr-base-recorded)
+  write_task_meta "$dir"
+  FM_TEST_GH_BASE=release/2026.09 run_check_entry "$dir" task-a https://github.com/o/r/pull/11 \
+    >/dev/null 2>/dev/null || fail "check with a forge base failed"
+  grep -qxF 'pr_base=release/2026.09' "$dir/home/state/task-a.meta" \
+    || fail "the forge's base branch was not recorded"
+
+  # A restack: the same PR now targets a different branch.
+  FM_TEST_GH_BASE=main run_check_entry "$dir" task-a https://github.com/o/r/pull/11 \
+    >/dev/null 2>/dev/null || fail "check after a restack failed"
+  count=$(grep -c '^pr_base=' "$dir/home/state/task-a.meta")
+  [ "$count" -eq 1 ] || fail "a rerun appended a second pr_base instead of refreshing it"
+  grep -qxF 'pr_base=main' "$dir/home/state/task-a.meta" \
+    || fail "a rerun did not refresh pr_base to the PR's current base"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+    || fail "a recorded pr_base invalidated the poll's metadata binding"
+
+  dir=$(make_case pr-base-absent)
+  write_task_meta "$dir"
+  FM_TEST_GH_BASE_ABSENT=1 run_check_entry "$dir" task-a https://github.com/o/r/pull/12 \
+    >/dev/null 2>/dev/null || fail "check with an unanswerable base failed"
+  assert_no_grep 'pr_base=' "$dir/home/state/task-a.meta" "an unanswered base reached metadata"
+  grep -qxF 'pr=https://github.com/o/r/pull/12' "$dir/home/state/task-a.meta" \
+    || fail "an unanswered base cost the PR url"
+  grep -q '^pr_head=' "$dir/home/state/task-a.meta" \
+    || fail "an unanswered base cost the PR head"
+
+  dir=$(make_case pr-base-malformed)
+  write_task_meta "$dir"
+  FM_TEST_GH_BASE=$'main\nwindow=unexpected' run_check_entry "$dir" task-a https://github.com/o/r/pull/13 \
+    >/dev/null 2>/dev/null || fail "check with a malformed forge base failed"
+  assert_no_grep 'pr_base=' "$dir/home/state/task-a.meta" "a malformed base reached metadata"
+  assert_no_grep 'window=unexpected' "$dir/home/state/task-a.meta" "a newline base injected a metadata key"
+
+  # A GitLab merge request records no base at all, exactly like its head.
+  dir=$(make_case pr-base-gitlab)
+  write_task_meta "$dir"
+  run_check_entry "$dir" task-a https://gitlab.com/g/p/-/merge_requests/4 \
+    >/dev/null 2>/dev/null || fail "GitLab check failed"
+  assert_no_grep 'pr_base=' "$dir/home/state/task-a.meta" "a GitLab task recorded a base branch"
+  pass "fm-pr-check records the PR's base branch when the forge supplies one"
 }
 
 test_rejected_metacharacter_bytes_are_inert() {
@@ -3367,6 +3421,7 @@ test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
+test_pr_base_recording
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_atomic_interruption_leaves_no_partial_artifact

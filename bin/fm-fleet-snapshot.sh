@@ -33,6 +33,14 @@
 #     fm-classify-lib.sh's authoritative status_open_decisions fold and reconciled
 #     against current_state; hints.pending_decision and hints.blocked_event are
 #     booleans derived from that set.
+#     base and pr_base are the task branch's PARENT: the branch its work merges
+#     into. base is what the spawn declared (bin/fm-spawn.sh --base) and pr_base
+#     is the PR's own base ref (bin/fm-pr-check.sh). Both are strings, empty when
+#     unknown, and both are reported: a consumer decides precedence (a PR's base
+#     supersedes the declared one) and empty base with empty pr_base is a
+#     different fact from a declared base on a task that has no PR yet.
+#     The pairing is stated as data in tests/fixtures/snapshot-branch-parent/ and
+#     pinned by tests/fm-snapshot-branch-parent-contract.test.sh.
 #     endpoint.exists is the cheap backend endpoint-presence read.
 #     endpoint.agent_alive is populated for secondmates only, where it is useful
 #     return-channel supervision data; other tasks use "not_checked".
@@ -444,6 +452,8 @@ task_json_lines() {
     status_log="$STATE/$id.status"
     report_path="$DATA/$id/report.md"
     pr=$(meta_value "$meta" pr)
+    base=$(meta_value "$meta" base)
+    pr_base=$(meta_value "$meta" pr_base)
     pr_source=meta
     if [ -z "$pr" ]; then
       pr_from_status=$(first_pr_url_in_file "$status_log" || true)
@@ -555,6 +565,8 @@ task_json_lines() {
       --arg remote_root "$remote_root" \
       --arg pr "$pr" \
       --arg pr_source "$pr_source" \
+      --arg base "$base" \
+      --arg pr_base "$pr_base" \
       --arg agent_alive "$agent_alive" \
       --arg observed_at "$SNAPSHOT_NOW" \
       --arg last_event_raw "$last_event_raw" \
@@ -593,6 +605,8 @@ task_json_lines() {
                   else "unknown" end),
           observed_at:$observed_at,freshness:"fresh"},
         pr:{url:($pr | if . == "" then null else . end),source:$pr_source},
+        base:$base,
+        pr_base:$pr_base,
         hints:{
           pending_decision:$pending_decision,
           blocked_event:$blocked_event,

@@ -1,0 +1,183 @@
+{
+  "contract": "A task branch's PARENT - the branch its work merges into - as bin/fm-fleet-snapshot.sh emits it on a fm-fleet-snapshot.v1 task row. Each case is one state/<id>.meta written as lines in producer order; expect is the pair of task-row fields that meta must produce. base is the branch bin/fm-spawn.sh --base declared at launch; pr_base is the PR's own base ref, recorded by bin/fm-pr-check.sh from the forge and refreshed on every rerun. Both fields are always present, both are strings, and both are the empty string when unknown - never null, and never collapsed into one field: the consumer decides precedence (pr_base wins when both are set, because a PR's base is the live answer and a restack moves it), and it must be able to tell 'this task has no PR yet' apart from 'this task declared no base'. A branch whose parent is the repository's default branch is a top-level workstream on the board side, which is why an empty pair is a real answer rather than a gap to fill from the network. peer records what the logbook board's workstream tree does with each pair.",
+  "peer_implementation": "logbook connector workstream tree (logbook item logbook-workstream-tree-w1), built against this file 2026-09-07; no case has been observed against a released peer yet, so every peer status here is 'planned' rather than a recorded observation.",
+  "cases": [
+    {
+      "name": "neither-known",
+      "meta": [
+        "window=firstmate:fm-parent-neither",
+        "worktree=WORKTREE",
+        "project=PROJECT",
+        "harness=claude",
+        "kind=ship",
+        "mode=no-mistakes",
+        "yolo=off"
+      ],
+      "expect": {
+        "base": "",
+        "pr_base": ""
+      },
+      "peer": {
+        "status": "planned",
+        "note": "a task launched before --base existed, with no PR yet: the board leaves it top level rather than guessing"
+      }
+    },
+    {
+      "name": "declared-base-no-pr",
+      "meta": [
+        "window=firstmate:fm-parent-declared",
+        "worktree=WORKTREE",
+        "project=PROJECT",
+        "harness=claude",
+        "kind=ship",
+        "mode=no-mistakes",
+        "yolo=off",
+        "base=main"
+      ],
+      "expect": {
+        "base": "main",
+        "pr_base": ""
+      },
+      "peer": {
+        "status": "planned",
+        "note": "the working-branch case: the only parent known before a PR exists"
+      }
+    },
+    {
+      "name": "declared-base-nested",
+      "meta": [
+        "window=firstmate:fm-parent-nested",
+        "worktree=WORKTREE",
+        "project=PROJECT",
+        "harness=claude",
+        "kind=ship",
+        "mode=direct-PR",
+        "yolo=on",
+        "base=release/2026.09"
+      ],
+      "expect": {
+        "base": "release/2026.09",
+        "pr_base": ""
+      },
+      "peer": {
+        "status": "planned",
+        "note": "a slashed branch name is one value, not a path to split"
+      }
+    },
+    {
+      "name": "pr-base-only",
+      "meta": [
+        "window=firstmate:fm-parent-prbase",
+        "worktree=WORKTREE",
+        "project=PROJECT",
+        "harness=claude",
+        "kind=ship",
+        "mode=no-mistakes",
+        "yolo=off",
+        "pr=https://github.com/example/repo/pull/11",
+        "pr_head=0123456789abcdef0123456789abcdef01234567",
+        "pr_base=main"
+      ],
+      "expect": {
+        "base": "",
+        "pr_base": "main"
+      },
+      "peer": {
+        "status": "planned",
+        "note": "a task launched without a declared base that later opened a PR; pr_base= must not be read as base="
+      }
+    },
+    {
+      "name": "both-agree",
+      "meta": [
+        "window=firstmate:fm-parent-agree",
+        "worktree=WORKTREE",
+        "project=PROJECT",
+        "harness=claude",
+        "kind=ship",
+        "mode=no-mistakes",
+        "yolo=off",
+        "base=main",
+        "pr=https://github.com/example/repo/pull/12",
+        "pr_head=0123456789abcdef0123456789abcdef01234567",
+        "pr_base=main"
+      ],
+      "expect": {
+        "base": "main",
+        "pr_base": "main"
+      },
+      "peer": {
+        "status": "planned",
+        "note": "the ordinary shape once a PR exists: both agree and precedence is unobservable"
+      }
+    },
+    {
+      "name": "restacked-pr-base-wins",
+      "meta": [
+        "window=firstmate:fm-parent-restacked",
+        "worktree=WORKTREE",
+        "project=PROJECT",
+        "harness=claude",
+        "kind=ship",
+        "mode=no-mistakes",
+        "yolo=off",
+        "base=main",
+        "pr=https://github.com/example/repo/pull/13",
+        "pr_head=0123456789abcdef0123456789abcdef01234567",
+        "pr_base=feature/stack-1"
+      ],
+      "expect": {
+        "base": "main",
+        "pr_base": "feature/stack-1"
+      },
+      "peer": {
+        "status": "planned",
+        "note": "the case precedence exists for: the PR was retargeted onto another branch after launch, so the board parents this branch under feature/stack-1 and keeps base as the stale declared value"
+      }
+    },
+    {
+      "name": "pr-without-a-readable-base",
+      "meta": [
+        "window=firstmate:fm-parent-gitlab",
+        "worktree=WORKTREE",
+        "project=PROJECT",
+        "harness=claude",
+        "kind=ship",
+        "mode=direct-PR",
+        "yolo=off",
+        "base=main",
+        "pr=https://gitlab.com/group/project/-/merge_requests/4"
+      ],
+      "expect": {
+        "base": "main",
+        "pr_base": ""
+      },
+      "peer": {
+        "status": "planned",
+        "note": "a GitLab merge request records no base, exactly as it records no head; the declared base is what the board falls back to"
+      }
+    },
+    {
+      "name": "secondmate-has-no-task-branch",
+      "meta": [
+        "window=firstmate:fm-parent-secondmate",
+        "worktree=HOME",
+        "project=HOME",
+        "harness=claude",
+        "kind=secondmate",
+        "mode=secondmate",
+        "yolo=off",
+        "home=HOME",
+        "projects=alpha, beta"
+      ],
+      "expect": {
+        "base": "",
+        "pr_base": ""
+      },
+      "peer": {
+        "status": "planned",
+        "note": "a secondmate is a firstmate home rather than a branch; --base is refused on that spawn, so the pair is always empty and the board shows no workstream for it"
+      }
+    }
+  ]
+}

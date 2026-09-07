@@ -203,6 +203,7 @@ family_for_basename() {
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
+    fm-spawn-base-branch.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
       ;;
@@ -214,7 +215,7 @@ family_for_basename() {
     fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
       printf '%s\n' afk
       ;;
-    fm-backlog-item-line-contract.test.sh|\
+    fm-backlog-item-line-contract.test.sh|fm-snapshot-branch-parent-contract.test.sh|\
     fm-bearings-snapshot.test.sh|fm-fleet-snapshot-view.test.sh)
       printf '%s\n' snapshot-bearings
       ;;
@@ -932,6 +933,13 @@ families_for_changed_path() {
       printf '%s\n' snapshot-bearings
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
+      ;;
+    bin/fm-pr-lib.sh)
+      # Shared forge-record validation, sourced by both bin/fm-pr-check.sh
+      # (pr-forge) and bin/fm-spawn.sh, whose --base uses the same branch-name
+      # shape (backend-dispatch).
+      printf '%s\n' pr-forge
+      printf '%s\n' backend-dispatch
       ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-merge-policy-lib.sh|bin/fm-teardown.sh|\
     bin/fm-review-diff.sh|bin/fm-x-*|bin/fm-check*)
