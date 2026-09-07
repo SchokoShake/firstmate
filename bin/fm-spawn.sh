@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--base <branch>]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--base <branch>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -32,6 +32,14 @@
 #   or herdr), refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
 #   the new incarnation.
+#   --base <branch> is the branch this task's work will merge into: the branch the
+#   brief tells the crew to branch FROM. It is recorded as base=<branch> and is
+#   what a consumer building a branch tree has to go on until the task has a PR,
+#   whose own base ref bin/fm-pr-check.sh then records as pr_base=. Optional and
+#   absent when not passed; validated as a plain branch name (fm_pr_branch_valid
+#   in bin/fm-pr-lib.sh) and refused otherwise. Refused on --secondmate, which is
+#   a firstmate home rather than a task branch, and on --relaunch, which reuses
+#   the value already recorded.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -141,7 +149,7 @@
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
-#   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo
+#   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo/--base
 #   applies to every pair. A ship batch therefore carries one delivery contract, and each
 #   pair still checks it against its own brief; a batch spanning modes is two invocations.
 #   If config/crew-dispatch.json exists, shared --harness is required for crewmate
@@ -274,6 +282,7 @@ EFFORT=
 BACKEND_ARG=
 MODE=
 YOLO=
+BASE=
 TRACEPARENT_ARG=
 HARNESS_SET=0
 MODEL_SET=0
@@ -281,6 +290,7 @@ EFFORT_SET=0
 BACKEND_SET=0
 MODE_SET=0
 YOLO_SET=0
+BASE_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
 POS=()
@@ -297,6 +307,7 @@ for a in "$@"; do
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
+      base) BASE=$a; BASE_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
@@ -319,6 +330,8 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
+    --base) want_value=base ;;
+    --base=*) BASE=${a#--base=}; BASE_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
     *) POS+=("$a") ;;
@@ -331,6 +344,7 @@ done
 [ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
+[ "$BASE_SET" -eq 0 ] || [ -n "$BASE" ] || { echo "error: --base requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
@@ -350,6 +364,20 @@ case "$EFFORT" in
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
 
+# The branch this task's work merges into, recorded so a consumer can build the
+# branch tree from durable state alone. A secondmate has no task branch to
+# parent, so the flag is meaningless there rather than merely unused.
+if [ "$BASE_SET" -eq 1 ]; then
+  [ "$KIND" != secondmate ] || {
+    echo "error: --base applies only to ship and scout spawns; a secondmate is a firstmate home, not a task branch" >&2
+    exit 1
+  }
+  fm_pr_branch_valid "$BASE" || {
+    echo "error: --base must be a plain branch name (got '$BASE')" >&2
+    exit 1
+  }
+fi
+
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
 # task's own durable record below. Contradicting it on the command line is a
@@ -359,6 +387,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
   [ "$KIND_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2; exit 1; }
   [ "$MODE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded delivery mode; --mode cannot override it" >&2; exit 1; }
   [ "$YOLO_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded yolo posture; --yolo cannot override it" >&2; exit 1; }
+  [ "$BASE_SET" -eq 0 ] || { echo "error: --relaunch reuses the task's recorded base branch; --base cannot override it" >&2; exit 1; }
 else
   # Delivery contract (AGENTS.md section 7). A ship task's mode and yolo are
   # firstmate's per-task decision, so they are required and closed-set validated
@@ -868,6 +897,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   # spanning several modes is two invocations rather than a silent mixed dispatch.
   [ "$MODE_SET" -eq 0 ] || shared_args+=(--mode "$MODE")
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
+  [ "$BASE_SET" -eq 0 ] || shared_args+=(--base "$BASE")
   for pair in "${POS[@]}"; do
     case "$pair" in
       *=*) : ;;
@@ -2661,6 +2691,7 @@ preserve_relaunch_meta() {
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
+  [ -z "$BASE" ] || echo "base=$BASE"
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"

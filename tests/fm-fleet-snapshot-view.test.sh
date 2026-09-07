@@ -95,7 +95,9 @@ EOF
     "kind=ship" \
     "mode=ship" \
     "yolo=off" \
-    "pr=https://github.com/kunchenguid/firstmate/pull/9"
+    "base=main" \
+    "pr=https://github.com/kunchenguid/firstmate/pull/9" \
+    "pr_base=release/2026.07"
   printf 'needs-decision: choose an API shape\n' > "$home/state/ship-task.status"
   # A working ship task proves it through its own semantic busy-state record
   # (bin/fm-busy-lib.sh), which is what the snapshot's current-state read
@@ -166,6 +168,8 @@ test_fixture_snapshot_json() {
     | .current_state.state == "working"
       and .current_state.source == "pane"
       and .pr.url == "https://github.com/kunchenguid/firstmate/pull/9"
+      and .base == "main"
+      and .pr_base == "release/2026.07"
       and .backlog.body_excerpt == "Preserve this detail for bearings."
       and .hints.pending_decision == false
       and .paths.status_log.kind == "event_history"
@@ -187,6 +191,12 @@ test_fixture_snapshot_json() {
       and .paths.worktree.present == false
       and .current_state.state == "unknown"
   ' >/dev/null || fail "cmux missing-file row missing"
+  # A task that recorded no parent branch still carries both fields as empty
+  # strings, which is the answer a consumer reads rather than a missing key.
+  printf '%s' "$out" | jq -e '
+    [ .tasks[] | select(.id != "ship-task") | {base,pr_base} ]
+    | length == 3 and all(.base == "" and .pr_base == "")
+  ' >/dev/null || fail "an undeclared branch parent was not an empty string on every field"
   printf '%s' "$out" | jq -e '
     [.backlog.records[] | select(.state == "queued")] | length == 2
   ' >/dev/null || fail "queued canonical and unstructured backlog records missing"

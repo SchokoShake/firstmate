@@ -292,6 +292,7 @@ Write the task-specific brief under section 11 before spawning.
 ### Dispatch and supervision handoff
 
 Spawn only through `bin/fm-spawn.sh` after the profile and backend checks in section 4.
+Pass `--base <branch>` to that spawn whenever the brief's Setup line branches the task from anything other than the default branch, so `base=` is recorded for the board's branch tree (contract: `bin/fm-spawn.sh` header).
 The spawn must resolve a genuine isolated task worktree distinct from the primary checkout; a failed isolation assertion stops the task.
 After spawning, confirm the worker is processing the brief, handle any trust dialog through `harness-adapters`, and record ship or scout work as under way.
 A persistent secondmate is recorded in the secondmate registry and runtime state, never as a backlog work item.
@@ -358,7 +359,7 @@ The worker reports the PR when CI first becomes green rather than waiting for me
 ### PR ready, landing, and teardown
 
 For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
-Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and the forge's `pr_head=` when available in the task's meta, records the same URL on the backlog item, and arms the watcher's merge poll.
+Run `bin/fm-pr-check.sh <id> <PR url>` - it records `pr=` and, when the forge supplies them, the `pr_head=` and `pr_base=` refs in the task's meta, records the same URL on the backlog item, and arms the watcher's merge poll.
 Tell the captain the PR's full URL, always the complete `https://...` link rather than a bare `#number`, a concise outcome summary, and the no-mistakes risk level when applicable.
 A captain instruction to merge is explicit authority; `yolo` is the only standing routine authority.
 For any custom `state/<id>.check.sh` you write yourself, keep it an ordinary single-link mode-`0700` file, print one line only when firstmate should wake, print nothing otherwise, finish before `FM_CHECK_TIMEOUT`, then bind its current bytes with `bin/fm-check-register.sh <id>` before the watcher may execute it.

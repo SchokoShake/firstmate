@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Record a PR-ready task: store one validated canonical pr=<url> and the forge's
-# exact pr_head=<sha> when available, atomically arm a static merge poll, and
-# record the same URL on the backlog item through bin/fm-backlog-pr.sh.
+# Record a PR-ready task: store one validated canonical pr=<url>, the forge's
+# exact pr_head=<sha> and pr_base=<branch> when available, atomically arm a
+# static merge poll, and record the same URL on the backlog item through
+# bin/fm-backlog-pr.sh.
+# pr_base is the branch the PR merges into - the parent of this task's branch -
+# and every rerun re-reads it, because a restack moves a PR's base.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -65,19 +68,27 @@ fi
 "$SCRIPT_DIR/fm-pr-check-migrate.sh" --checks-safe || exit 1
 "$FM_ROOT/bin/fm-guard.sh" || true
 
-# pr_head is recorded only when the forge's CLI can supply it. gh exposes the
-# head commit as a selectable field; plain glab exposes it only inside its JSON
+# pr_head and pr_base are recorded only when the forge's CLI can supply them. gh
+# exposes both as selectable fields; plain glab exposes them only inside its JSON
 # output, which would need a JSON processor firstmate does not require, so a
-# GitLab task records no pr_head. Both consumers already treat it as optional:
+# GitLab task records neither. Every consumer already treats them as optional:
 # bin/fm-teardown.sh reads the head from the forge at teardown rather than from
 # metadata and falls back to its provider-agnostic content check, and
-# bin/fm-review-diff.sh resolves the head from the remote when none is recorded.
+# bin/fm-review-diff.sh resolves the head from the remote when none is recorded,
+# and an absent pr_base leaves the fleet snapshot's field empty.
 WT=$(grep '^worktree=' "$META" | tail -1 | cut -d= -f2- || true)
 PR_HEAD=
+PR_BASE=
 if [ "$PROVIDER" = github ] && [ -n "$WT" ] && [ -d "$WT" ] && command -v gh >/dev/null 2>&1; then
   if REMOTE_HEAD=$(cd "$WT" && gh pr view "$URL" --json headRefOid -q .headRefOid 2>/dev/null) \
     && fm_pr_head_valid "$REMOTE_HEAD"; then
     PR_HEAD=$REMOTE_HEAD
+  fi
+  # Asked separately from the head so one unreadable field never costs the
+  # other, and so the head's exact query and its multiline guard stay untouched.
+  if REMOTE_BASE=$(cd "$WT" && gh pr view "$URL" --json baseRefName -q .baseRefName 2>/dev/null) \
+    && fm_pr_branch_valid "$REMOTE_BASE"; then
+    PR_BASE=$REMOTE_BASE
   fi
 fi
 
@@ -108,12 +119,13 @@ STATE_DEVICE=$(fm_pr_file_device "$STATE") || exit 1
 META_TMP=$(mktemp "$STATE/.fm-pr-meta.XXXXXX") || exit 1
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in
-    pr=*|pr_head=*) ;;
+    pr=*|pr_head=*|pr_base=*) ;;
     *) printf '%s\n' "$line" >> "$META_TMP" || exit 1 ;;
   esac
 done < "$META"
 printf 'pr=%s\n' "$URL" >> "$META_TMP" || exit 1
 [ -z "$PR_HEAD" ] || printf 'pr_head=%s\n' "$PR_HEAD" >> "$META_TMP" || exit 1
+[ -z "$PR_BASE" ] || printf 'pr_base=%s\n' "$PR_BASE" >> "$META_TMP" || exit 1
 chmod 0600 "$META_TMP" || exit 1
 fm_pr_private_file_valid "$META_TMP" 600 "$STATE_DEVICE" || exit 1
 fm_pr_metadata_identity_parse "$META_TMP" || exit 1

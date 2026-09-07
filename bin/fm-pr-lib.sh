@@ -213,6 +213,34 @@ fm_pr_head_valid() {
   [[ "$head" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]]
 }
 
+# The plain branch name recorded in a task's `base=` and `pr_base=` fields: one
+# or more "/"-separated segments of [A-Za-z0-9._+@-], no leading dash, no "..",
+# no empty, leading-dot, trailing-dot or ".lock" segment, no trailing slash, and
+# 255 bytes at most. Deliberately a conservative subset of git's own ref grammar,
+# and pure bash, because it also runs inside the watcher's restricted-PATH
+# metadata parse: a legal-but-exotic branch name is simply not recorded, which
+# leaves the field empty rather than failing anything.
+fm_pr_branch_valid() {
+  local branch=${1-} rest seg
+  local LC_ALL=C
+  [ -n "$branch" ] && [ "${#branch}" -le 255 ] || return 1
+  case "$branch" in
+    -*|*/|*..*|@) return 1 ;;
+  esac
+  [[ "$branch" =~ ^[A-Za-z0-9._/+@-]+$ ]] || return 1
+  rest=$branch
+  while [ -n "$rest" ]; do
+    seg=${rest%%/*}
+    case "$seg" in
+      ''|.*|*.|*.lock) return 1 ;;
+    esac
+    case "$rest" in
+      */*) rest=${rest#*/} ;;
+      *) rest= ;;
+    esac
+  done
+}
+
 fm_pr_file_mode() {
   if [ "$(uname)" = Darwin ]; then
     stat -f %Lp "$1" 2>/dev/null
@@ -313,6 +341,12 @@ fm_pr_metadata_identity_parse() {
         if [ "$seen_pr" -eq 1 ]; then
           value=${line#pr_head=}
           fm_pr_head_valid "$value" || post_pr_invalid=1
+        fi
+        ;;
+      pr_base=*)
+        if [ "$seen_pr" -eq 1 ]; then
+          value=${line#pr_base=}
+          fm_pr_branch_valid "$value" || post_pr_invalid=1
         fi
         ;;
       x_request=*|x_request_ts=*|x_followups=*|x_platform=*|x_reply_max_chars=*)
