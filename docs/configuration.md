@@ -161,7 +161,7 @@ Three artifacts wire it, all gitignored runtime state in the home:
   Firstmate does not assert that identity, it reads it, by two routes.
   Preferred is the environment the session itself exports inside a tool call, where `CLAUDE_CODE_SESSION_ID` is the session id and `CLAUDE_PID` is the session process; there is no lookup to miss and no leftover record to mistake for it.
   The fallback looks the harness pid the session lock already holds up in the harness session registry, for a start that runs without those variables.
-  The record's `source` field says which route answered, and when neither does, no record is written and the digest says which check did not pass.
+  The record's `source` field says which route answered, and when neither does, no record is written and the digest prints one `BOOTSTRAP_INFO:` line saying which check did not pass.
   It is written mode 0600 and atomically at every locked session start, and nothing removes it, because a reader detects a stale record from the pid and the session id it names.
   One line of JSON, with these fields:
 

@@ -1,12 +1,13 @@
 # Cross-session messaging: verified transport facts
 
-Maintainer-verification record for the board-answer nudge (`bin/fm-inbox-post.sh`).
-That script's header is the single owner of the frame, the published record, and the flags; this file records the empirical facts that guarantee is currently resting on, and the risk it is accepted under.
+Maintainer-verification record for the board-answer nudge (`bin/fm-inbox-post.sh`) and for the session-identity record a board wakes this session by (`state/board-session.json`, published by `bin/fm-session-start.sh`).
+Each script's header is the single owner of what it publishes - the frame, the inbox record, and the flags for the nudge, and the identity record's fields for the registration - and this file records the empirical facts those guarantees are currently resting on, and the risk they are accepted under.
 
 Verified 2026-08-27 on macOS 24.6.0 (arm64), Claude Code 2.1.247, single OS user.
 The frame was first recovered from 2.1.228 on Linux/WSL and re-derived here on 2.1.246 on 2026-08-26; the 2.1.247 refresh ran the live guard green on all four of its claims with `peerProtocol` unchanged at `1`, which is why the peer-protocol guard in `bin/fm-inbox-post.sh` correctly does not stand the push down on this build.
 
-Refresh this file after every Claude Code upgrade by running the live guard, which is the command that reproduces every claim below:
+Refresh this file after every Claude Code upgrade by running the live guards, which are the commands that reproduce every claim below.
+The registration's guard is recorded in its own section; the nudge's is:
 
 ```
 FM_INBOX_POST_LIVE_E2E=1 tests/fm-inbox-post-live-e2e.test.sh
@@ -111,7 +112,7 @@ Separately confirmed the same day on the same build that the harness pid `bin/fm
 ```
 $ cat ~/firstmate/state/.lock
 3821
-$ python3 -c 'import json;d=json.load(open("~/.claude/sessions/3821.json"));print(d["pid"],d["sessionId"],d["nameSource"])'
+$ python3 -c 'import json,os;d=json.load(open(os.path.expanduser("~/.claude/sessions/3821.json")));print(d["pid"],d["sessionId"],d["nameSource"])'
 3821 e7c7f7ad-6b1e-4b0c-b876-fbbc7a3c9871 derived
 ```
 
@@ -142,10 +143,10 @@ Three things bound that risk, and all three must be kept:
 
 `state/board-session.json` rests on the same kind of undocumented surface and is bounded the same way: `tests/fm-board-session.test.sh` pins both routes portably in CI, `tests/fm-board-session-live-e2e.test.sh` settles the vendor half against a real harness, and a disagreement between the two sources refuses rather than guesses.
 
-The live guard is the one that catches a vendor change, and CI cannot run it: it needs a real harness binary and credentials.
-Run it after every Claude Code upgrade.
+The live guards are the ones that catch a vendor change, and CI cannot run them: they need a real harness binary and credentials.
+Run them after every Claude Code upgrade.
 
-One surface the live guard does not cover is the hook-time environment: `bin/fm-session-start.sh` calls `--publish` from the SessionStart hook, and a publish that silently does not happen leaves no record and no diagnostic.
+One surface the nudge's live guard does not cover is the hook-time environment: `bin/fm-session-start.sh` calls `--publish` from the SessionStart hook, and a publish that silently does not happen leaves no record and no diagnostic.
 Verified read-only on 2.1.247 on 2026-08-27 that a child process spawned by a live session carries `CLAUDE_CODE_MESSAGING_SOCKET`, that the path is a bound AF_UNIX socket, and that it equals the `messagingSocketPath` in that session's registry entry.
 Whether the listener is bound before SessionStart hooks fire remains unverified, and the live guard injects the socket path from the registry rather than letting a hook publish it, so this is an accepted gap.
 Its cost is bounded the same way as every failure above: a session that did not publish is never nudged, the board poll drains its answers at its ordinary latency, and no answer is lost or duplicated.

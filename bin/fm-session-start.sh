@@ -147,8 +147,9 @@
 # the session itself exports inside a tool call (CLAUDE_CODE_SESSION_ID, with
 # CLAUDE_PID as the session process); the fallback looks the lock's harness pid
 # up in the Claude session registry. When neither answers, this writes nothing
-# and prints what it could not confirm. Nothing removes the file - a reader
-# detects a stale one from the pid and the session id.
+# and prints one BOOTSTRAP_INFO: line naming what it could not confirm - a
+# no-action fact, since the board keeps polling. Nothing removes the file - a
+# reader detects a stale one from the pid and the session id.
 # The file exists only on a Claude-harness home, the one harness with such a
 # registry; every other harness neither writes it nor reports its absence.
 # bin/fm-board-session-lib.sh owns both routes and the registry liveness rule.
