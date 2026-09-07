@@ -10,6 +10,10 @@
 #     stated as fixtures")
 #   - the environment route prefers the pid the harness names, and falls back to
 #     the lock's when that process is not running
+#   - CLAUDE_PID absent leaves the environment route open on the lock's pid;
+#     present but dead or non-numeric poisons the whole environment, so the
+#     session id beside it is never published and only the lock pid's own live
+#     entry can be
 #   - the liveness rule, driven against real processes: a matching start time
 #     publishes, a corpse entry whose pid was recycled does not
 #   - the pid-domain half of that rule: this machine's own domain publishes, a
@@ -341,6 +345,69 @@ test_the_named_session_process_is_preferred_and_a_dead_one_is_dropped() {
   pass "a running named session process is preferred, and a dead one falls back to the lock's pid"
 }
 
+# CLAUDE_PID absent says nothing - older builds do not export it - so the
+# environment route stays open on CLAUDE_CODE_SESSION_ID alone, with the lock's
+# pid. CLAUDE_PID present but dead is positive evidence the whole environment
+# was inherited from some other session, and the session id beside it goes with
+# the pid: such a start publishes the lock pid's own live entry, or nothing at
+# all, and never the environment's id. The case with no entry comes first,
+# because it is the one the disagreement check has nothing to compare against.
+test_a_dead_named_process_poisons_the_environment_and_an_absent_one_does_not() {
+  local dir state pid dead named status reason
+  dir="$TMP_ROOT/poisoned-env-registry"
+  state="$TMP_ROOT/poisoned-env-state"
+  mkdir -p "$dir" "$state"
+  start_live_process
+  pid=$LIVE_PID
+  bash -c 'exit 0' >/dev/null 2>&1 &
+  dead=$!
+  wait "$dead" 2>/dev/null || true
+
+  export CLAUDE_CODE_SESSION_ID="33330000-0000-4000-8000-000000000003"
+  for named in "$dead" not-a-pid; do
+    export CLAUDE_PID="$named"
+    status=0
+    reason=$(fm_board_session_publish "$state" "$pid" "$dir") || status=$?
+    [ "$status" -ne 0 ] \
+      || fail "CLAUDE_PID=$named: an environment whose named process is not running was published"
+    assert_absent "$state/board-session.json" \
+      "CLAUDE_PID=$named: a poisoned environment with no entry for the lock's pid left a record"
+    assert_contains "$reason" "$dir" \
+      "CLAUDE_PID=$named: the refusal does not say it looked for the lock pid's own entry"
+  done
+  pass "a dead or non-numeric CLAUDE_PID with no entry for the lock's pid publishes nothing"
+
+  printf '{"pid":%s,"sessionId":"44440000-0000-4000-8000-000000000004","kind":"interactive"}\n' \
+    "$pid" > "$dir/$pid.json"
+  export CLAUDE_PID="$dead"
+  fm_board_session_publish "$state" "$pid" "$dir" >/dev/null \
+    || fail "the lock pid's own live entry was not published under a dead CLAUDE_PID"
+  assert_grep '"source":"registry"' "$state/board-session.json" \
+    "the record does not say the registry route produced it"
+  assert_grep '"session_id":"44440000-0000-4000-8000-000000000004"' "$state/board-session.json" \
+    "the record does not carry the lock pid's own session id"
+  assert_no_grep '33330000-0000-4000-8000-000000000003' "$state/board-session.json" \
+    "the session id from the poisoned environment reached the record"
+  assert_grep '"pid":'"$pid" "$state/board-session.json" \
+    "the record does not name the pid the session lock holds"
+  pass "a dead CLAUDE_PID with a live entry for the lock's pid publishes that entry's id, never the environment's"
+
+  # The same environment with CLAUDE_PID absent rather than dead, and the entry
+  # gone so the environment is the only place the id can have come from.
+  rm -f "$state/board-session.json" "$dir/$pid.json"
+  unset CLAUDE_PID
+  fm_board_session_publish "$state" "$pid" "$dir" >/dev/null \
+    || fail "the environment route was refused with CLAUDE_PID absent"
+  assert_grep '"source":"environment"' "$state/board-session.json" \
+    "the record does not say the environment route produced it"
+  assert_grep '"session_id":"33330000-0000-4000-8000-000000000003"' "$state/board-session.json" \
+    "the record does not carry the session id the environment stated"
+  assert_grep '"pid":'"$pid" "$state/board-session.json" \
+    "the record does not fall back to the pid the session lock holds"
+  unset CLAUDE_CODE_SESSION_ID
+  pass "an absent CLAUDE_PID leaves the environment route open, with the lock's pid"
+}
+
 # The pid domain pins an entry to the machine and pid namespace it was written
 # in, so a matching one publishes and a foreign one is a record from somewhere
 # else and is refused. A host whose machine id cannot be read - a container,
@@ -455,6 +522,7 @@ test_pid_domain_pins_this_machine_and_degrades_without_a_machine_id
 test_non_ascii_registry_values_publish_and_control_characters_refuse
 test_a_dead_pid_is_refused
 test_the_named_session_process_is_preferred_and_a_dead_one_is_dropped
+test_a_dead_named_process_poisons_the_environment_and_an_absent_one_does_not
 test_a_missing_entry_is_refused_and_names_where_it_looked
 test_the_record_is_owner_only_and_written_atomically
 test_the_registry_directory_follows_claude_config_dir

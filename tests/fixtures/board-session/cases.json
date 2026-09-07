@@ -1,5 +1,5 @@
 {
-  "contract": "state/board-session.json, as bin/fm-session-start.sh publishes it at every locked session start (bin/fm-session-start.sh's header is the contract's owner). Each case gives the environment the session start ran in and the Claude session-registry entry the harness wrote for this session; expect is the record they must produce, or null when the identity must be refused and no record written. source names which route produced the session id: environment when the session stated it in CLAUDE_CODE_SESSION_ID, registry when it was read back out of the registry under the session lock's harness pid. {{PID}} stands for the live harness pid, substituted by both sides before comparing. registered_at is asserted for presence and ISO-8601 UTC shape only, never for a value. Entries here carry no procStart or pidDomain, whose liveness rule is exercised against real processes in tests/fm-board-session.test.sh rather than pinned as data.",
+  "contract": "state/board-session.json, as bin/fm-session-start.sh publishes it at every locked session start (bin/fm-session-start.sh's header is the contract's owner). Each case gives the environment the session start ran in and the Claude session-registry entry the harness wrote for this session; expect is the record they must produce, or null when the identity must be refused and no record written. source names which route produced the session id: environment when the session stated it in CLAUDE_CODE_SESSION_ID, registry when it was read back out of the registry under the session lock's harness pid. The environment route is open only while CLAUDE_PID is absent or names a running process. Absent says nothing, because older builds do not export it, and the record then carries the lock's harness pid. Present but non-numeric or dead is evidence the whole environment was inherited from some other session, so CLAUDE_CODE_SESSION_ID is ignored with it and only the registry route under the lock pid remains: that start publishes the lock pid's own live entry or nothing at all, never the environment's id. {{PID}} stands for the live harness pid, substituted by both sides before comparing. registered_at is asserted for presence and ISO-8601 UTC shape only, never for a value. Entries here carry no procStart or pidDomain, whose liveness rule is exercised against real processes in tests/fm-board-session.test.sh rather than pinned as data, and the dead-CLAUDE_PID half of the environment rule is exercised there for the same reason.",
   "peer_implementation": "logbook's board wake path, which reads this record and selects the session with bridge-axi agent-wake --session. Recorded 2026-09-07, while that side is being built against this file; no case has a divergence to record yet.",
   "cases": [
     {
@@ -192,6 +192,34 @@
       "expect": {
         "schema": "fm-board-session.v1",
         "session_id": "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        "pid": "{{PID}}",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-7c",
+        "name_source": "derived",
+        "source": "environment"
+      },
+      "peer": {
+        "status": "pending"
+      }
+    },
+    {
+      "name": "environment-route-without-a-named-process",
+      "note": "CLAUDE_PID absent says nothing, since older builds do not export it, so the environment route stays open on CLAUDE_CODE_SESSION_ID alone and the pid is the harness pid the session lock holds; its entry still supplies the informational fields. The opposite case, a CLAUDE_PID that is present but names no running process, marks the whole environment as inherited from some other session and closes the route; it needs a real dead process, so it is exercised in tests/fm-board-session.test.sh.",
+      "env": {
+        "CLAUDE_CODE_SESSION_ID": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+      },
+      "entry": {
+        "pid": "{{PID}}",
+        "sessionId": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+        "cwd": "/home/captain/firstmate",
+        "kind": "interactive",
+        "name": "firstmate-7c",
+        "nameSource": "derived"
+      },
+      "expect": {
+        "schema": "fm-board-session.v1",
+        "session_id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
         "pid": "{{PID}}",
         "cwd": "/home/captain/firstmate",
         "kind": "interactive",

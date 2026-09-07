@@ -174,7 +174,7 @@ Three artifacts wire it, all gitignored runtime state in the home:
   | `kind` | the session class the registry states, such as `interactive`; `null` when the registry omits it |
   | `registered_at` | ISO-8601 UTC, when this session start wrote the record |
   | `name` | the registry's name, informational only; `null` when the registry omits it |
-  | `name_source` | `user`, `derived`, or `null`. `null` is NOT "nobody named it": the harness omits the field for a name set through `CLAUDE_CODE_SESSION_NAME`, which is a name a person chose |
+  | `name_source` | the registry's `nameSource` as written, not a closed set. Seen today: `user`, `derived`, `auto` (a background job's auto-name) and `collision` (a suffix applied because another live session already held the name). `null` when the registry omits the field, and `null` is NOT "nobody named it": the harness omits the field for a name set through `CLAUDE_CODE_SESSION_NAME`, which is a name a person chose |
   | `source` | `environment` or `registry`: which route produced the session id |
 
   `bin/fm-session-start.sh`'s header is the single owner of this record; `tests/fixtures/board-session/cases.json` states the same contract as data for the board that reads it.

@@ -110,16 +110,28 @@ fm_board_session_id_valid() {  # <value>
 # publish a guessed identity.
 fm_board_session_publish() {  # <state> <lock-pid> [registry-dir]
   local state=$1 lock_pid=$2 dir=${3:-}
-  local pid='' entry='' source='' session_id='' cwd='' kind='' name='' name_source=''
+  local pid='' entry='' source='' session_id='' env_session_id='' cwd='' kind='' name='' name_source=''
   local entry_session prior_umask tmp value
   [ -n "$dir" ] || dir=$(fm_board_session_registry_dir)
 
-  # The session process, preferring the pid the harness names over the one the
-  # ancestry walk inferred. A named pid that is not running is not this session,
-  # so it is dropped rather than published.
+  # The session process, and whether the environment may name the session at
+  # all. CLAUDE_PID ABSENT says nothing - older builds do not export it - so the
+  # environment route stays open on CLAUDE_CODE_SESSION_ID alone, with the pid
+  # the lock holds. CLAUDE_PID PRESENT but non-numeric or naming no running
+  # process is positive evidence of a stale or inherited export, and the session
+  # id beside it is no more this session's than the pid was: both are dropped,
+  # and only the registry route under the lock's pid remains. The disagreement
+  # check below cannot catch that case by itself, because a lock pid with no
+  # live entry gives it nothing to compare against.
   case "${CLAUDE_PID:-}" in
-    '' | *[!0-9]*) ;;
-    *) kill -0 "$CLAUDE_PID" 2>/dev/null && pid=$CLAUDE_PID ;;
+    '') env_session_id=${CLAUDE_CODE_SESSION_ID:-} ;;
+    *[!0-9]*) ;;
+    *)
+      if kill -0 "$CLAUDE_PID" 2>/dev/null; then
+        pid=$CLAUDE_PID
+        env_session_id=${CLAUDE_CODE_SESSION_ID:-}
+      fi
+      ;;
   esac
   if [ -z "$pid" ]; then
     case "$lock_pid" in
@@ -136,8 +148,8 @@ fm_board_session_publish() {  # <state> <lock-pid> [registry-dir]
     entry="$dir/$pid.json"
   fi
 
-  if fm_board_session_id_valid "${CLAUDE_CODE_SESSION_ID:-}"; then
-    session_id=$CLAUDE_CODE_SESSION_ID
+  if fm_board_session_id_valid "$env_session_id"; then
+    session_id=$env_session_id
     source=environment
     # Two independent statements of the same identity, so they are checked
     # against each other rather than one being trusted. A live entry under this

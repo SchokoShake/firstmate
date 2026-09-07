@@ -134,7 +134,12 @@
 #   session_id     the harness session id - the selector; survives a resume
 #   pid            the session process this record was resolved against
 #   cwd kind name  the registry's own values, informational; null when absent
-#   name_source    "user", "derived", or null; null is NOT "nobody named it"
+#   name_source    the registry's nameSource as written, not a closed set. Seen
+#                  today: "user", "derived", "auto" (a background job's
+#                  auto-name), "collision" (suffixed because another live
+#                  session held the name). null when the registry omits it,
+#                  which is NOT "nobody named it": the harness omits the field
+#                  for a name set through CLAUDE_CODE_SESSION_NAME
 #   registered_at  ISO-8601 UTC, when this start wrote the record
 #   source         which route produced the id: "environment" or "registry"
 #
