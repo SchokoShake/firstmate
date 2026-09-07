@@ -125,6 +125,35 @@
 # The context and fleet-state digests
 # below are always read-only, so they run unconditionally in both modes.
 #
+# state/board-session.json - THIS HEADER IS ITS ONE OWNER.
+# Written mode 0600 and atomically at every LOCKED session start, never in
+# read-only mode, so a board can wake this session by session id instead of by a
+# name a person has to set by hand and re-set on every start. One line of JSON:
+#
+#   schema         "fm-board-session.v1"
+#   session_id     the harness session id - the selector; survives a resume
+#   pid            the session process this record was resolved against
+#   cwd kind name  the registry's own values, informational; null when absent
+#   name_source    the registry's nameSource as written, not a closed set. Seen
+#                  today: "user", "derived", "auto" (a background job's
+#                  auto-name), "collision" (suffixed because another live
+#                  session held the name). null when the registry omits it,
+#                  which is NOT "nobody named it": the harness omits the field
+#                  for a name set through CLAUDE_CODE_SESSION_NAME
+#   registered_at  ISO-8601 UTC, when this start wrote the record
+#   source         which route produced the id: "environment" or "registry"
+#
+# Identity is READ, never asserted, by two routes. Preferred is the environment
+# the session itself exports inside a tool call (CLAUDE_CODE_SESSION_ID, with
+# CLAUDE_PID as the session process); the fallback looks the lock's harness pid
+# up in the Claude session registry. When neither answers, this writes nothing
+# and prints one BOOTSTRAP_INFO: line naming what it could not confirm - a
+# no-action fact, since the board keeps polling. Nothing removes the file - a
+# reader detects a stale one from the pid and the session id.
+# The file exists only on a Claude-harness home, the one harness with such a
+# registry; every other harness neither writes it nor reports its absence.
+# bin/fm-board-session-lib.sh owns both routes and the registry liveness rule.
+#
 # BACKLOG DIGEST: the startup listing is a RECOVERY input, not a reporting
 # surface, so it carries what this turn can act on and nothing else.
 #   - `done` rows are never listed. Retained completion history belongs to the
@@ -269,6 +298,8 @@ stage() {  # <stage-name>: breadcrumb for the parent's truncation banner
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 # shellcheck source=bin/fm-session-lock-lib.sh
 . "$SCRIPT_DIR/fm-session-lock-lib.sh"
+# shellcheck source=bin/fm-board-session-lib.sh
+. "$SCRIPT_DIR/fm-board-session-lib.sh"
 
 if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
   SESSION_START_BUDGET=${FM_SESSION_START_TIMEOUT:-120}
@@ -644,8 +675,10 @@ if [ "$LOCK_RC" -ne 0 ]; then
     printf '%s\n' "$BAR"
   }
 fi
-REBUILDING_SESSION_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
-print_agents_refresh_if_required "$REBUILDING_SESSION_PID"
+# The harness pid this session is identified by: the same value fm-lock.sh just
+# wrote into the lock, from the same ancestry walk.
+SESSION_HARNESS_PID=$(fm_harness_ancestry_pid 2>/dev/null || true)
+print_agents_refresh_if_required "$SESSION_HARNESS_PID"
 
 if [ "$READ_ONLY" -eq 0 ]; then
   if [ "$REEMIT" -eq 0 ]; then
@@ -662,6 +695,16 @@ if [ "$READ_ONLY" -eq 0 ]; then
   # and the board poll remains the answer's only content path either way
   # (bin/fm-inbox-post.sh owns the record format and the wire frame).
   "$SCRIPT_DIR/fm-inbox-post.sh" --publish >/dev/null 2>&1 || true
+  # Register this session's identity for the same board, for the same reason and
+  # under the same lock-holder-only rule (see the record's contract in the header
+  # above). A decline prints what could not be confirmed and writes nothing.
+  if [ "$PRIMARY_HARNESS" = claude ]; then
+    if ! BOARD_SESSION_OUT=$(fm_board_session_publish \
+      "$STATE" "$SESSION_HARNESS_PID" 2>/dev/null); then
+      printf 'BOOTSTRAP_INFO: this session is not registered for board wake-ups: %s\n' \
+        "${BOARD_SESSION_OUT:-the session registry could not be read}"
+    fi
+  fi
   # Every network call this session start owes is launched HERE, detached and
   # bounded, so it runs concurrently with the whole digest below instead of in
   # front of it. Step 7 harvests whatever it has finished, without ever waiting.

@@ -11,6 +11,9 @@
 #   - the board-answer inbox record (state/primary-inbox) is published by the
 #     lock holder only: a read-only session and a session with no inbox socket
 #     both leave none
+#   - the board wake-up registration (state/board-session.json) follows the same
+#     lock-holder-only rule, an unregisterable session says so and writes
+#     nothing, and a primary on any other harness writes and says nothing
 #   - output section ordering: the safety preamble leads unchanged, live fleet
 #     state precedes the curated memory a truncated tail may take, and the
 #     read-once contract precedes both
@@ -512,23 +515,40 @@ SH
 # codex and opencode have no env markers (ancestry only). Without this, a local
 # claude/pi/grok session fails cases that pin a different fake harness while CI
 # (no ambient markers) still passes.
+# CLAUDE_CODE_SESSION_ID and CLAUDE_PID go with them: the board wake-up
+# registration reads the session's own identity out of those, so a suite run
+# from inside a real session would otherwise register THAT session's id from
+# every fixture home. A case that drives the environment route sets them itself.
 run_session_start() {
   local home=$1 root=$2 path=$3 pi_harness=${4:-}
   if [ -n "$pi_harness" ]; then
-    env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
+    env -u CLAUDECODE -u GROK_AGENT -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PID \
+      PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$SESSION_START"
   else
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+      -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PID \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$SESSION_START"
   fi
 }
 
+# run_session_start, but keeping CLAUDE_CODE_SESSION_ID and CLAUDE_PID as the
+# caller set them: the one case that drives the board registration's environment
+# route needs the variables run_session_start exists to drop.
+run_session_start_with_session_env() {  # <home> <root> <path>
+  local home=$1 root=$2 path=$3
+  env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
+    "$SESSION_START"
+}
+
 run_pi_session_start() {  # <home> <root> <path> [fm-session-start args...]
   local home=$1 root=$2 path=$3
   shift 3
-  env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS=pi \
+  env -u CLAUDECODE -u GROK_AGENT -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PID \
+    PI_CODING_AGENT=true FM_PI_HARNESS=pi \
     FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
     "$SESSION_START" "$@"
@@ -538,6 +558,7 @@ run_named_harness_session_start() {  # <harness> <home> <root> <path> [fm-sessio
   local harness=$1 home=$2 root=$3 path=$4
   shift 4
   env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PID \
     FM_FAKE_HARNESS="$harness" FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
     "$SESSION_START" "$@"
@@ -891,6 +912,127 @@ EOF
   assert_absent "$home/state/primary-inbox" "a session with no inbox socket published a record"
 
   pass "only the lock holder publishes state/primary-inbox; a read-only or inbox-less session leaves none"
+}
+
+# A board wakes this session by session id, so the session has to register that
+# id itself: a session name only counts when a person set one, and the derived
+# name a session gets otherwise is redrawn on every start. The identity is READ
+# out of the harness session registry under the lock's own harness pid - never
+# asserted - so an unregistered session must say so and register nothing rather
+# than publish a guess a wake would silently miss.
+# bin/fm-board-session-lib.sh's own suite owns the record's shape; this pins
+# that session start writes it exactly when it holds the lock.
+test_lock_holder_registers_this_session_for_board_wakeups() {
+  local rec root home fakebin cfg out status record holder_pid
+  rec=$(new_world board-session)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  record="$home/state/board-session.json"
+
+  # The lock pid is this suite's own process, so the registry entry the harness
+  # would have written for it is written here, in a scratch CLAUDE_CONFIG_DIR so
+  # the operator's own sessions are never read.
+  cfg="$TMP_ROOT/board-session-cfg"
+  mkdir -p "$cfg/sessions"
+  printf '{"pid":%s,"sessionId":"7f3d1a2b-0000-4000-8000-abcdefabcdef","cwd":"%s","kind":"interactive","name":"firstmate-7c","nameSource":"derived"}\n' \
+    "$SESSION_START_TEST_HARNESS_PID" "$home" \
+    > "$cfg/sessions/$SESSION_START_TEST_HARNESS_PID.json"
+
+  status=0
+  out=$(CLAUDE_CONFIG_DIR="$cfg" FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 when it registers the session"
+  assert_contains "$out" "lock acquired" "the registering run did not hold the lock"
+  assert_present "$record" "the lock holder registered no session for board wake-ups"
+  assert_grep '"session_id":"7f3d1a2b-0000-4000-8000-abcdefabcdef"' "$record" \
+    "the record does not carry the session id a board selects on"
+  assert_grep "\"pid\":$SESSION_START_TEST_HARNESS_PID" "$record" \
+    "the record does not name the harness pid the lock holds"
+  assert_not_contains "$out" "not registered for board wake-ups" \
+    "a successful registration still reported itself as unregistered"
+
+  # Lock refused by another live holder: nothing is written, so a sibling
+  # session in the same home can never redirect the board's wakes to itself.
+  rm -f "$record"
+  sleep 300 >/dev/null 2>&1 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+  status=0
+  out=$(CLAUDE_CONFIG_DIR="$cfg" FM_FAKE_LIVE_HOLDER_PID="$holder_pid" \
+    FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 on a lock refusal"
+  assert_contains "$out" "READ-ONLY SESSION" "the refused run did not go read-only"
+  assert_absent "$record" "a read-only session registered itself for board wake-ups"
+
+  # No registry entry for this session: the digest says what it could not
+  # confirm, as a no-action fact, and registers nothing.
+  rm -f "$home/state/.lock" "$cfg/sessions/$SESSION_START_TEST_HARNESS_PID.json"
+  status=0
+  out=$(CLAUDE_CONFIG_DIR="$cfg" FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 when it cannot register"
+  assert_contains "$out" "lock acquired" "the unregistered run did not hold the lock"
+  assert_contains "$out" "BOOTSTRAP_INFO: this session is not registered for board wake-ups" \
+    "an unregisterable session did not say so"
+  assert_absent "$record" "an unregisterable session wrote a record anyway"
+
+  # The environment route: inside a tool call the session states its own id, so
+  # a start with no registry entry at all still registers, and the record says
+  # which route answered.
+  status=0
+  out=$(CLAUDE_CONFIG_DIR="$cfg" FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
+    CLAUDE_CODE_SESSION_ID=4c1f9e70-1111-4000-8000-0123456789ab \
+    CLAUDE_PID="$SESSION_START_TEST_HARNESS_PID" \
+    run_session_start_with_session_env "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 on the environment route"
+  assert_present "$record" "the environment route registered nothing"
+  assert_grep '"session_id":"4c1f9e70-1111-4000-8000-0123456789ab"' "$record" \
+    "the record does not carry the session id the session itself stated"
+  assert_grep '"source":"environment"' "$record" \
+    "the record does not say the environment route produced it"
+  assert_not_contains "$out" "not registered for board wake-ups" \
+    "the environment route reported itself as unregistered"
+
+  pass "only the lock holder registers this session for board wake-ups, by either route, and an unregisterable one says so"
+}
+
+# The registry the registration reads exists only on Claude Code, so a primary
+# on any other harness neither registers nor reports itself unregistered: that
+# line would name a directory the harness never writes, on every start, with
+# nothing anyone could do about it. Drive a locked codex primary against the
+# very registry entry a Claude primary registers from, so the harness is the
+# only thing that separates the two outcomes.
+test_a_non_claude_primary_registers_nothing_for_board_wakeups() {
+  local rec root home fakebin cfg out status
+  rec=$(new_world board-session-codex)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" codex
+  cfg="$TMP_ROOT/board-session-codex-cfg"
+  mkdir -p "$cfg/sessions"
+  printf '{"pid":%s,"sessionId":"9a8b7c6d-0000-4000-8000-fedcbafedcba","cwd":"%s","kind":"interactive","name":"firstmate-2e","nameSource":"derived"}\n' \
+    "$SESSION_START_TEST_HARNESS_PID" "$home" \
+    > "$cfg/sessions/$SESSION_START_TEST_HARNESS_PID.json"
+
+  status=0
+  out=$(CLAUDE_CONFIG_DIR="$cfg" \
+    run_named_harness_session_start codex "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+  expect_code 0 "$status" "fm-session-start.sh must exit 0 on a codex primary"
+  assert_contains "$out" "lock acquired" "the codex run did not hold the lock"
+  assert_contains "$out" "primary harness: codex" "the fixture did not run as a codex primary"
+  assert_absent "$home/state/board-session.json" "a codex primary registered itself for board wake-ups"
+  assert_not_contains "$out" "not registered for board wake-ups" \
+    "a codex primary reported a registration it can never have"
+
+  pass "a locked non-Claude primary neither registers for board wake-ups nor reports itself unregistered"
 }
 
 test_trace_context_effective_state_is_frozen_after_lock() {
@@ -2469,6 +2611,8 @@ test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_lock_holder_publishes_inbox_and_read_only_session_does_not
+test_lock_holder_registers_this_session_for_board_wakeups
+test_a_non_claude_primary_registers_nothing_for_board_wakeups
 test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner
 test_output_ordering_diagnostics_lead

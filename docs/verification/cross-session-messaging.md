@@ -1,12 +1,13 @@
 # Cross-session messaging: verified transport facts
 
-Maintainer-verification record for the board-answer nudge (`bin/fm-inbox-post.sh`).
-That script's header is the single owner of the frame, the published record, and the flags; this file records the empirical facts that guarantee is currently resting on, and the risk it is accepted under.
+Maintainer-verification record for the board-answer nudge (`bin/fm-inbox-post.sh`) and for the session-identity record a board wakes this session by (`state/board-session.json`, published by `bin/fm-session-start.sh`).
+Each script's header is the single owner of what it publishes - the frame, the inbox record, and the flags for the nudge, and the identity record's fields for the registration - and this file records the empirical facts those guarantees are currently resting on, and the risk they are accepted under.
 
 Verified 2026-08-27 on macOS 24.6.0 (arm64), Claude Code 2.1.247, single OS user.
 The frame was first recovered from 2.1.228 on Linux/WSL and re-derived here on 2.1.246 on 2026-08-26; the 2.1.247 refresh ran the live guard green on all four of its claims with `peerProtocol` unchanged at `1`, which is why the peer-protocol guard in `bin/fm-inbox-post.sh` correctly does not stand the push down on this build.
 
-Refresh this file after every Claude Code upgrade by running the live guard, which is the command that reproduces every claim below:
+Refresh this file after every Claude Code upgrade by running the live guards, which are the commands that reproduce every claim below.
+The registration's guard is recorded in its own section; the nudge's is:
 
 ```
 FM_INBOX_POST_LIVE_E2E=1 tests/fm-inbox-post-live-e2e.test.sh
@@ -92,6 +93,38 @@ The accepted values are `accept`, `hold`, and `refuse`.
 
 An attested `from-mode` that does not match the receiver's class is held as a mismatch on this version, so attesting is not a workaround; it is a second way to be held, on top of being a false claim by a process that has no permission class.
 
+## The session states its own identity, and the registry agrees (2026-09-07, 2.1.263)
+
+`state/board-session.json` exists because a session name is not a handle: it counts as one only when a person set it, and the derived name a session gets otherwise carries a random byte redrawn on every start, so a board configured against it fails as a quiet `no_match`.
+The record carries the session id instead, and it resolves that id by two routes whose agreement is the fact worth verifying.
+
+Measured against Claude Code 2.1.263 on Linux under WSL 2, by `tests/fm-board-session-live-e2e.test.sh`: a throwaway named session was started, made to run `printenv` from a real tool call, and its output compared to the registry entry that same session wrote.
+
+```
+$ FM_BOARD_SESSION_LIVE_E2E=1 tests/fm-board-session-live-e2e.test.sh
+ok - a live 2.1.263 (Claude Code) tool call states the same session id and pid the registry records
+ok - the real publisher registers a live session from its own environment
+```
+
+Inside a tool call `CLAUDE_CODE_SESSION_ID` equals the registry's `sessionId` and `CLAUDE_PID` equals the pid its entry is keyed by, so the preferred environment route needs no lookup at all.
+Separately confirmed the same day on the same build that the harness pid `bin/fm-lock.sh` writes into a home's session lock, derived from the ancestry walk, is that same registry pid, which is what the fallback route depends on:
+
+```
+$ cat ~/firstmate/state/.lock
+3821
+$ python3 -c 'import json,os;d=json.load(open(os.path.expanduser("~/.claude/sessions/3821.json")));print(d["pid"],d["sessionId"],d["nameSource"])'
+3821 e7c7f7ad-6b1e-4b0c-b876-fbbc7a3c9871 derived
+```
+
+That entry's `nameSource` is `derived`, which is the bug the record answers: this home's own primary session had no name a board could have selected on.
+
+The registry's liveness rule is adopted as bridge-axi's `docs/wake.md` documents it, and both halves were confirmed against a live process on the same build: `procStart` is `/proc/<pid>/stat` field 22, and `pidDomain` is `linux:<contents of /etc/machine-id>:<readlink /proc/self/ns/pid>`.
+Without the `procStart` check a corpse entry under a recycled pid would be published as this session's identity.
+
+Neither variable is documented as meaning what it was measured to mean here, so the runtime does not trust one over the other: when a live entry for the same pid names a different session, that is drift between two vendor sources and the record is refused rather than guessed.
+The cost of that refusal is bounded exactly like a dropped nudge - the board keeps polling - where publishing a wrong session id would send every wake confidently into nothing.
+Re-run the guard above after every Claude Code upgrade.
+
 ## Why a held or dropped nudge is acceptable
 
 Held is not lost.
@@ -108,10 +141,12 @@ Three things bound that risk, and all three must be kept:
 - The peer-protocol guard refuses an unverified protocol instead of guessing.
 - `tests/fm-inbox-post.test.sh` pins the produced frame portably in CI, and the live guard above proves an installed harness still accepts it.
 
-The live guard is the one that catches a vendor change, and CI cannot run it: it needs a real harness binary and credentials.
-Run it after every Claude Code upgrade.
+`state/board-session.json` rests on the same kind of undocumented surface and is bounded the same way: `tests/fm-board-session.test.sh` pins both routes portably in CI, `tests/fm-board-session-live-e2e.test.sh` settles the vendor half against a real harness, and a disagreement between the two sources refuses rather than guesses.
 
-One surface the live guard does not cover is the hook-time environment: `bin/fm-session-start.sh` calls `--publish` from the SessionStart hook, and a publish that silently does not happen leaves no record and no diagnostic.
+The live guards are the ones that catch a vendor change, and CI cannot run them: they need a real harness binary and credentials.
+Run them after every Claude Code upgrade.
+
+One surface the nudge's live guard does not cover is the hook-time environment: `bin/fm-session-start.sh` calls `--publish` from the SessionStart hook, and a publish that silently does not happen leaves no record and no diagnostic.
 Verified read-only on 2.1.247 on 2026-08-27 that a child process spawned by a live session carries `CLAUDE_CODE_MESSAGING_SOCKET`, that the path is a bound AF_UNIX socket, and that it equals the `messagingSocketPath` in that session's registry entry.
 Whether the listener is bound before SessionStart hooks fire remains unverified, and the live guard injects the socket path from the registry rather than letting a hook publish it, so this is an accepted gap.
 Its cost is bounded the same way as every failure above: a session that did not publish is never nudged, the board poll drains its answers at its ordinary latency, and no answer is lost or duplicated.

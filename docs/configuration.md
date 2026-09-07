@@ -142,7 +142,7 @@ No harness protocol asks the agent to source a carrier by hand, and a carrier is
 The cadence-transition rule is the Relay section's: `bin/fm-watch.sh` reads `FM_CHECK_INTERVAL` only at process start, so installing or removing a carrier takes effect when the home-scoped watcher next restarts through the emitted harness protocol.
 While away mode is active the daemon (`bin/fm-supervise-daemon.sh`) owns the watcher and applies no carrier; away-mode cadence remains the deferred follow-up the Relay section records.
 
-## Board-answer nudge (state/primary-inbox, state/logbook-notify-command)
+## Board wake-ups (state/board-session.json, state/primary-inbox, state/logbook-notify-command)
 
 A logbook board holds a captain's answer, but firstmate has nothing running that notices it, so the answer waits for the board poll's next tick.
 The nudge closes that gap: when the board records a response it spawns a firstmate command that wakes the running session immediately.
@@ -153,8 +153,31 @@ It names the channel and says the answers are pending; it never carries an answe
 That is what makes the two compose safely: the nudge only changes WHEN the existing drain runs, so a broken, held, or dropped nudge costs the poll's ordinary latency and can never lose or duplicate an answer.
 Nothing in the answer-handling flow needs to know whether a given drain was triggered by the poll or by a nudge.
 
-Two artifacts wire it, both gitignored runtime state in the home:
+Three artifacts wire it, all gitignored runtime state in the home:
 
+- `state/board-session.json` records who this session IS, so a board can wake it by session id.
+  A session name is not a handle: it counts as one only when a person set it, and the name a session gets otherwise is derived from its directory plus a random byte that is drawn again on every start, so a board configured against it silently stops finding its target.
+  The session id has no such problem, and it survives a resume.
+  Firstmate does not assert that identity, it reads it, by two routes.
+  Preferred is the environment the session itself exports inside a tool call, where `CLAUDE_CODE_SESSION_ID` is the session id and `CLAUDE_PID` is the session process; there is no lookup to miss and no leftover record to mistake for it.
+  The fallback looks the harness pid the session lock already holds up in the harness session registry, for a start that runs without those variables.
+  The record's `source` field says which route answered, and when neither does, no record is written and the digest prints one `BOOTSTRAP_INFO:` line saying which check did not pass.
+  It is written mode 0600 and atomically at every locked session start, and nothing removes it, because a reader detects a stale record from the pid and the session id it names.
+  One line of JSON, with these fields:
+
+  | Field | Value |
+  | --- | --- |
+  | `schema` | `fm-board-session.v1` |
+  | `session_id` | the harness session id: the selector, and the one field the record refuses to be written without |
+  | `pid` | the session process this record was resolved against: `CLAUDE_PID` when the harness names a running one, otherwise the harness pid the session lock holds |
+  | `cwd` | the session's working directory, informational; `null` when the registry omits it |
+  | `kind` | the session class the registry states, such as `interactive`; `null` when the registry omits it |
+  | `registered_at` | ISO-8601 UTC, when this session start wrote the record |
+  | `name` | the registry's name, informational only; `null` when the registry omits it |
+  | `name_source` | the registry's `nameSource` as written, not a closed set. Seen today: `user`, `derived`, `auto` (a background job's auto-name) and `collision` (a suffix applied because another live session already held the name). `null` when the registry omits the field, and `null` is NOT "nobody named it": the harness omits the field for a name set through `CLAUDE_CODE_SESSION_NAME`, which is a name a person chose |
+  | `source` | `environment` or `registry`: which route produced the session id |
+
+  `bin/fm-session-start.sh`'s header is the single owner of this record; `tests/fixtures/board-session/cases.json` states the same contract as data for the board that reads it.
 - `state/primary-inbox` records the session that should be nudged: its socket, pid, session id, advertised peer protocol, and the registry directory it was published from.
   Only the lock holder publishes it, because several sessions can share a home's directory and nothing else distinguishes the real primary among them.
   It is rewritten at every locked session start and needs no cleanup, since every consumer revalidates it and a stale record declines quietly.
@@ -168,11 +191,14 @@ Two artifacts wire it, both gitignored runtime state in the home:
   Both paths arrive single-quoted, so the line is correct as published for a home or checkout under a path holding a space or a quote, and a board that runs it through a shell spawns it verbatim.
   Removing every board poll removes the artifact, and a home with no board writes nothing at all.
 
+A board that wakes the session by session id needs neither a configured name nor a manual rename, so `LOGBOOK_WAKE_NAME` remains valid only as the fallback for a board that has not adopted the record; which one wins is the reader's decision.
+
 `bin/fm-inbox-post.sh --status` reports whether this home has a live inbox, prints that command line, and names the inbound posture below.
 Its header is the single owner of the wire frame, the record format, the flags, and the exit codes; [`verification/cross-session-messaging.md`](verification/cross-session-messaging.md) records the dated transport evidence and the stability risk the transport is accepted under.
 
 The feature is inert everywhere it cannot apply.
-Only Claude Code exposes such an inbox, so a home running any other harness publishes nothing and keeps the poll, with no branch in the operating instructions.
+Only Claude Code exposes such an inbox and such a session registry, so a home running any other harness publishes neither artifact and keeps the poll, with no branch in the operating instructions.
+`state/board-session.json` therefore exists only on a Claude-harness home, and a session start on any other harness neither writes it nor reports that the session is unregistered.
 
 ### Inbound delivery posture (crossSessionInbound)
 

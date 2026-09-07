@@ -104,6 +104,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-check-register.sh`   | Bind an intentional custom watcher check to its current bytes                       |
 | `fm-check-lib.sh`        | Validate custom-check registrations and prepare private execution snapshots          |
 | `fm-inbox-post.sh`       | Publish this session's cross-session inbox, and post one notification-only nudge so a board answer is drained at once instead of at the next poll |
+| `fm-board-session-lib.sh` | Register this session's own identity for a board wake-up, from the session's own environment or, failing that, the lock's harness pid looked up in the Claude session registry |
 | `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication and identity-bound retirement |
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
