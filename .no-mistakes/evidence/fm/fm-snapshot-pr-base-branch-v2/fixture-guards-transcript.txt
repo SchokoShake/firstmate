@@ -1,0 +1,30 @@
+### control: the untouched fixture passes in the exported tree
+ok - every branch-parent case produces the pair the fixture states
+ok - recorded peer divergences are still divergent
+[exit 0]
+
+### guard 1: a divergence the fixture records has quietly converged
+$ jq (.cases[] | select(.name=="restacked-pr-base-wins") | .peer) |= {status:"diverge", expect:{pr_base:"feature/stack-1"}, note:"peer reads the same value"} cases.json > cases.json; bash tests/fm-snapshot-branch-parent-contract.test.sh
+ok - every branch-parent case produces the pair the fixture states
+not ok - a recorded divergence quietly converged:
+case restacked-pr-base-wins: pr_base now matches the peer value "feature/stack-1" the fixture records as divergent
+[exit 1]
+
+### guard 2: a peer status outside the fixture vocabulary (would make guard 1 inert)
+$ jq (.cases[] | select(.name=="both-agree") | .peer.status) = "agreed" cases.json > cases.json; bash tests/fm-snapshot-branch-parent-contract.test.sh
+ok - every branch-parent case produces the pair the fixture states
+not ok - unknown peer status in the fixture:
+case both-agree: unknown peer status "agreed"
+[exit 1]
+
+### expectation drift: fixture claims pr_base wins by being copied into base
+$ jq (.cases[] | select(.name=="restacked-pr-base-wins") | .expect.base) = "feature/stack-1" cases.json > cases.json; bash tests/fm-snapshot-branch-parent-contract.test.sh
+not ok - snapshot branch-parent contract mismatch:
+case restacked-pr-base-wins: base is "main", want "feature/stack-1"
+[exit 1]
+
+### shape drift: fixture expects null for an unknown parent
+$ jq (.cases[] | select(.name=="neither-known") | .expect.pr_base) = null cases.json > cases.json; bash tests/fm-snapshot-branch-parent-contract.test.sh
+not ok - snapshot branch-parent contract mismatch:
+case neither-known: pr_base is "", want null
+[exit 1]

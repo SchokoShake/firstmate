@@ -1,0 +1,149 @@
+
+### 1. Spawn a ship task with --base release/2026.09 (the Setup line's branch-from)
+$ spawn tree-ship-a1 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode no-mistakes --yolo off --base release/2026.09
+spawned tree-ship-a1 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-tree-ship-a1 worktree=/tmp/fm-e2e-branch-parent.mY4Ww6/wt
+[exit 0]
+$ state/tree-ship-a1.meta (branch-parent keys)
+base=release/2026.09
+
+### 2. Snapshot before any PR exists: base declared, pr_base empty string (not null, not missing)
+$ snap
+{"id":"tree-ship-a1","base":"release/2026.09","pr_base":"","pr":null}
+[exit 0]
+
+### 3. Record the PR; the forge (gh pr view --json baseRefName) says its base is release/2026.09
+$ prcheck tree-ship-a1 https://github.com/o/r/pull/11
+skipped: tasks-axi is absent or older than 0.2.4, so the backlog was not written
+armed: state/tree-ship-a1.check.sh
+[exit 0]
+$ state/tree-ship-a1.meta (branch-parent keys)
+base=release/2026.09
+pr=https://github.com/o/r/pull/11
+pr_head=0123456789abcdef0123456789abcdef01234567
+pr_base=release/2026.09
+$ snap
+{"id":"tree-ship-a1","base":"release/2026.09","pr_base":"release/2026.09","pr":"https://github.com/o/r/pull/11"}
+[exit 0]
+
+### 4. Restack: the same PR is retargeted onto main; re-running fm-pr-check refreshes pr_base and keeps base as declared
+$ prcheck tree-ship-a1 https://github.com/o/r/pull/11
+skipped: tasks-axi is absent or older than 0.2.4, so the backlog was not written
+armed: state/tree-ship-a1.check.sh
+[exit 0]
+$ state/tree-ship-a1.meta (branch-parent keys)
+base=release/2026.09
+pr=https://github.com/o/r/pull/11
+pr_head=0123456789abcdef0123456789abcdef01234567
+pr_base=main
+$ snap
+{"id":"tree-ship-a1","base":"release/2026.09","pr_base":"main","pr":"https://github.com/o/r/pull/11"}
+[exit 0]
+
+### 5. Forge cannot answer baseRefName: pr= and pr_head= still recorded, pr_base omitted
+$ spawn tree-ship-b2 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode no-mistakes --yolo off
+spawned tree-ship-b2 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-tree-ship-b2 worktree=/tmp/fm-e2e-branch-parent.mY4Ww6/wt
+[exit 0]
+$ prcheck tree-ship-b2 https://github.com/o/r/pull/12
+skipped: tasks-axi is absent or older than 0.2.4, so the backlog was not written
+armed: state/tree-ship-b2.check.sh
+[exit 0]
+$ state/tree-ship-b2.meta (branch-parent keys)
+pr=https://github.com/o/r/pull/12
+pr_head=0123456789abcdef0123456789abcdef01234567
+
+### 6. GitLab merge request: no pr_base, exactly like no pr_head; the declared base is what remains
+$ spawn tree-ship-c3 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode direct-PR --yolo off --base main
+notice: tree-ship-c3 ships mode=direct-PR while the standing posture for project is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+spawned tree-ship-c3 harness=claude kind=ship mode=direct-PR yolo=off window=firstmate:fm-tree-ship-c3 worktree=/tmp/fm-e2e-branch-parent.mY4Ww6/wt
+[exit 0]
+$ prcheck tree-ship-c3 https://gitlab.com/g/p/-/merge_requests/4
+skipped: tasks-axi is absent or older than 0.2.4, so the backlog was not written
+armed: state/tree-ship-c3.check.sh
+[exit 0]
+$ state/tree-ship-c3.meta (branch-parent keys)
+base=main
+pr=https://gitlab.com/g/p/-/merge_requests/4
+
+### 7. Scout spawn with --base, and a spawn with no --base at all
+$ spawn tree-scout-d4 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --scout --base feature/stack-1
+spawned tree-scout-d4 harness=claude kind=scout window=firstmate:fm-tree-scout-d4 worktree=/tmp/fm-e2e-branch-parent.mY4Ww6/wt
+[exit 0]
+$ state/tree-scout-d4.meta (branch-parent keys)
+base=feature/stack-1
+
+### 8. The snapshot every consumer reads: one row per task, both fields always present strings
+$ snap
+{"id":"tree-scout-d4","base":"feature/stack-1","pr_base":"","pr":null}
+{"id":"tree-ship-a1","base":"release/2026.09","pr_base":"main","pr":"https://github.com/o/r/pull/11"}
+{"id":"tree-ship-b2","base":"","pr_base":"","pr":"https://github.com/o/r/pull/12"}
+{"id":"tree-ship-c3","base":"main","pr_base":"","pr":"https://gitlab.com/g/p/-/merge_requests/4"}
+[exit 0]
+$ every task row has both keys as strings:
+[{"id":"tree-scout-d4","base_type":"string","pr_base_type":"string"},{"id":"tree-ship-a1","base_type":"string","pr_base_type":"string"},{"id":"tree-ship-b2","base_type":"string","pr_base_type":"string"},{"id":"tree-ship-c3","base_type":"string","pr_base_type":"string"}]
+
+### 9. Refusals: a --base that is not a plain branch name never writes metadata
+$ spawn tree-bad-x9 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode no-mistakes --yolo off --base=main..topic
+error: --base must be a plain branch name (got 'main..topic')
+[exit 1]
+(no state/tree-bad-x9.meta written)
+$ spawn tree-bad-x9 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode no-mistakes --yolo off --base=-topic
+error: --base must be a plain branch name (got '-topic')
+[exit 1]
+(no state/tree-bad-x9.meta written)
+$ spawn tree-bad-x9 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode no-mistakes --yolo off --base=window=unexpected
+error: --base must be a plain branch name (got 'window=unexpected')
+[exit 1]
+(no state/tree-bad-x9.meta written)
+$ spawn tree-bad-x9 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode no-mistakes --yolo off --base=release/
+error: --base must be a plain branch name (got 'release/')
+[exit 1]
+(no state/tree-bad-x9.meta written)
+$ spawn tree-bad-x9 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode no-mistakes --yolo off --base=topic.lock
+error: --base must be a plain branch name (got 'topic.lock')
+[exit 1]
+(no state/tree-bad-x9.meta written)
+$ spawn tree-bad-x9 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode no-mistakes --yolo off --base=two words
+error: --base must be a plain branch name (got 'two words')
+[exit 1]
+(no state/tree-bad-x9.meta written)
+$ --base with an embedded newline (would forge a second meta key)
+$ spawn tree-bad-x9 /tmp/fm-e2e-branch-parent.mY4Ww6/project claude --mode no-mistakes --yolo off --base main
+window=unexpected
+error: --base must be a plain branch name (got 'main
+window=unexpected')
+[exit 1]
+(no state/tree-bad-x9.meta written)
+
+### 10. Refusals where --base has no meaning: a secondmate spawn and a relaunch
+$ spawn tree-sm-e5 /tmp/fm-e2e-branch-parent.mY4Ww6/home --secondmate --base main
+error: --base applies only to ship and scout spawns; a secondmate is a firstmate home, not a task branch
+[exit 1]
+$ spawn tree-ship-a1 --relaunch --base main
+error: --relaunch reuses the task's recorded base branch; --base cannot override it
+[exit 1]
+
+### 11. Batch dispatch forwards the shared --base to every pair
+$ spawn tree-batch-f6=/tmp/fm-e2e-branch-parent.mY4Ww6/project tree-batch-g7=/tmp/fm-e2e-branch-parent.mY4Ww6/project --harness claude --mode no-mistakes --yolo off --base release/2026.09
+spawned tree-batch-f6 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-tree-batch-f6 worktree=/tmp/fm-e2e-branch-parent.mY4Ww6/wt
+spawned tree-batch-g7 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-tree-batch-g7 worktree=/tmp/fm-e2e-branch-parent.mY4Ww6/wt
+[exit 0]
+$ state/tree-batch-f6.meta / tree-batch-g7.meta (branch-parent keys)
+base=release/2026.09
+base=release/2026.09
+
+### 12. BEFORE the change: the base commit's snapshot on the very same home has no base / pr_base at all
+$ (base commit 31235bd) fm-fleet-snapshot.sh --json | jq tasks{id,base,pr_base}
+{"id":"tree-batch-f6","base":null,"pr_base":null,"has_base_key":false,"has_pr_base_key":false}
+{"id":"tree-batch-g7","base":null,"pr_base":null,"has_base_key":false,"has_pr_base_key":false}
+{"id":"tree-scout-d4","base":null,"pr_base":null,"has_base_key":false,"has_pr_base_key":false}
+{"id":"tree-ship-a1","base":null,"pr_base":null,"has_base_key":false,"has_pr_base_key":false}
+{"id":"tree-ship-b2","base":null,"pr_base":null,"has_base_key":false,"has_pr_base_key":false}
+{"id":"tree-ship-c3","base":null,"pr_base":null,"has_base_key":false,"has_pr_base_key":false}
+$ (base commit) the new contract test against the old snapshot:
+not ok - snapshot branch-parent contract mismatch:
+case neither-known: the task row has no base field
+case neither-known: the task row has no pr_base field
+case declared-base-no-pr: the task row has no base field
+case declared-base-no-pr: the task row has no pr_base field
+case declared-base-nested: the task row has no base field
+[exit 1]
