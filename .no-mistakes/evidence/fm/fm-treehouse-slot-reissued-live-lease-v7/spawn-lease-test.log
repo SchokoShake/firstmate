@@ -1,0 +1,11 @@
+FM_TEST_BEGIN 2026-09-11T12:16:37Z tests/fm-spawn-lease.test.sh family=backend-dispatch expected_gate_skip=none
+ok - fm-spawn: a fresh spawn takes a durable treehouse lease, records its holder, and cds the pane into it
+ok - fm-spawn: a leased slot another record still names is held aside, handed back, and never used
+ok - fm-spawn: gives up after a bounded search and hands back every slot it held aside
+ok - fm-spawn: a spawn that stops before publishing its record hands its clean lease back
+ok - fm-spawn: an aborted spawn keeps the lease on a slot with uncommitted work rather than discarding it
+# all fm-spawn-lease tests passed
+FM_TEST_END 2026-09-11T12:16:44Z tests/fm-spawn-lease.test.sh exit=0 duration_ms=7516 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=7568
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=7516 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-spawn-lease.test.sh duration_ms=7516

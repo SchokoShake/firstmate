@@ -1,0 +1,70 @@
+
+
+===== 1. legacy-r1 predates durable leases: its slot was only owner-reserved; the pool now leases it to new-r1 =====
+
+$ th status
+1     leased       /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project  (held by fm-task:new-r1:l1789026480.244338.3761)
+[exit 0]
+
+$ cat /tmp/fm-retire-legacy.xBBL/home/state/legacy-r1.meta
+window=firstmate:fm-legacy-r1
+endpoint_task_id=legacy-r1
+worktree=/tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project
+project=/tmp/fm-retire-legacy.xBBL/project
+harness=claude
+kind=ship
+tasktmp=/tmp/fm-retire-legacy.xBBL/tasktmp-legacy-r1
+spawn_gen=s1788765996.150863.30112
+mode=direct-PR
+yolo=off
+[exit 0]
+
+
+===== 2. --retire-record of the legacy record (dry run, then real) =====
+
+$ teardown legacy-r1 --retire-record --dry-run
+REFUSED: cannot prove legacy-r1's working copy /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project was re-leased: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project, and ownership is not inferred; the pool leases /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy.
+Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh legacy-r1), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh legacy-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+$ teardown legacy-r1 --retire-record
+REFUSED: cannot prove legacy-r1's working copy /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project was re-leased: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project, and ownership is not inferred; the pool leases /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy.
+Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh legacy-r1), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh legacy-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+
+===== 3. ordinary teardown of the legacy record, plain =====
+
+$ teardown legacy-r1
+REFUSED: legacy-r1's ownership of its recorded working copy /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project could not be proven: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project, and ownership is not inferred; the pool leases /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy.
+Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh legacy-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+
+===== 4. ordinary teardown of the legacy record, --force =====
+
+$ teardown legacy-r1 --force
+REFUSED: legacy-r1's ownership of its recorded working copy /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project could not be proven: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project, and ownership is not inferred; the pool leases /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy.
+Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh legacy-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+
+===== 5. after: is new-r1's live work still there? who holds the slot? =====
+new-r1's live-work.txt: still present
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     leased       /tmp/fm-retire-legacy.xBBL/th/.treehouse/project-686900/1/project  (held by fm-task:new-r1:l1789026480.244338.3761)
+[exit 0]
+
+$ cat runtime.log
+
+$ ls /tmp/fm-retire-legacy.xBBL/home/state
+legacy-r1.meta
+legacy-r1.status
+new-r1.meta
+new-r1.status

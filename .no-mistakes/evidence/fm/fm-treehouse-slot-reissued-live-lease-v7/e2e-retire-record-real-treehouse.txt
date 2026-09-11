@@ -1,0 +1,273 @@
+
+
+===== 1. A project repo with its own treehouse pool under /tmp/fm-retire-e2e.seIm/th =====
+max_trees = 4
+root = "/tmp/fm-retire-e2e.seIm/th"
+
+
+===== 2. The finished task old-r1 held slot 1 under a durable lease; its lease was released without its record being retired =====
+old-r1 leased: /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project
+
+$ th status
+1     leased       /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project  (held by fm-task:old-r1:l1788765990.150863.30112)
+[exit 0]
+
+$ th return --force /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project
+🌳 Worktree returned to pool.
+[exit 0]
+
+
+===== 3. The pool re-leases the same slot to the next spawn, new-r1, which starts uncommitted work in it =====
+new-r1 leased: /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project
+same slot reissued: yes
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     leased       /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project  (held by fm-task:new-r1:l1789026480.244338.3761)
+[exit 0]
+
+$ cat /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/treehouse-state.json
+{
+  "worktrees": [
+    {
+      "name": "1",
+      "path": "/tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project",
+      "created_at": "2026-09-11T14:21:39.311208296+02:00",
+      "leased": true,
+      "lease_holder": "fm-task:new-r1:l1789026480.244338.3761",
+      "leased_at": "2026-09-11T14:21:39.40900092+02:00"
+    }
+  ]
+}
+
+===== 4. Both firstmate records name that slot; every kind of per-task state record exists for both =====
+
+$ cat /tmp/fm-retire-e2e.seIm/home/state/old-r1.meta
+window=firstmate:fm-old-r1
+endpoint_task_id=old-r1
+worktree=/tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project
+project=/tmp/fm-retire-e2e.seIm/project
+harness=claude
+kind=ship
+tasktmp=/tmp/fm-retire-e2e.seIm/tasktmp-old-r1
+spawn_gen=s1788765996.150863.30112
+mode=direct-PR
+yolo=off
+lease_holder=fm-task:old-r1:l1788765990.150863.30112
+pr=https://github.com/example/repo/pull/829
+busy_gen=g1789129299.245340.5075
+[exit 0]
+
+$ ls -A /tmp/fm-retire-e2e.seIm/home/state
+.count-firstmate_fm-new-r1
+.count-firstmate_fm-old-r1
+.hash-firstmate_fm-new-r1
+.hash-firstmate_fm-old-r1
+.hb-surfaced-new-r1
+.hb-surfaced-old-r1
+.new-r1.open-decisions-cursor
+.old-r1.open-decisions-cursor
+.paused-firstmate_fm-new-r1
+.paused-firstmate_fm-old-r1
+.paused-rechecked-firstmate_fm-new-r1
+.paused-rechecked-firstmate_fm-old-r1
+.paused-resurfaced-firstmate_fm-new-r1
+.paused-resurfaced-firstmate_fm-old-r1
+.pr-check-quarantine
+.seen-new-r1_status
+.seen-new-r1_turn-ended
+.seen-old-r1_status
+.seen-old-r1_turn-ended
+.stale-firstmate_fm-new-r1
+.stale-firstmate_fm-old-r1
+.status-presentation-cursor
+.subsuper-paused-new-r1
+.subsuper-paused-old-r1
+new-r1.busy-gen
+new-r1.busy-state
+new-r1.meta
+new-r1.status
+new-r1.turn-ended
+old-r1.busy-gen
+old-r1.busy-state
+old-r1.meta
+old-r1.status
+old-r1.turn-ended
+
+
+===== 5. Working-copy and pool fingerprint before any teardown =====
+HEAD 9e7ca0161d57968d8952d0ae3d57d10090ae83ae
+git status --porcelain:
+ M README.md
+?? live-work.txt
+files:
+3039aa7a36bbdc966dfb3a11da334b0153d674a35d9413c8225e8fba107d4b3d  ./.git
+79a9df1b2da4d813d924cdc8dbc4ef05a067d74063a9c67027534417dd9d2762  ./README.md
+6dca6795220cf3a0e3907ead372b458ea34bf29af42e08ae99814c4f6cfa503d  ./live-work.txt
+pool record: 1757655600 336
+
+
+===== 6. CHANGE UNDER TEST: dry run of the record-only retirement of old-r1 =====
+
+$ teardown /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M2804J10EN3W2Y98KMVDS51H old-r1 --retire-record --dry-run
+dry run: old-r1's working copy /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project was re-leased: the pool leases /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy, not to this record's claim fm-task:old-r1:l1788765990.150863.30112
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/old-r1.turn-ended
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/old-r1.meta
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.seen-old-r1_status
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.seen-old-r1_turn-ended
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.hb-surfaced-old-r1
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.subsuper-paused-old-r1
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.hash-firstmate_fm-old-r1
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.count-firstmate_fm-old-r1
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.stale-firstmate_fm-old-r1
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.paused-firstmate_fm-old-r1
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.paused-rechecked-firstmate_fm-old-r1
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.paused-resurfaced-firstmate_fm-old-r1
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/old-r1.status
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.old-r1.open-decisions-cursor
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/old-r1.busy-gen
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/old-r1.busy-state
+dry run: would remove /tmp/fm-retire-e2e.seIm/home/state/.pr-check-quarantine/old-r1.diagnostic.ambiguous
+dry run: would leave the working copy, the pool's lease on it, and endpoint firstmate:fm-old-r1 untouched
+[exit 0]
+
+
+===== 7. CHANGE UNDER TEST: ordinary teardown of old-r1, plain and --force, must refuse =====
+
+$ teardown /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M2804J10EN3W2Y98KMVDS51H old-r1
+REFUSED: old-r1's recorded working copy /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project is no longer its own: the pool leases /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy, not to this record's claim fm-task:old-r1:l1788765990.150863.30112.
+Tearing it down would reset that copy and kill the processes in it, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh old-r1 --retire-record
+[exit 1]
+
+$ teardown /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M2804J10EN3W2Y98KMVDS51H old-r1 --force
+REFUSED: old-r1's recorded working copy /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project is no longer its own: the pool leases /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy, not to this record's claim fm-task:old-r1:l1788765990.150863.30112.
+Tearing it down would reset that copy and kill the processes in it, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh old-r1 --retire-record
+[exit 1]
+
+
+===== 8. CHANGE UNDER TEST: retiring the record of the CURRENT holder new-r1 must refuse =====
+
+$ teardown /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M2804J10EN3W2Y98KMVDS51H new-r1 --retire-record --dry-run
+REFUSED: new-r1 still owns its working copy: the pool leases /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project to this record's own claim fm-task:new-r1:l1789026480.244338.3761.
+Dropping only the record would strand that lease and keep the pool slot consumed; tear the task down normally once its work has landed: bin/fm-teardown.sh new-r1
+[exit 1]
+
+
+===== 9. CHANGE UNDER TEST: real record-only retirement of old-r1 =====
+
+$ teardown /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M2804J10EN3W2Y98KMVDS51H old-r1 --retire-record
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/old-r1.turn-ended
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/old-r1.meta
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.seen-old-r1_status
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.seen-old-r1_turn-ended
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.hb-surfaced-old-r1
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.subsuper-paused-old-r1
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.hash-firstmate_fm-old-r1
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.count-firstmate_fm-old-r1
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.stale-firstmate_fm-old-r1
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.paused-firstmate_fm-old-r1
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.paused-rechecked-firstmate_fm-old-r1
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.paused-resurfaced-firstmate_fm-old-r1
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/old-r1.status
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.old-r1.open-decisions-cursor
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/old-r1.busy-gen
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/old-r1.busy-state
+retire-record: removed /tmp/fm-retire-e2e.seIm/home/state/.pr-check-quarantine/old-r1.diagnostic.ambiguous
+retire-record: removed old-r1's row from /tmp/fm-retire-e2e.seIm/home/state/.status-presentation-cursor
+retired record old-r1 (the pool leases /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy, not to this record's claim fm-task:old-r1:l1788765990.150863.30112); left working copy /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project, its pool lease, and every process in it untouched
+Backlog: old-r1 just finished. Run tasks-axi done old-r1 --pr https://github.com/example/repo/pull/829, then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+
+
+===== 10. After: state/ holds only new-r1's records; working copy and pool are byte-identical =====
+
+$ ls -A /tmp/fm-retire-e2e.seIm/home/state
+.count-firstmate_fm-new-r1
+.hash-firstmate_fm-new-r1
+.hb-surfaced-new-r1
+.new-r1.open-decisions-cursor
+.paused-firstmate_fm-new-r1
+.paused-rechecked-firstmate_fm-new-r1
+.paused-resurfaced-firstmate_fm-new-r1
+.pr-check-quarantine
+.seen-new-r1_status
+.seen-new-r1_turn-ended
+.stale-firstmate_fm-new-r1
+.status-presentation-cursor
+.subsuper-paused-new-r1
+new-r1.busy-gen
+new-r1.busy-state
+new-r1.meta
+new-r1.status
+new-r1.turn-ended
+
+$ cat /tmp/fm-retire-e2e.seIm/home/state/.status-presentation-cursor
+new-r1	1:2	0
+
+$ diff fp-before.txt fp-after.txt
+(no difference: HEAD, dirty status, every file hash, and the pool record are unchanged)
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     leased       /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project  (held by fm-task:new-r1:l1789026480.244338.3761)
+[exit 0]
+
+$ cat runtime.log (every tmux/treehouse call teardown made)
+tmux list-windows -t firstmate -F #{window_name}
+tmux list-windows -t firstmate -F #{window_name}
+treehouse calls by teardown: 0
+tmux kill-window calls by teardown: 0
+
+
+===== 11. BASE COMMIT 313bbb6 for contrast: the same shape, ordinary teardown --force of the dead record =====
+
+$ teardown /tmp/fm-retire-e2e.seIm/base old-r1 --force
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/tmp/fm-retire-e2e.seIm/project: skipped: no origin remote
+teardown old-r1 complete (window firstmate:fm-old-r1, worktree /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project)
+Backlog: old-r1 just finished. Run tasks-axi done old-r1 --pr PR_URL, then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+
+$ diff fp-before.txt fp-after-base.txt
+3,4d2
+<  M README.md
+< ?? live-work.txt
+7,9c5,6
+< 79a9df1b2da4d813d924cdc8dbc4ef05a067d74063a9c67027534417dd9d2762  ./README.md
+< 6dca6795220cf3a0e3907ead372b458ea34bf29af42e08ae99814c4f6cfa503d  ./live-work.txt
+< pool record: 1757655600 336
+---
+> f34848ca92665c342abd5816c9e3eda0e82180671195362bcd0080544a3bc2ac  ./README.md
+> pool record: 866979342 193
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     available    /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project
+[exit 0]
+
+$ cat runtime.log
+treehouse return --force /tmp/fm-retire-e2e.seIm/th/.treehouse/project-ecedea/1/project
+tmux kill-window -t =firstmate:=fm-old-r1
+new-r1's live-work.txt: DESTROYED by the base commit's teardown
+
+
+===== cleanup =====
+removed /tmp/fm-retire-e2e.seIm

@@ -1,0 +1,118 @@
+
+
+===== 1. A project with an origin remote and its own treehouse pool under /tmp/fm-spawn-lease-e2e.lLAH/th =====
+slot 1: /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project
+slot 2: /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project
+
+$ th status
+1     available    /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project
+2     available    /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project
+[exit 0]
+
+
+===== 2. PREVENTION: a pre-lease record stale-l2 still names slot 1, whose owner reservation died; the pool would hand slot 1 out first =====
+
+$ cat /tmp/fm-spawn-lease-e2e.lLAH/home/state/stale-l2.meta
+window=firstmate:fm-stale-l2
+endpoint_task_id=stale-l2
+worktree=/tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project
+project=/tmp/fm-spawn-lease-e2e.lLAH/project
+kind=ship
+spawn_gen=s1788765996.150863.30112
+[exit 0]
+
+$ spawn lease-skip-l2 /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project
+warning: /tmp/fm-spawn-lease-e2e.lLAH/home/data/lease-skip-l2/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+warning: pool slot /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project is still named by task record(s) stale-l2; holding it aside and leasing another. Retire or tear those records down so the slot can be reused.
+spawned lease-skip-l2 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-lease-skip-l2 worktree=/tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project
+[exit 0]
+
+$ grep worktree= lease-skip-l2.meta
+worktree=/tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project
+lease_holder=fm-task:lease-skip-l2:l1789129486.319103.1098
+
+$ cat treehouse-lease-skip-l2.log (every treehouse call spawn made)
+treehouse get --lease --lease-holder fm-task:lease-skip-l2:l1789129486.319103.1098
+treehouse get --lease --lease-holder fm-task:lease-skip-l2:l1789129486.319103.1098
+treehouse return --force /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project
+
+$ grep "cd --" tmux-lease-skip-l2.log
+tmux send-keys -t firstmate:fm-lease-skip-l2 cd -- '/tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project' Enter
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     available    /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project
+2     leased       /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project  (held by fm-task:lease-skip-l2:l1789129486.319103.1098)
+[exit 0]
+
+
+===== 3. A fresh spawn on the now-free slot 1 takes a durable lease under its own label and records it =====
+
+$ spawn lease-fresh-l1 /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project
+warning: /tmp/fm-spawn-lease-e2e.lLAH/home/data/lease-fresh-l1/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned lease-fresh-l1 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-lease-fresh-l1 worktree=/tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project
+[exit 0]
+
+$ grep worktree=/lease_holder= lease-fresh-l1.meta
+worktree=/tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project
+lease_holder=fm-task:lease-fresh-l1:l1789129488.319435.14128
+
+$ cat treehouse-lease-fresh-l1.log
+treehouse get --lease --lease-holder fm-task:lease-fresh-l1:l1789129488.319435.14128
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     leased       /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project  (held by fm-task:lease-fresh-l1:l1789129488.319435.14128)
+2     leased       /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project  (held by fm-task:lease-skip-l2:l1789129486.319103.1098)
+[exit 0]
+
+$ cat /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/treehouse-state.json
+{
+  "worktrees": [
+    {
+      "name": "1",
+      "path": "/tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project",
+      "created_at": "2026-09-11T14:24:46.361306667+02:00",
+      "leased": true,
+      "lease_holder": "fm-task:lease-fresh-l1:l1789129488.319435.14128",
+      "leased_at": "2026-09-11T14:24:48.965467746+02:00"
+    },
+    {
+      "name": "2",
+      "path": "/tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project",
+      "created_at": "2026-09-11T14:24:46.3967773+02:00",
+      "leased": true,
+      "lease_holder": "fm-task:lease-skip-l2:l1789129486.319103.1098",
+      "leased_at": "2026-09-11T14:24:46.836377925+02:00"
+    }
+  ]
+}
+
+===== 4. With both slots durably leased, a third spawn cannot be handed either of them (max_trees lowered to 2) =====
+
+$ spawn lease-third-l3 /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project
+warning: /tmp/fm-spawn-lease-e2e.lLAH/home/data/lease-third-l3/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+treehouse: A new version of treehouse is available: v2.0.0 → v2.3.0
+treehouse: Run "treehouse update" to update
+treehouse: 
+treehouse: 🌳 Setting up worktree...
+treehouse: all 2 worktrees are in use or dirty (max_trees = 2). Run 'treehouse status' to see details, or increase max_trees in treehouse.toml
+error: treehouse get --lease could not lease a worktree for lease-third-l3 from /tmp/fm-spawn-lease-e2e.lLAH/project
+[exit 1]
+lease-third-l3 record: not published
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     leased       /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/1/project  (held by fm-task:lease-fresh-l1:l1789129488.319435.14128)
+2     leased       /tmp/fm-spawn-lease-e2e.lLAH/th/.treehouse/project-ed5961/2/project  (held by fm-task:lease-skip-l2:l1789129486.319103.1098)
+[exit 0]
+
+
+===== cleanup =====
+removed /tmp/fm-spawn-lease-e2e.lLAH

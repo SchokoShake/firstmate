@@ -1,0 +1,24 @@
+FM_TEST_BEGIN 2026-09-11T12:48:16Z tests/fm-teardown-retire-record.test.sh family=pr-forge expected_gate_skip=none
+ok - fm-teardown --retire-record: drops every state record of a superseded task and nothing of the current holder's, the working copy, or the pool
+ok - fm-teardown --retire-record --dry-run: prints the verdict and the records it would drop, and changes nothing
+ok - fm-teardown --retire-record --dry-run: scans for armed checks over what completing a pending receipt would leave, so its verdict matches the real run's in both directions
+ok - fm-teardown --retire-record: refuses a record the pool still leases to it, and the lease proves the older claimant re-leased
+ok - fm-teardown --retire-record: a claim is unproven unless the pool's lease confirms it or another record's claim on the same path explains it, and the leased record is refused as the holder
+ok - fm-teardown --retire-record: a record with no recorded claim is unproven whatever its slot shows, and refuses in a real run and a dry run alike, naming --unproven-confirmed
+ok - fm-teardown --retire-record: a secondmate home leased under its bare id on the same path proves the older claim was re-leased
+ok - fm-teardown --retire-record: refuses while a PR merge poll or registered watcher check is armed for the task
+ok - fm-teardown --retire-record: refuses while the record's own endpoint still runs a live agent, with or without --unproven-confirmed
+ok - fm-teardown --retire-record: refuses secondmate homes and Orca worktrees, which are never pool slots it can prove re-leased, with or without --unproven-confirmed
+ok - fm-teardown: rejects unknown or conflicting options, --unproven-confirmed anywhere but with --retire-record among them, before touching anything
+ok - fm-teardown: refuses, with or without --force, to tear down a record whose working copy was re-leased
+ok - fm-teardown: a record with no recorded claim on a copy no other record names tears down normally, as before durable leases, and drops every per-task record, watcher markers included
+ok - fm-teardown: refuses, with or without --force, both records of a pre-lease pair that name one working copy without a claim, naming --unproven-confirmed
+ok - fm-teardown: refuses a claimless record whose copy the pool leases to another record's claim, while that holder's own teardown proceeds
+ok - fm-teardown --retire-record --unproven-confirmed: retires a claimless record after printing the complete plan, in a dry run changes nothing, and leaves the copy, the pool, every endpoint, and every other record alone
+ok - fm-teardown --retire-record --unproven-confirmed: still refuses a record that owns its lease and one with an armed PR merge poll or registered watcher check
+ok - fm-teardown --retire-record: removes the task's own idle /tmp/fm-<id> root
+# all fm-teardown-retire-record tests passed
+FM_TEST_END 2026-09-11T12:48:42Z tests/fm-teardown-retire-record.test.sh exit=0 duration_ms=26204 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=26256
+FM_TEST_SUMMARY_FAMILY family=pr-forge count=1 duration_ms=26204 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-teardown-retire-record.test.sh duration_ms=26204

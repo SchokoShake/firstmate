@@ -1,0 +1,398 @@
+
+
+===== 1. A project repo with its own treehouse pool =====
+
+
+===== 2. The pre-lease shape: slot 1 was handed out under the old owner reservation, which treehouse cleared when that process died; no durable lease exists =====
+
+$ th status
+1     dirty        /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project
+[exit 0]
+
+$ cat /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/treehouse-state.json
+{
+  "worktrees": [
+    {
+      "name": "1",
+      "path": "/tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project",
+      "created_at": "2026-09-11T14:51:17.807907331+02:00"
+    }
+  ]
+}
+
+
+===== 3. Two records with no lease_holder= claim name that slot: stale-r1 (finished, PR 829 merged) and holder-r1 (still working there) =====
+
+$ cat /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.meta
+window=firstmate:fm-stale-r1
+endpoint_task_id=stale-r1
+worktree=/tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project
+project=/tmp/fm-unproven-e2e.l5gc/project
+harness=claude
+kind=ship
+tasktmp=/tmp/fm-unproven-e2e.l5gc/tasktmp-stale-r1
+spawn_gen=s1788765996.150863.30112
+mode=direct-PR
+yolo=off
+busy_gen=g1789131077.984207.14748
+pr=https://github.com/example/repo/pull/829
+[exit 0]
+
+$ ls -A /tmp/fm-unproven-e2e.l5gc/home/state
+.count-firstmate_fm-holder-r1
+.count-firstmate_fm-stale-r1
+.hash-firstmate_fm-holder-r1
+.hash-firstmate_fm-stale-r1
+.hb-surfaced-holder-r1
+.hb-surfaced-stale-r1
+.holder-r1.open-decisions-cursor
+.paused-firstmate_fm-holder-r1
+.paused-firstmate_fm-stale-r1
+.paused-rechecked-firstmate_fm-holder-r1
+.paused-rechecked-firstmate_fm-stale-r1
+.paused-resurfaced-firstmate_fm-holder-r1
+.paused-resurfaced-firstmate_fm-stale-r1
+.pr-check-quarantine
+.seen-holder-r1_status
+.seen-holder-r1_turn-ended
+.seen-stale-r1_status
+.seen-stale-r1_turn-ended
+.stale-firstmate_fm-holder-r1
+.stale-firstmate_fm-stale-r1
+.stale-r1.open-decisions-cursor
+.status-presentation-cursor
+.subsuper-paused-holder-r1
+.subsuper-paused-stale-r1
+holder-r1.busy-gen
+holder-r1.busy-state
+holder-r1.meta
+holder-r1.status
+holder-r1.turn-ended
+stale-r1.busy-gen
+stale-r1.busy-state
+stale-r1.meta
+stale-r1.status
+stale-r1.turn-ended
+
+
+===== 4. Ordinary teardown of the STALE claimless record, plain and --force, must refuse and name the way through =====
+
+$ teardown stale-r1
+REFUSED: stale-r1's ownership of its recorded working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project could not be proven: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) holder-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy.
+Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+$ teardown stale-r1 --force
+REFUSED: stale-r1's ownership of its recorded working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project could not be proven: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) holder-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy.
+Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+
+===== 5. Ordinary teardown of the claimless record that STILL HOLDS the copy, plain and --force, must refuse the same way =====
+
+$ teardown holder-r1
+REFUSED: holder-r1's ownership of its recorded working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project could not be proven: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) stale-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy.
+Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh holder-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+$ teardown holder-r1 --force
+REFUSED: holder-r1's ownership of its recorded working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project could not be proven: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) stale-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy.
+Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh holder-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+$ cat runtime.log (every tmux/treehouse call so far)
+(0 lines)
+
+
+===== 6. The flag is valid only with --retire-record: each of these must exit 2 and touch nothing =====
+
+$ teardown stale-r1 --unproven-confirmed
+error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]
+[exit 2]
+
+$ teardown stale-r1 --force --unproven-confirmed
+error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]
+[exit 2]
+
+$ teardown stale-r1 --unproven-confirmed --dry-run
+error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]
+[exit 2]
+
+$ teardown stale-r1 --retire-record --force --unproven-confirmed
+error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]
+[exit 2]
+
+$ FM_UNPROVEN_CONFIRMED=1 teardown stale-r1 --retire-record   (an environment variable must not turn it on)
+REFUSED: cannot prove stale-r1's working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project was re-leased: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) holder-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy.
+Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh stale-r1), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+
+===== 7. --retire-record on the stale record refuses without the acknowledgement =====
+
+$ teardown stale-r1 --retire-record --dry-run
+REFUSED: cannot prove stale-r1's working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project was re-leased: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) holder-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy.
+Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh stale-r1), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+$ teardown stale-r1 --retire-record
+REFUSED: cannot prove stale-r1's working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project was re-leased: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) holder-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy.
+Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh stale-r1), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+
+===== 8. --unproven-confirmed --dry-run, in either order, prints the verdict and the plan and changes nothing =====
+
+$ teardown stale-r1 --retire-record --unproven-confirmed --dry-run
+dry run: stale-r1's ownership of its working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project could not be proven, which --unproven-confirmed acknowledges: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) holder-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.turn-ended
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.meta
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.seen-stale-r1_status
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.seen-stale-r1_turn-ended
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.hb-surfaced-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.subsuper-paused-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.hash-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.count-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.stale-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.paused-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.paused-rechecked-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.paused-resurfaced-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.status
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.stale-r1.open-decisions-cursor
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.busy-gen
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.busy-state
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.pr-check-quarantine/stale-r1.diagnostic.ambiguous
+dry run: would leave the working copy, the pool's lease on it, and endpoint firstmate:fm-stale-r1 untouched
+[exit 0]
+
+$ teardown stale-r1 --dry-run --unproven-confirmed --retire-record
+dry run: stale-r1's ownership of its working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project could not be proven, which --unproven-confirmed acknowledges: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) holder-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.turn-ended
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.meta
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.seen-stale-r1_status
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.seen-stale-r1_turn-ended
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.hb-surfaced-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.subsuper-paused-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.hash-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.count-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.stale-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.paused-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.paused-rechecked-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.paused-resurfaced-firstmate_fm-stale-r1
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.status
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.stale-r1.open-decisions-cursor
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.busy-gen
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.busy-state
+dry run: would remove /tmp/fm-unproven-e2e.l5gc/home/state/.pr-check-quarantine/stale-r1.diagnostic.ambiguous
+dry run: would leave the working copy, the pool's lease on it, and endpoint firstmate:fm-stale-r1 untouched
+[exit 0]
+
+$ ls -A /tmp/fm-unproven-e2e.l5gc/home/state (unchanged)
+.count-firstmate_fm-holder-r1
+.count-firstmate_fm-stale-r1
+.hash-firstmate_fm-holder-r1
+.hash-firstmate_fm-stale-r1
+.hb-surfaced-holder-r1
+.hb-surfaced-stale-r1
+.holder-r1.open-decisions-cursor
+.paused-firstmate_fm-holder-r1
+.paused-firstmate_fm-stale-r1
+.paused-rechecked-firstmate_fm-holder-r1
+.paused-rechecked-firstmate_fm-stale-r1
+.paused-resurfaced-firstmate_fm-holder-r1
+.paused-resurfaced-firstmate_fm-stale-r1
+.pr-check-quarantine
+.seen-holder-r1_status
+.seen-holder-r1_turn-ended
+.seen-stale-r1_status
+.seen-stale-r1_turn-ended
+.stale-firstmate_fm-holder-r1
+.stale-firstmate_fm-stale-r1
+.stale-r1.open-decisions-cursor
+.status-presentation-cursor
+.subsuper-paused-holder-r1
+.subsuper-paused-stale-r1
+holder-r1.busy-gen
+holder-r1.busy-state
+holder-r1.meta
+holder-r1.status
+holder-r1.turn-ended
+stale-r1.busy-gen
+stale-r1.busy-state
+stale-r1.meta
+stale-r1.status
+stale-r1.turn-ended
+
+$ diff fp-before.txt fp-mid.txt
+(no difference)
+
+
+===== 9. --retire-record --unproven-confirmed on the stale record: prints the complete plan first, then removes exactly that =====
+
+$ teardown stale-r1 --retire-record --unproven-confirmed
+retire-record: stale-r1's ownership of its working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project could not be proven, which --unproven-confirmed acknowledges: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) holder-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy
+retire-record: --unproven-confirmed removes exactly these records of stale-r1 and nothing else:
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.turn-ended
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.meta
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.seen-stale-r1_status
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.seen-stale-r1_turn-ended
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.hb-surfaced-stale-r1
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.subsuper-paused-stale-r1
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.hash-firstmate_fm-stale-r1
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.count-firstmate_fm-stale-r1
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.stale-firstmate_fm-stale-r1
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.paused-firstmate_fm-stale-r1
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.paused-rechecked-firstmate_fm-stale-r1
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.paused-resurfaced-firstmate_fm-stale-r1
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.status
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.stale-r1.open-decisions-cursor
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.busy-gen
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.busy-state
+retire-record: will remove /tmp/fm-unproven-e2e.l5gc/home/state/.pr-check-quarantine/stale-r1.diagnostic.ambiguous
+retire-record: will remove stale-r1's row from /tmp/fm-unproven-e2e.l5gc/home/state/.status-presentation-cursor
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.turn-ended
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.meta
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.seen-stale-r1_status
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.seen-stale-r1_turn-ended
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.hb-surfaced-stale-r1
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.subsuper-paused-stale-r1
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.hash-firstmate_fm-stale-r1
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.count-firstmate_fm-stale-r1
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.stale-firstmate_fm-stale-r1
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.paused-firstmate_fm-stale-r1
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.paused-rechecked-firstmate_fm-stale-r1
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.paused-resurfaced-firstmate_fm-stale-r1
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.status
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.stale-r1.open-decisions-cursor
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.busy-gen
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/stale-r1.busy-state
+retire-record: removed /tmp/fm-unproven-e2e.l5gc/home/state/.pr-check-quarantine/stale-r1.diagnostic.ambiguous
+retire-record: removed stale-r1's row from /tmp/fm-unproven-e2e.l5gc/home/state/.status-presentation-cursor
+retired record stale-r1 on --unproven-confirmed (the record carries no lease claim, so it predates durable leases and nothing recorded ties it to /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, and ownership is not inferred; record(s) holder-r1 also name /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project as their working copy); left working copy /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project, whatever the pool holds on it, and every process in it untouched
+Backlog: stale-r1 just finished. Run tasks-axi done stale-r1 --pr https://github.com/example/repo/pull/829, then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+
+
+===== 10. After: only holder-r1's records remain; copy, pool, and endpoints untouched =====
+
+$ ls -A /tmp/fm-unproven-e2e.l5gc/home/state
+.count-firstmate_fm-holder-r1
+.hash-firstmate_fm-holder-r1
+.hb-surfaced-holder-r1
+.holder-r1.open-decisions-cursor
+.paused-firstmate_fm-holder-r1
+.paused-rechecked-firstmate_fm-holder-r1
+.paused-resurfaced-firstmate_fm-holder-r1
+.pr-check-quarantine
+.seen-holder-r1_status
+.seen-holder-r1_turn-ended
+.stale-firstmate_fm-holder-r1
+.status-presentation-cursor
+.subsuper-paused-holder-r1
+holder-r1.busy-gen
+holder-r1.busy-state
+holder-r1.meta
+holder-r1.status
+holder-r1.turn-ended
+
+$ cat /tmp/fm-unproven-e2e.l5gc/home/state/.status-presentation-cursor
+holder-r1	1:2	0
+
+$ diff fp-before.txt fp-after.txt
+(no difference: HEAD, dirty status, every file hash, and the pool record are unchanged)
+holder-r1's live-work.txt: still present
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     dirty        /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project
+[exit 0]
+
+$ cat runtime.log (every tmux/treehouse call teardown made in steps 4-9)
+tmux list-windows -t firstmate -F #{window_name}
+tmux list-windows -t firstmate -F #{window_name}
+tmux list-windows -t firstmate -F #{window_name}
+treehouse calls: 0; tmux kill-window calls: 0
+
+
+===== 10b. The way through, completed: with stale-r1 gone, holder-r1 is uncontested and ordinary teardown of it works as before (dirty refusal, then --force returns the slot) =====
+
+$ teardown holder-r1
+REFUSED: worktree /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project has uncommitted changes.
+uncommitted changes present
+Commit them (or get the captain's explicit OK to discard, then --force).
+[exit 1]
+
+$ teardown holder-r1 --force
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+🌳 Worktree returned to pool.
+/tmp/fm-unproven-e2e.l5gc/project: skipped: no origin remote
+teardown holder-r1 complete (window firstmate:fm-holder-r1, worktree /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project)
+Backlog: holder-r1 just finished. Run tasks-axi done holder-r1 --pr PR_URL, then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+
+$ cat runtime.log
+treehouse return --force /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project
+tmux kill-window -t =firstmate:=fm-holder-r1
+
+$ ls -A /tmp/fm-unproven-e2e.l5gc/home/state
+.status-presentation-cursor
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     available    /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project
+[exit 0]
+
+
+===== 11. A record whose own claim the pool still leases to it refuses even with the flag (dropping it would strand the lease) =====
+own-r1 leased: /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     leased       /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project  (held by fm-task:own-r1:l1789000000.4242.17)
+[exit 0]
+
+$ teardown own-r1 --retire-record --unproven-confirmed
+REFUSED: own-r1 still owns its working copy: the pool leases /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project to this record's own claim fm-task:own-r1:l1789000000.4242.17.
+Dropping only the record would strand that lease and keep the pool slot consumed; tear the task down normally once its work has landed: bin/fm-teardown.sh own-r1
+--unproven-confirmed acknowledges only a record whose ownership could not be proven; this record's ownership is proven, so it changes nothing here.
+[exit 1]
+
+$ teardown own-r1 --retire-record --unproven-confirmed --dry-run
+REFUSED: own-r1 still owns its working copy: the pool leases /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project to this record's own claim fm-task:own-r1:l1789000000.4242.17.
+Dropping only the record would strand that lease and keep the pool slot consumed; tear the task down normally once its work has landed: bin/fm-teardown.sh own-r1
+--unproven-confirmed acknowledges only a record whose ownership could not be proven; this record's ownership is proven, so it changes nothing here.
+[exit 1]
+own-r1.meta: still present
+
+$ th status
+A new version of treehouse is available: v2.0.0 → v2.3.0
+Run "treehouse update" to update
+
+1     leased       /tmp/fm-unproven-e2e.l5gc/th/.treehouse/project-12a419/1/project  (held by fm-task:own-r1:l1789000000.4242.17)
+[exit 0]
+
+
+===== 12. A claimless record with an armed PR merge poll still refuses with the flag =====
+
+$ teardown poll-r1 --retire-record --unproven-confirmed
+REFUSED: poll-r1 still has an armed PR merge poll (state/poll-r1.check.sh state/poll-r1.pr-poll state/poll-r1.pr-poll-registration state/poll-r1.check-trust) watching https://github.com/example/repo/pull/829; dropping the record under it would orphan the poll and its trust binding.
+The watcher retires that poll itself when it reports the merge, so retry once the merge lands; a PR closed without merging means the work never landed, which is a decision for the captain rather than bookkeeping.
+[exit 1]
+/tmp/fm-unproven-e2e.l5gc/home/state/poll-r1.check-trust
+/tmp/fm-unproven-e2e.l5gc/home/state/poll-r1.check.sh
+/tmp/fm-unproven-e2e.l5gc/home/state/poll-r1.meta
+/tmp/fm-unproven-e2e.l5gc/home/state/poll-r1.pr-poll
+/tmp/fm-unproven-e2e.l5gc/home/state/poll-r1.pr-poll-registration
+/tmp/fm-unproven-e2e.l5gc/home/state/poll-r1.status
