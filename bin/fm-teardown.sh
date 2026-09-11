@@ -94,7 +94,8 @@
 #   endpoint that holds a live agent or cannot be proven agent-free, an armed PR
 #   merge poll or registered watcher check, and an owed public reply, and each
 #   refusal names the path that applies instead. --dry-run prints the verdict
-#   and the records it would remove, and changes nothing.
+#   and the records it would remove, refuses exactly where a real run would,
+#   and changes nothing.
 #   Ordinary teardown, with or without --force, refuses before any worktree,
 #   process, or endpoint step when that verdict says the recorded slot was
 #   re-leased, because each of those steps acts on the recorded path and would
@@ -2500,24 +2501,27 @@ refuse_if_slot_released() {
 # result whose retirement was interrupted is finished first, exactly as
 # ordinary teardown finishes it.
 retire_record_refuse_armed_check() {
-  local artifact armed=
+  local artifact armed='' recovered=0 poll_armed=0
   if [ "$RETIRE_DRY_RUN" = 1 ]; then
     if [ -e "$STATE/$ID.pr-poll-retirement" ] || [ -L "$STATE/$ID.pr-poll-retirement" ]; then
-      echo "dry run: a real run first completes $ID's pending PR-poll retirement, then checks again for an armed poll"
-      return 0
+      recovered=1
+      echo "dry run: a real run first completes $ID's pending PR-poll retirement, which removes state/$ID.check.sh, state/$ID.pr-poll, state/$ID.pr-poll-registration, and the receipt, then checks again for an armed poll"
     fi
   elif ! fm_pr_poll_retirement_recover_one "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then
     echo "REFUSED: $ID's pending PR-poll retirement could not be completed; preserving every record." >&2
     return 1
   fi
   for artifact in check.sh pr-poll pr-poll-registration check-trust; do
+    if [ "$recovered" = 1 ] && [ "$artifact" != check-trust ]; then
+      continue
+    fi
     if [ -e "$STATE/$ID.$artifact" ] || [ -L "$STATE/$ID.$artifact" ]; then
       armed="$armed state/$ID.$artifact"
+      case "$artifact" in pr-poll|pr-poll-registration) poll_armed=1 ;; esac
     fi
   done
   [ -n "$armed" ] || return 0
-  if [ -e "$STATE/$ID.pr-poll" ] || [ -L "$STATE/$ID.pr-poll" ] \
-    || [ -e "$STATE/$ID.pr-poll-registration" ] || [ -L "$STATE/$ID.pr-poll-registration" ]; then
+  if [ "$poll_armed" = 1 ]; then
     echo "REFUSED: $ID still has an armed PR merge poll (${armed# }) watching ${PR_URL:-its PR}; dropping the record under it would orphan the poll and its trust binding." >&2
     echo "The watcher retires that poll itself when it reports the merge, so retry once the merge lands; a PR closed without merging means the work never landed, which is a decision for the captain rather than bookkeeping." >&2
   else

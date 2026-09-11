@@ -31,7 +31,9 @@
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
 #   or herdr), refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation.
+#   the new incarnation. It also refuses a ship or scout record whose treehouse
+#   slot the pool has provably re-leased to another holder (bin/fm-slot-lib.sh
+#   owns that verdict), naming bin/fm-teardown.sh <id> --retire-record instead.
 #   --base <branch> is the branch this task's work will merge into: the branch the
 #   brief tells the crew to branch FROM. It is recorded as base=<branch> and is
 #   what a consumer building a branch tree has to go on until the task has a PR,
@@ -1142,6 +1144,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
       echo "error: task $ID has no recorded project; refusing to relaunch" >&2
       exit 1
     }
+    if [ "$BACKEND" != orca ] && fm_slot_verdict "$STATE" "$ID" && [ "$FM_SLOT_VERDICT" = released ]; then
+      echo "error: task $ID's recorded worktree $RELAUNCH_WT is no longer its own: $FM_SLOT_EVIDENCE; refusing to launch a replacement inside another holder's working copy. Retire only this task's record with bin/fm-teardown.sh $ID --retire-record, or spawn a fresh task from its branch" >&2
+      exit 1
+    fi
   fi
   if [ "$BACKEND" = herdr ]; then
     HERDR_SES=$(fm_meta_get "$RELAUNCH_META" herdr_session)

@@ -15,8 +15,9 @@
 #   5. A launch failure after the agent is stopped keeps the prior record,
 #      reports the concrete state, and preserves the work.
 #   6. fm-spawn --relaunch refuses on its own: a live agent, a contradicting
-#      flag, an extra positional, or a backend that cannot prove the previous
-#      agent exited.
+#      flag, an extra positional, a backend that cannot prove the previous
+#      agent exited, or a treehouse slot the pool has re-leased to another
+#      holder.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -158,6 +159,39 @@ add_ship_task() {
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   printf '%s' "$wt" > "$dir/fake/cwd"
   TASK_TMPS+=("/tmp/fm-$id")
+}
+
+# write_pool_record <case-dir> [extra-json-fields]: the treehouse pool's own
+# record for slot 1 at <case-dir>/pool, which bin/fm-slot-lib.sh reads.
+write_pool_record() {
+  mkdir -p "$1/pool"
+  : > "$1/pool/treehouse-state.lock"
+  printf '{"worktrees":[{"name":"1","path":"%s"%s}]}\n' "$1/pool/1/proj" "${2:-}" \
+    > "$1/pool/treehouse-state.json"
+}
+
+# add_pooled_ship_task <case-dir> <id> <spawn-gen> [key=value...]: a ship task
+# whose worktree is pool slot 1. The slot is created once per case, so a second
+# record added to the same case names the same working copy.
+add_pooled_ship_task() {
+  local dir=$1 id=$2 gen=$3 home="$1/home" wt="$1/pool/1/proj"
+  shift 3
+  [ -d "$wt" ] || fm_git_worktree "$dir/proj" "$wt" "task-$id"
+  mkdir -p "$home/data/$id"
+  printf '# brief for %s\n\nDo the thing.\n' "$id" > "$home/data/$id/brief.md"
+  fm_write_meta "$home/state/$id.meta" \
+    "window=fmses:fm-$id" "endpoint_task_id=$id" "worktree=$wt" "project=$dir/proj" \
+    "harness=${POOLED_HARNESS:-claude}" "kind=ship" "mode=no-mistakes" "yolo=off" \
+    "tasktmp=/tmp/fm-$id" "model=default" "effort=default" "spawn_gen=$gen" "$@"
+  printf '%s\n' "fm-$id" >> "$dir/fake/windows"
+  printf '%s' "$wt" > "$dir/fake/cwd"
+  TASK_TMPS+=("/tmp/fm-$id")
+}
+
+# state_fingerprint <case-dir>: every file under the home's state/ with its
+# checksum, so a refusal can be shown to have changed nothing there.
+state_fingerprint() {
+  (cd "$1/home/state" && find . -type f | LC_ALL=C sort | xargs -r cksum)
 }
 
 run_control() {  # <case-dir> <args...>
@@ -1312,6 +1346,65 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
 }
 
+# A relaunch re-enters the recorded working copy, so a record whose treehouse
+# slot the pool has provably re-leased (bin/fm-slot-lib.sh owns the verdict)
+# refuses before anything changes, while a record that still owns its slot
+# relaunches exactly as before.
+test_spawn_relaunch_refuses_a_re_leased_slot() {
+  local dir out rc before auth label
+
+  # A later fresh claimant on the same slot proves the pool reissued it.
+  dir=$(new_case releasedgen rl40)
+  write_pool_record "$dir" ',"owner_pid":999999'
+  add_pooled_ship_task "$dir" rl41 s1789026483.244338.3761
+  POOLED_HARNESS=grok-2 add_pooled_ship_task "$dir" rl40 s1788765996.150863.30112
+  mkdir -p "$dir/grokhome/hooks/fm-turn-end.d"
+  printf 'fm.abcdefabcdef\n' > "$dir/home/state/rl40.grok-turnend-token"
+  auth="$dir/grokhome/hooks/fm-turn-end.d/fm.abcdefabcdef"
+  printf '%s\n' "$dir/home/state/rl40.turn-ended" > "$auth"
+  printf 'zsh' > "$dir/fake/command"
+  before=$(state_fingerprint "$dir")
+  out=$(run_spawn "$dir" rl40 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "relaunching into a slot a later claimant holds should refuse"$'\n'"$out"
+  assert_contains "$out" "task rl41 names the same working copy" "the refusal should name the verdict's evidence"
+  assert_contains "$out" "bin/fm-teardown.sh rl40 --retire-record" "the refusal should name the record-only path"
+  [ "$(state_fingerprint "$dir")" = "$before" ] \
+    || fail "a refused relaunch changed state/ (metadata, busy state, or wiring)"
+  [ -f "$auth" ] || fail "a refused relaunch cleared the prior harness's wiring"
+  if [ -s "$dir/fake/literal" ] || [ -s "$dir/fake/keys" ]; then
+    fail "a refused relaunch sent keys to the endpoint"
+  fi
+
+  # A durable lease held by anyone else proves it too.
+  dir=$(new_case releasedlease rl42)
+  write_pool_record "$dir" ',"leased":true,"lease_holder":"fm-task:other-x9:l1789026480.7.7"'
+  add_pooled_ship_task "$dir" rl42 s1788765996.150863.30112
+  printf 'zsh' > "$dir/fake/command"
+  before=$(state_fingerprint "$dir")
+  out=$(run_spawn "$dir" rl42 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "relaunching into a slot leased to someone else should refuse"$'\n'"$out"
+  assert_contains "$out" "leases $dir/pool/1/proj to fm-task:other-x9:l1789026480.7.7" \
+    "the refusal should name the lease holder"
+  assert_contains "$out" "bin/fm-teardown.sh rl42 --retire-record" "the refusal should name the record-only path"
+  [ "$(state_fingerprint "$dir")" = "$before" ] || fail "a refused relaunch changed state/"
+  if [ -s "$dir/fake/literal" ] || [ -s "$dir/fake/keys" ]; then
+    fail "a refused relaunch sent keys to the endpoint"
+  fi
+
+  # The record's own lease is ownership, and the relaunch proceeds as before.
+  dir=$(new_case ownlease rl43)
+  label=fm-task:rl43:l1789026480.7.7
+  write_pool_record "$dir" ",\"leased\":true,\"lease_holder\":\"$label\""
+  add_pooled_ship_task "$dir" rl43 s1789026483.244338.3761 "lease_holder=$label"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl43 --relaunch --harness claude); rc=$?
+  expect_code 0 "$rc" "a record that still owns its slot should relaunch"$'\n'"$out"
+  assert_contains "$out" "spawned rl43 harness=claude" "the launch should report the relaunched task"
+  [ "$(meta_field "$dir" rl43 lease_holder)" = "$label" ] || fail "the relaunch dropped the recorded lease holder"
+  assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
+  pass "fm-spawn --relaunch: refuses a record whose slot the pool re-leased before touching anything, and relaunches a record that still owns its slot"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1358,3 +1451,4 @@ test_spawn_relaunch_refuses_a_live_agent
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+test_spawn_relaunch_refuses_a_re_leased_slot

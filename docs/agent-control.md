@@ -99,6 +99,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
+  It also refuses a ship or scout record whose treehouse slot the pool has provably re-leased to another holder (`bin/fm-slot-lib.sh` owns that verdict) and names `bin/fm-teardown.sh <id> --retire-record` instead, so a replacement can never start inside another task's working copy.
 
 ## Capability matrix
 

@@ -13,6 +13,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-pr-lib.sh"
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-retire-record)
@@ -105,6 +107,44 @@ task_paths() {
   for marker in hash count stale paused paused-rechecked paused-resurfaced; do
     printf '%s\n' "$state/.$marker-firstmate_fm-$id"
   done
+}
+
+# arm_pr_poll <case> <id> <url>: the canonical PR merge poll fm-pr-check arms
+# for <id>, built through the PR library so its trust binding is genuine.
+arm_pr_poll() {
+  local state="$1/home/state" id=$2 url=$3
+  (
+    fm_pr_url_parse "$url" || exit 1
+    fm_pr_poll_prepare "$state" "$id" "$FM_PR_PROVIDER" "$url" "$FM_PR_HOST" "$FM_PR_PATH" \
+      "$FM_PR_NUMBER" "$ROOT/bin/fm-pr-poll.sh" || exit 1
+    fm_pr_poll_publish_prepared
+  ) || fail "could not arm the fixture PR poll for $id"
+}
+
+# arm_pending_receipt <case> <id> <url>: that poll plus the validated
+# merged-result retirement receipt the watcher publishes, still pending, as an
+# interrupted retirement leaves it.
+arm_pending_receipt() {
+  local state="$1/home/state" id=$2 url=$3
+  arm_pr_poll "$1" "$id" "$url"
+  (
+    fm_pr_poll_snapshot_capture "$state" "$id" "$ROOT/bin/fm-pr-poll.sh" || exit 1
+    fm_pr_poll_retirement_publish "$state" "$id" "$ROOT/bin/fm-pr-poll.sh" merged
+  ) || fail "could not publish the fixture retirement receipt for $id"
+}
+
+# make_receipt_case <name> <url> -> a superseded case whose retired record has
+# its PR poll armed and its merged-result receipt pending; the PR line is the
+# record's last, as the PR library requires.
+make_receipt_case() {
+  local dir
+  dir=$(make_case "$1")
+  write_pool "$dir" ',"owner_pid":999999,"owner_started_at":1789026475860'
+  write_record "$dir" old-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
+  write_record "$dir" new-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off"
+  populate_task_state "$dir" old-r1
+  printf 'pr=%s\n' "$2" >> "$dir/home/state/old-r1.meta"
+  printf '%s\n' "$dir"
 }
 
 write_presentation_rows() {  # <case> <id>...
@@ -205,6 +245,72 @@ EOF
     "the dry run did not print the verdict's evidence"
   assert_copy_and_pool_untouched "$dir" "$before" "dry run"
   pass "fm-teardown --retire-record --dry-run: prints the verdict and the records it would drop, and changes nothing"
+}
+
+test_retire_dry_run_refuses_exactly_where_a_real_run_would() {
+  local dir url=https://github.com/example/repo/pull/829 artifact before rc out
+
+  # Completing a validated merged-result receipt removes the poll but not a
+  # trust record, so a real run refuses on the trust record; the dry run must
+  # say the same rather than list the poll as removable.
+  dir=$(make_receipt_case pending-receipt "$url")
+  arm_pending_receipt "$dir" old-r1 "$url"
+  (umask 077 && printf 'armed\n' > "$dir/home/state/old-r1.check-trust")
+  before=$(cksum < "$dir/pool/treehouse-state.json")
+  set +e
+  out=$(run_teardown "$dir" old-r1 --retire-record --dry-run 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a dry run over a pending receipt and a trust record"$'\n'"$out"
+  assert_contains "$out" "registered watcher check (state/old-r1.check-trust)" \
+    "the dry run did not raise the refusal a real run raises"
+  assert_not_contains "$out" "would remove" "the dry run listed records as removable"
+  for artifact in check.sh pr-poll pr-poll-registration pr-poll-retirement check-trust; do
+    assert_present "$dir/home/state/old-r1.$artifact" "the dry run removed $artifact"
+  done
+  assert_copy_and_pool_untouched "$dir" "$before" "pending-receipt dry run"
+  set +e
+  out=$(run_teardown "$dir" old-r1 --retire-record 2>&1)
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "a real run over a pending receipt and a trust record"$'\n'"$out"
+  assert_contains "$out" "registered watcher check (state/old-r1.check-trust)" \
+    "the real run did not refuse on the trust record"
+  for artifact in check.sh pr-poll pr-poll-registration pr-poll-retirement; do
+    assert_absent "$dir/home/state/old-r1.$artifact" "the real run left $artifact after completing the receipt"
+  done
+  assert_present "$dir/home/state/old-r1.meta" "the refused real run removed the record"
+  assert_present "$dir/home/state/old-r1.check-trust" "the refused real run removed the trust record"
+
+  # With no trust record, completing the receipt leaves nothing armed, so the
+  # dry run lets the record go exactly as the real run then does.
+  dir=$(make_receipt_case receipt-clear "$url")
+  arm_pending_receipt "$dir" old-r1 "$url"
+  before=$(cksum < "$dir/pool/treehouse-state.json")
+  set +e
+  out=$(run_teardown "$dir" old-r1 --retire-record --dry-run 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "a dry run over a pending receipt with nothing else armed"$'\n'"$out"
+  assert_contains "$out" "a real run first completes old-r1's pending PR-poll retirement" \
+    "the dry run did not say the receipt is completed first"
+  assert_contains "$out" "dry run: would remove $dir/home/state/old-r1.meta" \
+    "the dry run did not list the records to go"
+  for artifact in check.sh pr-poll pr-poll-registration pr-poll-retirement; do
+    assert_present "$dir/home/state/old-r1.$artifact" "the dry run removed $artifact"
+  done
+  assert_copy_and_pool_untouched "$dir" "$before" "receipt-clear dry run"
+  set +e
+  out=$(run_teardown "$dir" old-r1 --retire-record 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "a real run over a pending receipt with nothing else armed"$'\n'"$out"
+  assert_contains "$out" "retired record old-r1" "the real run did not retire the record"
+  for artifact in meta check.sh pr-poll pr-poll-registration pr-poll-retirement; do
+    assert_absent "$dir/home/state/old-r1.$artifact" "the real run left $artifact behind"
+  done
+  assert_copy_and_pool_untouched "$dir" "$before" "receipt-clear retire"
+  pass "fm-teardown --retire-record --dry-run: scans for armed checks over what completing a pending receipt would leave, so its verdict matches the real run's in both directions"
 }
 
 assert_refused_without_mutation() {  # <case> <id> <expected-text> <label> [args...]
@@ -457,6 +563,7 @@ test_retire_removes_an_idle_task_temp_root() {
 
 test_retire_drops_only_a_superseded_record
 test_retire_dry_run_changes_nothing
+test_retire_dry_run_refuses_exactly_where_a_real_run_would
 test_retire_refuses_a_record_that_owns_its_lease
 test_retire_refuses_an_unproven_re_lease
 test_retire_refuses_when_the_later_claimant_was_relaunched
