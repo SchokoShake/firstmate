@@ -79,10 +79,45 @@
 # the retired home. Removing a leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# Usage: fm-teardown.sh <task-id> [--force]
+# Usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
+#   --retire-record drops ONLY this task's records from state/ - exactly the set
+#   an ordinary teardown retires there - for a ship or scout record whose
+#   treehouse slot the pool has provably re-leased to another holder
+#   (bin/fm-slot-lib.sh owns that verdict). It never touches the working copy,
+#   returns no lease, kills no process, and closes no endpoint; it leaves
+#   data/<id>/ alone and removes the task's /tmp/fm-<id> root only when no
+#   process is using it. It refuses a record that still owns its slot (ordinary
+#   teardown's job), a record whose re-lease is unproven (every record without a
+#   recorded lease claim among them, since ownership is never inferred), a
+#   secondmate or Orca record, an own endpoint that holds a live agent or cannot
+#   be proven agent-free, an armed PR merge poll or registered watcher check,
+#   and an owed public reply, and each refusal names the path that applies
+#   instead, which for an unproven record is --unproven-confirmed.
+#   --unproven-confirmed is a person's explicit acknowledgement that the
+#   record's ownership could not be proven. It is valid only together with
+#   --retire-record, with or without --dry-run and in any order, and is
+#   rejected with exit 2 anywhere else; nothing implies it - no environment
+#   variable, config, or other flag turns it on, and --force never does. It
+#   lets --retire-record act on a record whose verdict is unproven and nothing
+#   more: a record the pool still leases to its own claim still refuses,
+#   because dropping it would strand its lease, and every other refusal above
+#   stands. It prints the complete list of what it will remove before removing
+#   anything, then removes exactly that state set and nothing else.
+#   --dry-run prints the verdict
+#   and the records it would remove, refuses exactly where a real run would,
+#   and changes nothing.
+#   Ordinary teardown, with or without --force, refuses before any worktree,
+#   process, or endpoint step when that verdict says the recorded slot was
+#   re-leased, because each of those steps acts on the recorded path and would
+#   land on the new holder's work. It refuses there just the same, on recorded
+#   facts alone and inferring no ownership, a record with no recorded lease
+#   claim whose recorded path the pool durably leases to another record's own
+#   claim on that same path, or whose recorded working copy any other record
+#   in this home also names; each such refusal names --retire-record
+#   --unproven-confirmed as the deliberate way through.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -148,6 +183,15 @@
 #     roots are unique per task and never
 #     shared, so this can never reach another task's or the primary's
 #     processes. Idempotent: nothing left to find is a silent no-op.
+#     The one process rooted there that is NOT leaked is the endpoint's own
+#     root shell, which fm-spawn.sh moves into the worktree with a top-level
+#     cd: the reap skips exactly the pid the backend names as that shell
+#     (fm_backend_endpoint_shell_pid), because closing the endpoint is what
+#     ends it, through the backend's own path. Ending it here instead let the
+#     terminal remove the pane on its own, outside that path, so a projected
+#     Herdr close stole the captain's focus. For the same reason the Herdr
+#     endpoint is closed before the worktree return, whose own process
+#     cleanup would end that shell too.
 #   Fix 3 - sweep abandoned remote job workers. A remote job worker started
 #     from a worktree's own bin/ outlives that worktree's removal without
 #     being reachable by Fix 2, because its working directory is wherever it
@@ -193,12 +237,43 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-slot-lib.sh
+. "$SCRIPT_DIR/fm-slot-lib.sh"
+# shellcheck source=bin/fm-busy-lib.sh
+. "$SCRIPT_DIR/fm-busy-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
 fi
 ID=$1
-FORCE=${2:-}
+shift
+# An empty sole option is the no-option form, for callers passing an unset flag.
+if [ "$#" = 1 ] && [ -z "$1" ]; then shift; fi
+FORCE=
+RETIRE_RECORD=0
+RETIRE_DRY_RUN=0
+RETIRE_UNPROVEN_CONFIRMED=0
+teardown_usage_error() {
+  echo "error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]" >&2
+  exit 2
+}
+for arg in "$@"; do
+  case "$arg" in
+    --force) [ -z "$FORCE" ] || teardown_usage_error; FORCE=--force ;;
+    --retire-record) [ "$RETIRE_RECORD" = 0 ] || teardown_usage_error; RETIRE_RECORD=1 ;;
+    --dry-run) [ "$RETIRE_DRY_RUN" = 0 ] || teardown_usage_error; RETIRE_DRY_RUN=1 ;;
+    --unproven-confirmed) [ "$RETIRE_UNPROVEN_CONFIRMED" = 0 ] || teardown_usage_error; RETIRE_UNPROVEN_CONFIRMED=1 ;;
+    *) teardown_usage_error ;;
+  esac
+done
+# --force stands alone, and --dry-run and --unproven-confirmed belong to
+# --retire-record only; nothing else ever turns --unproven-confirmed on.
+if [ -n "$FORCE" ] && [ "$RETIRE_RECORD$RETIRE_DRY_RUN$RETIRE_UNPROVEN_CONFIRMED" != 000 ]; then
+  teardown_usage_error
+fi
+if [ "$RETIRE_RECORD" = 0 ] && [ "$RETIRE_DRY_RUN$RETIRE_UNPROVEN_CONFIRMED" != 00 ]; then
+  teardown_usage_error
+fi
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
@@ -246,6 +321,10 @@ META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+if [ "$RETIRE_RECORD" = 1 ] && [ "$(fm_meta_get "$META" kind)" = secondmate ]; then
+  echo "REFUSED: $ID is a secondmate home, not a pooled task working copy; --retire-record applies only to ship and scout records. Retire a secondmate through ordinary teardown: bin/fm-teardown.sh $ID" >&2
+  exit 1
+fi
 
 REMOTE_HANDOFF_DIR_PRESENT=0
 REMOTE_HANDOFF_DIR_REAL=
@@ -1466,6 +1545,11 @@ task_pids_under_roots() {  # <dir>...
 $dir_pids"
   done
   TASK_PIDS=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
+  # The endpoint's own root shell lives in the worktree by design and is ended
+  # by the endpoint close, never by the reap (see Fix 2 in the header).
+  if [ -n "${TASK_ENDPOINT_SHELL_PID:-}" ]; then
+    TASK_PIDS=$(printf '%s\n' "$TASK_PIDS" | grep -Fxv "$TASK_ENDPOINT_SHELL_PID" || true)
+  fi
 }
 
 reap_task_backend_process_group() {  # <label>
@@ -2379,7 +2463,250 @@ remove_secondmate_registry_entry() {
   return "$rc"
 }
 
+# The per-task files teardown deletes outright; the status log, busy state, and
+# watcher-check artifacts retire through their own owners in
+# remove_task_state_records instead. The metadata goes before the supervision
+# markers, so a watcher poll that starts after it no longer tracks the task and
+# cannot recreate them, and every step before it can simply be rerun.
+task_plain_record_files() {  # <state> <id> <target>
+  local state=$1 id=$2 target=$3 key marker
+  printf '%s\n' "$state/$id.turn-ended" "$state/$id.pi-ext.ts" \
+    "$state/$id.grok-turnend-token" "$state/$id.kimi-turnend-token" \
+    "$state/$id.muse-session" "$state/$id.muse-session-current" \
+    "$state/$id.cursor-session" "$state/$id.control-relaunch" \
+    "$state/$id.control-relaunch.meta-prior" "$state/$id.control-relaunch.brief-prior" \
+    "$state/$id.control-relaunch.note" "$state/$id.meta"
+  # Supervision markers keyed to this task, in the formats owned by
+  # fm_wake_signal_seen_path, bin/fm-push-transition-lib.sh, bin/fm-watch.sh, and
+  # bin/fm-supervise-daemon.sh. Left behind they are litter, and a later task
+  # reusing the id would inherit a stale pause flag or stale-hash suppressor.
+  key=$(printf '%s' "$id" | tr ':/.' '___')
+  printf '%s\n' "$(fm_wake_signal_seen_path "$state" "$state/$id.status")" \
+    "$(fm_wake_signal_seen_path "$state" "$state/$id.turn-ended")" \
+    "$state/.hb-surfaced-$key" "$state/.subsuper-paused-$key" \
+    "$state/.subsuper-stale-$key" "$state/.subsuper-seen-status-$key"
+  [ -n "$target" ] || return 0
+  key=$(printf '%s' "$target" | tr ':/.' '___')
+  for marker in hash count stale stale-since wedge-escalations paused paused-rechecked paused-resurfaced; do
+    printf '%s\n' "$state/.$marker-$key"
+  done
+}
+
+# Every per-task state path teardown retires, for --retire-record's report.
+task_record_files() {  # <state> <id> <target>
+  local state=$1 id=$2 artifact
+  task_plain_record_files "$@"
+  printf '%s\n' "$state/$id.status" "$state/.$id.open-decisions-cursor" \
+    "$(fm_busy_gen_path "$state" "$id")" "$(fm_busy_record_path "$state" "$id")"
+  for artifact in check.sh pr-poll pr-poll-registration pr-poll-retirement check-trust; do
+    printf '%s\n' "$state/$id.$artifact"
+  done
+  for artifact in "$state/.pr-check-quarantine/$id."*; do
+    [ -e "$artifact" ] || [ -L "$artifact" ] || continue
+    printf '%s\n' "$artifact"
+  done
+}
+
+# The per-task state teardown retires, shared by the ordinary path and
+# --retire-record so both remove exactly the same set.
+remove_task_state_records() {  # <state> <id> <backend> <target> <busy-gen>
+  local state=$1 id=$2 backend=$3 target=$4 gen=$5 path
+  remove_grok_turnend_auth "$state" "$id" || return 1
+  remove_kimi_turnend_auth "$state" "$id" || return 1
+  fm_backend_clear_transition "$backend" "$state" "$target" || true
+  remove_pr_poll_artifacts "$state" "$id" || return 1
+  retire_busy_state "$state" "$id" "$gen" || return 1
+  status_retire_presentation_task "$state" "$id" || return 1
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    rm -f -- "$path" || return 1
+  done <<EOF
+$(task_plain_record_files "$state" "$id" "$target")
+EOF
+}
+
+# Ordinary teardown acts on the RECORDED working copy: it resets and returns it,
+# deletes its checked-out branch, and kills every process inside it. Once the
+# pool has provably re-leased that copy to another holder (bin/fm-slot-lib.sh
+# owns the verdict), each of those steps would land on the other holder's work,
+# and --force authorizes discarding only THIS task's work, so the refusal holds
+# either way and names the record-only path instead. A record with no recorded
+# claim is refused on the same footing, inferring nothing about who owns the
+# copy, as soon as the recorded facts show another record standing on it
+# (FM_SLOT_CONTESTED); the way through is the person's --unproven-confirmed.
+refuse_if_slot_released_or_contested() {
+  [ "$KIND" != secondmate ] || return 0
+  [ "$BACKEND" != orca ] || return 0
+  fm_slot_verdict "$STATE" "$ID" || return 0
+  if [ "$FM_SLOT_VERDICT" = released ]; then
+    echo "REFUSED: $ID's recorded working copy $FM_SLOT_WORKTREE is no longer its own: $FM_SLOT_EVIDENCE." >&2
+    echo "Tearing it down would reset that copy and kill the processes in it, and --force cannot authorize discarding another holder's work." >&2
+    echo "Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh $ID --retire-record" >&2
+    return 1
+  fi
+  [ -n "$FM_SLOT_CONTESTED" ] || return 0
+  echo "REFUSED: $ID's ownership of its recorded working copy $FM_SLOT_WORKTREE could not be proven: $FM_SLOT_EVIDENCE." >&2
+  echo "Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work." >&2
+  echo "Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh $ID --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record." >&2
+  return 1
+}
+
+# A watcher check still armed for the task is a wait firstmate asked for, and a
+# PR merge poll's trust binding would be orphaned by dropping the record under
+# it, so --retire-record refuses while either is armed. A validated merged
+# result whose retirement was interrupted is finished first, exactly as
+# ordinary teardown finishes it.
+retire_record_refuse_armed_check() {
+  local artifact armed='' recovered=0 poll_armed=0
+  if [ "$RETIRE_DRY_RUN" = 1 ]; then
+    if [ -e "$STATE/$ID.pr-poll-retirement" ] || [ -L "$STATE/$ID.pr-poll-retirement" ]; then
+      recovered=1
+      echo "dry run: a real run first completes $ID's pending PR-poll retirement, which removes state/$ID.check.sh, state/$ID.pr-poll, state/$ID.pr-poll-registration, and the receipt, then checks again for an armed poll"
+    fi
+  elif ! fm_pr_poll_retirement_recover_one "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+    echo "REFUSED: $ID's pending PR-poll retirement could not be completed; preserving every record." >&2
+    return 1
+  fi
+  for artifact in check.sh pr-poll pr-poll-registration check-trust; do
+    if [ "$recovered" = 1 ] && [ "$artifact" != check-trust ]; then
+      continue
+    fi
+    if [ -e "$STATE/$ID.$artifact" ] || [ -L "$STATE/$ID.$artifact" ]; then
+      armed="$armed state/$ID.$artifact"
+      case "$artifact" in pr-poll|pr-poll-registration) poll_armed=1 ;; esac
+    fi
+  done
+  [ -n "$armed" ] || return 0
+  if [ "$poll_armed" = 1 ]; then
+    echo "REFUSED: $ID still has an armed PR merge poll (${armed# }) watching ${PR_URL:-its PR}; dropping the record under it would orphan the poll and its trust binding." >&2
+    echo "The watcher retires that poll itself when it reports the merge, so retry once the merge lands; a PR closed without merging means the work never landed, which is a decision for the captain rather than bookkeeping." >&2
+  else
+    echo "REFUSED: $ID has a registered watcher check (${armed# }) that firstmate armed on purpose; dropping the record would silently drop that wait." >&2
+    echo "Let it fire, or remove the check and its trust record deliberately, then retry." >&2
+  fi
+  return 1
+}
+
+# The task's own /tmp/fm-<id> root goes with its record only when nothing is
+# using it, because --retire-record kills no process, unlike ordinary teardown.
+retire_record_tasktmp() {
+  local pids
+  [ -n "$TASK_TMP" ] || return 0
+  [ -e "$TASK_TMP" ] || [ -L "$TASK_TMP" ] || return 0
+  if [ "$TASK_TMP" != "/tmp/fm-$ID" ] || [ -L "$TASK_TMP" ] || [ ! -d "$TASK_TMP" ]; then
+    echo "retire-record: left $TASK_TMP in place; it is not this task's own /tmp/fm-$ID root"
+  elif ! command -v lsof >/dev/null 2>&1 || ! pids=$(pids_with_cwd_under "$TASK_TMP"); then
+    echo "retire-record: left $TASK_TMP in place; no process scan could prove it unused"
+  elif [ -n "$pids" ]; then
+    echo "retire-record: left $TASK_TMP in place; process(es) $(printf '%s' "$pids" | tr '\n' ' ') still use it"
+  else
+    rm -rf -- "$TASK_TMP" && echo "retire-record: removed $TASK_TMP"
+  fi
+}
+
+# --retire-record: the script header owns the contract. Every refusal comes
+# before the first removal, and nothing here touches the working copy, the
+# pool, a process, or an endpoint.
+retire_record_only() {
+  local agent path existing row=0 verdict rerun="bin/fm-teardown.sh $ID --retire-record"
+  [ "$RETIRE_UNPROVEN_CONFIRMED" = 0 ] || rerun="$rerun --unproven-confirmed"
+  if [ "$BACKEND" = orca ]; then
+    echo "REFUSED: $ID's working copy is an Orca worktree rather than a treehouse pool slot, so it cannot have been re-leased; use ordinary teardown: bin/fm-teardown.sh $ID" >&2
+    return 1
+  fi
+  fm_slot_verdict "$STATE" "$ID" || { echo "REFUSED: $ID has no readable record at $META" >&2; return 1; }
+  case "$FM_SLOT_VERDICT" in
+    released)
+      verdict="$ID's working copy $FM_SLOT_WORKTREE was re-leased: $FM_SLOT_EVIDENCE"
+      ;;
+    own)
+      echo "REFUSED: $ID still owns its working copy: $FM_SLOT_EVIDENCE." >&2
+      echo "Dropping only the record would strand that lease and keep the pool slot consumed; tear the task down normally once its work has landed: bin/fm-teardown.sh $ID" >&2
+      [ "$RETIRE_UNPROVEN_CONFIRMED" = 0 ] \
+        || echo "--unproven-confirmed acknowledges only a record whose ownership could not be proven; this record's ownership is proven, so it changes nothing here." >&2
+      return 1
+      ;;
+    *)
+      if [ "$RETIRE_UNPROVEN_CONFIRMED" = 0 ]; then
+        echo "REFUSED: cannot prove $ID's working copy ${FM_SLOT_WORKTREE:-(none recorded)} was re-leased: $FM_SLOT_EVIDENCE." >&2
+        echo "Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh $ID), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh $ID --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record." >&2
+        return 1
+      fi
+      verdict="$ID's ownership of its working copy ${FM_SLOT_WORKTREE:-(none recorded)} could not be proven, which --unproven-confirmed acknowledges: $FM_SLOT_EVIDENCE"
+      ;;
+  esac
+  agent=$(fm_backend_agent_state "$BACKEND" "$T")
+  case "$agent" in
+    dead|missing) ;;
+    alive)
+      echo "REFUSED: $ID's own endpoint $T still holds a live agent; stop it first with bin/fm-control.sh $ID exit, then retry." >&2
+      return 1
+      ;;
+    *)
+      echo "REFUSED: cannot prove $ID's own endpoint $T holds no live agent (the $BACKEND agent state reads $agent); inspect it, then retry." >&2
+      return 1
+      ;;
+  esac
+  retire_record_refuse_armed_check || return 1
+  if [ "$RETIRE_DRY_RUN" = 1 ]; then
+    echo "dry run: $verdict"
+    while IFS= read -r path; do
+      if [ -e "$path" ] || [ -L "$path" ]; then echo "dry run: would remove $path"; fi
+    done <<EOF
+$(task_record_files "$STATE" "$ID" "$T")
+EOF
+    echo "dry run: would leave the working copy, the pool's lease on it, and endpoint $T untouched"
+    return 0
+  fi
+  existing=$(task_record_files "$STATE" "$ID" "$T" | while IFS= read -r path; do
+    if [ -e "$path" ] || [ -L "$path" ]; then printf '%s\n' "$path"; fi
+  done)
+  if awk -F '\t' -v id="$ID" '$1 == id { found = 1 } END { exit !found }' \
+      "$STATE/.status-presentation-cursor" 2>/dev/null; then
+    row=1
+  fi
+  # The acknowledgement is a person's deliberate act on a record nothing
+  # proves, so the complete plan is printed before the first removal.
+  if [ "$RETIRE_UNPROVEN_CONFIRMED" = 1 ]; then
+    echo "retire-record: $verdict"
+    echo "retire-record: --unproven-confirmed removes exactly these records of $ID and nothing else:"
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      echo "retire-record: will remove $path"
+    done <<EOF
+$existing
+EOF
+    [ "$row" = 0 ] || echo "retire-record: will remove $ID's row from $STATE/.status-presentation-cursor"
+    if [ -e "$TASK_TMP" ] || [ -L "$TASK_TMP" ]; then
+      echo "retire-record: will remove $TASK_TMP only if it is this task's own idle /tmp/fm-$ID root"
+    fi
+  fi
+  remove_task_state_records "$STATE" "$ID" "$BACKEND" "$T" "$BUSY_GEN" || {
+    echo "error: retiring $ID's records stopped partway; rerun $rerun to finish" >&2
+    return 1
+  }
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then echo "retire-record: removed $path"; fi
+  done <<EOF
+$existing
+EOF
+  [ "$row" = 0 ] || echo "retire-record: removed $ID's row from $STATE/.status-presentation-cursor"
+  retire_record_tasktmp
+  if [ -e "$STATE/$ID.herdr-presentation" ] || [ -L "$STATE/$ID.herdr-presentation" ]; then
+    echo "retire-record: left the quarantined Herdr presentation journal $STATE/$ID.herdr-presentation for manual inspection"
+  fi
+  [ "$agent" = missing ] || echo "retire-record: left endpoint $T in place; it holds no live agent, so close it by hand if it is litter"
+  if [ "$FM_SLOT_VERDICT" = released ]; then
+    echo "retired record $ID ($FM_SLOT_EVIDENCE); left working copy $FM_SLOT_WORKTREE, its pool lease, and every process in it untouched"
+  else
+    echo "retired record $ID on --unproven-confirmed ($FM_SLOT_EVIDENCE); left working copy ${FM_SLOT_WORKTREE:-(none recorded)}, whatever the pool holds on it, and every process in it untouched"
+  fi
+  backlog_refresh_reminder
+}
+
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
+[ "$RETIRE_RECORD" = 1 ] || refuse_if_slot_released_or_contested || exit 1
 
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
@@ -2415,7 +2742,9 @@ if [ "$KIND" = secondmate ] && [ "$FORCE" = "--force" ]; then
   cleanup_firstmate_home_children "$HOME_PATH" || exit $?
 fi
 
-if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
+# --retire-record leaves data/<id>/ and the working copy alone, so a scout's
+# report and decision inventory stay exactly as they are and need no gate here.
+if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ] && [ "$RETIRE_RECORD" != 1 ]; then
   REPORT="$DATA/$ID/report.md"
   if [ ! -f "$REPORT" ]; then
     echo "REFUSED: scout task $ID has no report at $REPORT." >&2
@@ -2447,9 +2776,18 @@ if [ "$FORCE" != "--force" ] \
       "$SCRIPT_DIR/fm-public-followup.sh" guard-work "$PUBLIC_FOLLOWUP_WORK_HOME" "$ID" 2>/dev/null); then
     echo "REFUSED: task $ID still owes a public reply through the myfirstmate relay." >&2
     printf '%s\n' "$PUBLIC_FOLLOWUP_BLOCKING" >&2
-    echo "Deliver it with bin/fm-public-followup.sh deliver <obligation-id>, waive it with tasks-axi public-followup waive, or use --force after explicit discard approval." >&2
+    if [ "$RETIRE_RECORD" = 1 ]; then
+      echo "Deliver it with bin/fm-public-followup.sh deliver <obligation-id> or waive it with tasks-axi public-followup waive, then retry." >&2
+    else
+      echo "Deliver it with bin/fm-public-followup.sh deliver <obligation-id>, waive it with tasks-axi public-followup waive, or use --force after explicit discard approval." >&2
+    fi
     exit 1
   fi
+fi
+
+if [ "$RETIRE_RECORD" = 1 ]; then
+  if retire_record_only; then exit 0; fi
+  exit 1
 fi
 
 if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
@@ -2485,6 +2823,11 @@ fi
 # not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
+  # The endpoint's own root shell sits in this worktree by design; the endpoint
+  # close below ends it through the backend's focus-preserving path, so the
+  # reap skips exactly that pid and still ends every other process rooted here.
+  # A backend that cannot name it leaves nothing excluded.
+  TASK_ENDPOINT_SHELL_PID=$(fm_backend_endpoint_shell_pid "$BACKEND" "$T" 2>/dev/null) || TASK_ENDPOINT_SHELL_PID=
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi
 
@@ -2493,7 +2836,7 @@ fi
 "$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
 
 # A Herdr close may reposition shared workspace order, so the whole
-# destructive sequence below (worktree return, pane close, record removal)
+# destructive sequence below (pane close, worktree return, record removal)
 # runs under the named-session presentation lock, acquired BEFORE anything is
 # returned or erased: a contended lock refuses here while the isolated copy,
 # every durable record, and the endpoint are all still intact for a plain
@@ -2508,6 +2851,87 @@ if [ "$BACKEND" = herdr ]; then
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
 fi
 
+# The Herdr endpoint is closed BEFORE the worktree return below. fm-spawn.sh
+# moves the endpoint's own shell into the worktree with a top-level cd, and
+# `treehouse return` ends every process still rooted there, so returning first
+# ended that shell and let Herdr remove the pane on its own, outside the
+# focus-preserving close path: a projected close then stole the captain's
+# focus and left the presentation journal quarantined. The confirmed-gone gate
+# stays with the close, so a refused, skipped, or unconfirmed close still stops
+# before the isolated copy is touched, and a rerun retries the locked close
+# with the worktree, every durable record, and the endpoint intact.
+HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
+HERDR_PRESENTATION_RETIRE_CANDIDATE=0
+HERDR_PRESENTATION_SESSION=
+HERDR_PRESENTATION_PANE=
+if [ "$BACKEND" = herdr ] \
+   && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
+  fm_backend_source herdr || true
+  HERDR_PRESENTATION_SESSION=$(meta_value "$META" herdr_session)
+  HERDR_PRESENTATION_WORKSPACE=$(meta_value "$META" herdr_workspace_id)
+  HERDR_PRESENTATION_PANE=$(meta_value "$META" herdr_pane_id)
+  if [ -n "$HERDR_PRESENTATION_SESSION" ] \
+     && [ -n "$HERDR_PRESENTATION_WORKSPACE" ] \
+     && [ -n "$HERDR_PRESENTATION_PANE" ] \
+     && [ "$T" = "$HERDR_PRESENTATION_SESSION:$HERDR_PRESENTATION_PANE" ] \
+     && fm_backend_herdr_projection_endpoint_matches_journal \
+       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" \
+       "$HERDR_PRESENTATION_JOURNAL" "$ID"; then
+    HERDR_PRESENTATION_RETIRE_CANDIDATE=1
+  fi
+fi
+
+if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
+  # The presentation lock was acquired by the herdr preflight above; a
+  # contended lock already refused this teardown while everything was intact.
+  if teardown_herdr_session_lock_held "$HERDR_PRESENTATION_SESSION"; then
+    # stderr is deliberately NOT discarded here. This is the highest-frequency
+    # projected-close call site, and the helper's only stderr output is a real
+    # warning - unverifiable workspace.move support, a refused focus-unsafe
+    # close, an unconfirmed repositioned-workspace removal, or a failed exact
+    # restore.
+    # Swallowing them left a wrong active workspace with no operator-visible
+    # signal at all. The close stays non-fatal exactly as before: the presence
+    # gate below is what decides whether any durable record may be removed.
+    fm_backend_herdr_projection_close_pane_focus_preserving \
+      "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" || true
+  else
+    echo "warning: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close" >&2
+  fi
+elif [ "$BACKEND" = herdr ]; then
+  if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
+    fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
+  else
+    echo "warning: herdr session presentation lock path is unavailable; skipping the pane close rather than closing unlocked" >&2
+  fi
+fi
+if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
+  if [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
+    rm -f "$HERDR_PRESENTATION_JOURNAL"
+  else
+    echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
+  fi
+elif [ "$BACKEND" = herdr ] \
+     && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
+  echo "warning: herdr presentation journal for $ID remains quarantined; no workspace cleanup was attempted" >&2
+fi
+# A refused, skipped, or failed Herdr close must never erase a live task's
+# durable endpoint identity: unless the exact pane is confirmed gone, retain
+# every record and stop before any removal below so a later rerun can retry
+# the locked close. Only a structured not-found proves the pane gone; unknown
+# presence, missing or malformed endpoint identity, and missing confirmation
+# machinery all refuse.
+if [ "$BACKEND" = herdr ]; then
+  fm_backend_source herdr || true
+  if ! declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1; then
+    echo "error: herdr endpoint confirmation is unavailable for $ID; retaining every durable task record" >&2
+    exit 1
+  fi
+  if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
+    echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
+    exit 1
+  fi
+fi
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -2551,100 +2975,18 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   }
 fi
 
-HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
-HERDR_PRESENTATION_RETIRE_CANDIDATE=0
-HERDR_PRESENTATION_SESSION=
-HERDR_PRESENTATION_PANE=
-if [ "$BACKEND" = herdr ] \
-   && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
-  fm_backend_source herdr || true
-  HERDR_PRESENTATION_SESSION=$(meta_value "$META" herdr_session)
-  HERDR_PRESENTATION_WORKSPACE=$(meta_value "$META" herdr_workspace_id)
-  HERDR_PRESENTATION_PANE=$(meta_value "$META" herdr_pane_id)
-  if [ -n "$HERDR_PRESENTATION_SESSION" ] \
-     && [ -n "$HERDR_PRESENTATION_WORKSPACE" ] \
-     && [ -n "$HERDR_PRESENTATION_PANE" ] \
-     && [ "$T" = "$HERDR_PRESENTATION_SESSION:$HERDR_PRESENTATION_PANE" ] \
-     && fm_backend_herdr_projection_endpoint_matches_journal \
-       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKSPACE" \
-       "$HERDR_PRESENTATION_JOURNAL" "$ID"; then
-    HERDR_PRESENTATION_RETIRE_CANDIDATE=1
-  fi
-fi
-
-if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
-  # The presentation lock was acquired before the worktree return above; a
-  # contended lock already refused this teardown while everything was intact.
-  if teardown_herdr_session_lock_held "$HERDR_PRESENTATION_SESSION"; then
-    # stderr is deliberately NOT discarded here. This is the highest-frequency
-    # projected-close call site, and the helper's only stderr output is a real
-    # warning - unverifiable workspace.move support, a refused focus-unsafe
-    # close, an unconfirmed repositioned-workspace removal, or a failed exact
-    # restore.
-    # Swallowing them left a wrong active workspace with no operator-visible
-    # signal at all. The close stays non-fatal exactly as before: the presence
-    # gate below is what decides whether any durable record may be removed.
-    fm_backend_herdr_projection_close_pane_focus_preserving \
-      "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" || true
-  else
-    echo "warning: herdr presentation focus lock unavailable; refusing a concurrent focus-unsafe pane close" >&2
-  fi
-elif [ "$BACKEND" = herdr ]; then
-  if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
-    fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
-  else
-    echo "warning: herdr session presentation lock path is unavailable; skipping the pane close rather than closing unlocked" >&2
-  fi
-elif [ "$BACKEND" != orca ]; then
+if [ "$BACKEND" != orca ] && [ "$BACKEND" != herdr ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
-fi
-if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
-  if [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
-    rm -f "$HERDR_PRESENTATION_JOURNAL"
-  else
-    echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
-  fi
-elif [ "$BACKEND" = herdr ] \
-     && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
-  echo "warning: herdr presentation journal for $ID remains quarantined; no workspace cleanup was attempted" >&2
-fi
-# A refused, skipped, or failed Herdr close must never erase a live task's
-# durable endpoint identity: unless the exact pane is confirmed gone, retain
-# every record and stop before any removal below so a later rerun can retry
-# the locked close. Only a structured not-found proves the pane gone; unknown
-# presence, missing or malformed endpoint identity, and missing confirmation
-# machinery all refuse.
-if [ "$BACKEND" = herdr ]; then
-  fm_backend_source herdr || true
-  if ! declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1; then
-    echo "error: herdr endpoint confirmation is unavailable for $ID; retaining every durable task record" >&2
-    exit 1
-  fi
-  if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
-    echo "error: herdr pane $T for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
-    exit 1
-  fi
 fi
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
   remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
   remove_secondmate_registry_entry "$ID"
 fi
-remove_grok_turnend_auth "$STATE" "$ID" || exit 1
-remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
-fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
-# Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
+# Read before the state-file removal below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
-remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
-retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
-status_retire_presentation_task "$STATE" "$ID" || exit 1
-rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
-  "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
-  "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
-  "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \
-  "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
-  "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note"
+remove_task_state_records "$STATE" "$ID" "$BACKEND" "$T" "$BUSY_GEN" || exit 1
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then

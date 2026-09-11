@@ -31,7 +31,11 @@
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
 #   or herdr), refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation.
+#   the new incarnation. On a treehouse-backed backend it relaunches a ship or
+#   scout only when the pool's durable lease proves the record still owns its
+#   worktree (bin/fm-slot-lib.sh owns that verdict): a re-leased slot names
+#   bin/fm-teardown.sh <id> --retire-record instead, and an unproven one names
+#   what a person can confirm by hand.
 #   --base <branch> is the branch this task's work will merge into: the branch the
 #   brief tells the crew to branch FROM. It is recorded as base=<branch> and is
 #   what a consumer building a branch tree has to go on until the task has a PR,
@@ -56,8 +60,8 @@
 #   then tmux.
 #   Spawn-capable backends are the reference tmux adapter and experimental
 #   herdr, zellij, orca, and cmux. Orca owns both the task worktree and
-#   terminal, so ship/scout Orca spawns do not run treehouse get; cmux is a
-#   session provider only, exactly like herdr/zellij, so it does. An
+#   terminal, so ship/scout Orca spawns do not lease a treehouse worktree; cmux
+#   is a session provider only, exactly like herdr/zellij, so it does. An
 #   auto-detected herdr or cmux spawn prints a loud stderr notice;
 #   auto-detected tmux stays silent; zellij and orca are never auto-detected.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
@@ -190,6 +194,17 @@
 # success line and state/<id>.meta omit them.
 # Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
 # consumers can distinguish a replacement worker that reuses the same task id.
+# A fresh ship or scout on a treehouse-backed backend takes its worktree with
+# `treehouse get --lease`, records the holder label as lease_holder= (relaunch
+# keeps it, and teardown's return releases the lease), and then moves the
+# pane's own shell there with a top-level cd; bin/fm-slot-lib.sh owns why the
+# reservation must be a durable lease and how the label is formed. A leased slot
+# that another record in this home still names is held aside while the search
+# continues and handed back before the spawn proceeds, so a fresh task never
+# shares a working copy with a record that has not been torn down or retired.
+# A spawn that stops before publishing its record hands its lease back, except
+# for a slot with uncommitted changes, which keeps its lease and is named for a
+# deliberate release rather than discarded.
 # When the home session's frozen trace-context decision is enabled (see
 # docs/configuration.md and bin/fm-trace-context-lib.sh), the meta also records
 # one W3C traceparent= carrier, the same value injected into the pane as
@@ -264,6 +279,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-slot-lib.sh
+. "$SCRIPT_DIR/fm-slot-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
@@ -701,6 +718,72 @@ RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+LEASE_HOLDER=
+SPAWN_LEASE_RETURN_ON_ABORT=0
+SPAWN_LEASE_HELD=()
+
+# Hand a lease this spawn took back to the pool, unless the slot now holds
+# uncommitted changes: those keep the lease and are named for a deliberate
+# release instead of being discarded by the return's reset.
+spawn_return_lease() {  # <path>
+  local path=$1 dirty
+  if ! dirty=$(git -C "$path" status --porcelain --untracked-files=all 2>/dev/null); then
+    echo "warning: cannot inspect leased pool slot $path; it stays leased to $LEASE_HOLDER - release it by hand once it is safe: (cd $PROJ_ABS && treehouse return $path)" >&2
+    return 1
+  fi
+  if [ -n "$dirty" ]; then
+    echo "warning: leased pool slot $path has uncommitted changes; it stays leased to $LEASE_HOLDER rather than discarding them - release it by hand once they are safe: (cd $PROJ_ABS && treehouse return $path)" >&2
+    return 1
+  fi
+  if ! (cd "$PROJ_ABS" && treehouse return --force "$path") >/dev/null 2>&1; then
+    echo "warning: treehouse could not return leased pool slot $path; it stays leased to $LEASE_HOLDER" >&2
+    return 1
+  fi
+}
+
+spawn_release_held_leases() {
+  local path
+  [ "${#SPAWN_LEASE_HELD[@]}" -gt 0 ] || return 0
+  for path in "${SPAWN_LEASE_HELD[@]}"; do
+    spawn_return_lease "$path" || true
+  done
+  SPAWN_LEASE_HELD=()
+}
+
+# Lease this task's worktree and set WT; the header owns the contract.
+spawn_lease_worktree() {
+  local attempt=0 path claimants err
+  LEASE_HOLDER=$(fm_slot_lease_holder_new "$ID")
+  err=$(mktemp "${TMPDIR:-/tmp}/fm-spawn-lease.XXXXXX") || return 1
+  while [ "$attempt" -lt 8 ]; do
+    attempt=$((attempt + 1))
+    if ! path=$(cd "$PROJ_ABS" && treehouse get --lease --lease-holder "$LEASE_HOLDER" 2>"$err"); then
+      sed 's/^/treehouse: /' "$err" >&2
+      rm -f "$err"
+      echo "error: treehouse get --lease could not lease a worktree for $ID from $PROJ_ABS" >&2
+      return 1
+    fi
+    if [ -z "$path" ] || [ ! -d "$path" ]; then
+      rm -f "$err"
+      echo "error: treehouse get --lease did not report a worktree for $ID (got '$path')" >&2
+      return 1
+    fi
+    claimants=$(fm_slot_claimants "$STATE" "$path" "$ID" | tr '\n' ' ')
+    if [ -n "$claimants" ]; then
+      echo "warning: pool slot $path is still named by task record(s) ${claimants% }; holding it aside and leasing another. Retire or tear those records down so the slot can be reused." >&2
+      SPAWN_LEASE_HELD+=("$path")
+      continue
+    fi
+    rm -f "$err"
+    WT=$path
+    SPAWN_LEASE_RETURN_ON_ABORT=1
+    spawn_release_held_leases
+    return 0
+  done
+  rm -f "$err"
+  echo "error: every pool slot leased for $ID in $attempt attempts is still named by another task record; retire or tear those records down first" >&2
+  return 1
+}
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -791,6 +874,13 @@ spawn_abort_cleanup() {
       fi
     fi
   fi
+  # A lease taken for a record that never got published goes back to the pool;
+  # once the record is published it owns the lease and teardown returns it.
+  if [ "$SPAWN_LEASE_RETURN_ON_ABORT" = 1 ]; then
+    SPAWN_LEASE_RETURN_ON_ABORT=0
+    [ -z "${WT:-}" ] || spawn_return_lease "$WT" || true
+  fi
+  spawn_release_held_leases || true
   if [ "$SPAWN_TASK_LOCK_HELD" = 1 ]; then
     SPAWN_TASK_LOCK_HELD=0
     fm_lock_release "$SPAWN_TASK_LOCK" || true
@@ -1056,6 +1146,14 @@ if [ "$RELAUNCH" -eq 1 ]; then
       echo "error: task $ID has no recorded project; refusing to relaunch" >&2
       exit 1
     }
+    if [ "$BACKEND" != orca ] && fm_slot_verdict "$STATE" "$ID" && [ "$FM_SLOT_VERDICT" != own ]; then
+      if [ "$FM_SLOT_VERDICT" = released ]; then
+        echo "error: task $ID's recorded worktree $RELAUNCH_WT is no longer its own: $FM_SLOT_EVIDENCE; refusing to launch a replacement inside another holder's working copy. Retire only this task's record with bin/fm-teardown.sh $ID --retire-record, or spawn a fresh task from its branch" >&2
+      else
+        echo "error: cannot prove task $ID still owns its recorded worktree $RELAUNCH_WT: $FM_SLOT_EVIDENCE; refusing to launch a replacement into a working copy that may hold another task's work, because ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed, spawn a fresh task from its branch, or retire the record deliberately by hand" >&2
+      fi
+      exit 1
+    fi
   fi
   if [ "$BACKEND" = herdr ]; then
     HERDR_SES=$(fm_meta_get "$RELAUNCH_META" herdr_session)
@@ -2256,53 +2354,41 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  spawn_lease_worktree || exit 1
+  spawn_send_text_line "$WT_TARGET" "cd -- $(shell_quote "$WT")"
 
-  # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
+  # Wait for the pane's own shell to report the leased worktree as its cwd.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
   # automatic-rename slips through), display-message -t <bad-name> falls back to the
   # active client's window, which would misread firstmate's OWN pane path as the
   # worktree and tangle a hook into the primary checkout. The window id never lies.
-  # Compare against PROJ_ABS_REAL (physical), not PROJ_ABS: a symlinked project
-  # prefix would otherwise make the pane's OS-level cwd read differ from
-  # PROJ_ABS on the very first poll, before the pane has actually moved.
+  # Compare physical paths, so a symlinked prefix on either side of the read
+  # cannot make the one leased directory look like two.
   #
-  # A single read that already differs from PROJ_ABS_REAL is not proof the pane
-  # settled there: on some tmux/WSL setups a brand-new window's pane_current_path
-  # transiently reports an unrelated stale path (seen live as another real git
-  # checkout entirely) before the shell catches up with treehouse get's cd. That
-  # stale path still passes the PROJ_ABS_REAL comparison and validate_spawn_worktree
-  # below (it resolves to a real, distinct worktree top-level too), so accepting it
-  # on one read alone silently records the wrong worktree= in state/<id>.meta. Require
-  # two consecutive reads to agree on the same non-project path before accepting it;
-  # a mismatch just becomes the new candidate rather than resetting the wait, so a
-  # pane that is already settled by the first real read only costs the one existing
+  # A single matching read is not treated as settled: on some tmux/WSL setups a
+  # brand-new window's pane_current_path transiently reports an unrelated stale
+  # path (seen live as another real git checkout entirely) before the shell
+  # catches up with the cd. Two consecutive reads must name the leased worktree;
+  # a pane that is already there by the first read costs only the one existing
   # inter-poll sleep as confirmation, not a whole extra cycle on top.
-  candidate=""
+  lease_real=$(real_path_or_raw "$WT")
+  confirmed=0
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
-    if [ -n "$p" ]; then
-      p_real=$(real_path_or_raw "$p")
-      if [ "$p_real" != "$PROJ_ABS_REAL" ]; then
-        if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
-          WT="$p"
-          break
-        fi
-        candidate="$p_real"
-      else
-        candidate=""
-      fi
+    if [ -n "$p" ] && [ "$(real_path_or_raw "$p")" = "$lease_real" ]; then
+      confirmed=$((confirmed + 1))
+      [ "$confirmed" -lt 2 ] || break
     else
-      candidate=""
+      confirmed=0
     fi
     sleep 1
   done
-  if [ -z "$WT" ]; then
-    echo "error: treehouse get did not enter a worktree within 60s; inspect window $T" >&2
+  if [ "$confirmed" -lt 2 ]; then
+    echo "error: the pane did not enter its leased worktree $WT within 60s; inspect window $T" >&2
     exit 1
   fi
 
-  validate_spawn_worktree "treehouse get" "$T"
+  validate_spawn_worktree "treehouse get --lease" "$T"
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
@@ -2697,6 +2783,9 @@ preserve_relaunch_meta() {
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   echo "spawn_gen=$SPAWN_GEN"
+  # A fresh treehouse lease names its holder; a relaunch carries the recorded
+  # one forward through preserve_relaunch_meta.
+  [ -z "$LEASE_HOLDER" ] || echo "lease_holder=$LEASE_HOLDER"
   # Default-off writes no traceparent= line.
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
@@ -2732,6 +2821,8 @@ preserve_relaunch_meta() {
     echo "control_relaunch_tx=$FM_CONTROL_RELAUNCH_TX"
   fi
 } > "$SPAWN_META_PATH"
+# The published record owns the lease from here on; teardown returns it.
+[ "$RELAUNCH" -eq 1 ] || SPAWN_LEASE_RETURN_ON_ABORT=0
 if [ "$RELAUNCH" -eq 1 ]; then
   SPAWN_META_PUBLISH_STARTED=1
   mv -f "$SPAWN_META_TMP" "$STATE/$ID.meta"

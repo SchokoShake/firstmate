@@ -112,7 +112,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-backlog-pr.sh`       | Own the backlog PR-link convention: `record` a task's PR URL in the item's `pr` field, `retitle` without losing recorded links, and `repair` a lost link from task metadata |
 | `fm-pr-merge.sh`         | Record PR metadata, then merge a task's canonical full GitHub URL                    |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
-| `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes |
+| `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes, and retire only the record of a task whose pool slot was re-leased or, on a person's `--unproven-confirmed`, whose ownership could not be proven |
+| `fm-slot-lib.sh`         | Own the durable treehouse lease a task holds and the verdict on whether a record still owns its pool slot |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared Relay config, relay, and reply-threading helpers                              |

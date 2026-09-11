@@ -11,7 +11,8 @@
 # string/exit-code/file assertions. It deliberately does NOT bundle the
 # behavior-specific fake tmux/treehouse/no-mistakes mocks: those encode terminal
 # and lifecycle assumptions that differ per suite and belong with the tests that
-# own them.
+# own them. The one shared exception is fm_fake_treehouse, the minimal lease
+# stub every suite that drives the real fm-spawn.sh needs.
 #
 # ROOT is exported as the firstmate repo root (this file lives in tests/), so a
 # sourcing test can use "$ROOT/bin/..." without recomputing it.
@@ -185,6 +186,32 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/$tool"
+}
+
+# fm_fake_treehouse <fakebin>: the minimal treehouse stub every suite that drives
+# the real fm-spawn.sh against a fake terminal needs. `get --lease` prints the
+# worktree the fake pane reports (FM_FAKE_TREEHOUSE_LEASE, else
+# FM_FAKE_PANE_PATH), the one stdout line fm-spawn reads back, or, when
+# FM_FAKE_TREEHOUSE_QUEUE names a file, pops that file's first line so
+# successive leases hand out distinct slots; every other call exits 0. When
+# FM_FAKE_TREEHOUSE_LOG is set, each call appends its arguments.
+fm_fake_treehouse() {
+  local fakebin=$1
+  cat > "$fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+[ -z "${FM_FAKE_TREEHOUSE_LOG:-}" ] || printf 'treehouse %s\n' "$*" >> "$FM_FAKE_TREEHOUSE_LOG"
+if [ "${1:-}" = get ] && [ "${2:-}" = --lease ]; then
+  if [ -n "${FM_FAKE_TREEHOUSE_QUEUE:-}" ]; then
+    head -n 1 "$FM_FAKE_TREEHOUSE_QUEUE"
+    tail -n +2 "$FM_FAKE_TREEHOUSE_QUEUE" > "$FM_FAKE_TREEHOUSE_QUEUE.rest" \
+      && mv -f "$FM_FAKE_TREEHOUSE_QUEUE.rest" "$FM_FAKE_TREEHOUSE_QUEUE"
+  else
+    printf '%s\n' "${FM_FAKE_TREEHOUSE_LEASE:-${FM_FAKE_PANE_PATH:-}}"
+  fi
+fi
+exit 0
+SH
+  chmod +x "$fakebin/treehouse"
 }
 
 # --- deterministic git identity and fixtures --------------------------------

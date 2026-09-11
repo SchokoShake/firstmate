@@ -63,6 +63,8 @@ It is not deterministic across the verified adapters: codex and grok resume only
    A harness change resets model and effort unless they are named too, because a model chosen for one adapter does not transfer to another.
 2. **Safe checkpoint.**
    The recorded worktree must exist and be a worktree root; its head and dirty state are recorded.
+   For a ship or scout on a treehouse-backed backend, the pool's durable lease must prove the record still owns that worktree (`bin/fm-slot-lib.sh` owns that verdict), and a released or unproven record is refused here, before the note is written or the agent is stopped, so its live agent keeps running.
+   That refusal names the verdict's evidence and the deliberate path instead: stop the agent with `bin/fm-control.sh <id> exit`, then retire only a re-leased record with `bin/fm-teardown.sh <id> --retire-record` or spawn the task afresh from its branch through `bin/fm-spawn.sh`, which takes a durable lease under the task's own claim.
    For a `kind=secondmate` task, the home's identity marker must match and its child records must be readable, so a relaunch can never strand child work behind an unreadable home.
    A secondmate's own crewmates run in their own endpoints and outlive its relaunch; the relaunched secondmate reconciles them from its home's durable records at startup.
 3. **Record the note.**
@@ -99,6 +101,9 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
+  On a treehouse-backed backend it also relaunches a ship or scout only when the pool's durable lease proves the record still owns its worktree (`bin/fm-slot-lib.sh` owns that verdict), so a replacement can never start inside another task's working copy.
+  A re-leased slot names `bin/fm-teardown.sh <id> --retire-record` instead, and an unproven one, including every record that carries no recorded lease claim, names what a person can confirm by hand, because ownership is never inferred.
+  `fm-control.sh relaunch` applies the same verdict at its checkpoint, before anything is stopped, so the launch owner's check is a backstop rather than the first line.
 
 ## Capability matrix
 
