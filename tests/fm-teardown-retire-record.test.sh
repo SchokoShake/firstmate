@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Tests for bin/fm-teardown.sh --retire-record and for ordinary teardown's
-# refusal of a record whose treehouse slot the pool has re-leased.
+# Tests for bin/fm-teardown.sh --retire-record, its --unproven-confirmed
+# acknowledgement, and ordinary teardown's refusals of a record whose treehouse
+# slot the pool has re-leased or whose working copy another record also stands on.
 #
 # Every case drives the real script against a fixture home, a fixture treehouse
 # pool state file, and logging fakes for tmux and treehouse, so any touch of the
@@ -9,7 +10,9 @@
 # executable: the pool's durable lease on the recorded path, matched against
 # this record's own recorded claim and the claims other records in the home
 # carry, is the only evidence, and a record that carries no claim stays
-# unproven whatever else is true of its slot.
+# unproven whatever else is true of its slot. Such a record goes only on a
+# person's explicit --unproven-confirmed, and ordinary teardown refuses it once
+# any other record stands on its copy.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -67,14 +70,15 @@ write_pool() {
 }
 
 # write_record <case> <id> <kind> <spawn-gen> [key=value...]: a tmux-backed
-# record naming slot 1 as its working copy. RECORD_TASKTMP overrides its temp
-# root, which otherwise names a path that never exists.
+# record naming slot 1 as its working copy. RECORD_WORKTREE overrides that
+# copy; RECORD_TASKTMP overrides its temp root, which otherwise names a path
+# that never exists.
 write_record() {
   local dir=$1 id=$2 kind=$3 gen=$4
   shift 4
   fm_write_meta "$dir/home/state/$id.meta" \
     "window=firstmate:fm-$id" "endpoint_task_id=$id" \
-    "worktree=$dir/pool/1/repo" "project=$dir/project" \
+    "worktree=${RECORD_WORKTREE:-$dir/pool/1/repo}" "project=$dir/project" \
     "harness=claude" "kind=$kind" "tasktmp=${RECORD_TASKTMP:-$dir/tasktmp-$id}" \
     "spawn_gen=$gen" "$@"
 }
@@ -416,8 +420,10 @@ test_retire_refuses_a_record_without_a_recorded_claim() {
     fi
     assert_contains "$REFUSAL_OUTPUT" "Confirm by hand whose work the copy holds" \
       "the $mode refusal did not name the person's alternatives"
-    assert_contains "$REFUSAL_OUTPUT" "retire the record deliberately by hand" \
-      "the $mode refusal did not name the hand retirement"
+    assert_contains "$REFUSAL_OUTPUT" "bin/fm-teardown.sh legacy-r1 --retire-record --unproven-confirmed" \
+      "the $mode refusal did not name the acknowledgement flag"
+    assert_contains "$REFUSAL_OUTPUT" "whose ownership could not be proven" \
+      "the $mode refusal did not say what the flag is for"
     assert_not_contains "$REFUSAL_OUTPUT" "would remove" "the $mode run listed records as removable"
     while IFS= read -r path; do
       assert_present "$path" "the $mode run removed $path"
@@ -425,7 +431,7 @@ test_retire_refuses_a_record_without_a_recorded_claim() {
 $(task_paths "$dir" legacy-r1)
 EOF
   done
-  pass "fm-teardown --retire-record: a record with no recorded claim is unproven whatever its slot shows, and refuses in a real run and a dry run alike"
+  pass "fm-teardown --retire-record: a record with no recorded claim is unproven whatever its slot shows, and refuses in a real run and a dry run alike, naming --unproven-confirmed"
 }
 
 test_retire_follows_a_lease_to_a_secondmate_home() {
@@ -498,10 +504,15 @@ SH
     "an endpoint running a live agent" --retire-record
   assert_contains "$REFUSAL_OUTPUT" "bin/fm-control.sh old-r1 exit" \
     "the refusal did not name the supported way to stop the worker"
+  # --unproven-confirmed acknowledges an unproven slot, never a live agent: the
+  # same record with no recorded claim is refused on the agent just the same.
+  write_record "$dir" old-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
+  assert_refused_without_mutation "$dir" old-r1 "still holds a live agent" \
+    "an endpoint running a live agent under --unproven-confirmed" --retire-record --unproven-confirmed
   env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$socket" has-session -t firstmate 2>/dev/null \
     || fail "the refusal disturbed the live endpoint"
   env -u TMUX -u TMUX_PANE "$REAL_TMUX" -S "$socket" kill-server 2>/dev/null || true
-  pass "fm-teardown --retire-record: refuses while the record's own endpoint still runs a live agent"
+  pass "fm-teardown --retire-record: refuses while the record's own endpoint still runs a live agent, with or without --unproven-confirmed"
 }
 
 test_retire_refuses_secondmate_and_orca_records() {
@@ -511,19 +522,27 @@ test_retire_refuses_secondmate_and_orca_records() {
   fm_write_secondmate_meta "$dir/home/state/sm-r1.meta" "$dir/pool/1/repo"
   assert_refused_without_mutation "$dir" sm-r1 "is a secondmate home" \
     "a secondmate record" --retire-record
+  assert_refused_without_mutation "$dir" sm-r1 "is a secondmate home" \
+    "a secondmate record under --unproven-confirmed" --retire-record --unproven-confirmed
   fm_write_meta "$dir/home/state/orca-r1.meta" \
     "window=fm-orca-r1" "endpoint_task_id=orca-r1" "terminal=term-7" \
     "worktree=$dir/pool/1/repo" "project=$dir/project" "backend=orca" \
     "orca_worktree_id=worktree-9" "kind=ship" "spawn_gen=$OLD_GEN"
   assert_refused_without_mutation "$dir" orca-r1 "Orca worktree" \
     "an Orca record" --retire-record
-  pass "fm-teardown --retire-record: refuses secondmate homes and Orca worktrees, which are never pool slots it can prove re-leased"
+  assert_refused_without_mutation "$dir" orca-r1 "Orca worktree" \
+    "an Orca record under --unproven-confirmed" --retire-record --unproven-confirmed
+  pass "fm-teardown --retire-record: refuses secondmate homes and Orca worktrees, which are never pool slots it can prove re-leased, with or without --unproven-confirmed"
 }
 
 test_retire_rejects_malformed_requests() {
   local dir rc args
   dir=$(make_superseded_case bad-options)
-  for args in "--retire-record --force" "--dry-run" "--force --dry-run" "--retire-record --bogus" "--bogus"; do
+  for args in "--retire-record --force" "--dry-run" "--force --dry-run" "--retire-record --bogus" "--bogus" \
+      "--unproven-confirmed" "--force --unproven-confirmed" "--unproven-confirmed --force" \
+      "--unproven-confirmed --dry-run" "--dry-run --unproven-confirmed" \
+      "--retire-record --unproven-confirmed --force" "--retire-record --unproven-confirmed --unproven-confirmed" \
+      "--retire-record --dry-run --dry-run" "--retire-record --retire-record --unproven-confirmed"; do
     set +e
     # shellcheck disable=SC2086 # each case is a deliberate word list
     run_teardown "$dir" old-r1 $args > "$dir/bad.out" 2>&1
@@ -533,7 +552,7 @@ test_retire_rejects_malformed_requests() {
   done
   assert_present "$dir/home/state/old-r1.meta" "a malformed request changed state"
   [ ! -s "$dir/runtime.log" ] || fail "a malformed request reached the runtime: $(cat "$dir/runtime.log")"
-  pass "fm-teardown: rejects unknown or conflicting options before touching anything"
+  pass "fm-teardown: rejects unknown or conflicting options, --unproven-confirmed anywhere but with --retire-record among them, before touching anything"
 }
 
 test_ordinary_teardown_refuses_a_re_leased_slot() {
@@ -560,7 +579,7 @@ test_ordinary_teardown_lets_the_current_holder_through() {
   local dir rc out marker
   dir=$(make_case current-holder)
   write_pool "$dir" ',"owner_pid":999999,"owner_started_at":1789026475860'
-  write_record "$dir" old-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
+  RECORD_WORKTREE="$dir/pool/2/repo" write_record "$dir" old-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
   write_record "$dir" new-r1 scout "$NEW_GEN"
   populate_task_state "$dir" new-r1
   write_presentation_rows "$dir" old-r1 new-r1
@@ -581,7 +600,212 @@ test_ordinary_teardown_lets_the_current_holder_through() {
   assert_absent "$dir/home/state/.seen-new-r1_status" "teardown left the signal seen-marker"
   assert_absent "$dir/home/state/.hb-surfaced-new-r1" "teardown left the heartbeat marker"
   assert_absent "$dir/home/state/.subsuper-paused-new-r1" "teardown left the away-mode pause marker"
-  pass "fm-teardown: a record with no recorded claim tears down normally, as before durable leases, and drops every per-task record, watcher markers included"
+  pass "fm-teardown: a record with no recorded claim on a copy no other record names tears down normally, as before durable leases, and drops every per-task record, watcher markers included"
+}
+
+# The pre-lease shape: two records with no recorded claim on one working copy,
+# under the process-bound reservation treehouse clears once its owner dies.
+make_claimless_pair_case() {  # <name> -> case dir
+  local dir
+  dir=$(make_case "$1")
+  write_pool "$dir" ',"owner_pid":999999,"owner_started_at":1789026475860'
+  write_record "$dir" stale-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off" \
+    "pr=https://github.com/example/repo/pull/829"
+  write_record "$dir" holder-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off"
+  populate_task_state "$dir" stale-r1
+  populate_task_state "$dir" holder-r1
+  write_presentation_rows "$dir" stale-r1 holder-r1
+  printf '%s\n' "$dir"
+}
+
+# The transition shape: a record with no recorded claim on a copy the pool now
+# durably leases to a later record's own claim.
+make_claimless_under_lease_case() {  # <name> -> case dir
+  local dir
+  dir=$(make_case "$1")
+  write_pool "$dir" ",\"leased\":true,\"lease_holder\":\"$NEW_CLAIM\""
+  write_record "$dir" legacy-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off" \
+    "pr=https://github.com/example/repo/pull/829"
+  write_record "$dir" new-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off" "lease_holder=$NEW_CLAIM"
+  populate_task_state "$dir" legacy-r1
+  populate_task_state "$dir" new-r1
+  write_presentation_rows "$dir" legacy-r1 new-r1
+  printf '%s\n' "$dir"
+}
+
+# Ordinary teardown of <id>, plain and --force, refuses on the recorded fact
+# <evidence>, names --unproven-confirmed and what it is for, and reaches
+# neither treehouse nor tmux.
+assert_ordinary_teardown_refuses_unproven() {  # <case> <id> <evidence> <label>
+  local dir=$1 id=$2 evidence=$3 label=$4 mode
+  for mode in plain force; do
+    : > "$dir/runtime.log"
+    if [ "$mode" = force ]; then
+      assert_refused_without_mutation "$dir" "$id" "could not be proven" "$label ($mode)" --force
+    else
+      assert_refused_without_mutation "$dir" "$id" "could not be proven" "$label ($mode)"
+    fi
+    assert_contains "$REFUSAL_OUTPUT" "$evidence" "$label ($mode): the refusal did not name the recorded fact"
+    assert_contains "$REFUSAL_OUTPUT" "bin/fm-teardown.sh $id --retire-record --unproven-confirmed" \
+      "$label ($mode): the refusal did not name the acknowledgement flag"
+    assert_contains "$REFUSAL_OUTPUT" "whose ownership could not be proven" \
+      "$label ($mode): the refusal did not say what the flag is for"
+    [ ! -s "$dir/runtime.log" ] \
+      || fail "$label ($mode): the refusal reached the runtime: $(cat "$dir/runtime.log")"
+    assert_present "$dir/home/state/.hash-firstmate_fm-$id" "$label ($mode): the refusal removed watcher state"
+  done
+}
+
+test_ordinary_teardown_refuses_both_records_of_a_claimless_pair() {
+  local dir
+  dir=$(make_claimless_pair_case claimless-pair)
+  assert_ordinary_teardown_refuses_unproven "$dir" stale-r1 "holder-r1 also name" \
+    "ordinary teardown of the stale record of a claimless pair"
+  assert_ordinary_teardown_refuses_unproven "$dir" holder-r1 "stale-r1 also name" \
+    "ordinary teardown of the record still holding the copy of a claimless pair"
+  pass "fm-teardown: refuses, with or without --force, both records of a pre-lease pair that name one working copy without a claim, naming --unproven-confirmed"
+}
+
+test_ordinary_teardown_refuses_a_claimless_record_under_another_claims_lease() {
+  local dir rc out
+  dir=$(make_claimless_under_lease_case claimless-under-lease)
+  assert_ordinary_teardown_refuses_unproven "$dir" legacy-r1 \
+    "task new-r1's own recorded claim on that same working copy" \
+    "ordinary teardown of a claimless record whose copy is leased to another claim"
+  # The holder's own claim is what the pool leases, so its teardown proceeds.
+  set +e
+  out=$(run_teardown "$dir" new-r1 --force 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "tearing down the record the pool leases the copy to"$'\n'"$out"
+  assert_grep "treehouse <return> <--force> <$dir/pool/1/repo>" "$dir/runtime.log" \
+    "the lease holder's teardown did not return its slot"
+  assert_grep "kill-window" "$dir/runtime.log" "the lease holder's endpoint was not closed"
+  assert_present "$dir/home/state/legacy-r1.meta" "the lease holder's teardown touched the claimless record"
+  assert_absent "$dir/home/state/new-r1.meta" "the lease holder's record survived its teardown"
+  pass "fm-teardown: refuses a claimless record whose copy the pool leases to another record's claim, while that holder's own teardown proceeds"
+}
+
+# Every planned removal is printed before the first removal.
+assert_plan_precedes_removal() {  # <output> <label>
+  local out=$1 label=$2 plan_last removed_first
+  plan_last=$(printf '%s\n' "$out" | grep -n 'retire-record: will remove ' | tail -n 1 | cut -d: -f1)
+  removed_first=$(printf '%s\n' "$out" | grep -n 'retire-record: removed ' | head -n 1 | cut -d: -f1)
+  [ -n "$plan_last" ] && [ -n "$removed_first" ] && [ "$plan_last" -lt "$removed_first" ] \
+    || fail "$label: the planned removals were not all printed before the first removal"$'\n'"$out"
+}
+
+# assert_confirmed_retire <case> <id> <other-id> <evidence>: --retire-record
+# --unproven-confirmed prints the verdict and the complete plan, then removes
+# exactly teardown's state set for <id>, leaving <other-id>'s records, the
+# working copy, the pool, and every endpoint alone.
+assert_confirmed_retire() {
+  local dir=$1 id=$2 other=$3 evidence=$4 before rc out path
+  before=$(cksum < "$dir/pool/treehouse-state.json")
+  set +e
+  out=$(run_teardown "$dir" "$id" --retire-record --unproven-confirmed 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "retiring $id with --unproven-confirmed"$'\n'"$out"
+  assert_contains "$out" "could not be proven" "retiring $id did not print the verdict"
+  assert_contains "$out" "$evidence" "retiring $id did not print the recorded fact"
+  while IFS= read -r path; do
+    assert_contains "$out" "retire-record: will remove $path" "the plan for $id did not list $path"
+    assert_contains "$out" "retire-record: removed $path" "the removal of $path was not reported"
+    assert_absent "$path" "retiring $id left $path behind"
+  done <<EOF
+$(task_paths "$dir" "$id")
+EOF
+  assert_contains "$out" "retire-record: will remove $id's row from $dir/home/state/.status-presentation-cursor" \
+    "the plan for $id did not list the presentation row"
+  assert_plan_precedes_removal "$out" "retiring $id"
+  assert_no_grep "$id"$'\t' "$dir/home/state/.status-presentation-cursor" \
+    "retiring $id kept its presentation row"
+  while IFS= read -r path; do
+    case "$path" in */.pr-check-quarantine/*) continue ;; esac
+    assert_present "$path" "retiring $id removed $other's $path"
+  done <<EOF
+$(task_paths "$dir" "$other")
+EOF
+  assert_present "$dir/home/state/.pr-check-quarantine/$other.diagnostic.ambiguous" \
+    "retiring $id removed $other's quarantine entry"
+  assert_grep "$other"$'\t' "$dir/home/state/.status-presentation-cursor" \
+    "retiring $id dropped $other's presentation row"
+  assert_copy_and_pool_untouched "$dir" "$before" "retiring $id with --unproven-confirmed"
+}
+
+test_retire_unproven_confirmed_retires_a_claimless_record() {
+  local dir before rc out path args
+  dir=$(make_claimless_under_lease_case unproven-confirmed)
+  before=$(cksum < "$dir/pool/treehouse-state.json")
+
+  # Without the acknowledgement the record stays.
+  assert_refused_without_mutation "$dir" legacy-r1 "carries no lease claim" \
+    "a claimless record without the acknowledgement" --retire-record
+
+  # A dry run with the flag, in either order, prints the verdict and the planned
+  # removals and changes nothing.
+  for args in "--retire-record --unproven-confirmed --dry-run" "--unproven-confirmed --dry-run --retire-record"; do
+    set +e
+    # shellcheck disable=SC2086 # each case is a deliberate word list
+    out=$(run_teardown "$dir" legacy-r1 $args 2>&1)
+    rc=$?
+    set -e
+    expect_code 0 "$rc" "a dry run with --unproven-confirmed ($args)"$'\n'"$out"
+    assert_contains "$out" "could not be proven" "the dry run ($args) did not print the verdict"
+    assert_contains "$out" "task new-r1's own recorded claim on that same working copy" \
+      "the dry run ($args) did not print the recorded fact"
+    assert_contains "$out" "dry run: would remove $dir/home/state/legacy-r1.meta" \
+      "the dry run ($args) did not list the records it would remove"
+    assert_not_contains "$out" "retire-record: removed" "the dry run ($args) removed something"
+    while IFS= read -r path; do
+      assert_present "$path" "the dry run ($args) removed $path"
+    done <<EOF
+$(task_paths "$dir" legacy-r1)
+EOF
+    assert_grep "legacy-r1"$'\t' "$dir/home/state/.status-presentation-cursor" \
+      "the dry run ($args) dropped the presentation row"
+    assert_copy_and_pool_untouched "$dir" "$before" "dry run ($args)"
+  done
+
+  # The real run, on the copy the pool leases to another record's claim.
+  assert_confirmed_retire "$dir" legacy-r1 new-r1 \
+    "task new-r1's own recorded claim on that same working copy"
+
+  # And on the pre-lease pair, where the only recorded fact is the other
+  # claimless record naming the same copy.
+  dir=$(make_claimless_pair_case unproven-confirmed-pair)
+  assert_confirmed_retire "$dir" stale-r1 holder-r1 "holder-r1 also name"
+  pass "fm-teardown --retire-record --unproven-confirmed: retires a claimless record after printing the complete plan, in a dry run changes nothing, and leaves the copy, the pool, every endpoint, and every other record alone"
+}
+
+test_retire_unproven_confirmed_keeps_every_other_refusal() {
+  local dir label=fm-task:own-r1:l1789000000.4242.17 artifact
+  # A record the pool leases to its own claim would strand that lease.
+  dir=$(make_case own-lease-confirmed)
+  write_pool "$dir" ",\"leased\":true,\"lease_holder\":\"$label\""
+  write_record "$dir" own-r1 ship s1789000003.4242.18 "mode=direct-PR" "yolo=off" "lease_holder=$label"
+  assert_refused_without_mutation "$dir" own-r1 "still owns its working copy" \
+    "a record holding its own lease under --unproven-confirmed" --retire-record --unproven-confirmed
+  assert_refused_without_mutation "$dir" own-r1 "still owns its working copy" \
+    "a dry run of a record holding its own lease under --unproven-confirmed" \
+    --retire-record --dry-run --unproven-confirmed
+  # An armed PR merge poll or registered watcher check on a claimless record.
+  dir=$(make_claimless_pair_case armed-confirmed)
+  for artifact in check.sh pr-poll pr-poll-registration check-trust; do
+    (umask 077 && printf 'armed\n' > "$dir/home/state/stale-r1.$artifact")
+  done
+  assert_refused_without_mutation "$dir" stale-r1 "still has an armed PR merge poll" \
+    "an armed PR merge poll under --unproven-confirmed" --retire-record --unproven-confirmed
+  assert_contains "$REFUSAL_OUTPUT" "https://github.com/example/repo/pull/829" \
+    "the refusal did not name the watched PR"
+  for artifact in check.sh pr-poll pr-poll-registration check-trust; do
+    assert_present "$dir/home/state/stale-r1.$artifact" "the refusal removed the poll's $artifact"
+  done
+  rm -f "$dir/home/state/stale-r1.pr-poll" "$dir/home/state/stale-r1.pr-poll-registration"
+  assert_refused_without_mutation "$dir" stale-r1 "registered watcher check" \
+    "an armed custom check under --unproven-confirmed" --retire-record --unproven-confirmed
+  pass "fm-teardown --retire-record --unproven-confirmed: still refuses a record that owns its lease and one with an armed PR merge poll or registered watcher check"
 }
 
 test_retire_removes_an_idle_task_temp_root() {
@@ -621,6 +845,10 @@ test_retire_refuses_secondmate_and_orca_records
 test_retire_rejects_malformed_requests
 test_ordinary_teardown_refuses_a_re_leased_slot
 test_ordinary_teardown_lets_the_current_holder_through
+test_ordinary_teardown_refuses_both_records_of_a_claimless_pair
+test_ordinary_teardown_refuses_a_claimless_record_under_another_claims_lease
+test_retire_unproven_confirmed_retires_a_claimless_record
+test_retire_unproven_confirmed_keeps_every_other_refusal
 test_retire_removes_an_idle_task_temp_root
 
 echo "# all fm-teardown-retire-record tests passed"

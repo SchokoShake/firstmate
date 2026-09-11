@@ -79,7 +79,7 @@
 # the retired home. Removing a leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# Usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run]]
+# Usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
@@ -95,14 +95,29 @@
 #   secondmate or Orca record, an own endpoint that holds a live agent or cannot
 #   be proven agent-free, an armed PR merge poll or registered watcher check,
 #   and an owed public reply, and each refusal names the path that applies
-#   instead, which for an unproven record is what a person confirms by hand.
+#   instead, which for an unproven record is --unproven-confirmed.
+#   --unproven-confirmed is a person's explicit acknowledgement that the
+#   record's ownership could not be proven. It is valid only together with
+#   --retire-record, with or without --dry-run and in any order, and is
+#   rejected with exit 2 anywhere else; nothing implies it - no environment
+#   variable, config, or other flag turns it on, and --force never does. It
+#   lets --retire-record act on a record whose verdict is unproven and nothing
+#   more: a record the pool still leases to its own claim still refuses,
+#   because dropping it would strand its lease, and every other refusal above
+#   stands. It prints the complete list of what it will remove before removing
+#   anything, then removes exactly that state set and nothing else.
 #   --dry-run prints the verdict
 #   and the records it would remove, refuses exactly where a real run would,
 #   and changes nothing.
 #   Ordinary teardown, with or without --force, refuses before any worktree,
 #   process, or endpoint step when that verdict says the recorded slot was
 #   re-leased, because each of those steps acts on the recorded path and would
-#   land on the new holder's work.
+#   land on the new holder's work. It refuses there just the same, on recorded
+#   facts alone and inferring no ownership, a record with no recorded lease
+#   claim whose recorded path the pool durably leases to another record's own
+#   claim on that same path, or whose recorded working copy any other record
+#   in this home also names; each such refusal names --retire-record
+#   --unproven-confirmed as the deliberate way through.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -222,19 +237,34 @@ if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   exit 2
 fi
 ID=$1
+shift
+# An empty sole option is the no-option form, for callers passing an unset flag.
+if [ "$#" = 1 ] && [ -z "$1" ]; then shift; fi
 FORCE=
 RETIRE_RECORD=0
 RETIRE_DRY_RUN=0
-case "$#:${2:-}:${3:-}" in
-  1::|2::) ;;
-  2:--force:) FORCE=--force ;;
-  2:--retire-record:) RETIRE_RECORD=1 ;;
-  3:--retire-record:--dry-run) RETIRE_RECORD=1; RETIRE_DRY_RUN=1 ;;
-  *)
-    echo "error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run]]" >&2
-    exit 2
-    ;;
-esac
+RETIRE_UNPROVEN_CONFIRMED=0
+teardown_usage_error() {
+  echo "error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]" >&2
+  exit 2
+}
+for arg in "$@"; do
+  case "$arg" in
+    --force) [ -z "$FORCE" ] || teardown_usage_error; FORCE=--force ;;
+    --retire-record) [ "$RETIRE_RECORD" = 0 ] || teardown_usage_error; RETIRE_RECORD=1 ;;
+    --dry-run) [ "$RETIRE_DRY_RUN" = 0 ] || teardown_usage_error; RETIRE_DRY_RUN=1 ;;
+    --unproven-confirmed) [ "$RETIRE_UNPROVEN_CONFIRMED" = 0 ] || teardown_usage_error; RETIRE_UNPROVEN_CONFIRMED=1 ;;
+    *) teardown_usage_error ;;
+  esac
+done
+# --force stands alone, and --dry-run and --unproven-confirmed belong to
+# --retire-record only; nothing else ever turns --unproven-confirmed on.
+if [ -n "$FORCE" ] && [ "$RETIRE_RECORD$RETIRE_DRY_RUN$RETIRE_UNPROVEN_CONFIRMED" != 000 ]; then
+  teardown_usage_error
+fi
+if [ "$RETIRE_RECORD" = 0 ] && [ "$RETIRE_DRY_RUN$RETIRE_UNPROVEN_CONFIRMED" != 00 ]; then
+  teardown_usage_error
+fi
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
@@ -2486,15 +2516,24 @@ EOF
 # pool has provably re-leased that copy to another holder (bin/fm-slot-lib.sh
 # owns the verdict), each of those steps would land on the other holder's work,
 # and --force authorizes discarding only THIS task's work, so the refusal holds
-# either way and names the record-only path instead.
-refuse_if_slot_released() {
+# either way and names the record-only path instead. A record with no recorded
+# claim is refused on the same footing, inferring nothing about who owns the
+# copy, as soon as the recorded facts show another record standing on it
+# (FM_SLOT_CONTESTED); the way through is the person's --unproven-confirmed.
+refuse_if_slot_released_or_contested() {
   [ "$KIND" != secondmate ] || return 0
   [ "$BACKEND" != orca ] || return 0
   fm_slot_verdict "$STATE" "$ID" || return 0
-  [ "$FM_SLOT_VERDICT" = released ] || return 0
-  echo "REFUSED: $ID's recorded working copy $FM_SLOT_WORKTREE is no longer its own: $FM_SLOT_EVIDENCE." >&2
-  echo "Tearing it down would reset that copy and kill the processes in it, and --force cannot authorize discarding another holder's work." >&2
-  echo "Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh $ID --retire-record" >&2
+  if [ "$FM_SLOT_VERDICT" = released ]; then
+    echo "REFUSED: $ID's recorded working copy $FM_SLOT_WORKTREE is no longer its own: $FM_SLOT_EVIDENCE." >&2
+    echo "Tearing it down would reset that copy and kill the processes in it, and --force cannot authorize discarding another holder's work." >&2
+    echo "Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh $ID --retire-record" >&2
+    return 1
+  fi
+  [ -n "$FM_SLOT_CONTESTED" ] || return 0
+  echo "REFUSED: $ID's ownership of its recorded working copy $FM_SLOT_WORKTREE could not be proven: $FM_SLOT_EVIDENCE." >&2
+  echo "Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work." >&2
+  echo "Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh $ID --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record." >&2
   return 1
 }
 
@@ -2555,23 +2594,31 @@ retire_record_tasktmp() {
 # before the first removal, and nothing here touches the working copy, the
 # pool, a process, or an endpoint.
 retire_record_only() {
-  local agent path existing row=0
+  local agent path existing row=0 verdict rerun="bin/fm-teardown.sh $ID --retire-record"
+  [ "$RETIRE_UNPROVEN_CONFIRMED" = 0 ] || rerun="$rerun --unproven-confirmed"
   if [ "$BACKEND" = orca ]; then
     echo "REFUSED: $ID's working copy is an Orca worktree rather than a treehouse pool slot, so it cannot have been re-leased; use ordinary teardown: bin/fm-teardown.sh $ID" >&2
     return 1
   fi
   fm_slot_verdict "$STATE" "$ID" || { echo "REFUSED: $ID has no readable record at $META" >&2; return 1; }
   case "$FM_SLOT_VERDICT" in
-    released) ;;
+    released)
+      verdict="$ID's working copy $FM_SLOT_WORKTREE was re-leased: $FM_SLOT_EVIDENCE"
+      ;;
     own)
       echo "REFUSED: $ID still owns its working copy: $FM_SLOT_EVIDENCE." >&2
       echo "Dropping only the record would strand that lease and keep the pool slot consumed; tear the task down normally once its work has landed: bin/fm-teardown.sh $ID" >&2
+      [ "$RETIRE_UNPROVEN_CONFIRMED" = 0 ] \
+        || echo "--unproven-confirmed acknowledges only a record whose ownership could not be proven; this record's ownership is proven, so it changes nothing here." >&2
       return 1
       ;;
     *)
-      echo "REFUSED: cannot prove $ID's working copy ${FM_SLOT_WORKTREE:-(none recorded)} was re-leased: $FM_SLOT_EVIDENCE." >&2
-      echo "Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh $ID), spawn a fresh task from its branch, or retire the record deliberately by hand." >&2
-      return 1
+      if [ "$RETIRE_UNPROVEN_CONFIRMED" = 0 ]; then
+        echo "REFUSED: cannot prove $ID's working copy ${FM_SLOT_WORKTREE:-(none recorded)} was re-leased: $FM_SLOT_EVIDENCE." >&2
+        echo "Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh $ID), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh $ID --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record." >&2
+        return 1
+      fi
+      verdict="$ID's ownership of its working copy ${FM_SLOT_WORKTREE:-(none recorded)} could not be proven, which --unproven-confirmed acknowledges: $FM_SLOT_EVIDENCE"
       ;;
   esac
   agent=$(fm_backend_agent_state "$BACKEND" "$T")
@@ -2588,7 +2635,7 @@ retire_record_only() {
   esac
   retire_record_refuse_armed_check || return 1
   if [ "$RETIRE_DRY_RUN" = 1 ]; then
-    echo "dry run: $ID's working copy $FM_SLOT_WORKTREE was re-leased: $FM_SLOT_EVIDENCE"
+    echo "dry run: $verdict"
     while IFS= read -r path; do
       if [ -e "$path" ] || [ -L "$path" ]; then echo "dry run: would remove $path"; fi
     done <<EOF
@@ -2604,8 +2651,24 @@ EOF
       "$STATE/.status-presentation-cursor" 2>/dev/null; then
     row=1
   fi
+  # The acknowledgement is a person's deliberate act on a record nothing
+  # proves, so the complete plan is printed before the first removal.
+  if [ "$RETIRE_UNPROVEN_CONFIRMED" = 1 ]; then
+    echo "retire-record: $verdict"
+    echo "retire-record: --unproven-confirmed removes exactly these records of $ID and nothing else:"
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      echo "retire-record: will remove $path"
+    done <<EOF
+$existing
+EOF
+    [ "$row" = 0 ] || echo "retire-record: will remove $ID's row from $STATE/.status-presentation-cursor"
+    if [ -e "$TASK_TMP" ] || [ -L "$TASK_TMP" ]; then
+      echo "retire-record: will remove $TASK_TMP only if it is this task's own idle /tmp/fm-$ID root"
+    fi
+  fi
   remove_task_state_records "$STATE" "$ID" "$BACKEND" "$T" "$BUSY_GEN" || {
-    echo "error: retiring $ID's records stopped partway; rerun bin/fm-teardown.sh $ID --retire-record to finish" >&2
+    echo "error: retiring $ID's records stopped partway; rerun $rerun to finish" >&2
     return 1
   }
   while IFS= read -r path; do
@@ -2620,12 +2683,16 @@ EOF
     echo "retire-record: left the quarantined Herdr presentation journal $STATE/$ID.herdr-presentation for manual inspection"
   fi
   [ "$agent" = missing ] || echo "retire-record: left endpoint $T in place; it holds no live agent, so close it by hand if it is litter"
-  echo "retired record $ID ($FM_SLOT_EVIDENCE); left working copy $FM_SLOT_WORKTREE, its pool lease, and every process in it untouched"
+  if [ "$FM_SLOT_VERDICT" = released ]; then
+    echo "retired record $ID ($FM_SLOT_EVIDENCE); left working copy $FM_SLOT_WORKTREE, its pool lease, and every process in it untouched"
+  else
+    echo "retired record $ID on --unproven-confirmed ($FM_SLOT_EVIDENCE); left working copy ${FM_SLOT_WORKTREE:-(none recorded)}, whatever the pool holds on it, and every process in it untouched"
+  fi
   backlog_refresh_reminder
 }
 
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
-[ "$RETIRE_RECORD" = 1 ] || refuse_if_slot_released || exit 1
+[ "$RETIRE_RECORD" = 1 ] || refuse_if_slot_released_or_contested || exit 1
 
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT

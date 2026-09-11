@@ -258,7 +258,9 @@ The helper requires a full `https://github.com/<owner>/<repo>/pull/<n>` URL, inv
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 Teardown also refuses, with or without `--force`, a record whose slot the pool has provably re-leased to another holder, because every destructive step acts on the recorded path and would land on that holder's work; `--retire-record` then drops only the record's own state and leaves the working copy alone.
 That verdict reads only the record's own recorded lease claim against the pool's durable lease record and never infers ownership from spawn generations or other records, so a record with no recorded claim is unproven.
-`--retire-record` and a relaunch refuse an unproven record and name what a person confirms by hand, while ordinary teardown treats it exactly as before, under its landed-work checks.
+Ordinary teardown, with or without `--force`, also refuses a record with no recorded claim on the recorded fact alone, inferring no ownership, once the pool durably leases its copy to another record's own claim on that same path or any other record in the home names that same copy; a claimless record no other record stands on is treated exactly as before, under the landed-work checks.
+`--retire-record` and a relaunch refuse an unproven record; the retire path and every such teardown refusal name `--retire-record --unproven-confirmed`, a person's explicit acknowledgement that the record's ownership could not be proven.
+That flag is valid only with `--retire-record`, is never implied by any other flag, variable, or setting, keeps every other refusal, and removes only the record's own state after printing the complete list first.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
 
 ## Optional Relay
