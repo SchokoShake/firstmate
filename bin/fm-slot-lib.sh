@@ -5,9 +5,10 @@
 # The single owner of how a ship or scout record durably holds its treehouse
 # working copy, and of how firstmate tells a record that still owns that copy
 # from one whose copy the pool has re-leased to another holder. Sourced by
-# bin/fm-spawn.sh (lease label, claimant scan, and the verdict a --relaunch
-# requires to read own) and bin/fm-teardown.sh (the verdict behind its
-# re-leased-slot refusal and --retire-record).
+# bin/fm-control.sh (the verdict its relaunch checkpoint requires to read own,
+# refused before anything is stopped), bin/fm-spawn.sh (lease label, claimant
+# scan, and the same verdict as --relaunch's backstop), and bin/fm-teardown.sh
+# (the verdict behind its re-leased-slot refusal and --retire-record).
 #
 # Why a lease. treehouse offers two reservations. The interactive
 # `treehouse get` subshell holds an owner reservation that lives exactly as long

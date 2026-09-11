@@ -894,6 +894,65 @@ test_missing_instructions_refuse_before_stopping_anything() {
   pass "fm-control relaunch: a worker with nothing to work from is never launched"
 }
 
+# assert_relaunch_refused_untouched <case-dir> <id> <meta-before> <brief-before> <out>:
+# a checkpoint refusal named the deliberate path, left the agent running, sent
+# nothing to the endpoint, changed no byte of the record or instructions, and
+# opened no transaction journal.
+assert_relaunch_refused_untouched() {
+  local dir=$1 id=$2 meta_before=$3 brief_before=$4 out=$5
+  assert_contains "$out" "bin/fm-control.sh $id exit" "the $id refusal should name how to stop the agent deliberately"
+  assert_contains "$out" "bin/fm-spawn.sh" "the $id refusal should name the fresh spawn"
+  assert_contains "$out" "durable lease under the task's own claim" "the $id refusal should say the fresh spawn takes a claim"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "the $id refusal must leave the agent running"
+  if [ -s "$dir/fake/literal" ] || [ -s "$dir/fake/keys" ]; then
+    fail "the $id refusal sent keys to the endpoint"
+  fi
+  [ "$(cat "$dir/home/state/$id.meta")" = "$meta_before" ] || fail "the $id refusal changed the durable record"
+  [ "$(cat "$dir/home/data/$id/brief.md")" = "$brief_before" ] || fail "the $id refusal changed the instructions"
+  [ ! -e "$dir/home/state/$id.control-relaunch" ] \
+    || fail "the $id refusal opened a transaction journal (phase $(journal_field "$dir" "$id" phase))"
+}
+
+# The ownership verdict (bin/fm-slot-lib.sh) is applied at the checkpoint,
+# before the progress note, the transaction journal, and the agent stop, so a
+# record the pool's lease does not prove the holder of keeps its live agent and
+# every byte of its record and instructions, and is told the deliberate path.
+test_relaunch_refuses_an_unowned_slot_before_stopping_anything() {
+  local dir out rc meta_before brief_before
+
+  # No recorded claim: unproven, whatever the pool's lease says.
+  dir=$(new_case ctl-noclaim rl47)
+  add_ship_task "$dir" rl47 claude
+  write_ship_record "$dir" rl47 claude
+  meta_before=$(cat "$dir/home/state/rl47.meta")
+  brief_before=$(cat "$dir/home/data/rl47/brief.md")
+  out=$(run_control "$dir" rl47 relaunch --note "x"); rc=$?
+  expect_code 1 "$rc" "relaunching a record with no recorded claim should refuse"$'\n'"$out"
+  assert_contains "$out" "carries no lease claim" "the refusal should say nothing recorded ties the record to its slot"
+  assert_relaunch_refused_untouched "$dir" rl47 "$meta_before" "$brief_before" "$out"
+
+  # A claim on a slot the pool leases to another record's claim: released.
+  dir=$(new_case ctl-released rl48)
+  add_ship_task "$dir" rl49 claude
+  write_ship_record "$dir" rl48 claude "lease_holder=$(ship_claim rl48)"
+  meta_before=$(cat "$dir/home/state/rl48.meta")
+  brief_before=$(cat "$dir/home/data/rl48/brief.md")
+  out=$(run_control "$dir" rl48 relaunch --note "x"); rc=$?
+  expect_code 1 "$rc" "relaunching a record whose slot another claim holds should refuse"$'\n'"$out"
+  assert_contains "$out" "task rl49's own recorded claim on that same working copy" \
+    "the refusal should name the verdict's evidence"
+  assert_contains "$out" "bin/fm-teardown.sh rl48 --retire-record" "the refusal should name the record-only path"
+  assert_relaunch_refused_untouched "$dir" rl48 "$meta_before" "$brief_before" "$out"
+
+  # A record that owns its slot still relaunches.
+  dir=$(new_case ctl-own rl50)
+  add_ship_task "$dir" rl50 claude
+  out=$(run_control "$dir" rl50 relaunch --note "x"); rc=$?
+  expect_code 0 "$rc" "a record that owns its slot should relaunch"$'\n'"$out"
+  assert_contains "$out" "relaunched rl50 harness=claude" "the owned record should relaunch"
+  pass "fm-control relaunch: a slot the pool's lease does not prove the record owns refuses at the checkpoint, before the note, the journal, and the agent stop, naming the deliberate path"
+}
+
 test_checkpoint_refusal_leaves_the_record_byte_identical() {
   local dir before after
   dir=$(new_case bytes rl12)
@@ -1445,6 +1504,7 @@ test_muse_session_binding_is_retired_on_a_harness_switch
 test_cursor_session_binding_is_retired_on_a_harness_switch
 test_missing_worktree_refuses_before_stopping_anything
 test_missing_instructions_refuse_before_stopping_anything
+test_relaunch_refuses_an_unowned_slot_before_stopping_anything
 test_checkpoint_refusal_leaves_the_record_byte_identical
 test_checkpoint_refuses_uninspectable_head_and_status
 test_launch_failure_keeps_the_prior_record_and_reports_it

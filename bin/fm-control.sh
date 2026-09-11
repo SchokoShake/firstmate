@@ -44,6 +44,11 @@
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
+#              Before that checkpoint is recorded, the note is written, or the
+#              agent is stopped, a ship or scout on a treehouse-backed backend
+#              is refused unless the pool's durable lease proves the record
+#              still owns its worktree (bin/fm-slot-lib.sh owns that verdict),
+#              and the refusal names the deliberate path instead.
 #              Records a durable checkpoint and that note, exits the old agent,
 #              then delegates the launch to its single owner,
 #              bin/fm-spawn.sh --relaunch. A failure before publication keeps
@@ -134,6 +139,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-slot-lib.sh
+. "$SCRIPT_DIR/fm-slot-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -708,6 +715,18 @@ safe_checkpoint() {
     dirty=no
   fi
   CHECKPOINT_LINES+=("worktree_head=$head" "worktree_dirty=$dirty")
+  if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
+    fm_slot_verdict "$STATE" "$ID" || die "task $ID has no readable record at $META; refusing to relaunch"
+    case "$FM_SLOT_VERDICT" in
+      own) ;;
+      released)
+        die "task $ID's recorded worktree $WT is no longer its own: $FM_SLOT_EVIDENCE; refusing to relaunch a replacement inside another holder's working copy. Stop the agent with bin/fm-control.sh $ID exit, then retire only this task's record with bin/fm-teardown.sh $ID --retire-record or spawn the task afresh from its branch through bin/fm-spawn.sh, which takes a durable lease under the task's own claim"
+        ;;
+      *)
+        die "cannot prove task $ID still owns its recorded worktree $WT: $FM_SLOT_EVIDENCE; refusing to relaunch a replacement into a working copy that may hold another task's work, because ownership is never inferred. Stop the agent with bin/fm-control.sh $ID exit, then spawn the task afresh from its branch through bin/fm-spawn.sh, which takes a durable lease under the task's own claim; or confirm by hand whose work the copy holds and tear the task down normally once its work has landed"
+        ;;
+    esac
+  fi
   if [ "$KIND" = secondmate ]; then
     # A secondmate's own crewmates outlive its relaunch: they run in their own
     # endpoints, and the relaunched secondmate reconciles them from its home's
