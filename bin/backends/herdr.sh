@@ -2532,6 +2532,28 @@ fm_backend_herdr_current_path() {  # <target>
     | jq -r '.result.pane.foreground_cwd // empty' 2>/dev/null
 }
 
+# fm_backend_herdr_endpoint_shell_pid: the pid of the pane's own root shell,
+# the process fm-spawn.sh moved into the task's worktree with a top-level cd,
+# read from `pane process-info`'s shell_pid for the exact pane. Fails on any
+# error, an answer for another pane, or a non-numeric pid, so a caller never
+# mistakes an unreadable pane for a known process. fm-teardown.sh's
+# leaked-process reap leaves exactly that process to the focus-preserving
+# endpoint close; ending it directly would remove the emptied workspace
+# through Herdr's raw pane death, outside the focus-safe plan.
+fm_backend_herdr_endpoint_shell_pid() {  # <target>
+  local pid
+  fm_backend_herdr_parse_target "$1" || return 1
+  pid=$(fm_backend_herdr_cli "$FM_BACKEND_HERDR_SESSION" pane process-info --pane "$FM_BACKEND_HERDR_PANE" 2>/dev/null \
+    | jq -er --arg pane "$FM_BACKEND_HERDR_PANE" '
+      select(.result.type == "pane_process_info" and .result.process_info.pane_id == $pane)
+      | .result.process_info.shell_pid
+      | select(type == "number" and . > 1)
+      | floor
+    ' 2>/dev/null) || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$pid"
+}
+
 # fm_backend_herdr_send_text_line: send one line of TEXT then submit,
 # ATOMICALLY - mirrors tmux's `send-keys -t T text Enter`. Used for the fixed
 # spawn-time commands (the cd into the leased worktree, the GOTMPDIR export).

@@ -140,6 +140,21 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$ACTIVE_SEEDED_CONTROL" ] \
   refusal_probe=1
   refusal_before=$(focus_snapshot || printf ambiguous/ambiguous)
 fi
+# fm-spawn.sh moves an armed post-create abort pane into its leased path with
+# the shell builtin cd, so by the time the spawn aborts the pane is a lone idle
+# shell and the focus-safe cleanup removes it through Herdr's pane-death path,
+# which issues no pane.close call for this audit to record. Keep that pane busy
+# with a foreground sleep, exactly as the interactive treehouse subshell kept
+# it busy before the spawn leased its slot itself, so the cleanup takes the
+# plain pane close the audit records; that close ends the sleep with the pane.
+if [ "${1:-} ${2:-}" = "pane run" ] && [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
+  for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
+    [ -d "$task_dir" ] || continue
+    [ "${3:-}" = "$(cat "$task_dir/task-pane" 2>/dev/null || true)" ] || continue
+    set -- "$1" "$2" "$3" "${4:-}; sleep 120" "${@:5}"
+    break
+  done
+fi
 before=
 [ -z "$mutation" ] || before=$(focus_snapshot || printf ambiguous/ambiguous)
 if out=$(env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"); then
