@@ -207,7 +207,12 @@ set -u
   done
   printf '\n'
 } >> "$TREEHOUSE_CALL_LOG"
+# Armed post-create abort: the lease reports a real directory that is not an
+# isolated git worktree, so the spawn moves its already-created pane there and
+# fails its worktree validation only after the pane exists.
 if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
+  mkdir -p "$POST_CREATE_ABORT_CONTROL/not-a-worktree"
+  printf '%s\n' "$POST_CREATE_ABORT_CONTROL/not-a-worktree"
   exit 0
 fi
 exec "$REAL_TREEHOUSE" "$@"
