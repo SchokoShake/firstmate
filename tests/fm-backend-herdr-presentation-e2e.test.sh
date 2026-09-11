@@ -428,7 +428,14 @@ normalize_meta() {  # <meta>
     -e 's|^herdr_tab_id=.*$|herdr_tab_id=<herdr-container-id>|' \
     -e 's|^herdr_pane_id=.*$|herdr_pane_id=<herdr-container-id>|' \
     -e 's|^spawn_gen=.*$|spawn_gen=<spawn-incarnation>|' \
+    -e 's|^lease_holder=(fm-task:[^:]*):.*$|lease_holder=\1:<lease-token>|' \
     "$1"
+}
+
+# Each spawn's treehouse lease holder label carries a fresh token, exactly like
+# its spawn incarnation, so the command sequence compares with that token masked.
+normalize_treehouse_log() {  # <log>
+  sed -E 's#(fm-task:[^:[:space:]]*):l[0-9]+\.[0-9]+\.[0-9]+#\1:<lease-token>#g' "$1"
 }
 
 log_line_count() { wc -l < "$HERDR_CALL_LOG" | tr -d '[:space:]'; }
@@ -605,7 +612,7 @@ assert_raw_presentation_mutations_preserved_since "$SHAPE_FOCUS_AUDIT_START" "pr
 ON_META="$TMP_ROOT/on.meta"
 cp "$HOME_DIR/state/shape.meta" "$ON_META"
 ON_WT=$(remember_meta_worktree "$ON_META")
-cmp -s "$TMP_ROOT/off-treehouse.log" "$TREEHOUSE_CALL_LOG" \
+cmp -s <(normalize_treehouse_log "$TMP_ROOT/off-treehouse.log") <(normalize_treehouse_log "$TREEHOUSE_CALL_LOG") \
   || fail "Treehouse command sequence changed between opted-out and projected spawns"
 JOURNAL="$HOME_DIR/state/shape.herdr-presentation"
 [ -f "$JOURNAL" ] || fail "projected spawn did not publish its presentation journal"
