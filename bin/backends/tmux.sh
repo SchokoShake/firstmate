@@ -106,6 +106,18 @@ fm_backend_tmux_current_path() {  # <target>
   tmux display-message -p -t "$1" '#{pane_current_path}' 2>/dev/null
 }
 
+# fm_backend_tmux_endpoint_shell_pid: the pid of the pane's own root process,
+# the shell fm-spawn.sh moved into the task's worktree with a top-level cd, or
+# failure on any tmux error or a non-numeric answer. fm-teardown.sh's
+# leaked-process reap leaves exactly that process to the endpoint close.
+fm_backend_tmux_endpoint_shell_pid() {  # <target>
+  local pid
+  pid=$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null) || return 1
+  pid=$(printf '%s' "$pid" | tr -d '[:space:]')
+  case "$pid" in ''|*[!0-9]*|0|1) return 1 ;; esac
+  printf '%s\n' "$pid"
+}
+
 # fm_backend_tmux_send_text_line: send one line of TEXT then Enter, with no
 # composer verification - used for the fixed spawn-time commands (the cd into
 # the leased worktree, the GOTMPDIR export) that already ran this exact

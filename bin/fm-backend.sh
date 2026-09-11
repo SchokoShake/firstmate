@@ -906,6 +906,23 @@ fm_backend_agent_alive() {  # <backend> <target>
   esac
 }
 
+# fm_backend_endpoint_shell_pid: the pid of the endpoint's own root process,
+# the pane shell fm-spawn.sh moved into the task's worktree with a top-level
+# cd, or failure when the backend cannot name one. fm-teardown.sh's
+# leaked-process reap skips exactly that process, because closing the endpoint
+# is what ends it through each backend's own focus-preserving path; every
+# other process rooted in the worktree is still reaped. A backend without the
+# lookup fails, so a caller never treats a guess as the endpoint's process.
+fm_backend_endpoint_shell_pid() {  # <backend> <target>
+  local backend=$1 target=$2
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    tmux) fm_backend_tmux_endpoint_shell_pid "$target" ;;
+    herdr) fm_backend_herdr_endpoint_shell_pid "$target" ;;
+    *) return 1 ;;
+  esac
+}
+
 # --- native event push (backend-extensible) ---------------------------------
 #
 # The watcher's event-wait splice (bin/fm-watch.sh) is backend-agnostic: it asks
