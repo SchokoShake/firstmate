@@ -16,8 +16,8 @@
 #      reports the concrete state, and preserves the work.
 #   6. fm-spawn --relaunch refuses on its own: a live agent, a contradicting
 #      flag, an extra positional, a backend that cannot prove the previous
-#      agent exited, or a treehouse slot the pool has re-leased to another
-#      holder.
+#      agent exited, or a treehouse slot whose durable lease does not prove the
+#      record still owns it.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -136,56 +136,46 @@ new_case() {
   printf '%s\n' "$dir"
 }
 
-# add_ship_task <case-dir> <id> [harness]
-add_ship_task() {
-  local dir=$1 id=$2 harness=${3:-claude}
-  local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
-  fm_git_worktree "$proj" "$wt" "task-$id"
-  mkdir -p "$home/data/$id"
-  printf '# brief for %s\n\nDo the thing.\n' "$id" > "$home/data/$id/brief.md"
-  {
-    echo "window=fmses:fm-$id"
-    echo "endpoint_task_id=$id"
-    echo "worktree=$wt"
-    echo "project=$proj"
-    echo "harness=$harness"
-    echo "kind=ship"
-    echo "mode=no-mistakes"
-    echo "yolo=off"
-    echo "tasktmp=/tmp/fm-$id"
-    echo "model=default"
-    echo "effort=default"
-  } > "$home/state/$id.meta"
-  printf '%s\n' "fm-$id" > "$dir/fake/windows"
-  printf '%s' "$wt" > "$dir/fake/cwd"
-  TASK_TMPS+=("/tmp/fm-$id")
-}
-
 # write_pool_record <case-dir> [extra-json-fields]: the treehouse pool's own
 # record for slot 1 at <case-dir>/pool, which bin/fm-slot-lib.sh reads.
 write_pool_record() {
   mkdir -p "$1/pool"
   : > "$1/pool/treehouse-state.lock"
-  printf '{"worktrees":[{"name":"1","path":"%s"%s}]}\n' "$1/pool/1/proj" "${2:-}" \
+  printf '{"worktrees":[{"name":"1","path":"%s"%s}]}\n' "$1/pool/1/wt" "${2:-}" \
     > "$1/pool/treehouse-state.json"
 }
 
-# add_pooled_ship_task <case-dir> <id> <spawn-gen> [key=value...]: a ship task
-# whose worktree is pool slot 1. The slot is created once per case, so a second
-# record added to the same case names the same working copy.
-add_pooled_ship_task() {
-  local dir=$1 id=$2 gen=$3 home="$1/home" wt="$1/pool/1/proj"
+# write_ship_record <case-dir> <id> <harness> [key=value...]: a ship task's
+# durable record naming pool slot 1, its brief, and the fake endpoint's window
+# and cwd; the slot itself is created once per case by add_ship_task.
+write_ship_record() {
+  local dir=$1 id=$2 harness=$3 home="$1/home" wt="$1/pool/1/wt"
   shift 3
-  [ -d "$wt" ] || fm_git_worktree "$dir/proj" "$wt" "task-$id"
   mkdir -p "$home/data/$id"
   printf '# brief for %s\n\nDo the thing.\n' "$id" > "$home/data/$id/brief.md"
   fm_write_meta "$home/state/$id.meta" \
     "window=fmses:fm-$id" "endpoint_task_id=$id" "worktree=$wt" "project=$dir/proj" \
-    "harness=${POOLED_HARNESS:-claude}" "kind=ship" "mode=no-mistakes" "yolo=off" \
-    "tasktmp=/tmp/fm-$id" "model=default" "effort=default" "spawn_gen=$gen" "$@"
+    "harness=$harness" "kind=ship" "mode=no-mistakes" "yolo=off" \
+    "tasktmp=/tmp/fm-$id" "model=default" "effort=default" "$@"
   printf '%s\n' "fm-$id" >> "$dir/fake/windows"
   printf '%s' "$wt" > "$dir/fake/cwd"
   TASK_TMPS+=("/tmp/fm-$id")
+}
+
+# ship_claim <id>: the lease holder label a task's record carries as its claim.
+ship_claim() {
+  printf 'fm-task:%s:l1789026480.7.7\n' "$1"
+}
+
+# add_ship_task <case-dir> <id> [harness]: a live ship task that owns its slot:
+# its worktree is pool slot 1, its record carries its lease claim, and the pool
+# leases the slot to that claim, so the relaunch verdict reads own.
+add_ship_task() {
+  local dir=$1 id=$2 harness=${3:-claude} label
+  label=$(ship_claim "$id")
+  [ -d "$dir/pool/1/wt" ] || fm_git_worktree "$dir/proj" "$dir/pool/1/wt" "task-$id"
+  write_ship_record "$dir" "$id" "$harness" "lease_holder=$label"
+  write_pool_record "$dir" ",\"leased\":true,\"lease_holder\":\"$label\""
 }
 
 # state_fingerprint <case-dir>: every file under the home's state/ with its
@@ -293,7 +283,7 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_contains "$out" "relaunched rl1 harness=claude from=claude" "the outcome should name the transition"
   [ "$(meta_field "$dir" rl1 window)" = "fmses:fm-rl1" ] \
     || fail "the endpoint must be reused, not recreated"
-  [ "$(meta_field "$dir" rl1 worktree)" = "$dir/wt" ] \
+  [ "$(meta_field "$dir" rl1 worktree)" = "$dir/pool/1/wt" ] \
     || fail "the worktree must be reused, not reallocated"
   [ "$(meta_field "$dir" rl1 kind)" = ship ] || fail "kind must survive the relaunch"
   [ "$(meta_field "$dir" rl1 project)" = "$dir/proj" ] || fail "project must survive the relaunch"
@@ -449,14 +439,14 @@ test_harness_switch_moves_the_record_and_clears_prior_wiring() {
   dir=$(new_case switch rl4)
   add_ship_task "$dir" rl4 claude
   # Wiring the previous claude incarnation left in the worktree.
-  mkdir -p "$dir/wt/.claude"
-  printf '{"hooks":{}}\n' > "$dir/wt/.claude/settings.local.json"
+  mkdir -p "$dir/pool/1/wt/.claude"
+  printf '{"hooks":{}}\n' > "$dir/pool/1/wt/.claude/settings.local.json"
   printf 'codex' > "$dir/fake/becomes"
   out=$(run_control "$dir" rl4 relaunch --harness codex --note "switching runtime"); rc=$?
   expect_code 0 "$rc" "a harness switch should succeed"$'\n'"$out"
   assert_contains "$out" "harness=codex from=claude" "the outcome should name both harnesses"
   [ "$(meta_field "$dir" rl4 harness)" = codex ] || fail "the record should follow the switch"
-  [ ! -e "$dir/wt/.claude/settings.local.json" ] \
+  [ ! -e "$dir/pool/1/wt/.claude/settings.local.json" ] \
     || fail "the previous harness's per-task wiring must be cleared on a switch"
   assert_grep "codex" "$dir/fake/literal" "the replacement launch should be the new harness"
   [ "$(journal_field "$dir" rl4 from_harness)" = claude ] || fail "the journal should record the origin harness"
@@ -490,7 +480,7 @@ test_harness_switch_resolves_a_prefixed_recorded_harness() {
   printf 'fm.abcdefabcdef\n' > "$dir/home/state/rl32.grok-turnend-token"
   auth="$dir/grokhome/hooks/fm-turn-end.d/fm.abcdefabcdef"
   printf '%s\n' "$dir/home/state/rl32.turn-ended" > "$auth"
-  printf 'token=fm.abcdefabcdef\n' > "$dir/wt/.fm-grok-turnend"
+  printf 'token=fm.abcdefabcdef\n' > "$dir/pool/1/wt/.fm-grok-turnend"
 
   out=$(run_control "$dir" rl32 relaunch --harness claude --note "switching runtime"); rc=$?
   expect_code 0 "$rc" "relaunch should resolve a prefixed recorded harness"$'\n'"$out"
@@ -503,7 +493,7 @@ test_harness_switch_resolves_a_prefixed_recorded_harness() {
   assert_contains "$out" "harness=claude from=grok-2" \
     "relaunch should report the recorded-to-selected harness transition"
   [ ! -e "$auth" ] && [ ! -e "$dir/home/state/rl32.grok-turnend-token" ] \
-    && [ ! -e "$dir/wt/.fm-grok-turnend" ] \
+    && [ ! -e "$dir/pool/1/wt/.fm-grok-turnend" ] \
     || fail "relaunch should retire wiring owned by the prefixed prior harness"
   pass "fm-control relaunch: a prefixed recorded harness can switch adapters transactionally"
 }
@@ -595,7 +585,7 @@ test_wiring_removal_failure_refuses_before_replacement_arm() {
   local dir hook out rc real_rm
   dir=$(new_case wiring-failure rl29)
   add_ship_task "$dir" rl29 claude
-  hook="$dir/wt/.claude/settings.local.json"
+  hook="$dir/pool/1/wt/.claude/settings.local.json"
   mkdir -p "${hook%/*}"
   printf '{}\n' > "$hook"
   real_rm=$(command -v rm)
@@ -832,14 +822,14 @@ test_prefixed_prior_harness_wiring_is_still_retired() {
   printf 'fm.abcdefabcdef\n' > "$dir/home/state/rl30.grok-turnend-token"
   auth="$dir/grokhome/hooks/fm-turn-end.d/fm.abcdefabcdef"
   printf '%s\n' "$dir/home/state/rl30.turn-ended" > "$auth"
-  printf 'token=fm.abcdefabcdef\n' > "$dir/wt/.fm-grok-turnend"
+  printf 'token=fm.abcdefabcdef\n' > "$dir/pool/1/wt/.fm-grok-turnend"
   printf 'zsh' > "$dir/fake/command"
   run_spawn "$dir" rl30 --relaunch --harness claude >/dev/null
   [ ! -e "$auth" ] \
     || fail "a prefixed prior harness must still have its turn-end registry entry revoked"
   [ ! -e "$dir/home/state/rl30.grok-turnend-token" ] \
     || fail "a prefixed prior harness must still have its private token retired"
-  [ ! -e "$dir/wt/.fm-grok-turnend" ] \
+  [ ! -e "$dir/pool/1/wt/.fm-grok-turnend" ] \
     || fail "a prefixed prior harness must still have its worktree hook pointer removed"
   pass "fm-spawn --relaunch: wiring armed under a prefixed harness name is still retired"
 }
@@ -852,7 +842,7 @@ test_muse_session_binding_is_retired_on_a_harness_switch() {
   local dir
   dir=$(new_case musewiring rl31)
   add_ship_task "$dir" rl31 muse
-  printf 'sessions_root=/nonexistent\nworkspace_root=%s\nbinding_id=1.2.3\n' "$dir/wt" \
+  printf 'sessions_root=/nonexistent\nworkspace_root=%s\nbinding_id=1.2.3\n' "$dir/pool/1/wt" \
     > "$dir/home/state/rl31.muse-session"
   printf '/nonexistent/session.jsonl\n' > "$dir/home/state/rl31.muse-session-current"
   printf 'zsh' > "$dir/fake/command"
@@ -868,7 +858,7 @@ test_cursor_session_binding_is_retired_on_a_harness_switch() {
   local dir
   dir=$(new_case cursorwiring rl35)
   add_ship_task "$dir" rl35 cursor
-  printf 'workspace=%s\nprior_conversation=old-conversation\n' "$dir/wt" \
+  printf 'workspace=%s\nprior_conversation=old-conversation\n' "$dir/pool/1/wt" \
     > "$dir/home/state/rl35.cursor-session"
   printf 'zsh' > "$dir/fake/command"
   run_spawn "$dir" rl35 --relaunch --harness claude >/dev/null
@@ -883,7 +873,7 @@ test_missing_worktree_refuses_before_stopping_anything() {
   local dir out rc
   dir=$(new_case nowt rl10)
   add_ship_task "$dir" rl10 claude
-  rm -rf "$dir/wt"
+  rm -rf "$dir/pool/1/wt"
   out=$(run_control "$dir" rl10 relaunch --note "x"); rc=$?
   expect_code 1 "$rc" "a missing worktree should refuse"
   assert_contains "$out" "recorded worktree" "the refusal should name the missing local copy"
@@ -909,7 +899,7 @@ test_checkpoint_refusal_leaves_the_record_byte_identical() {
   dir=$(new_case bytes rl12)
   add_ship_task "$dir" rl12 claude
   before=$(cat "$dir/home/state/rl12.meta")
-  rm -rf "$dir/wt/.git"
+  rm -rf "$dir/pool/1/wt/.git"
   run_control "$dir" rl12 relaunch --note "x" >/dev/null 2>&1
   after=$(cat "$dir/home/state/rl12.meta")
   [ "$before" = "$after" ] || fail "a refused relaunch must leave the durable record byte-identical"
@@ -953,7 +943,7 @@ test_launch_failure_keeps_the_prior_record_and_reports_it() {
   out=$(run_control "$dir" rl13 relaunch --harness codex --note "carry this forward"); rc=$?
   expect_code 1 "$rc" "a failed launch should fail closed"$'\n'"$out"
   assert_contains "$out" "no agent is running" "the failure should say no agent is running"
-  assert_contains "$out" "$dir/wt" "the failure should say where the work is preserved"
+  assert_contains "$out" "$dir/pool/1/wt" "the failure should say where the work is preserved"
   [ "$(cat "$dir/home/state/rl13.meta")" = "$before" ] \
     || fail "a failed launch must keep the prior durable record"
   [ "$(journal_field "$dir" rl13 phase)" = "failed:launching" ] \
@@ -1068,7 +1058,7 @@ test_prepublication_abort_retires_replacement_wiring_and_busy_state() {
   expect_code 1 "$rc" "a failed metadata publication should fail closed"$'\n'"$out"
   [ "$(meta_field "$dir" rl28 harness)" = claude ] \
     || fail "a failed publication should retain the prior durable record"
-  [ ! -e "$dir/wt/.claude/settings.local.json" ] \
+  [ ! -e "$dir/pool/1/wt/.claude/settings.local.json" ] \
     || fail "an aborted replacement should remove its harness wiring"
   [ ! -e "$dir/home/state/rl28.busy-gen" ] \
     || fail "an aborted replacement should retire its busy generation"
@@ -1083,14 +1073,14 @@ test_journal_records_the_checkpoint_it_proved() {
   local dir head
   dir=$(new_case journal rl14)
   add_ship_task "$dir" rl14 claude
-  printf 'scratch\n' > "$dir/wt/uncommitted.txt"
-  head=$(git -C "$dir/wt" rev-parse HEAD)
+  printf 'scratch\n' > "$dir/pool/1/wt/uncommitted.txt"
+  head=$(git -C "$dir/pool/1/wt" rev-parse HEAD)
   run_control "$dir" rl14 relaunch --note "keeping the scratch file" >/dev/null
   [ "$(journal_field "$dir" rl14 worktree_head)" = "$head" ] \
     || fail "the checkpoint should record the head it preserved"
   [ "$(journal_field "$dir" rl14 worktree_dirty)" = yes ] \
     || fail "the checkpoint should record that uncommitted work was present"
-  [ -f "$dir/wt/uncommitted.txt" ] || fail "uncommitted work must survive a relaunch"
+  [ -f "$dir/pool/1/wt/uncommitted.txt" ] || fail "uncommitted work must survive a relaunch"
   pass "fm-control relaunch: the checkpoint records the exact unlanded work it preserved"
 }
 
@@ -1346,18 +1336,15 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
 }
 
-# A relaunch re-enters the recorded working copy, so a record whose treehouse
-# slot the pool has provably re-leased (bin/fm-slot-lib.sh owns the verdict)
-# refuses before anything changes, while a record that still owns its slot
-# relaunches exactly as before.
+# A relaunch re-enters the recorded working copy, so it proceeds only when the
+# pool's durable lease proves the record still owns it (bin/fm-slot-lib.sh owns
+# the verdict). A slot the pool leases to another record's claim on the same
+# path is released, and refuses before anything changes.
 test_spawn_relaunch_refuses_a_re_leased_slot() {
-  local dir out rc before auth label
-
-  # A later fresh claimant on the same slot proves the pool reissued it.
-  dir=$(new_case releasedgen rl40)
-  write_pool_record "$dir" ',"owner_pid":999999'
-  add_pooled_ship_task "$dir" rl41 s1789026483.244338.3761
-  POOLED_HARNESS=grok-2 add_pooled_ship_task "$dir" rl40 s1788765996.150863.30112
+  local dir out rc before auth
+  dir=$(new_case released rl40)
+  add_ship_task "$dir" rl41 claude
+  write_ship_record "$dir" rl40 grok-2 "lease_holder=$(ship_claim rl40)"
   mkdir -p "$dir/grokhome/hooks/fm-turn-end.d"
   printf 'fm.abcdefabcdef\n' > "$dir/home/state/rl40.grok-turnend-token"
   auth="$dir/grokhome/hooks/fm-turn-end.d/fm.abcdefabcdef"
@@ -1365,8 +1352,9 @@ test_spawn_relaunch_refuses_a_re_leased_slot() {
   printf 'zsh' > "$dir/fake/command"
   before=$(state_fingerprint "$dir")
   out=$(run_spawn "$dir" rl40 --relaunch --harness claude); rc=$?
-  expect_code 1 "$rc" "relaunching into a slot a later claimant holds should refuse"$'\n'"$out"
-  assert_contains "$out" "task rl41 names the same working copy" "the refusal should name the verdict's evidence"
+  expect_code 1 "$rc" "relaunching into a slot leased to another record's claim should refuse"$'\n'"$out"
+  assert_contains "$out" "task rl41's own recorded claim on that same working copy" \
+    "the refusal should name the verdict's evidence"
   assert_contains "$out" "bin/fm-teardown.sh rl40 --retire-record" "the refusal should name the record-only path"
   [ "$(state_fingerprint "$dir")" = "$before" ] \
     || fail "a refused relaunch changed state/ (metadata, busy state, or wiring)"
@@ -1375,34 +1363,59 @@ test_spawn_relaunch_refuses_a_re_leased_slot() {
     fail "a refused relaunch sent keys to the endpoint"
   fi
 
-  # A durable lease held by anyone else proves it too.
-  dir=$(new_case releasedlease rl42)
+  # The record's own lease is ownership, and the relaunch proceeds as before.
+  dir=$(new_case ownlease rl43)
+  add_ship_task "$dir" rl43 claude
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl43 --relaunch --harness claude); rc=$?
+  expect_code 0 "$rc" "a record that still owns its slot should relaunch"$'\n'"$out"
+  assert_contains "$out" "spawned rl43 harness=claude" "the launch should report the relaunched task"
+  [ "$(meta_field "$dir" rl43 lease_holder)" = "$(ship_claim rl43)" ] \
+    || fail "the relaunch dropped the recorded lease holder"
+  assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
+  pass "fm-spawn --relaunch: refuses a record whose slot the pool leases to another record's claim before touching anything, and relaunches a record that still owns its slot"
+}
+
+# Ownership is never inferred: a record with no recorded lease claim reads
+# unproven whatever else is true of its slot, and so does a claim the pool's
+# lease does not confirm, so the relaunch refuses and names what a person can
+# do instead.
+test_spawn_relaunch_refuses_an_unproven_record() {
+  local dir out rc before
+  # No recorded claim, a later fresh claimant on the same path, a foreign pool
+  # lease, and spawn generations on both records.
+  dir=$(new_case noclaim rl44)
+  add_ship_task "$dir" rl45 claude
+  write_ship_record "$dir" rl44 claude "spawn_gen=s1788765996.150863.30112"
+  printf 'spawn_gen=s1789026483.244338.3761\n' >> "$dir/home/state/rl45.meta"
   write_pool_record "$dir" ',"leased":true,"lease_holder":"fm-task:other-x9:l1789026480.7.7"'
-  add_pooled_ship_task "$dir" rl42 s1788765996.150863.30112
   printf 'zsh' > "$dir/fake/command"
   before=$(state_fingerprint "$dir")
-  out=$(run_spawn "$dir" rl42 --relaunch --harness claude); rc=$?
-  expect_code 1 "$rc" "relaunching into a slot leased to someone else should refuse"$'\n'"$out"
-  assert_contains "$out" "leases $dir/pool/1/proj to fm-task:other-x9:l1789026480.7.7" \
-    "the refusal should name the lease holder"
-  assert_contains "$out" "bin/fm-teardown.sh rl42 --retire-record" "the refusal should name the record-only path"
+  out=$(run_spawn "$dir" rl44 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "relaunching a record with no recorded claim should refuse"$'\n'"$out"
+  assert_contains "$out" "carries no lease claim" "the refusal should say nothing recorded ties the record to its slot"
+  assert_contains "$out" "Confirm by hand whose work the copy holds" "the refusal should name what a person can do"
+  assert_contains "$out" "retire the record deliberately by hand" "the refusal should name the hand retirement"
   [ "$(state_fingerprint "$dir")" = "$before" ] || fail "a refused relaunch changed state/"
   if [ -s "$dir/fake/literal" ] || [ -s "$dir/fake/keys" ]; then
     fail "a refused relaunch sent keys to the endpoint"
   fi
 
-  # The record's own lease is ownership, and the relaunch proceeds as before.
-  dir=$(new_case ownlease rl43)
-  label=fm-task:rl43:l1789026480.7.7
-  write_pool_record "$dir" ",\"leased\":true,\"lease_holder\":\"$label\""
-  add_pooled_ship_task "$dir" rl43 s1789026483.244338.3761 "lease_holder=$label"
+  # A claim the pool leases to a label no record in this home carries.
+  dir=$(new_case foreignlabel rl46)
+  add_ship_task "$dir" rl46 claude
+  write_pool_record "$dir" ',"leased":true,"lease_holder":"fm-task:other-x9:l1789026480.7.7"'
   printf 'zsh' > "$dir/fake/command"
-  out=$(run_spawn "$dir" rl43 --relaunch --harness claude); rc=$?
-  expect_code 0 "$rc" "a record that still owns its slot should relaunch"$'\n'"$out"
-  assert_contains "$out" "spawned rl43 harness=claude" "the launch should report the relaunched task"
-  [ "$(meta_field "$dir" rl43 lease_holder)" = "$label" ] || fail "the relaunch dropped the recorded lease holder"
-  assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
-  pass "fm-spawn --relaunch: refuses a record whose slot the pool re-leased before touching anything, and relaunches a record that still owns its slot"
+  before=$(state_fingerprint "$dir")
+  out=$(run_spawn "$dir" rl46 --relaunch --harness claude); rc=$?
+  expect_code 1 "$rc" "relaunching a record whose slot is leased to an unclaimed label should refuse"$'\n'"$out"
+  assert_contains "$out" "no record in this home carries that label" "the refusal should say the label is unclaimed"
+  assert_contains "$out" "Confirm by hand whose work the copy holds" "the refusal should name what a person can do"
+  [ "$(state_fingerprint "$dir")" = "$before" ] || fail "a refused relaunch changed state/"
+  if [ -s "$dir/fake/literal" ] || [ -s "$dir/fake/keys" ]; then
+    fail "a refused relaunch sent keys to the endpoint"
+  fi
+  pass "fm-spawn --relaunch: a record with no recorded claim, or a claim the pool's lease does not confirm, is unproven and refuses without touching anything, naming the person's alternatives"
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
@@ -1452,3 +1465,4 @@ test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
 test_spawn_relaunch_refuses_a_re_leased_slot
+test_spawn_relaunch_refuses_an_unproven_record

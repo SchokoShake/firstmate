@@ -257,6 +257,8 @@ PR-based task merges go through `bin/fm-pr-merge.sh`, which records the PR throu
 The helper requires a full `https://github.com/<owner>/<repo>/pull/<n>` URL, invokes `gh-axi pr merge <n> --repo <owner>/<repo>`, defaults to `--squash`, preserves explicit merge-method flags, and rejects malformed URLs or repo override flags before recording merge state; a well-formed GitLab merge request URL (see [docs/gitlab-merge-watch.md](gitlab-merge-watch.md)) is refused too, explicitly, rather than sent to the wrong forge.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 Teardown also refuses, with or without `--force`, a record whose slot the pool has provably re-leased to another holder, because every destructive step acts on the recorded path and would land on that holder's work; `--retire-record` then drops only the record's own state and leaves the working copy alone.
+That verdict reads only the record's own recorded lease claim against the pool's durable lease record and never infers ownership from spawn generations or other records, so a record with no recorded claim is unproven.
+`--retire-record` and a relaunch refuse an unproven record and name what a person confirms by hand, while ordinary teardown treats it exactly as before, under its landed-work checks.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, and stale-lock recovery procedure.
 
 ## Optional Relay

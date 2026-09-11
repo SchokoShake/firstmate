@@ -31,9 +31,11 @@
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
 #   or herdr), refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation. It also refuses a ship or scout record whose treehouse
-#   slot the pool has provably re-leased to another holder (bin/fm-slot-lib.sh
-#   owns that verdict), naming bin/fm-teardown.sh <id> --retire-record instead.
+#   the new incarnation. On a treehouse-backed backend it relaunches a ship or
+#   scout only when the pool's durable lease proves the record still owns its
+#   worktree (bin/fm-slot-lib.sh owns that verdict): a re-leased slot names
+#   bin/fm-teardown.sh <id> --retire-record instead, and an unproven one names
+#   what a person can confirm by hand.
 #   --base <branch> is the branch this task's work will merge into: the branch the
 #   brief tells the crew to branch FROM. It is recorded as base=<branch> and is
 #   what a consumer building a branch tree has to go on until the task has a PR,
@@ -1144,8 +1146,12 @@ if [ "$RELAUNCH" -eq 1 ]; then
       echo "error: task $ID has no recorded project; refusing to relaunch" >&2
       exit 1
     }
-    if [ "$BACKEND" != orca ] && fm_slot_verdict "$STATE" "$ID" && [ "$FM_SLOT_VERDICT" = released ]; then
-      echo "error: task $ID's recorded worktree $RELAUNCH_WT is no longer its own: $FM_SLOT_EVIDENCE; refusing to launch a replacement inside another holder's working copy. Retire only this task's record with bin/fm-teardown.sh $ID --retire-record, or spawn a fresh task from its branch" >&2
+    if [ "$BACKEND" != orca ] && fm_slot_verdict "$STATE" "$ID" && [ "$FM_SLOT_VERDICT" != own ]; then
+      if [ "$FM_SLOT_VERDICT" = released ]; then
+        echo "error: task $ID's recorded worktree $RELAUNCH_WT is no longer its own: $FM_SLOT_EVIDENCE; refusing to launch a replacement inside another holder's working copy. Retire only this task's record with bin/fm-teardown.sh $ID --retire-record, or spawn a fresh task from its branch" >&2
+      else
+        echo "error: cannot prove task $ID still owns its recorded worktree $RELAUNCH_WT: $FM_SLOT_EVIDENCE; refusing to launch a replacement into a working copy that may hold another task's work, because ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed, spawn a fresh task from its branch, or retire the record deliberately by hand" >&2
+      fi
       exit 1
     fi
   fi

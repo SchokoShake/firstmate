@@ -90,10 +90,13 @@
 #   returns no lease, kills no process, and closes no endpoint; it leaves
 #   data/<id>/ alone and removes the task's /tmp/fm-<id> root only when no
 #   process is using it. It refuses a record that still owns its slot (ordinary
-#   teardown's job), an unproven re-lease, a secondmate or Orca record, an own
-#   endpoint that holds a live agent or cannot be proven agent-free, an armed PR
-#   merge poll or registered watcher check, and an owed public reply, and each
-#   refusal names the path that applies instead. --dry-run prints the verdict
+#   teardown's job), a record whose re-lease is unproven (every record without a
+#   recorded lease claim among them, since ownership is never inferred), a
+#   secondmate or Orca record, an own endpoint that holds a live agent or cannot
+#   be proven agent-free, an armed PR merge poll or registered watcher check,
+#   and an owed public reply, and each refusal names the path that applies
+#   instead, which for an unproven record is what a person confirms by hand.
+#   --dry-run prints the verdict
 #   and the records it would remove, refuses exactly where a real run would,
 #   and changes nothing.
 #   Ordinary teardown, with or without --force, refuses before any worktree,
@@ -2567,7 +2570,7 @@ retire_record_only() {
       ;;
     *)
       echo "REFUSED: cannot prove $ID's working copy ${FM_SLOT_WORKTREE:-(none recorded)} was re-leased: $FM_SLOT_EVIDENCE." >&2
-      echo "Only a proven re-lease lets the record go alone. While the copy may still be this task's, ordinary teardown owns it, because it checks the copy for unlanded work first: bin/fm-teardown.sh $ID" >&2
+      echo "Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh $ID), spawn a fresh task from its branch, or retire the record deliberately by hand." >&2
       return 1
       ;;
   esac
