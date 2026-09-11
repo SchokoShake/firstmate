@@ -2514,11 +2514,13 @@ fm_backend_herdr_target_ready() {  # <target>
 
 # fm_backend_herdr_current_path: the live FOREGROUND process's cwd, or empty on
 # any error. Mirrors tmux's pane_current_path poll used for worktree-path
-# discovery after `treehouse get`.
+# discovery after fm-spawn.sh moves the pane into its leased worktree with a
+# top-level cd, which foreground_cwd follows because the shell itself is the
+# foreground process.
 #
 # Verified pitfall: `pane get`'s `.result.pane.cwd` is the pane's cwd AT
 # CREATION TIME - the top-level shell's cwd - and does NOT update when that
-# shell `cd`s or enters a subshell (as `treehouse get` does). Reading it here
+# shell `cd`s or enters a subshell (as the interactive `treehouse get` does). Reading it here
 # would make fm-spawn.sh's worktree-discovery poll never see the pane "leave"
 # the project directory, since `cwd` stays frozen at the original path forever.
 # `.result.pane.foreground_cwd` tracks the ACTUALLY RUNNING foreground
