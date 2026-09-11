@@ -44,7 +44,15 @@
 #             path, including a label whose record names a different path; no
 #             durable lease on the path; and a pool record that cannot be read.
 # --retire-record and --relaunch refuse an unproven record and name what a
-# person can confirm by hand instead; ordinary teardown refuses only released.
+# person can confirm by hand instead; --retire-record --unproven-confirmed is
+# that person's explicit acknowledgement. Ordinary teardown refuses released
+# and, on the recorded fact alone, a contested claimless record:
+#   FM_SLOT_CONTESTED  for a record with no lease claim, one clause naming the
+#             recorded fact that another record also stands on its working
+#             copy - the pool durably leases the path to another record's own
+#             claim on that same path, or another record in this home names
+#             the same path - and empty when there is none or the record
+#             carries a claim. It says nothing about who owns the copy.
 #
 # The pool record is treehouse's own treehouse-state.json in the pool directory
 # two levels above the slot, where treehouse's own `return` resolves it, read
@@ -171,14 +179,39 @@ _fm_slot_label_claimant() {  # <state> <path> <label> <exclude-id>
   done
 }
 
+# For a record with no lease claim: the recorded fact, if any, that another
+# record also stands on its working copy <path>, as one clause in
+# FM_SLOT_CONTESTED. The header owns the two facts. Neither says who owns the
+# copy; both say a routine teardown of this record could land on another
+# task's work.
+_fm_slot_claimless_contest() {  # <state> <id> <path>
+  local state=$1 id=$2 path=$3 record pool_holder owner others
+  FM_SLOT_CONTESTED=
+  record=$(fm_slot_pool_record "$path")
+  case "$record" in
+    leased$'\t'*)
+      pool_holder=${record#leased$'\t'}
+      owner=$(_fm_slot_label_claimant "$state" "$path" "$pool_holder" "$id")
+      if [ -n "$owner" ]; then
+        FM_SLOT_CONTESTED="the pool leases $path to $pool_holder, task $owner's own recorded claim on that same working copy"
+        return 0
+      fi
+      ;;
+  esac
+  others=$(fm_slot_claimants "$state" "$path" "$id" | paste -sd ' ' -)
+  [ -z "$others" ] || FM_SLOT_CONTESTED="record(s) $others also name $path as their working copy"
+}
+
 # Sets FM_SLOT_VERDICT (own|released|unproven), FM_SLOT_EVIDENCE (one clause
-# naming the evidence), and FM_SLOT_WORKTREE for the record <state>/<id>.meta.
-# The header owns the rules. Returns 1 only when the record is missing.
+# naming the evidence), FM_SLOT_WORKTREE, and FM_SLOT_CONTESTED for the record
+# <state>/<id>.meta. The header owns the rules. Returns 1 only when the record
+# is missing.
 fm_slot_verdict() {  # <state> <id>
   local state=$1 id=$2 meta wt holder record pool_holder owner
   FM_SLOT_VERDICT=unproven
   FM_SLOT_EVIDENCE=
   FM_SLOT_WORKTREE=
+  FM_SLOT_CONTESTED=
   meta="$state/$id.meta"
   [ -f "$meta" ] || return 1
   wt=$(_fm_slot_meta "$meta" worktree)
@@ -190,6 +223,8 @@ fm_slot_verdict() {  # <state> <id>
   holder=$(_fm_slot_meta "$meta" lease_holder)
   if [ -z "$holder" ]; then
     FM_SLOT_EVIDENCE="the record carries no lease claim, so it predates durable leases and nothing recorded ties it to $wt, and ownership is not inferred"
+    _fm_slot_claimless_contest "$state" "$id" "$wt"
+    [ -z "$FM_SLOT_CONTESTED" ] || FM_SLOT_EVIDENCE="$FM_SLOT_EVIDENCE; $FM_SLOT_CONTESTED"
     return 0
   fi
   record=$(fm_slot_pool_record "$wt")
