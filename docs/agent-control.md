@@ -64,7 +64,7 @@ It is not deterministic across the verified adapters: codex and grok resume only
 2. **Safe checkpoint.**
    The recorded worktree must exist and be a worktree root; its head and dirty state are recorded.
    For a ship or scout on a treehouse-backed backend, the pool's durable lease must prove the record still owns that worktree (`bin/fm-slot-lib.sh` owns that verdict), and a released or unproven record is refused here, before the note is written or the agent is stopped, so its live agent keeps running.
-   That refusal names the verdict's evidence and the deliberate path instead: stop the agent with `bin/fm-control.sh <id> exit` and spawn the task afresh from its branch through `bin/fm-spawn.sh`, which takes a durable lease under the task's own claim.
+   That refusal names the verdict's evidence and the deliberate path instead: stop the agent with `bin/fm-control.sh <id> exit`, then retire only a re-leased record with `bin/fm-teardown.sh <id> --retire-record` or spawn the task afresh from its branch through `bin/fm-spawn.sh`, which takes a durable lease under the task's own claim.
    For a `kind=secondmate` task, the home's identity marker must match and its child records must be readable, so a relaunch can never strand child work behind an unreadable home.
    A secondmate's own crewmates run in their own endpoints and outlive its relaunch; the relaunched secondmate reconciles them from its home's durable records at startup.
 3. **Record the note.**
