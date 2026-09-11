@@ -33,17 +33,33 @@ SH
 make_spawn_fakebin() {
   local dir=$1 fakebin
   fakebin=$(fm_fakebin "$dir")
+  # With FM_FAKE_PANE_CD_FILE set, the pane reports the last directory spawn cd'd
+  # it into, so each spawn of a batch sees the slot it leased.
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
 case "$*" in
-  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+  *"#{pane_current_path}"*)
+    if [ -n "${FM_FAKE_PANE_CD_FILE:-}" ] && [ -s "$FM_FAKE_PANE_CD_FILE" ]; then
+      cat "$FM_FAKE_PANE_CD_FILE"
+    else
+      printf '%s\n' "${FM_FAKE_PANE_PATH:-}"
+    fi
+    exit 0
+    ;;
 esac
 case "${1:-}" in
   display-message) printf 'firstmate\n'; exit 0 ;;
   list-windows) exit 0 ;;
   has-session|new-session|new-window|kill-window) exit 0 ;;
   send-keys)
+    if [ -n "${FM_FAKE_PANE_CD_FILE:-}" ]; then
+      for a in "$@"; do
+        case "$a" in
+          "cd -- '"*"'") a=${a#"cd -- '"}; printf '%s\n' "${a%"'"}" > "$FM_FAKE_PANE_CD_FILE" ;;
+        esac
+      done
+    fi
     if [ -n "${FM_FAKE_LAUNCH_LOG:-}" ]; then
       prev=
       for a in "$@"; do
@@ -59,7 +75,7 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/tmux"
-  fm_fake_exit0 "$fakebin" treehouse
+  fm_fake_treehouse "$fakebin"
   cat > "$fakebin/timeout" <<'SH'
 #!/usr/bin/env bash
 shift
@@ -244,6 +260,9 @@ test_home_defaults_preserve_absolute_or_resolve_relative_paths() {
 
   linked_home="$CASE_DIR/home-link"
   ln -s "$HOME_DIR" "$linked_home"
+  # The second spawn reuses the same fixture worktree, which a fresh spawn takes
+  # only once no other record in the home still names it, as after a teardown.
+  rm -f "$HOME_DIR/state/$relative_id.meta"
   : > "$LAUNCH_LOG"
   out=$(
     FM_ROOT_OVERRIDE='' FM_HOME="$linked_home" \
@@ -741,14 +760,20 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
 }
 
 test_batch_forwards_shared_profile_flags() {
-  local rec id1 id2 out status
+  local rec id1 id2 out status wt2
   id1=profile-batch-a-z9
   id2=profile-batch-b-z10
   rec=$(make_spawn_case profile-batch claude "$id1" "$id2")
   read_case_record "$rec"
   enable_dispatch_profile "$HOME_DIR"
+  # Each pair leases its own pool slot, as treehouse hands a batch distinct
+  # slots, and the fake pane follows each spawn's cd into the slot it leased.
+  wt2="$CASE_DIR/wt2"
+  git -C "$PROJ_DIR" worktree add --quiet --detach "$wt2" HEAD
+  printf '%s\n%s\n' "$WT_DIR" "$wt2" > "$CASE_DIR/lease-queue"
 
-  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+  out=$(FM_FAKE_TREEHOUSE_QUEUE="$CASE_DIR/lease-queue" FM_FAKE_PANE_CD_FILE="$CASE_DIR/pane-cwd" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
     "$id1=$PROJ_DIR" "$id2=$PROJ_DIR" --harness codex --model gpt-5 --effort high)
   status=$?
   expect_code 0 "$status" "batch spawn with shared profile flags should succeed"
@@ -756,7 +781,9 @@ test_batch_forwards_shared_profile_flags() {
   assert_contains "$out" "spawned $id2 harness=codex" "second batch task did not use shared harness"
   assert_meta_profile "$HOME_DIR/state/$id1.meta" codex gpt-5 high
   assert_meta_profile "$HOME_DIR/state/$id2.meta" codex gpt-5 high
-  pass "batch dispatch forwards shared --harness, --model, and --effort to every pair"
+  assert_grep "worktree=$WT_DIR" "$HOME_DIR/state/$id1.meta" "the first batch task did not record its own slot"
+  assert_grep "worktree=$wt2" "$HOME_DIR/state/$id2.meta" "the second batch task did not record its own slot"
+  pass "batch dispatch forwards shared --harness, --model, and --effort to every pair, each on its own slot"
 }
 
 test_claude_forwards_firstmate_config_dir_when_set() {

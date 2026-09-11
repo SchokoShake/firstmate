@@ -79,10 +79,26 @@
 # the retired home. Removing a leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
-# Usage: fm-teardown.sh <task-id> [--force]
+# Usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run]]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
+#   --retire-record drops ONLY this task's records from state/ - exactly the set
+#   an ordinary teardown retires there - for a ship or scout record whose
+#   treehouse slot the pool has provably re-leased to another holder
+#   (bin/fm-slot-lib.sh owns that verdict). It never touches the working copy,
+#   returns no lease, kills no process, and closes no endpoint; it leaves
+#   data/<id>/ alone and removes the task's /tmp/fm-<id> root only when no
+#   process is using it. It refuses a record that still owns its slot (ordinary
+#   teardown's job), an unproven re-lease, a secondmate or Orca record, an own
+#   endpoint that holds a live agent or cannot be proven agent-free, an armed PR
+#   merge poll or registered watcher check, and an owed public reply, and each
+#   refusal names the path that applies instead. --dry-run prints the verdict
+#   and the records it would remove, and changes nothing.
+#   Ordinary teardown, with or without --force, refuses before any worktree,
+#   process, or endpoint step when that verdict says the recorded slot was
+#   re-leased, because each of those steps acts on the recorded path and would
+#   land on the new holder's work.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -193,12 +209,28 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
 . "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-slot-lib.sh
+. "$SCRIPT_DIR/fm-slot-lib.sh"
+# shellcheck source=bin/fm-busy-lib.sh
+. "$SCRIPT_DIR/fm-busy-lib.sh"
 if [ "$#" -lt 1 ] || ! fm_task_id_path_safe "$1"; then
   echo "error: invalid teardown request" >&2
   exit 2
 fi
 ID=$1
-FORCE=${2:-}
+FORCE=
+RETIRE_RECORD=0
+RETIRE_DRY_RUN=0
+case "$#:${2:-}:${3:-}" in
+  1::|2::) ;;
+  2:--force:) FORCE=--force ;;
+  2:--retire-record:) RETIRE_RECORD=1 ;;
+  3:--retire-record:--dry-run) RETIRE_RECORD=1; RETIRE_DRY_RUN=1 ;;
+  *)
+    echo "error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run]]" >&2
+    exit 2
+    ;;
+esac
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 CONTROL_LOCK="$STATE/.control-$ID.lock"
@@ -246,6 +278,10 @@ META_LOCK=$(fm_meta_lock_path "$META") || exit 1
 fm_lock_acquire_wait "$META_LOCK"
 META_LOCK_HELD=1
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
+if [ "$RETIRE_RECORD" = 1 ] && [ "$(fm_meta_get "$META" kind)" = secondmate ]; then
+  echo "REFUSED: $ID is a secondmate home, not a pooled task working copy; --retire-record applies only to ship and scout records. Retire a secondmate through ordinary teardown: bin/fm-teardown.sh $ID" >&2
+  exit 1
+fi
 
 REMOTE_HANDOFF_DIR_PRESENT=0
 REMOTE_HANDOFF_DIR_REAL=
@@ -2379,7 +2415,210 @@ remove_secondmate_registry_entry() {
   return "$rc"
 }
 
+# The per-task files teardown deletes outright; the status log, busy state, and
+# watcher-check artifacts retire through their own owners in
+# remove_task_state_records instead. The metadata goes before the supervision
+# markers, so a watcher poll that starts after it no longer tracks the task and
+# cannot recreate them, and every step before it can simply be rerun.
+task_plain_record_files() {  # <state> <id> <target>
+  local state=$1 id=$2 target=$3 key marker
+  printf '%s\n' "$state/$id.turn-ended" "$state/$id.pi-ext.ts" \
+    "$state/$id.grok-turnend-token" "$state/$id.kimi-turnend-token" \
+    "$state/$id.muse-session" "$state/$id.muse-session-current" \
+    "$state/$id.cursor-session" "$state/$id.control-relaunch" \
+    "$state/$id.control-relaunch.meta-prior" "$state/$id.control-relaunch.brief-prior" \
+    "$state/$id.control-relaunch.note" "$state/$id.meta"
+  # Supervision markers keyed to this task, in the formats owned by
+  # fm_wake_signal_seen_path, bin/fm-push-transition-lib.sh, bin/fm-watch.sh, and
+  # bin/fm-supervise-daemon.sh. Left behind they are litter, and a later task
+  # reusing the id would inherit a stale pause flag or stale-hash suppressor.
+  key=$(printf '%s' "$id" | tr ':/.' '___')
+  printf '%s\n' "$(fm_wake_signal_seen_path "$state" "$state/$id.status")" \
+    "$(fm_wake_signal_seen_path "$state" "$state/$id.turn-ended")" \
+    "$state/.hb-surfaced-$key" "$state/.subsuper-paused-$key" \
+    "$state/.subsuper-stale-$key" "$state/.subsuper-seen-status-$key"
+  [ -n "$target" ] || return 0
+  key=$(printf '%s' "$target" | tr ':/.' '___')
+  for marker in hash count stale stale-since wedge-escalations paused paused-rechecked paused-resurfaced; do
+    printf '%s\n' "$state/.$marker-$key"
+  done
+}
+
+# Every per-task state path teardown retires, for --retire-record's report.
+task_record_files() {  # <state> <id> <target>
+  local state=$1 id=$2 artifact
+  task_plain_record_files "$@"
+  printf '%s\n' "$state/$id.status" "$state/.$id.open-decisions-cursor" \
+    "$(fm_busy_gen_path "$state" "$id")" "$(fm_busy_record_path "$state" "$id")"
+  for artifact in check.sh pr-poll pr-poll-registration pr-poll-retirement check-trust; do
+    printf '%s\n' "$state/$id.$artifact"
+  done
+  for artifact in "$state/.pr-check-quarantine/$id."*; do
+    [ -e "$artifact" ] || [ -L "$artifact" ] || continue
+    printf '%s\n' "$artifact"
+  done
+}
+
+# The per-task state teardown retires, shared by the ordinary path and
+# --retire-record so both remove exactly the same set.
+remove_task_state_records() {  # <state> <id> <backend> <target> <busy-gen>
+  local state=$1 id=$2 backend=$3 target=$4 gen=$5 path
+  remove_grok_turnend_auth "$state" "$id" || return 1
+  remove_kimi_turnend_auth "$state" "$id" || return 1
+  fm_backend_clear_transition "$backend" "$state" "$target" || true
+  remove_pr_poll_artifacts "$state" "$id" || return 1
+  retire_busy_state "$state" "$id" "$gen" || return 1
+  status_retire_presentation_task "$state" "$id" || return 1
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    rm -f -- "$path" || return 1
+  done <<EOF
+$(task_plain_record_files "$state" "$id" "$target")
+EOF
+}
+
+# Ordinary teardown acts on the RECORDED working copy: it resets and returns it,
+# deletes its checked-out branch, and kills every process inside it. Once the
+# pool has provably re-leased that copy to another holder (bin/fm-slot-lib.sh
+# owns the verdict), each of those steps would land on the other holder's work,
+# and --force authorizes discarding only THIS task's work, so the refusal holds
+# either way and names the record-only path instead.
+refuse_if_slot_released() {
+  [ "$KIND" != secondmate ] || return 0
+  [ "$BACKEND" != orca ] || return 0
+  fm_slot_verdict "$STATE" "$ID" || return 0
+  [ "$FM_SLOT_VERDICT" = released ] || return 0
+  echo "REFUSED: $ID's recorded working copy $FM_SLOT_WORKTREE is no longer its own: $FM_SLOT_EVIDENCE." >&2
+  echo "Tearing it down would reset that copy and kill the processes in it, and --force cannot authorize discarding another holder's work." >&2
+  echo "Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh $ID --retire-record" >&2
+  return 1
+}
+
+# A watcher check still armed for the task is a wait firstmate asked for, and a
+# PR merge poll's trust binding would be orphaned by dropping the record under
+# it, so --retire-record refuses while either is armed. A validated merged
+# result whose retirement was interrupted is finished first, exactly as
+# ordinary teardown finishes it.
+retire_record_refuse_armed_check() {
+  local artifact armed=
+  if [ "$RETIRE_DRY_RUN" = 1 ]; then
+    if [ -e "$STATE/$ID.pr-poll-retirement" ] || [ -L "$STATE/$ID.pr-poll-retirement" ]; then
+      echo "dry run: a real run first completes $ID's pending PR-poll retirement, then checks again for an armed poll"
+      return 0
+    fi
+  elif ! fm_pr_poll_retirement_recover_one "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+    echo "REFUSED: $ID's pending PR-poll retirement could not be completed; preserving every record." >&2
+    return 1
+  fi
+  for artifact in check.sh pr-poll pr-poll-registration check-trust; do
+    if [ -e "$STATE/$ID.$artifact" ] || [ -L "$STATE/$ID.$artifact" ]; then
+      armed="$armed state/$ID.$artifact"
+    fi
+  done
+  [ -n "$armed" ] || return 0
+  if [ -e "$STATE/$ID.pr-poll" ] || [ -L "$STATE/$ID.pr-poll" ] \
+    || [ -e "$STATE/$ID.pr-poll-registration" ] || [ -L "$STATE/$ID.pr-poll-registration" ]; then
+    echo "REFUSED: $ID still has an armed PR merge poll (${armed# }) watching ${PR_URL:-its PR}; dropping the record under it would orphan the poll and its trust binding." >&2
+    echo "The watcher retires that poll itself when it reports the merge, so retry once the merge lands; a PR closed without merging means the work never landed, which is a decision for the captain rather than bookkeeping." >&2
+  else
+    echo "REFUSED: $ID has a registered watcher check (${armed# }) that firstmate armed on purpose; dropping the record would silently drop that wait." >&2
+    echo "Let it fire, or remove the check and its trust record deliberately, then retry." >&2
+  fi
+  return 1
+}
+
+# The task's own /tmp/fm-<id> root goes with its record only when nothing is
+# using it, because --retire-record kills no process, unlike ordinary teardown.
+retire_record_tasktmp() {
+  local pids
+  [ -n "$TASK_TMP" ] || return 0
+  [ -e "$TASK_TMP" ] || [ -L "$TASK_TMP" ] || return 0
+  if [ "$TASK_TMP" != "/tmp/fm-$ID" ] || [ -L "$TASK_TMP" ] || [ ! -d "$TASK_TMP" ]; then
+    echo "retire-record: left $TASK_TMP in place; it is not this task's own /tmp/fm-$ID root"
+  elif ! command -v lsof >/dev/null 2>&1 || ! pids=$(pids_with_cwd_under "$TASK_TMP"); then
+    echo "retire-record: left $TASK_TMP in place; no process scan could prove it unused"
+  elif [ -n "$pids" ]; then
+    echo "retire-record: left $TASK_TMP in place; process(es) $(printf '%s' "$pids" | tr '\n' ' ') still use it"
+  else
+    rm -rf -- "$TASK_TMP" && echo "retire-record: removed $TASK_TMP"
+  fi
+}
+
+# --retire-record: the script header owns the contract. Every refusal comes
+# before the first removal, and nothing here touches the working copy, the
+# pool, a process, or an endpoint.
+retire_record_only() {
+  local agent path existing row=0
+  if [ "$BACKEND" = orca ]; then
+    echo "REFUSED: $ID's working copy is an Orca worktree rather than a treehouse pool slot, so it cannot have been re-leased; use ordinary teardown: bin/fm-teardown.sh $ID" >&2
+    return 1
+  fi
+  fm_slot_verdict "$STATE" "$ID" || { echo "REFUSED: $ID has no readable record at $META" >&2; return 1; }
+  case "$FM_SLOT_VERDICT" in
+    released) ;;
+    own)
+      echo "REFUSED: $ID still owns its working copy: $FM_SLOT_EVIDENCE." >&2
+      echo "Dropping only the record would strand that lease and keep the pool slot consumed; tear the task down normally once its work has landed: bin/fm-teardown.sh $ID" >&2
+      return 1
+      ;;
+    *)
+      echo "REFUSED: cannot prove $ID's working copy ${FM_SLOT_WORKTREE:-(none recorded)} was re-leased: $FM_SLOT_EVIDENCE." >&2
+      echo "Only a proven re-lease lets the record go alone. While the copy may still be this task's, ordinary teardown owns it, because it checks the copy for unlanded work first: bin/fm-teardown.sh $ID" >&2
+      return 1
+      ;;
+  esac
+  agent=$(fm_backend_agent_state "$BACKEND" "$T")
+  case "$agent" in
+    dead|missing) ;;
+    alive)
+      echo "REFUSED: $ID's own endpoint $T still holds a live agent; stop it first with bin/fm-control.sh $ID exit, then retry." >&2
+      return 1
+      ;;
+    *)
+      echo "REFUSED: cannot prove $ID's own endpoint $T holds no live agent (the $BACKEND agent state reads $agent); inspect it, then retry." >&2
+      return 1
+      ;;
+  esac
+  retire_record_refuse_armed_check || return 1
+  if [ "$RETIRE_DRY_RUN" = 1 ]; then
+    echo "dry run: $ID's working copy $FM_SLOT_WORKTREE was re-leased: $FM_SLOT_EVIDENCE"
+    while IFS= read -r path; do
+      if [ -e "$path" ] || [ -L "$path" ]; then echo "dry run: would remove $path"; fi
+    done <<EOF
+$(task_record_files "$STATE" "$ID" "$T")
+EOF
+    echo "dry run: would leave the working copy, the pool's lease on it, and endpoint $T untouched"
+    return 0
+  fi
+  existing=$(task_record_files "$STATE" "$ID" "$T" | while IFS= read -r path; do
+    if [ -e "$path" ] || [ -L "$path" ]; then printf '%s\n' "$path"; fi
+  done)
+  if awk -F '\t' -v id="$ID" '$1 == id { found = 1 } END { exit !found }' \
+      "$STATE/.status-presentation-cursor" 2>/dev/null; then
+    row=1
+  fi
+  remove_task_state_records "$STATE" "$ID" "$BACKEND" "$T" "$BUSY_GEN" || {
+    echo "error: retiring $ID's records stopped partway; rerun bin/fm-teardown.sh $ID --retire-record to finish" >&2
+    return 1
+  }
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then echo "retire-record: removed $path"; fi
+  done <<EOF
+$existing
+EOF
+  [ "$row" = 0 ] || echo "retire-record: removed $ID's row from $STATE/.status-presentation-cursor"
+  retire_record_tasktmp
+  if [ -e "$STATE/$ID.herdr-presentation" ] || [ -L "$STATE/$ID.herdr-presentation" ]; then
+    echo "retire-record: left the quarantined Herdr presentation journal $STATE/$ID.herdr-presentation for manual inspection"
+  fi
+  [ "$agent" = missing ] || echo "retire-record: left endpoint $T in place; it holds no live agent, so close it by hand if it is litter"
+  echo "retired record $ID ($FM_SLOT_EVIDENCE); left working copy $FM_SLOT_WORKTREE, its pool lease, and every process in it untouched"
+  backlog_refresh_reminder
+}
+
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
+[ "$RETIRE_RECORD" = 1 ] || refuse_if_slot_released || exit 1
 
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
@@ -2415,7 +2654,9 @@ if [ "$KIND" = secondmate ] && [ "$FORCE" = "--force" ]; then
   cleanup_firstmate_home_children "$HOME_PATH" || exit $?
 fi
 
-if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ]; then
+# --retire-record leaves data/<id>/ and the working copy alone, so a scout's
+# report and decision inventory stay exactly as they are and need no gate here.
+if [ "$KIND" = scout ] && [ "$FORCE" != "--force" ] && [ "$RETIRE_RECORD" != 1 ]; then
   REPORT="$DATA/$ID/report.md"
   if [ ! -f "$REPORT" ]; then
     echo "REFUSED: scout task $ID has no report at $REPORT." >&2
@@ -2447,9 +2688,18 @@ if [ "$FORCE" != "--force" ] \
       "$SCRIPT_DIR/fm-public-followup.sh" guard-work "$PUBLIC_FOLLOWUP_WORK_HOME" "$ID" 2>/dev/null); then
     echo "REFUSED: task $ID still owes a public reply through the myfirstmate relay." >&2
     printf '%s\n' "$PUBLIC_FOLLOWUP_BLOCKING" >&2
-    echo "Deliver it with bin/fm-public-followup.sh deliver <obligation-id>, waive it with tasks-axi public-followup waive, or use --force after explicit discard approval." >&2
+    if [ "$RETIRE_RECORD" = 1 ]; then
+      echo "Deliver it with bin/fm-public-followup.sh deliver <obligation-id> or waive it with tasks-axi public-followup waive, then retry." >&2
+    else
+      echo "Deliver it with bin/fm-public-followup.sh deliver <obligation-id>, waive it with tasks-axi public-followup waive, or use --force after explicit discard approval." >&2
+    fi
     exit 1
   fi
+fi
+
+if [ "$RETIRE_RECORD" = 1 ]; then
+  if retire_record_only; then exit 0; fi
+  exit 1
 fi
 
 if [ "$BACKEND" = orca ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$FORCE" != "--force" ]; then
@@ -2630,21 +2880,10 @@ if [ "$KIND" = secondmate ]; then
   remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
   remove_secondmate_registry_entry "$ID"
 fi
-remove_grok_turnend_auth "$STATE" "$ID" || exit 1
-remove_kimi_turnend_auth "$STATE" "$ID" || exit 1
-fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 # Remove the per-task temp root (/tmp/fm-<id>/, incl. its gotmp/) recorded by spawn.
-# Read before the state-file rm below; empty (pre-fix tasks without tasktmp=) is a no-op.
+# Read before the state-file removal below; empty (pre-fix tasks without tasktmp=) is a no-op.
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
-remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
-retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
-status_retire_presentation_task "$STATE" "$ID" || exit 1
-rm -f "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
-  "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
-  "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.muse-session" \
-  "$STATE/$ID.muse-session-current" "$STATE/$ID.cursor-session" \
-  "$STATE/$ID.control-relaunch" "$STATE/$ID.control-relaunch.meta-prior" \
-  "$STATE/$ID.control-relaunch.brief-prior" "$STATE/$ID.control-relaunch.note"
+remove_task_state_records "$STATE" "$ID" "$BACKEND" "$T" "$BUSY_GEN" || exit 1
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then

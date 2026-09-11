@@ -204,13 +204,13 @@ family_for_basename() {
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
-    fm-spawn-base-branch.test.sh|\
+    fm-spawn-base-branch.test.sh|fm-spawn-lease.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
       ;;
     fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-pr-slug-contract.test.sh|\
     fm-review-diff.test.sh|\
-    fm-teardown.test.sh|fm-x-mode.test.sh)
+    fm-teardown.test.sh|fm-teardown-retire-record.test.sh|fm-x-mode.test.sh)
       printf '%s\n' pr-forge
       ;;
     fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
@@ -946,6 +946,12 @@ families_for_changed_path() {
       # Shared forge-record validation, sourced by both bin/fm-pr-check.sh
       # (pr-forge) and bin/fm-spawn.sh, whose --base uses the same branch-name
       # shape (backend-dispatch).
+      printf '%s\n' pr-forge
+      printf '%s\n' backend-dispatch
+      ;;
+    bin/fm-slot-lib.sh)
+      # Pool-slot ownership, sourced by both bin/fm-teardown.sh (pr-forge) and
+      # bin/fm-spawn.sh's durable worktree lease (backend-dispatch).
       printf '%s\n' pr-forge
       printf '%s\n' backend-dispatch
       ;;
