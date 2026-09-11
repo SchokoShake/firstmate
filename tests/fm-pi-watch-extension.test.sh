@@ -1351,7 +1351,16 @@ const hooks = await mod.FmPrimaryWatchArm({
 const event = { event: { type: "session.idle", properties: { sessionID: "session-test" } } };
 writeFileSync(`${process.env.FM_HOME}/state/.lock`, "999999\n");
 await hooks.event(event);
-await new Promise((resolve) => setTimeout(resolve, 120));
+// The event handler does not await the launch it starts, and any launch
+// requested while one is in flight joins that launch and shares its verdict.
+// Settle the foreign-lock launch through the coordinator before the lock
+// changes hands, so the owned event below starts its own launch instead of
+// inheriting this read-only verdict on a slow runner.
+const foreign = await globalThis.__firstmateOpenCodeWatchArm.ensureArmed("session-test", client);
+if (foreign !== "read-only") {
+  console.error(`expected read-only under a foreign session lock, got ${foreign}`);
+  process.exit(1);
+}
 if (existsSync(process.env.FM_ARM_LOG)) {
   console.error("watch arm ran without owning the session lock");
   process.exit(1);
