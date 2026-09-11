@@ -6,9 +6,10 @@
 # pool state file, and logging fakes for tmux and treehouse, so any touch of the
 # working copy, the pool, or an endpoint is observable. The ownership verdict
 # itself is owned by bin/fm-slot-lib.sh; these cases pin it through the
-# executable: a later fresh claimant or a durable lease held by someone else
-# proves a re-lease, this record's own lease proves ownership, and everything
-# else stays unproven.
+# executable: the pool's durable lease on the recorded path, matched against
+# this record's own recorded claim and the claims other records in the home
+# carry, is the only evidence, and a record that carries no claim stays
+# unproven whatever else is true of its slot.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -24,6 +25,9 @@ REAL_SLEEP=$(command -v sleep || true)
 # finished record and the later spawn the pool handed the same slot to.
 OLD_GEN=s1788765996.150863.30112
 NEW_GEN=s1789026483.244338.3761
+# The lease claims those records carry once spawned under durable leases.
+OLD_CLAIM=fm-task:old-r1:l1788765990.150863.30112
+NEW_CLAIM=fm-task:new-r1:l1789026480.244338.3761
 
 # make_case <name> -> a case dir holding home/{state,data,config}, logging fakes,
 # and a treehouse pool whose slot 1 is the working copy the records share.
@@ -139,9 +143,9 @@ arm_pending_receipt() {
 make_receipt_case() {
   local dir
   dir=$(make_case "$1")
-  write_pool "$dir" ',"owner_pid":999999,"owner_started_at":1789026475860'
-  write_record "$dir" old-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
-  write_record "$dir" new-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off"
+  write_pool "$dir" ",\"leased\":true,\"lease_holder\":\"$NEW_CLAIM\""
+  write_record "$dir" old-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off" "lease_holder=$OLD_CLAIM"
+  write_record "$dir" new-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off" "lease_holder=$NEW_CLAIM"
   populate_task_state "$dir" old-r1
   printf 'pr=%s\n' "$2" >> "$dir/home/state/old-r1.meta"
   printf '%s\n' "$dir"
@@ -157,15 +161,15 @@ write_presentation_rows() {  # <case> <id>...
   done
 }
 
-# The live shape: an older finished record and a later spawn on one slot whose
-# process-bound owner reservation has since died.
+# The re-leased shape: an older record whose claim the pool no longer holds,
+# because the pool now leases the same slot to a later record's claim.
 make_superseded_case() {  # <name> -> case dir
   local dir
   dir=$(make_case "$1")
-  write_pool "$dir" ',"owner_pid":999999,"owner_started_at":1789026475860'
+  write_pool "$dir" ",\"leased\":true,\"lease_holder\":\"$NEW_CLAIM\""
   write_record "$dir" old-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off" \
-    "pr=https://github.com/example/repo/pull/829"
-  write_record "$dir" new-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off"
+    "lease_holder=$OLD_CLAIM" "pr=https://github.com/example/repo/pull/829"
+  write_record "$dir" new-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off" "lease_holder=$NEW_CLAIM"
   populate_task_state "$dir" old-r1
   populate_task_state "$dir" new-r1
   write_presentation_rows "$dir" old-r1 new-r1
@@ -218,7 +222,7 @@ EOF
   assert_grep "new-r1"$'\t' "$dir/home/state/.status-presentation-cursor" \
     "retire dropped the current holder's presentation row"
   assert_copy_and_pool_untouched "$dir" "$before" "retire"
-  assert_contains "$out" "task new-r1 names the same working copy" \
+  assert_contains "$out" "task new-r1's own recorded claim on that same working copy" \
     "retire did not name the evidence that the slot was re-leased"
   assert_contains "$out" "retire-record: removed $dir/home/state/old-r1.meta" \
     "retire did not report the records it removed"
@@ -241,7 +245,7 @@ $(task_paths "$dir" old-r1)
 EOF
   assert_contains "$out" "dry run: would remove $dir/home/state/old-r1.meta" \
     "the dry run did not list the records it would remove"
-  assert_contains "$out" "task new-r1 names the same working copy" \
+  assert_contains "$out" "task new-r1's own recorded claim on that same working copy" \
     "the dry run did not print the verdict's evidence"
   assert_copy_and_pool_untouched "$dir" "$before" "dry run"
   pass "fm-teardown --retire-record --dry-run: prints the verdict and the records it would drop, and changes nothing"
@@ -333,14 +337,16 @@ test_retire_refuses_a_record_that_owns_its_lease() {
   dir=$(make_case own-lease)
   write_pool "$dir" ",\"leased\":true,\"lease_holder\":\"$label\""
   write_record "$dir" own-r1 ship s1789000003.4242.18 "mode=direct-PR" "yolo=off" "lease_holder=$label"
-  write_record "$dir" older-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
+  write_record "$dir" older-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off" \
+    "lease_holder=fm-task:older-r1:l1788765990.4242.16"
   assert_refused_without_mutation "$dir" own-r1 "still owns its working copy" \
     "a record holding its own lease" --retire-record
   assert_contains "$REFUSAL_OUTPUT" "bin/fm-teardown.sh own-r1" \
     "the refusal did not name ordinary teardown"
 
   # The durable lease is authoritative in the other direction too: the older
-  # record's slot is leased to someone else, so it is retirable.
+  # record's claim is no longer on the slot, which the pool leases to own-r1's
+  # claim on that same path, so it is retirable.
   set +e
   run_teardown "$dir" older-r1 --retire-record --dry-run > "$dir/older.out" 2>&1
   expect_code 0 "$?" "a record whose slot is leased to another record"$'\n'"$(cat "$dir/older.out")"
@@ -350,44 +356,84 @@ test_retire_refuses_a_record_that_owns_its_lease() {
 }
 
 test_retire_refuses_an_unproven_re_lease() {
-  local dir
+  local dir claim=fm-task:alone-r1:l1788765990.150863.30112
   dir=$(make_case unproven)
   write_pool "$dir" ',"owner_pid":999999,"owner_started_at":1789026475860'
-  write_record "$dir" alone-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
-  assert_refused_without_mutation "$dir" alone-r1 "cannot prove alone-r1's working copy" \
-    "a record with no later claimant and no foreign lease" --retire-record
+  write_record "$dir" alone-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off" "lease_holder=$claim"
+  assert_refused_without_mutation "$dir" alone-r1 "holds no durable lease on" \
+    "a claim with no durable lease on its slot" --retire-record
+  assert_contains "$REFUSAL_OUTPUT" "Confirm by hand whose work the copy holds" \
+    "the refusal did not name the person's alternatives"
 
   # An unreadable pool record is no evidence at all, never a verdict.
   printf '{"worktrees": [truncated' > "$dir/pool/treehouse-state.json"
-  assert_refused_without_mutation "$dir" alone-r1 "cannot prove alone-r1's working copy" \
+  assert_refused_without_mutation "$dir" alone-r1 "could not be read" \
     "a record whose pool state cannot be read" --retire-record
 
-  # The newest record on a shared slot is the current holder, not a superseded one.
+  # A lease under a label no record in this home carries, such as a hand-run
+  # treehouse get, proves nothing about who holds the copy.
+  write_pool "$dir" ',"leased":true,"lease_holder":"fm-task:other-x9:l1789026480.7.7"'
+  assert_refused_without_mutation "$dir" alone-r1 "no record in this home carries that label" \
+    "a lease under a label nobody claims" --retire-record
+
+  # A label another record carries as its claim on a DIFFERENT path is not a
+  # re-lease of this slot: a spawn that held this slot aside and could not hand
+  # it back leaves exactly that shape.
+  write_pool "$dir" ',"leased":true,"lease_holder":"fm-task:elsewhere-r1:l1789026480.7.7"'
+  fm_write_meta "$dir/home/state/elsewhere-r1.meta" \
+    "window=firstmate:fm-elsewhere-r1" "endpoint_task_id=elsewhere-r1" \
+    "worktree=$dir/pool/2/repo" "project=$dir/project" "harness=claude" "kind=ship" \
+    "lease_holder=fm-task:elsewhere-r1:l1789026480.7.7"
+  assert_refused_without_mutation "$dir" alone-r1 "no record in this home carries that label" \
+    "a lease under a claim on a different path" --retire-record
+
+  # The record the pool leases the slot to is the current holder.
   dir=$(make_superseded_case newest)
-  assert_refused_without_mutation "$dir" new-r1 "cannot prove new-r1's working copy" \
-    "the newest of two claimants" --retire-record
-  pass "fm-teardown --retire-record: refuses when no durable lease or later fresh claimant proves the slot was re-leased"
+  assert_refused_without_mutation "$dir" new-r1 "still owns its working copy" \
+    "the record the pool leases the slot to" --retire-record
+  pass "fm-teardown --retire-record: a claim is unproven unless the pool's lease confirms it or another record's claim on the same path explains it, and the leased record is refused as the holder"
 }
 
-test_retire_refuses_when_the_later_claimant_was_relaunched() {
-  local dir
-  dir=$(make_case relaunched)
-  write_pool "$dir" ''
-  write_record "$dir" old-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
-  # A relaunch mints a new generation without acquiring anything, so its
-  # generation cannot say when that claimant took the slot.
-  write_record "$dir" relaunched-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off" \
-    "control_relaunch_tx=2895592.20260831T141214Z.29720"
-  assert_refused_without_mutation "$dir" old-r1 "cannot prove old-r1's working copy" \
-    "a later claimant whose generation came from a relaunch" --retire-record
-  pass "fm-teardown --retire-record: a relaunched claimant's generation is not evidence of a re-lease"
-}
-
-test_retire_follows_a_foreign_lease() {
-  local dir before rc out
-  dir=$(make_case foreign-lease)
-  write_pool "$dir" ',"leased":true,"lease_holder":"boards-b1"'
+# Ownership is never inferred: a record that carries no lease claim reads
+# unproven whatever else is true of its slot, so --retire-record refuses it in
+# a real run and in a dry run alike and names what a person can do instead.
+test_retire_refuses_a_record_without_a_recorded_claim() {
+  local dir mode path
+  dir=$(make_case no-claim)
+  # A later fresh claimant on the same path, a foreign durable lease on it, and
+  # spawn generations on both records, none of which is evidence.
+  write_pool "$dir" ',"leased":true,"lease_holder":"fm-task:other-x9:l1789026480.7.7"'
   write_record "$dir" legacy-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
+  write_record "$dir" new-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off" "lease_holder=$NEW_CLAIM"
+  populate_task_state "$dir" legacy-r1
+  for mode in dry real; do
+    if [ "$mode" = dry ]; then
+      assert_refused_without_mutation "$dir" legacy-r1 "carries no lease claim" \
+        "a $mode run over a record with no recorded claim" --retire-record --dry-run
+    else
+      assert_refused_without_mutation "$dir" legacy-r1 "carries no lease claim" \
+        "a $mode run over a record with no recorded claim" --retire-record
+    fi
+    assert_contains "$REFUSAL_OUTPUT" "Confirm by hand whose work the copy holds" \
+      "the $mode refusal did not name the person's alternatives"
+    assert_contains "$REFUSAL_OUTPUT" "retire the record deliberately by hand" \
+      "the $mode refusal did not name the hand retirement"
+    assert_not_contains "$REFUSAL_OUTPUT" "would remove" "the $mode run listed records as removable"
+    while IFS= read -r path; do
+      assert_present "$path" "the $mode run removed $path"
+    done <<EOF
+$(task_paths "$dir" legacy-r1)
+EOF
+  done
+  pass "fm-teardown --retire-record: a record with no recorded claim is unproven whatever its slot shows, and refuses in a real run and a dry run alike"
+}
+
+test_retire_follows_a_lease_to_a_secondmate_home() {
+  local dir before rc out
+  dir=$(make_case secondmate-lease)
+  write_pool "$dir" ',"leased":true,"lease_holder":"boards-b1"'
+  write_record "$dir" legacy-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off" \
+    "lease_holder=fm-task:legacy-r1:l1788765990.150863.30112"
   fm_write_secondmate_meta "$dir/home/state/boards-b1.meta" "$dir/pool/1/repo"
   before=$(cksum < "$dir/pool/treehouse-state.json")
   set +e
@@ -395,12 +441,12 @@ test_retire_follows_a_foreign_lease() {
   rc=$?
   set -e
   expect_code 0 "$rc" "a record whose slot the pool now leases to a secondmate home"$'\n'"$out"
-  assert_contains "$out" "leases $dir/pool/1/repo to boards-b1 (task boards-b1)" \
-    "the foreign lease holder was not named"
+  assert_contains "$out" "leases $dir/pool/1/repo to boards-b1, task boards-b1's own recorded claim" \
+    "the secondmate lease holder was not named"
   assert_absent "$dir/home/state/legacy-r1.meta" "the superseded record survived"
   assert_present "$dir/home/state/boards-b1.meta" "the lease holder's record was touched"
-  assert_copy_and_pool_untouched "$dir" "$before" "foreign-lease retire"
-  pass "fm-teardown --retire-record: a durable lease held by anyone else proves a record that never held one was re-leased"
+  assert_copy_and_pool_untouched "$dir" "$before" "secondmate-lease retire"
+  pass "fm-teardown --retire-record: a secondmate home leased under its bare id on the same path proves the older claim was re-leased"
 }
 
 test_retire_refuses_an_armed_pr_merge_poll() {
@@ -522,7 +568,7 @@ test_ordinary_teardown_lets_the_current_holder_through() {
   out=$(run_teardown "$dir" new-r1 --force 2>&1)
   rc=$?
   set -e
-  expect_code 0 "$rc" "tearing down the newest claimant"$'\n'"$out"
+  expect_code 0 "$rc" "tearing down a record with no recorded claim"$'\n'"$out"
   assert_grep "treehouse <return> <--force> <$dir/pool/1/repo>" "$dir/runtime.log" \
     "the current holder's teardown did not return its slot"
   assert_grep "kill-window" "$dir/runtime.log" "the current holder's endpoint was not closed"
@@ -535,7 +581,7 @@ test_ordinary_teardown_lets_the_current_holder_through() {
   assert_absent "$dir/home/state/.seen-new-r1_status" "teardown left the signal seen-marker"
   assert_absent "$dir/home/state/.hb-surfaced-new-r1" "teardown left the heartbeat marker"
   assert_absent "$dir/home/state/.subsuper-paused-new-r1" "teardown left the away-mode pause marker"
-  pass "fm-teardown: the newest claimant of a shared slot tears down normally and drops every per-task record, watcher markers included"
+  pass "fm-teardown: a record with no recorded claim tears down normally, as before durable leases, and drops every per-task record, watcher markers included"
 }
 
 test_retire_removes_an_idle_task_temp_root() {
@@ -543,9 +589,10 @@ test_retire_removes_an_idle_task_temp_root() {
   id="retire-tmp-$$"
   tmpdir="/tmp/fm-$id"
   dir=$(make_case idle-tasktmp)
-  write_pool "$dir" ''
-  RECORD_TASKTMP=$tmpdir write_record "$dir" "$id" ship "$OLD_GEN" "mode=direct-PR" "yolo=off"
-  write_record "$dir" newer-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off"
+  write_pool "$dir" ",\"leased\":true,\"lease_holder\":\"$NEW_CLAIM\""
+  RECORD_TASKTMP=$tmpdir write_record "$dir" "$id" ship "$OLD_GEN" "mode=direct-PR" "yolo=off" \
+    "lease_holder=fm-task:$id:l1788765990.150863.30112"
+  write_record "$dir" new-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off" "lease_holder=$NEW_CLAIM"
   mkdir -p "$tmpdir/gotmp"
   set +e
   out=$(run_teardown "$dir" "$id" --retire-record 2>&1)
@@ -566,8 +613,8 @@ test_retire_dry_run_changes_nothing
 test_retire_dry_run_refuses_exactly_where_a_real_run_would
 test_retire_refuses_a_record_that_owns_its_lease
 test_retire_refuses_an_unproven_re_lease
-test_retire_refuses_when_the_later_claimant_was_relaunched
-test_retire_follows_a_foreign_lease
+test_retire_refuses_a_record_without_a_recorded_claim
+test_retire_follows_a_lease_to_a_secondmate_home
 test_retire_refuses_an_armed_pr_merge_poll
 test_retire_refuses_a_live_agent
 test_retire_refuses_secondmate_and_orca_records

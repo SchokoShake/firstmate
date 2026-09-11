@@ -5,9 +5,9 @@
 # The single owner of how a ship or scout record durably holds its treehouse
 # working copy, and of how firstmate tells a record that still owns that copy
 # from one whose copy the pool has re-leased to another holder. Sourced by
-# bin/fm-spawn.sh (lease label, claimant scan, and the verdict behind the
-# --relaunch refusal of a re-leased slot) and bin/fm-teardown.sh (the
-# ownership verdict behind its re-leased-slot refusal and --retire-record).
+# bin/fm-spawn.sh (lease label, claimant scan, and the verdict a --relaunch
+# requires to read own) and bin/fm-teardown.sh (the verdict behind its
+# re-leased-slot refusal and --retire-record).
 #
 # Why a lease. treehouse offers two reservations. The interactive
 # `treehouse get` subshell holds an owner reservation that lives exactly as long
@@ -27,30 +27,23 @@
 # Holder label: fm-task:<task-id>:l<epoch>.<pid>.<random>, minted immediately
 # before the acquire and compared byte for byte with the pool's record.
 #
-# Ownership verdict (fm_slot_verdict), evaluated in this order:
-#   own       the pool durably leases the recorded path to this record's own
-#             holder label, or, conservatively, to its bare task id.
-#   released  the pool durably leases the path to any other holder: a record's
-#             lease is released only by `treehouse return`, never relabelled,
-#             and a record spawned before durable leases never held one.
-#             Or, with no durable lease on the path, another record in this
-#             home names the same working copy from a later acquisition. The
-#             pool hands a slot to at most one live reservation at a time, and
-#             a fresh spawn mints its spawn_gen= while its own reservation is
-#             still live, so a later fresh generation on the same path proves
-#             the pool reissued the slot after this record was last launched
-#             into it. A claimant's acquisition epoch is its lease token when
-#             it holds a lease (minted before the acquire, so a lower bound),
-#             otherwise its spawn generation, used only when it carries no
-#             control_relaunch_tx= because a relaunch mints a new generation
-#             without acquiring anything. This record's side is its own spawn
-#             generation, which never predates its acquisition.
-#   unproven  anything else, including a record whose only evidence is its age.
-# What the verdict cannot distinguish, each of which reads unproven: a reissue
-# whose only later claimant has since been relaunched or carries no generation;
-# a reissue to a holder outside this home's records (a hand-run treehouse get,
-# another home) that left no durable lease; two acquisitions within the same
-# second; and a wall clock stepped backwards between the two spawns.
+# Ownership verdict (fm_slot_verdict). Ownership is read from exactly two
+# records - this record's own lease_holder= claim and the pool's durable lease
+# on the recorded path - and never inferred from spawn generations, spawn
+# order, relaunch markers, lease tokens, or what other records happen to name.
+#   own       the pool leases the recorded path to this record's own claim.
+#   released  the pool leases the path to a different label that another record
+#             in this home carries as its own claim on that same path: its
+#             lease_holder= is that label and its worktree= is that path, or it
+#             is a secondmate home leased under its bare id whose home is that
+#             path.
+#   unproven  everything else: a record with no lease_holder= claim, which
+#             predates durable leases so nothing recorded ties it to the slot;
+#             a pool label no record in this home carries as its claim on that
+#             path, including a label whose record names a different path; no
+#             durable lease on the path; and a pool record that cannot be read.
+# --retire-record and --relaunch refuse an unproven record and name what a
+# person can confirm by hand instead; ordinary teardown refuses only released.
 #
 # The pool record is treehouse's own treehouse-state.json in the pool directory
 # two levels above the slot, where treehouse's own `return` resolves it, read
@@ -76,17 +69,6 @@ fm_slot_canonical() {  # <path>
 
 fm_slot_lease_holder_new() {  # <task-id>
   printf 'fm-task:%s:l%s.%s.%s\n' "$1" "$(date +%s)" "${BASHPID:-$$}" "$RANDOM"
-}
-
-# The epoch in a generation token of the form <letter><epoch>.<pid>.<random>
-# (s for a spawn generation, l for a lease token); fails on any other shape.
-fm_slot_token_epoch() {  # <token>
-  local epoch
-  case "$1" in [sl][0-9]*.*) ;; *) return 1 ;; esac
-  epoch=${1#?}
-  epoch=${epoch%%.*}
-  case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
-  printf '%s\n' "$epoch"
 }
 
 # Every record in <state> other than <exclude-id> whose worktree= names the same
@@ -159,32 +141,29 @@ fm_slot_pool_record() {  # <path>
   ' "$pool" "$path" "$(fm_slot_canonical "$path")" 2>/dev/null || printf 'unknown\n'
 }
 
-# The epoch at or after which the record in <meta> acquired its working copy,
-# for use only as the LATER side of a comparison; fails when that cannot be
-# bounded (the verdict header owns why each source is sound).
-fm_slot_acquired_epoch() {  # <meta>
-  local meta=$1 holder
-  holder=$(_fm_slot_meta "$meta" lease_holder)
-  if [ -n "$holder" ]; then
-    fm_slot_token_epoch "${holder##*:}"
-    return
-  fi
-  [ -z "$(_fm_slot_meta "$meta" control_relaunch_tx)" ] || return 1
-  fm_slot_token_epoch "$(_fm_slot_meta "$meta" spawn_gen)"
-}
-
-# The task in <state> other than <exclude-id> that a pool lease holder label
-# names: a record with that lease_holder=, or a secondmate home leased under
-# its bare id.
-_fm_slot_label_owner() {  # <state> <label> <exclude-id>
-  local state=$1 label=$2 exclude=$3 meta id
+# The task in <state> other than <exclude-id> that carries the pool's holder
+# <label> as its own claim on <path>: a record whose lease_holder= is that label
+# and whose worktree= is that path, or a secondmate home leased under its bare
+# id whose home is that path.
+_fm_slot_label_claimant() {  # <state> <path> <label> <exclude-id>
+  local state=$1 path=$2 label=$3 exclude=$4 want meta id claim
   [ -n "$label" ] || return 0
+  want=$(fm_slot_canonical "$path")
   for meta in "$state"/*.meta; do
     [ -f "$meta" ] || continue
     id=${meta##*/}
     id=${id%.meta}
     [ "$id" != "$exclude" ] || continue
-    if [ "$id" = "$label" ] || [ "$(_fm_slot_meta "$meta" lease_holder)" = "$label" ]; then
+    if [ "$(_fm_slot_meta "$meta" lease_holder)" = "$label" ]; then
+      claim=$(_fm_slot_meta "$meta" worktree)
+    elif [ "$id" = "$label" ] && [ "$(_fm_slot_meta "$meta" kind)" = secondmate ]; then
+      claim=$(_fm_slot_meta "$meta" home)
+      [ -n "$claim" ] || claim=$(_fm_slot_meta "$meta" worktree)
+    else
+      continue
+    fi
+    [ -n "$claim" ] || continue
+    if [ "$claim" = "$path" ] || [ "$(fm_slot_canonical "$claim")" = "$want" ]; then
       printf '%s\n' "$id"
       return 0
     fi
@@ -195,7 +174,7 @@ _fm_slot_label_owner() {  # <state> <label> <exclude-id>
 # naming the evidence), and FM_SLOT_WORKTREE for the record <state>/<id>.meta.
 # The header owns the rules. Returns 1 only when the record is missing.
 fm_slot_verdict() {  # <state> <id>
-  local state=$1 id=$2 meta wt holder gen epoch record pool_holder owner claimant cmeta cepoch
+  local state=$1 id=$2 meta wt holder record pool_holder owner
   FM_SLOT_VERDICT=unproven
   FM_SLOT_EVIDENCE=
   FM_SLOT_WORKTREE=
@@ -208,42 +187,33 @@ fm_slot_verdict() {  # <state> <id>
   fi
   FM_SLOT_WORKTREE=$wt
   holder=$(_fm_slot_meta "$meta" lease_holder)
-  gen=$(_fm_slot_meta "$meta" spawn_gen)
+  if [ -z "$holder" ]; then
+    FM_SLOT_EVIDENCE="the record carries no lease claim, so it predates durable leases and nothing recorded ties it to $wt, and ownership is not inferred"
+    return 0
+  fi
   record=$(fm_slot_pool_record "$wt")
   case "$record" in
     leased$'\t'*)
       pool_holder=${record#leased$'\t'}
-      if { [ -n "$holder" ] && [ "$pool_holder" = "$holder" ]; } || [ "$pool_holder" = "$id" ]; then
+      if [ "$pool_holder" = "$holder" ]; then
         FM_SLOT_VERDICT=own
-        FM_SLOT_EVIDENCE="the pool leases $wt to this record's own holder ${pool_holder}"
+        FM_SLOT_EVIDENCE="the pool leases $wt to this record's own claim $holder"
         return 0
       fi
-      owner=$(_fm_slot_label_owner "$state" "$pool_holder" "$id")
-      FM_SLOT_VERDICT=released
-      FM_SLOT_EVIDENCE="the pool leases $wt to ${pool_holder:-an unlabelled holder}${owner:+ (task $owner)}, not to this record"
-      return 0
+      owner=$(_fm_slot_label_claimant "$state" "$wt" "$pool_holder" "$id")
+      if [ -n "$owner" ]; then
+        FM_SLOT_VERDICT=released
+        FM_SLOT_EVIDENCE="the pool leases $wt to $pool_holder, task $owner's own recorded claim on that same working copy, not to this record's claim $holder"
+        return 0
+      fi
+      FM_SLOT_EVIDENCE="the pool leases $wt to ${pool_holder:-an unlabelled holder} rather than to this record's claim $holder, and no record in this home carries that label as its claim on $wt"
+      ;;
+    unknown)
+      FM_SLOT_EVIDENCE="the pool's record for $wt could not be read, so this record's claim $holder cannot be checked against it"
+      ;;
+    *)
+      FM_SLOT_EVIDENCE="the pool holds no durable lease on $wt (it reports $record), so this record's claim $holder is not on it and no other record's claim explains the slot"
       ;;
   esac
-  epoch=$(fm_slot_token_epoch "$gen" 2>/dev/null) || epoch=
-  if [ -n "$epoch" ]; then
-    while IFS= read -r claimant; do
-      [ -n "$claimant" ] || continue
-      cmeta="$state/$claimant.meta"
-      cepoch=$(fm_slot_acquired_epoch "$cmeta" 2>/dev/null) || continue
-      [ "$cepoch" -gt "$epoch" ] || continue
-      FM_SLOT_VERDICT=released
-      FM_SLOT_EVIDENCE="task $claimant names the same working copy $wt from a later acquisition (epoch $cepoch, after this record's last launch $gen)"
-      return 0
-    done <<EOF
-$(fm_slot_claimants "$state" "$wt" "$id")
-EOF
-  fi
-  if [ -n "$holder" ]; then
-    FM_SLOT_EVIDENCE="its lease $holder is no longer on $wt (the pool reports ${record%%$'\t'*}) and no later claimant in this home proves a re-lease"
-  elif [ -z "$epoch" ]; then
-    FM_SLOT_EVIDENCE="the record has no spawn generation to order against, and the pool holds no durable lease on $wt (it reports ${record%%$'\t'*})"
-  else
-    FM_SLOT_EVIDENCE="the pool holds no durable lease on $wt (it reports ${record%%$'\t'*}) and no later claimant in this home proves a re-lease"
-  fi
   return 0
 }
