@@ -31,7 +31,8 @@
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
 #   or herdr), refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation.
+#   the new incarnation. Nothing it adds to the record lands after a recorded
+#   PR's lines, so that PR's merge poll stays bound across the relaunch.
 #   --base <branch> is the branch this task's work will merge into: the branch the
 #   brief tells the crew to branch FROM. It is recorded as base=<branch> and is
 #   what a consumer building a branch tree has to go on until the task has a PR,
@@ -2725,11 +2726,14 @@ preserve_relaunch_meta() {
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
-  if [ "$RELAUNCH" -eq 1 ]; then
-    preserve_relaunch_meta
-  fi
   if [ "$SPAWN_CONTROL_PARENT" = 1 ] && [ -n "${FM_CONTROL_RELAUNCH_TX:-}" ]; then
     echo "control_relaunch_tx=$FM_CONTROL_RELAUNCH_TX"
+  fi
+  # The preserved lines stay last: they include any recorded PR, whose merge
+  # poll is bound to the PR lines ending the record (fm_pr_metadata_identity_parse
+  # in bin/fm-pr-lib.sh), so a line added after them unarms that poll.
+  if [ "$RELAUNCH" -eq 1 ]; then
+    preserve_relaunch_meta
   fi
 } > "$SPAWN_META_PATH"
 if [ "$RELAUNCH" -eq 1 ]; then
@@ -2816,9 +2820,15 @@ spawn_record_traceparent() {
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=1
   SPAWN_META_TMP="$STATE/.$ID.meta.trace.${BASHPID:-$$}"
+  # A relaunched task can already record a PR, whose merge poll is bound to the
+  # PR lines ending the record, so the carrier goes in ahead of them.
   if [ ! -f "$meta" ] || [ ! -w "$meta" ] \
-     || ! awk -F= '$1 != "traceparent"' "$meta" > "$SPAWN_META_TMP" \
-     || ! printf 'traceparent=%s\n' "$SPAWN_TRACEPARENT" >> "$SPAWN_META_TMP" \
+     || ! awk -F= -v carrier="traceparent=$SPAWN_TRACEPARENT" '
+          $1 == "traceparent" { next }
+          !placed && $1 == "pr" { print carrier; placed = 1 }
+          { print }
+          END { if (!placed) print carrier }
+        ' "$meta" > "$SPAWN_META_TMP" \
      || ! mv -f "$SPAWN_META_TMP" "$meta"; then
     status=1
     rm -f "$SPAWN_META_TMP" 2>/dev/null || true

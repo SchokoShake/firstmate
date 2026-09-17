@@ -68,14 +68,21 @@ It is not deterministic across the verified adapters: codex and grok resume only
 3. **Record the note.**
    A ship or scout relaunch requires `--note`, because the replacement inherits the local copy but none of the conversation; the note is appended to the instructions it reads.
    A secondmate relaunch does not require one and never rewrites its standing charter.
-4. **Stop the old agent** through the `exit` verb, with its postcondition.
-5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
+4. **Re-arm the merge poll.**
+   A task that records `pr=` has its merge poll rebuilt through its owner, `bin/fm-pr-check.sh`, while the old agent is still running.
+   The watcher refuses to run a poll that is not bound to the PR lines ending the task's record, and the migration every watcher start runs quarantines it, so a relaunch must never publish a record that unbinds it.
+   A task without `pr=` skips this step.
+5. **Stop the old agent** through the `exit` verb, with its postcondition.
+6. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
+   Nothing it adds to the record lands after the recorded PR's lines, so the re-armed poll stays bound at every moment the watcher could read the record.
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 
 ### Failure and rollback
 
-- A refusal **before** the agent is stopped leaves the durable record and the instructions byte-identical.
+- A refusal **before** the agent is stopped leaves the durable record and the instructions byte-identical, with one exception: a merge poll that cannot be re-armed.
+- That refusal also comes before the agent is stopped: it leaves the agent untouched, restores the instructions byte-exact, and marks the journal `failed:rearming`.
+  The poll owner may already have rewritten the record's PR lines or revoked the poll, so the refusal names the `bin/fm-pr-check.sh` command to run before relaunching again.
 - A launch failure **after** the agent is stopped restores the prior durable record, keeps the progress note so a later recovery still has it, marks the journal `failed:launching`, and reports plainly that no agent is running and where the work is preserved.
 - If the launch owner already published the new record but no running agent can be confirmed, the new record is kept: the task is recorded on the new harness with no agent confirmed, which is exactly what recovery reconciles.
   Rewriting it back to the old harness would be a second, worse inaccuracy.
@@ -118,5 +125,5 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 ## Verification
 
 - `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
-- `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
+- `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, rollback after a failed launch, and a recorded PR's merge poll staying armed at every record publication, including the refusal when it cannot be re-armed.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.

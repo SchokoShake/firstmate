@@ -44,12 +44,16 @@
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
-#              Records a durable checkpoint and that note, exits the old agent,
-#              then delegates the launch to its single owner,
-#              bin/fm-spawn.sh --relaunch. A failure before publication keeps
-#              the prior durable record in place and reports the concrete
-#              state; it never leaves a half-transitioned task claiming to be
-#              running.
+#              Records a durable checkpoint and that note, re-arms a recorded
+#              PR's merge poll through its owner bin/fm-pr-check.sh while the
+#              old agent still runs, exits the old agent, then delegates the
+#              launch to its single owner, bin/fm-spawn.sh --relaunch, which
+#              publishes the new generation without unbinding that poll, so the
+#              watcher never finds it to quarantine. A poll that cannot be
+#              re-armed refuses the relaunch before the agent is touched. A
+#              failure before publication keeps the prior durable record in
+#              place and reports the concrete state; it never leaves a
+#              half-transitioned task claiming to be running.
 #
 # Teardown and discard are NOT verbs here and never will be. `exit` stops an
 # agent and preserves everything else; removing a worktree, killing an
@@ -499,6 +503,7 @@ RELAUNCH_META_PUBLISHED=0
 RELAUNCH_AGENT_CONFIRMED=0
 RELAUNCH_TX=
 RELAUNCH_BRIEF=
+RELAUNCH_PR=
 PRIOR_HARNESS=$HARNESS
 PRIOR_RECORDED_HARNESS=$RECORDED_HARNESS
 CONFIG_HARNESS=
@@ -553,6 +558,16 @@ relaunch_rollback() {
       fi
       journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored" || true
       echo "error: relaunch of $ID was refused before its agent was touched; nothing changed" >&2
+      ;;
+    rearming)
+      # The old agent was never touched, so its instructions are restored as
+      # for any earlier refusal. The poll owner may already have rewritten the
+      # record's PR lines or revoked the poll, so this claims no more than that.
+      if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
+        cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
+      fi
+      journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored-poll-not-rearmed" || true
+      echo "error: relaunch of $ID was refused before its agent was touched, because its PR merge poll could not be re-armed; its instructions were restored. Re-arm the poll with bin/fm-pr-check.sh $ID $RELAUNCH_PR, then relaunch" >&2
       ;;
     stopping)
       state=$(agent_state 2>/dev/null || printf unknown)
@@ -736,6 +751,22 @@ safe_checkpoint() {
   fi
 }
 
+# rearm_pr_poll: a task that records a PR has a merge poll bound to its record,
+# and a relaunch must never publish a replacement whose poll the watcher would
+# quarantine. Rebuild the poll through its single owner, bin/fm-pr-check.sh,
+# while the old agent is still running and before the launch owner publishes
+# the new generation, which keeps the PR lines last so the rebuilt poll stays
+# armed across that publication. A task without a recorded PR is untouched.
+# It runs after record_note, so a failure restores instructions this same
+# transaction preserved rather than a copy an earlier relaunch left behind.
+rearm_pr_poll() {  # <journal-line>...
+  RELAUNCH_PR=$(fm_meta_get "$META" pr)
+  [ -n "$RELAUNCH_PR" ] || return 0
+  journal_write rearming "$@"
+  "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$RELAUNCH_PR" >/dev/null \
+    || die "the PR merge poll for $ID could not be re-armed from its recorded PR $RELAUNCH_PR"
+}
+
 # record_note: put the required progress note somewhere durable, and - for a
 # ship or scout, whose only record of the interrupted reasoning is the
 # conversation about to be discarded - into the instructions the replacement
@@ -802,6 +833,8 @@ do_relaunch() {
 
   record_note
   journal_write noted "${CHECKPOINT_LINES[@]}" "$note_line"
+
+  rearm_pr_poll "${CHECKPOINT_LINES[@]}" "$note_line"
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
   exit_result=$(do_exit)

@@ -17,6 +17,9 @@
 #   6. fm-spawn --relaunch refuses on its own: a live agent, a contradicting
 #      flag, an extra positional, or a backend that cannot prove the previous
 #      agent exited.
+#   7. A task that records a PR keeps its merge poll armed through the relaunch,
+#      with no moment the watcher could quarantine it, and a poll that cannot be
+#      re-armed refuses the relaunch before the agent is stopped.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -30,6 +33,9 @@ CONTROL="$ROOT/bin/fm-control.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
 PROMOTE="$ROOT/bin/fm-promote.sh"
 X_LINK="$ROOT/bin/fm-x-link.sh"
+PR_CHECK="$ROOT/bin/fm-pr-check.sh"
+MIGRATE="$ROOT/bin/fm-pr-check-migrate.sh"
+FORGE_HEAD=0123456789abcdef0123456789abcdef01234567
 # fm_test_tmproot's own cleanup trap fires when its command substitution exits,
 # so recreate the root before resolving it and clean it up from this file's trap.
 TMP_ROOT=$(fm_test_tmproot fm-control-relaunch)
@@ -120,6 +126,18 @@ SH
 exit 0
 SH
   chmod +x "$fb/sleep"
+  # A recorded PR is re-read from the forge when its merge poll is armed; answer
+  # locally so no case ever reaches a real forge.
+  cat > "$fb/gh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "\$FM_FAKE_DIR/gh.log"
+case " \$* " in
+  *" headRefOid "*) printf '%s\n' $FORGE_HEAD ;;
+  *" baseRefName "*) printf 'main\n' ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$fb/gh"
 }
 
 # new_case <name> [id] -> echoes a case dir with a live claude ship task.
@@ -128,6 +146,7 @@ new_case() {
   mkdir -p "$dir/home/state" "$dir/home/data" "$dir/fake"
   : > "$dir/fake/literal"
   : > "$dir/fake/keys"
+  : > "$dir/fake/gh.log"
   printf 'claude' > "$dir/fake/command"
   printf 'claude' > "$dir/fake/becomes"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
@@ -171,7 +190,30 @@ run_control() {  # <case-dir> <args...>
     FM_FAKE_TRACE_PREPARE="${FM_FAKE_TRACE_PREPARE:-}" \
     FM_FAKE_META_WRITER_READY="${FM_FAKE_META_WRITER_READY:-}" \
     FM_FAKE_TRACE_EXPORTED="${FM_FAKE_TRACE_EXPORTED:-}" \
+    FM_FAKE_RECORD_PROBE_TARGET="${FM_FAKE_RECORD_PROBE_TARGET:-}" \
+    FM_FAKE_RECORD_PROBE_LOG="${FM_FAKE_RECORD_PROBE_LOG:-}" \
+    FM_FAKE_RECORD_PROBE="${FM_FAKE_RECORD_PROBE:-}" \
     "$CONTROL" "$@" 2>&1
+}
+
+# arm_pr_poll <case-dir> <id> <url>: record the task's PR and arm its merge poll
+# through the owner firstmate uses when a PR becomes ready.
+arm_pr_poll() {
+  local dir=$1; shift
+  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    "$PR_CHECK" "$@" 2>&1
+}
+
+# migrate_checks_safe <case-dir>: the non-executing migration every watcher
+# start runs before it will execute any state check.
+migrate_checks_safe() {
+  local dir=$1
+  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    "$MIGRATE" --checks-safe 2>&1
+}
+
+quarantined_task_artifacts() {  # <case-dir> <id>
+  find "$1/home/state/.pr-check-quarantine" -name "$2.*" -print 2>/dev/null
 }
 
 run_spawn() {  # <case-dir> <args...>
@@ -227,6 +269,17 @@ if [ -n "${FM_FAKE_META_WRITER_TARGET:-}" ] \
    && grep -q '^x_request=' "$source_path" 2>/dev/null; then
   : > "$FM_FAKE_META_WRITER_READY"
   while [ ! -e "$FM_FAKE_META_WRITER_RELEASE" ]; do /bin/sleep 0.01; done
+fi
+# A watcher that starts the instant a record is replaced runs the migration
+# against exactly the bytes that replacement published.
+if [ -n "${FM_FAKE_RECORD_PROBE_TARGET:-}" ] && [ -z "${FM_FAKE_RECORD_PROBE_ACTIVE:-}" ] \
+   && [ "$target_path" = "$FM_FAKE_RECORD_PROBE_TARGET" ]; then
+  "$FM_REAL_MV" "$@" || exit $?
+  printf 'probe\n' >> "$FM_FAKE_RECORD_PROBE_LOG"
+  FM_FAKE_RECORD_PROBE_ACTIVE=1 "$FM_FAKE_RECORD_PROBE" --checks-safe \
+    >> "$FM_FAKE_RECORD_PROBE_LOG" 2>&1 \
+    || printf 'probe-failed\n' >> "$FM_FAKE_RECORD_PROBE_LOG"
+  exit 0
 fi
 exec "$FM_REAL_MV" "$@"
 SH
@@ -288,8 +341,9 @@ test_relaunch_preserves_durable_task_metadata() {
   expect_code 0 "$rc" "relaunch should preserve durable metadata"$'\n'"$out"
   [ "$(meta_field "$dir" rl19 pr)" = "https://github.com/example/repo/pull/19" ] \
     || fail "the task PR must survive relaunch"
-  [ "$(meta_field "$dir" rl19 pr_head)" = "feature/relaunch" ] \
-    || fail "the task PR head must survive relaunch"
+  # Re-arming the merge poll re-reads the PR's head from the forge.
+  [ "$(meta_field "$dir" rl19 pr_head)" = "$FORGE_HEAD" ] \
+    || fail "the task PR head must be re-read from the forge on relaunch, got '$(meta_field "$dir" rl19 pr_head)'"
   [ "$(meta_field "$dir" rl19 x_request)" = "request-19" ] \
     || fail "the task X request must survive relaunch"
   [ "$(meta_field "$dir" rl19 decisions_reviewed)" = 1 ] \
@@ -1312,6 +1366,109 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
 }
 
+# --- 7. the PR merge poll ----------------------------------------------------
+
+test_relaunch_keeps_the_pr_merge_poll_armed() {
+  local dir out rc url=https://github.com/example/repo/pull/35
+  dir=$(new_case prpoll rl35)
+  add_ship_task "$dir" rl35 claude
+  out=$(arm_pr_poll "$dir" rl35 "$url"); rc=$?
+  expect_code 0 "$rc" "arming the merge poll should succeed"$'\n'"$out"
+  out=$(migrate_checks_safe "$dir"); rc=$?
+  expect_code 0 "$rc" "the armed poll should pass migration before the relaunch"$'\n'"$out"
+  [ -z "$out" ] || fail "the armed poll should pass migration silently before the relaunch"$'\n'"$out"
+
+  out=$(run_control "$dir" rl35 relaunch --note "continuing after review"); rc=$?
+  expect_code 0 "$rc" "relaunching a task with a PR should succeed"$'\n'"$out"
+  out=$(migrate_checks_safe "$dir"); rc=$?
+  expect_code 0 "$rc" "migration right after the relaunch should succeed"$'\n'"$out"
+  [ -z "$out" ] \
+    || fail "migration right after the relaunch must be silent, not quarantine the task's merge poll"$'\n'"$out"
+  assert_present "$dir/home/state/rl35.check.sh" "the relaunched task's merge poll must stay armed"
+  [ -z "$(quarantined_task_artifacts "$dir" rl35)" ] \
+    || fail "the relaunch must leave nothing of the task's merge poll quarantined"
+  [ "$(meta_field "$dir" rl35 pr)" = "$url" ] || fail "the task PR must survive the relaunch"
+  [ -n "$(meta_field "$dir" rl35 control_relaunch_tx)" ] \
+    || fail "the published record should be the relaunch's new generation"
+  [ "$(journal_field "$dir" rl35 phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  pass "fm-control relaunch: a task's PR merge poll stays armed and migration stays silent right after"
+}
+
+test_no_record_published_during_relaunch_unarms_the_pr_merge_poll() {
+  local dir out rc probes url=https://github.com/example/repo/pull/36
+  dir=$(new_case prpoll-window rl36)
+  add_ship_task "$dir" rl36 claude
+  out=$(arm_pr_poll "$dir" rl36 "$url"); rc=$?
+  expect_code 0 "$rc" "arming the merge poll should succeed"$'\n'"$out"
+  # Tracing adds the carrier write after the new generation is published.
+  printf '%s\n' "$$" > "$dir/home/state/.lock"
+  printf '%s on\n' "$$" > "$dir/home/state/.trace-context-effective"
+  make_mv_failure_stub "$dir"
+  : > "$dir/probe.log"
+
+  out=$(FM_REAL_MV="$(command -v mv)" \
+    FM_FAKE_RECORD_PROBE_TARGET="$dir/home/state/rl36.meta" \
+    FM_FAKE_RECORD_PROBE_LOG="$dir/probe.log" \
+    FM_FAKE_RECORD_PROBE="$MIGRATE" \
+    run_control "$dir" rl36 relaunch --note "continuing after review"); rc=$?
+  expect_code 0 "$rc" "relaunching a traced task with a PR should succeed"$'\n'"$out"
+  probes=$(grep -c '^probe$' "$dir/probe.log")
+  # The generation publication and the carrier write, at least.
+  [ "$probes" -ge 2 ] \
+    || fail "every record replacement during the relaunch should have been probed, saw $probes"
+  ! grep -qv '^probe$' "$dir/probe.log" \
+    || fail "a watcher starting at any record replacement during the relaunch must find the merge poll armed"$'\n'"$(cat "$dir/probe.log")"
+  fm_trace_context_valid "$(meta_field "$dir" rl36 traceparent)" \
+    || fail "the relaunch should have recorded the replacement's trace carrier"
+  assert_present "$dir/home/state/rl36.check.sh" "the relaunched task's merge poll must stay armed"
+  pass "fm-control relaunch: no record published during the relaunch leaves the PR merge poll to quarantine"
+}
+
+test_relaunch_of_a_task_without_a_pr_arms_no_merge_poll() {
+  local dir out rc artifact
+  dir=$(new_case nopr rl37)
+  add_ship_task "$dir" rl37 claude
+  out=$(run_control "$dir" rl37 relaunch --note "no PR yet"); rc=$?
+  expect_code 0 "$rc" "relaunching a task without a PR should succeed"$'\n'"$out"
+  [ -z "$(meta_field "$dir" rl37 pr)" ] || fail "a relaunch must not invent a PR"
+  for artifact in check.sh pr-poll pr-poll-registration; do
+    assert_absent "$dir/home/state/rl37.$artifact" "a task without a PR must get no $artifact"
+  done
+  [ ! -s "$dir/fake/gh.log" ] || fail "a task without a PR must not consult the forge"
+  [ "$(journal_field "$dir" rl37 phase)" = complete ] \
+    || fail "the transaction journal should end complete"
+  pass "fm-control relaunch: a task without a PR is relaunched with no merge poll work"
+}
+
+test_failed_pr_poll_rearm_refuses_before_the_agent_is_stopped() {
+  local dir out rc brief_before url=https://github.com/example/repo/pull/38
+  dir=$(new_case prpoll-fail rl38)
+  add_ship_task "$dir" rl38 claude
+  out=$(arm_pr_poll "$dir" rl38 "$url"); rc=$?
+  expect_code 0 "$rc" "arming the merge poll should succeed"$'\n'"$out"
+  brief_before=$(cat "$dir/home/data/rl38/brief.md")
+  make_mv_failure_stub "$dir"
+  out=$(FM_REAL_MV="$(command -v mv)" \
+    FM_FAKE_META_PUBLISH_MV_FAIL="$dir/home/state/rl38.check.sh" \
+    run_control "$dir" rl38 relaunch --note "never delivered"); rc=$?
+  expect_code 1 "$rc" "a merge poll that cannot be re-armed should refuse the relaunch"$'\n'"$out"
+  assert_contains "$out" "could not be re-armed" "the refusal should name the merge poll"
+  assert_contains "$out" "before its agent was touched" "the refusal should say the agent was not touched"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "a failed re-arm must not stop the agent"
+  assert_no_grep "/exit" "$dir/fake/literal" "a failed re-arm must send no exit command"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" "a failed re-arm must launch no replacement"
+  [ "$(cat "$dir/home/data/rl38/brief.md")" = "$brief_before" ] \
+    || fail "a failed re-arm must restore the instructions byte-exact"
+  [ -z "$(meta_field "$dir" rl38 control_relaunch_tx)" ] \
+    || fail "a failed re-arm must publish no new generation"
+  [ "$(journal_field "$dir" rl38 phase)" = failed:rearming ] \
+    || fail "the journal should record the failed re-arm, got '$(journal_field "$dir" rl38 phase)'"
+  [ "$(journal_field "$dir" rl38 rollback)" = instructions-restored-poll-not-rearmed ] \
+    || fail "the journal should record what the rollback did"
+  pass "fm-control relaunch: a merge poll that cannot be re-armed refuses before the agent is stopped"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1358,3 +1515,7 @@ test_spawn_relaunch_refuses_a_live_agent
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+test_relaunch_keeps_the_pr_merge_poll_armed
+test_no_record_published_during_relaunch_unarms_the_pr_merge_poll
+test_relaunch_of_a_task_without_a_pr_arms_no_merge_poll
+test_failed_pr_poll_rearm_refuses_before_the_agent_is_stopped
