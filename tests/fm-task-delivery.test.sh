@@ -138,6 +138,14 @@ EOF
   out=$(run_spawn "$home" "$fakebin" delivery-agree-b2 "$proj" claude --mode direct-PR --yolo off)
   assert_not_contains "$out" "delivery mismatch" "an agreeing mode was reported as a mismatch"
 
+  # A stacked-chain brief's contract line still names its mode first.
+  write_brief "$home" delivery-stack-b4 "direct-PR stack=native"
+  out=$(run_spawn "$home" "$fakebin" delivery-stack-b4 "$proj" claude --mode direct-PR --yolo off)
+  assert_not_contains "$out" "delivery mismatch" "a stacked-chain brief was reported as a mismatch"
+  out=$(run_spawn "$home" "$fakebin" delivery-stack-b4 "$proj" claude --mode no-mistakes --yolo off)
+  assert_contains "$out" "the brief says mode=direct-PR but this spawn passed --mode no-mistakes" \
+    "a stacked-chain brief's mode was not read from its contract line"
+
   # A brief scaffolded before the contract line existed warns once and continues.
   write_brief "$home" delivery-legacy-b3
   out=$(run_spawn "$home" "$fakebin" delivery-legacy-b3 "$proj" claude --mode local-only --yolo off)

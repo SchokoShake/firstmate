@@ -286,8 +286,60 @@ yolo on a ship brief|brief-refused-b1 some-proj --mode direct-PR --yolo on|--yol
 yolo=value form on a ship brief|brief-refused-b2 some-proj --mode direct-PR --yolo=off|--yolo is not a brief input
 mode on a scout brief|brief-refused-b3 some-proj --scout --mode direct-PR|--mode applies only to ship briefs
 mode on a secondmate charter|brief-refused-b4 --secondmate --no-projects --mode no-mistakes|--mode applies only to ship briefs
+stack on a no-mistakes ship brief|brief-refused-b5 some-proj --mode no-mistakes --stack|--stack requires --mode direct-PR
+stack on a local-only ship brief|brief-refused-b6 some-proj --mode local-only --stack|--stack requires --mode direct-PR
+stack on a scout brief|brief-refused-b7 some-proj --scout --stack|--stack applies only to ship briefs
+stack on a secondmate charter|brief-refused-b8 --secondmate --no-projects --stack|--stack applies only to ship briefs
 ROWS
-  pass "fm-brief.sh: --yolo and scout/secondmate --mode are refused, never silently dropped"
+  for id in brief-refused-b5 brief-refused-b6 brief-refused-b7 brief-refused-b8; do
+    assert_absent "$home/data/$id/brief.md" "$id: a refused --stack scaffold still wrote a brief"
+  done
+  pass "fm-brief.sh: --yolo, scout/secondmate --mode, and --stack outside direct-PR ship briefs are refused"
+}
+
+# Dependent work that ships as a chain gets the stacked-chain variant: its done
+# gate is a native GitHub stack proven by bin/fm-stack-check.sh, never chained
+# bases, and its contract line is what bin/fm-pr-check.sh reads to refuse a
+# single-PR record.
+test_stack_brief_requires_a_proven_native_stack() {
+  local home id brief plain out
+  home="$TMP_ROOT/stack-home"
+  mkdir -p "$home/data"
+  id="brief-stack-c1"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR --stack 2>&1) \
+    || fail "a direct-PR --stack brief should scaffold: $out"
+  assert_contains "$out" "(ship, mode=direct-PR, native stack; replace {TASK})" \
+    "the scaffold did not report the stacked-chain variant"
+  brief="$home/data/$id/brief.md"
+  grep -qx "Delivery contract: mode=direct-PR stack=native" "$brief" \
+    || fail "a stack brief did not record its machine-readable stacked-chain contract line"
+  assert_grep "PRs whose bases merely point at each other are NOT a stack" "$brief" \
+    "a stack brief did not rule out chained bases"
+  assert_grep "Do NOT run /no-mistakes" "$brief" "a stack brief did not keep the worker off the trunk-only pipeline"
+  assert_grep "\`gh stack link <bottom> ... <top>\`" "$brief" "a stack brief did not say how to adopt existing PRs"
+  assert_grep "Keep those PR numbers" "$brief" "a stack brief did not require keeping adopted PR numbers"
+  assert_grep "\`gh stack init --base <trunk> fm/$id\`" "$brief" "a stack brief did not say how to start new work"
+  assert_grep "\`gh stack submit --auto\`" "$brief" "a stack brief did not say how to create the stack"
+  assert_grep "put the exact commands and their results in that layer's PR body" "$brief" \
+    "a stack brief did not require local checks in every PR body"
+  assert_grep "\`$ROOT/bin/fm-stack-check.sh <bottom-pr-url> ... <top-pr-url>\` must exit 0" "$brief" \
+    "a stack brief did not gate done on the stack checker"
+  assert_grep "\`done: {the one line fm-stack-check.sh printed}\`" "$brief" \
+    "a stack brief's done line does not carry the checker's proof"
+  assert_grep "never fall back to chained bases" "$brief" "a stack brief allowed a chained-base fallback"
+  assert_grep "Never merge a PR, and never run \`gh stack merge\`" "$brief" \
+    "a stack brief did not forbid merging the stack"
+  assert_grep "Verify isolation before anything else" "$brief" "a stack brief lost the worktree-isolation assertion"
+  assert_grep "{TASK}" "$brief" "a stack brief lost the {TASK} placeholder"
+  assert_no_grep "done: PR {url}" "$brief" "a stack brief kept the single-PR done line"
+  assert_no_grep "EOF" "$brief" "a stack brief leaked a heredoc EOF marker"
+
+  plain="$home/data/brief-stack-plain-c2/brief.md"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-stack-plain-c2 some-proj --mode direct-PR >/dev/null 2>&1 \
+    || fail "a plain direct-PR brief should still scaffold"
+  grep -qx "Delivery contract: mode=direct-PR" "$plain" || fail "a plain direct-PR brief changed its contract line"
+  assert_no_grep "fm-stack-check.sh" "$plain" "a plain direct-PR brief picked up the stack gate"
+  pass "fm-brief.sh: the --stack variant gates done on a proven native GitHub stack"
 }
 
 test_faster_paths_use_configured_authority_without_stacked_review() {
@@ -718,6 +770,7 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+test_stack_brief_requires_a_proven_native_stack
 # The two standing commit-hygiene rules must survive in BOTH crewmate scaffolds and
 # stay OUT of the secondmate charter, and the Rules block must stay correctly
 # numbered around them - a stale cross-reference points a crew at the wrong rule.

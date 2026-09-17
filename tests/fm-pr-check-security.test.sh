@@ -26,6 +26,7 @@ REAL_MV=$(command -v mv)
 REAL_STAT=$(command -v stat)
 REAL_CHMOD=$(command -v chmod)
 REAL_BASENAME=$(command -v basename)
+REAL_JQ=$(command -v jq || true)
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation
@@ -76,6 +77,20 @@ SH
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
+# The REST pull request read bin/fm-stack-check.sh makes: serve a JSON fixture
+# through the checker's own --jq program with the real jq.
+if [ "${1:-}" = api ]; then
+  path= program=
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -H) shift 2 ;;
+      --jq) program=$2; shift 2 ;;
+      *) path=$1; shift ;;
+    esac
+  done
+  [ -f "${FM_TEST_PULLS:-}/${path##*/}.json" ] || exit 1
+  exec "$FM_TEST_JQ" -r "$program" "$FM_TEST_PULLS/${path##*/}.json"
+fi
 case " $* " in
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
   *" baseRefName "*)
@@ -713,6 +728,106 @@ test_pr_base_recording() {
     >/dev/null 2>/dev/null || fail "GitLab check failed"
   assert_no_grep 'pr_base=' "$dir/home/state/task-a.meta" "a GitLab task recorded a base branch"
   pass "fm-pr-check records the PR's base branch when the forge supplies one"
+}
+
+# write_pull <case-dir> <number> <base> <head> [<stack#> <position> <size> <stack-base>]
+write_pull() {
+  local dir=$1 number=$2 base=$3 head=$4 stack=null
+  mkdir -p "$dir/pulls"
+  [ "$#" -lt 8 ] || stack=$(printf '{"number":%s,"position":%s,"size":%s,"base":{"ref":"%s"}}' "$5" "$6" "$7" "$8")
+  printf '{"number":%s,"merged":false,"base":{"ref":"%s"},"head":{"ref":"%s"},"stack":%s}\n' \
+    "$number" "$base" "$head" "$stack" > "$dir/pulls/$number.json"
+}
+
+test_stack_recording_requires_github_proof() {
+  local dir before after rc
+  if [ -z "$REAL_JQ" ]; then
+    echo "skip: jq not found (the gh stub serves stack fixtures through it)"
+    return 0
+  fi
+
+  # A native stack is proven, then recorded and armed on its top PR.
+  dir=$(make_case stack-proven)
+  write_task_meta "$dir"
+  write_pull "$dir" 21 main fm/task-a 70 1 2 main
+  write_pull "$dir" 22 fm/task-a fm/task-a-2 70 2 2 main
+  FM_TEST_PULLS="$dir/pulls" FM_TEST_JQ="$REAL_JQ" FM_TEST_GH_BASE=fm/task-a \
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/21 https://github.com/o/r/pull/22 \
+    > "$dir/stdout" 2> "$dir/stderr" || fail "a proven stack was not recorded: $(cat "$dir/stderr")"
+  grep -qxF 'stack ok: #70 base=main size=2: https://github.com/o/r/pull/21 https://github.com/o/r/pull/22' "$dir/stdout" \
+    || fail "recording a stack did not print the checker's proof line"
+  grep -qxF 'pr=https://github.com/o/r/pull/22' "$dir/home/state/task-a.meta" \
+    || fail "a stack was not recorded on its top PR"
+  [ "$(grep -c '^pr=' "$dir/home/state/task-a.meta")" -eq 1 ] || fail "a stack recorded more than one pr"
+  grep -qxF 'pr_base=fm/task-a' "$dir/home/state/task-a.meta" \
+    || fail "a stack's top PR base was not recorded"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+    || fail "a proven stack did not arm the merge poll"
+
+  # Chained bases GitHub does not report as a stack are never recorded.
+  dir=$(make_case stack-chained-only)
+  write_task_meta "$dir"
+  write_pull "$dir" 21 main fm/task-a
+  write_pull "$dir" 22 fm/task-a fm/task-a-2
+  before=$(state_snapshot "$dir/home/state")
+  set +e
+  FM_TEST_PULLS="$dir/pulls" FM_TEST_JQ="$REAL_JQ" \
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/21 https://github.com/o/r/pull/22 \
+    > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "chained bases with no GitHub stack were recorded as a stack"
+  assert_grep "GitHub reports no stack for this PR" "$dir/stderr" "the refusal did not name the PRs outside a stack"
+  assert_grep "error: not recorded:" "$dir/stderr" "the refusal did not say nothing was recorded"
+  after=$(state_snapshot "$dir/home/state")
+  [ "$after" = "$before" ] || fail "an unproven stack changed task state"
+  [ ! -s "$dir/guard.log" ] || fail "an unproven stack reached the guard"
+
+  # A stacked-chain task cannot be recorded as a lone PR, and an ordinary
+  # direct-PR brief still can.
+  dir=$(make_case stack-contract-single)
+  write_task_meta "$dir"
+  mkdir -p "$dir/home/data/task-a"
+  printf '# Definition of done\nDelivery contract: mode=direct-PR stack=native\n' > "$dir/home/data/task-a/brief.md"
+  before=$(state_snapshot "$dir/home/state")
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/22 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a stacked-chain task was recorded with a single PR"
+  assert_grep "ships as a native stack; record every PR bottom to top" "$dir/stderr" \
+    "the single-PR refusal did not say how to record the stack"
+  after=$(state_snapshot "$dir/home/state")
+  [ "$after" = "$before" ] || fail "a refused single-PR stack record changed task state"
+  [ ! -s "$dir/gh.log" ] || fail "a refused single-PR stack record called gh"
+
+  printf '# Definition of done\nDelivery contract: mode=direct-PR\n' > "$dir/home/data/task-a/brief.md"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/22 >/dev/null 2>&1 \
+    || fail "an ordinary direct-PR task could no longer record its single PR"
+  grep -qxF 'pr=https://github.com/o/r/pull/22' "$dir/home/state/task-a.meta" \
+    || fail "an ordinary direct-PR task did not record its PR"
+
+  # Re-arming the top PR a proven stack already recorded, as a relaunch does,
+  # is not a new stack claim.
+  dir=$(make_case stack-contract-rearm)
+  write_task_meta "$dir"
+  mkdir -p "$dir/home/data/task-a"
+  printf '# Definition of done\nDelivery contract: mode=direct-PR stack=native\n' > "$dir/home/data/task-a/brief.md"
+  write_pull "$dir" 21 main fm/task-a 70 1 2 main
+  write_pull "$dir" 22 fm/task-a fm/task-a-2 70 2 2 main
+  FM_TEST_PULLS="$dir/pulls" FM_TEST_JQ="$REAL_JQ" \
+    run_check_entry "$dir" task-a https://github.com/o/r/pull/21 https://github.com/o/r/pull/22 \
+    >/dev/null 2>&1 || fail "a proven stack task could not be recorded"
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/22 >/dev/null 2> "$dir/stderr" \
+    || fail "re-arming a stack task's recorded top PR was refused: $(cat "$dir/stderr")"
+  fm_pr_poll_artifacts_valid "$dir/home/state" task-a "$POLL" \
+    || fail "re-arming a stack task's recorded top PR left no valid poll"
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/21 >/dev/null 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a stack task was re-recorded on a PR other than its recorded top"
+  pass "fm-pr-check records a stack only when GitHub proves it, and a stacked task never as a lone PR"
 }
 
 test_rejected_metacharacter_bytes_are_inert() {
@@ -3422,6 +3537,7 @@ test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
 test_valid_recording_and_merge_derivation
 test_pr_base_recording
+test_stack_recording_requires_github_proof
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
 test_atomic_interruption_leaves_no_partial_artifact

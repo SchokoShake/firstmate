@@ -7,6 +7,7 @@
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --mode direct-PR --stack [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -36,6 +37,14 @@
 #                the configured merge authority approves, firstmate merges to local main
 # no-mistakes-prod-only is a registry policy, not a task mode; resolve it to one of
 # the three concrete modes at intake before calling this script.
+# --stack is the stacked-chain variant, used whenever dependent work ships as a
+# chain of PRs. It requires --mode direct-PR, because no-mistakes validates
+# against the default branch only and local-only opens no PR. Its definition of
+# done requires one NATIVE GitHub stack built with gh stack, per-layer local
+# checks in each PR body, and a done line quoting a passing
+# bin/fm-stack-check.sh proof; PRs whose bases merely chain never satisfy it.
+# Its contract line reads "Delivery contract: mode=direct-PR stack=native";
+# bin/fm-pr-check.sh reads it, and its header owns what that line refuses.
 # The generated ship brief records the chosen mode as a fixed machine-readable
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
@@ -111,6 +120,7 @@ fi
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
+STACK=0
 MODE=
 MODE_SET=0
 POS=()
@@ -131,6 +141,7 @@ for a in "$@"; do
     --scout) KIND=scout ;;
     --secondmate) KIND=secondmate ;;
     --herdr-lab) HERDR_LAB=1 ;;
+    --stack) STACK=1 ;;
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
@@ -160,6 +171,16 @@ if [ "$KIND" = ship ]; then
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
   exit 1
+fi
+if [ "$STACK" -eq 1 ]; then
+  [ "$KIND" = ship ] || {
+    echo "error: --stack applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+    exit 1
+  }
+  [ "$MODE" = direct-PR ] || {
+    echo "error: --stack requires --mode direct-PR: no-mistakes validates against the default branch only and cannot ship a stack, and local-only opens no PR" >&2
+    exit 1
+  }
 fi
 ID=${POS[0]}
 
@@ -404,8 +425,30 @@ fi
 case "$MODE" in
   direct-PR)
     SETUP2=""
-    RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
-    IFS= read -r -d '' DOD <<EOF || true
+    if [ "$STACK" -eq 1 ]; then
+      RULE1="1. Never push to the default branch or to any branch outside this task's stack. Never merge a PR, and never run \`gh stack merge\`."
+      IFS= read -r -d '' DOD <<EOF || true
+# Definition of done
+Delivery contract: mode=direct-PR stack=native
+This task ships **direct-PR as one native GitHub stack**: the dependent changes land as a chain of PRs that GitHub itself links into a stack, without the no-mistakes pipeline.
+PRs whose bases merely point at each other are NOT a stack: GitHub creates the stack as a server-side object only through \`gh stack\`, and nothing short of that object satisfies this task.
+Do NOT run /no-mistakes: it validates against the default branch only and cannot ship a stack.
+
+Build or update the stack with the \`gh stack\` extension; \`gh stack <command> --help\` is authoritative for its flags.
+- New work: start the bottom layer with \`gh stack init --base <trunk> fm/$ID\`, add each layer above it with \`gh stack add fm/$ID-<n>\`, one concern per layer, then run \`gh stack submit --auto\` to push every branch, open the PRs with chained bases, and create the stack; its new PRs are drafts unless you add \`--open\`.
+- Existing PRs: adopt them with \`gh stack link <bottom> ... <top>\`, naming each by PR number or URL from bottom to top; it corrects their bases and creates or extends the stack. Keep those PR numbers: never close, recreate, or replace a PR to build the stack.
+- After a rebase or restack, run \`gh stack submit --auto\` again so GitHub's stack matches your branches.
+If \`gh stack\` is unavailable, or GitHub reports that stacked pull requests are not enabled for the repository, append \`blocked: {why}\` and stop; never fall back to chained bases.
+
+Run the project's local checks at every layer's own head, and put the exact commands and their results in that layer's PR body, so every layer carries its own evidence whether or not CI runs for it.
+When every layer is committed, pushed, and in the stack, prove it: \`$FM_ROOT/bin/fm-stack-check.sh <bottom-pr-url> ... <top-pr-url>\` must exit 0.
+Then append \`done: {the one line fm-stack-check.sh printed}\` to the status file and stop.
+Never report done without that passing output.
+The configured merge authority merges the stack bottom-up; firstmate relays the outcome.
+EOF
+    else
+      RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
+      IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
@@ -413,6 +456,7 @@ The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
+    fi
     ;;
   local-only)
     SETUP2=""
@@ -513,4 +557,8 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
+if [ "$STACK" -eq 1 ]; then
+  echo "scaffolded: $BRIEF (ship, mode=$MODE, native stack; replace {TASK})"
+else
+  echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
+fi
