@@ -46,13 +46,18 @@
 # --retire-record and --relaunch refuse an unproven record and name what a
 # person can confirm by hand instead; --retire-record --unproven-confirmed is
 # that person's explicit acknowledgement. Ordinary teardown refuses released
-# and, on the recorded fact alone, a contested claimless record:
-#   FM_SLOT_CONTESTED  for a record with no lease claim, one clause naming the
-#             recorded fact that another record also stands on its working
-#             copy - the pool durably leases the path to another record's own
-#             claim on that same path, or another record in this home names
-#             the same path - and empty when there is none or the record
-#             carries a claim. It says nothing about who owns the copy.
+# and, on the recorded fact alone, a contested unproven record:
+#   FM_SLOT_CONTESTED  one clause naming the recorded fact that another holder
+#             stands on an unproven record's working copy, and empty when
+#             there is none. For a record with no lease claim: the pool
+#             durably leases the path to another record's own claim on that
+#             same path, or another record in this home names the same path.
+#             For a record with a lease claim: the pool durably leases the
+#             path to a holder other than that claim, labelled or not, which
+#             no record in this home carries as its claim on that path. No
+#             durable lease, an absent slot, and an unreadable pool record
+#             leave it empty, and so does another record merely naming a
+#             claimed record's path. It says nothing about who owns the copy.
 #
 # The pool record is treehouse's own treehouse-state.json in the pool directory
 # two levels above the slot, where treehouse's own `return` resolves it, read
@@ -242,7 +247,8 @@ fm_slot_verdict() {  # <state> <id>
         FM_SLOT_EVIDENCE="the pool leases $wt to $pool_holder, task $owner's own recorded claim on that same working copy, not to this record's claim $holder"
         return 0
       fi
-      FM_SLOT_EVIDENCE="the pool leases $wt to ${pool_holder:-an unlabelled holder} rather than to this record's claim $holder, and no record in this home carries that label as its claim on $wt"
+      FM_SLOT_CONTESTED="the pool leases $wt to ${pool_holder:-an unlabelled holder} rather than to this record's claim $holder"
+      FM_SLOT_EVIDENCE="$FM_SLOT_CONTESTED, and no record in this home carries that label as its claim on $wt"
       ;;
     unknown)
       FM_SLOT_EVIDENCE="the pool's record for $wt could not be read, so this record's claim $holder cannot be checked against it"

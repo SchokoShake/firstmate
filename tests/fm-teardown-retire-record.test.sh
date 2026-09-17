@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for bin/fm-teardown.sh --retire-record, its --unproven-confirmed
 # acknowledgement, and ordinary teardown's refusals of a record whose treehouse
-# slot the pool has re-leased or whose working copy another record also stands on.
+# slot the pool has re-leased or whose working copy another holder also stands on.
 #
 # Every case drives the real script against a fixture home, a fixture treehouse
 # pool state file, and logging fakes for tmux and treehouse, so any touch of the
@@ -686,6 +686,94 @@ test_ordinary_teardown_refuses_a_claimless_record_under_another_claims_lease() {
   pass "fm-teardown: refuses a claimless record whose copy the pool leases to another record's claim, while that holder's own teardown proceeds"
 }
 
+# A record WITH a recorded claim whose copy the pool durably leases to a holder
+# other than that claim, under a label no record in this home carries: another
+# home on the same pool, or a hand-run `treehouse get --lease`. A bystander
+# record on another copy shows what a retirement must leave alone.
+make_claimed_under_foreign_lease_case() {  # <name> <pool-fields> -> case dir
+  local dir
+  dir=$(make_case "$1")
+  write_pool "$dir" "$2"
+  write_record "$dir" claimed-r1 ship "$OLD_GEN" "mode=direct-PR" "yolo=off" "lease_holder=$OLD_CLAIM"
+  RECORD_WORKTREE="$dir/pool/2/repo" write_record "$dir" bystander-r1 ship "$NEW_GEN" \
+    "mode=direct-PR" "yolo=off" "lease_holder=$NEW_CLAIM"
+  populate_task_state "$dir" claimed-r1
+  populate_task_state "$dir" bystander-r1
+  write_presentation_rows "$dir" claimed-r1 bystander-r1
+  printf '%s\n' "$dir"
+}
+
+test_ordinary_teardown_refuses_a_claimed_record_under_a_foreign_lease() {
+  local dir rc out foreign=fm-task:other-x9:l1789026480.7.7
+  dir=$(make_claimed_under_foreign_lease_case claimed-foreign-lease \
+    ",\"leased\":true,\"lease_holder\":\"$foreign\"")
+  assert_ordinary_teardown_refuses_unproven "$dir" claimed-r1 \
+    "the pool leases $dir/pool/1/repo to $foreign rather than to this record's claim $OLD_CLAIM" \
+    "ordinary teardown of a claimed record whose copy is leased to a foreign label"
+  # The acknowledgement still retires that record's state records alone.
+  assert_confirmed_retire "$dir" claimed-r1 bystander-r1 \
+    "the pool leases $dir/pool/1/repo to $foreign rather than to this record's claim $OLD_CLAIM"
+
+  # A durable lease with no label is the same recorded fact.
+  dir=$(make_claimed_under_foreign_lease_case claimed-unlabelled-lease ',"leased":true')
+  assert_ordinary_teardown_refuses_unproven "$dir" claimed-r1 \
+    "the pool leases $dir/pool/1/repo to an unlabelled holder rather than to this record's claim $OLD_CLAIM" \
+    "ordinary teardown of a claimed record whose copy is leased without a label"
+
+  # No durable lease on the path is not that fact: the claimed record tears
+  # down under the ordinary checks, as before.
+  dir=$(make_claimed_under_foreign_lease_case claimed-no-lease ',"owner_pid":999999,"owner_started_at":1789026475860')
+  set +e
+  out=$(run_teardown "$dir" claimed-r1 --force 2>&1)
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "tearing down a claimed record whose path holds no durable lease"$'\n'"$out"
+  assert_grep "treehouse <return> <--force> <$dir/pool/1/repo>" "$dir/runtime.log" \
+    "the claimed record's teardown did not return its slot"
+  assert_absent "$dir/home/state/claimed-r1.meta" "the claimed record survived its teardown"
+  assert_present "$dir/home/state/bystander-r1.meta" "the claimed record's teardown touched the bystander"
+  pass "fm-teardown: refuses, with or without --force, a claimed record whose copy the pool durably leases to a holder other than its claim, naming --unproven-confirmed, which still retires the record alone; no durable lease tears down as before"
+}
+
+# A backend with no recovery-grade agent-state check can never prove the
+# endpoint agent-free, so --retire-record says it cannot run there instead of
+# asking for a retry that could not succeed.
+test_retire_refuses_a_backend_without_an_agent_state_check() {
+  local dir mode path
+  dir=$(make_case unverified-backend)
+  write_pool "$dir" ",\"leased\":true,\"lease_holder\":\"$NEW_CLAIM\""
+  fm_write_meta "$dir/home/state/old-r1.meta" \
+    "window=lab:7" "endpoint_task_id=old-r1" "worktree=$dir/pool/1/repo" "project=$dir/project" \
+    "harness=claude" "kind=ship" "tasktmp=$dir/tasktmp-old-r1" "spawn_gen=$OLD_GEN" \
+    "backend=zellij" "zellij_session=lab" "zellij_tab_id=3" "zellij_pane_id=7" \
+    "mode=direct-PR" "yolo=off" "lease_holder=$OLD_CLAIM"
+  write_record "$dir" new-r1 ship "$NEW_GEN" "mode=direct-PR" "yolo=off" "lease_holder=$NEW_CLAIM"
+  printf 'done: PR merged\n' > "$dir/home/state/old-r1.status"
+  : > "$dir/home/state/old-r1.turn-ended"
+  write_presentation_rows "$dir" old-r1 new-r1
+  for mode in dry real; do
+    if [ "$mode" = dry ]; then
+      assert_refused_without_mutation "$dir" old-r1 "--retire-record cannot run on the zellij backend" \
+        "a $mode run on a backend with no agent-state check" --retire-record --dry-run
+    else
+      assert_refused_without_mutation "$dir" old-r1 "--retire-record cannot run on the zellij backend" \
+        "a $mode run on a backend with no agent-state check" --retire-record
+    fi
+    assert_contains "$REFUSAL_OUTPUT" "no recovery-grade agent-state check" \
+      "the $mode refusal did not say why the backend cannot run it"
+    assert_contains "$REFUSAL_OUTPUT" "tmux and Herdr" \
+      "the $mode refusal did not name the backends where it works"
+    assert_not_contains "$REFUSAL_OUTPUT" "retry" "the $mode refusal asked for a retry that cannot succeed"
+    assert_not_contains "$REFUSAL_OUTPUT" "would remove" "the $mode run listed records as removable"
+    for path in "$dir/home/state/old-r1.status" "$dir/home/state/old-r1.turn-ended"; do
+      assert_present "$path" "the $mode run removed $path"
+    done
+    assert_grep "old-r1"$'\t' "$dir/home/state/.status-presentation-cursor" \
+      "the $mode run dropped the presentation row"
+  done
+  pass "fm-teardown --retire-record: on a backend with no recovery-grade agent-state check it refuses in a real run and a dry run alike, says it cannot run there, names tmux and Herdr, and asks for no retry"
+}
+
 # Every planned removal is printed before the first removal.
 assert_plan_precedes_removal() {  # <output> <label>
   local out=$1 label=$2 plan_last removed_first
@@ -847,6 +935,8 @@ test_ordinary_teardown_refuses_a_re_leased_slot
 test_ordinary_teardown_lets_the_current_holder_through
 test_ordinary_teardown_refuses_both_records_of_a_claimless_pair
 test_ordinary_teardown_refuses_a_claimless_record_under_another_claims_lease
+test_ordinary_teardown_refuses_a_claimed_record_under_a_foreign_lease
+test_retire_refuses_a_backend_without_an_agent_state_check
 test_retire_unproven_confirmed_retires_a_claimless_record
 test_retire_unproven_confirmed_keeps_every_other_refusal
 test_retire_removes_an_idle_task_temp_root

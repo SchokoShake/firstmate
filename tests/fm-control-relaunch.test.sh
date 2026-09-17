@@ -1508,7 +1508,11 @@ test_spawn_relaunch_refuses_an_unproven_record() {
   expect_code 1 "$rc" "relaunching a record with no recorded claim should refuse"$'\n'"$out"
   assert_contains "$out" "carries no lease claim" "the refusal should say nothing recorded ties the record to its slot"
   assert_contains "$out" "Confirm by hand whose work the copy holds" "the refusal should name what a person can do"
-  assert_contains "$out" "retire the record deliberately by hand" "the refusal should name the hand retirement"
+  assert_contains "$out" "bin/fm-teardown.sh rl44 --retire-record --unproven-confirmed" "the refusal should name the supported record-only retirement"
+  assert_contains "$out" "that flag is for a record whose ownership could not be proven" "the refusal should say what the acknowledgement is for"
+  assert_contains "$out" "tear the task down normally once its work has landed (bin/fm-teardown.sh rl44)" "the refusal should name ordinary teardown"
+  assert_contains "$out" "spawn a fresh task from its branch" "the refusal should name the fresh spawn"
+  assert_not_contains "$out" "deliberately by hand" "the refusal should name no hand retirement"
   [ "$(state_fingerprint "$dir")" = "$before" ] || fail "a refused relaunch changed state/"
   if [ -s "$dir/fake/literal" ] || [ -s "$dir/fake/keys" ]; then
     fail "a refused relaunch sent keys to the endpoint"

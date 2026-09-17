@@ -109,7 +109,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   Only a positively classified state acts.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
   On a treehouse-backed backend it also relaunches a ship or scout only when the pool's durable lease proves the record still owns its worktree (`bin/fm-slot-lib.sh` owns that verdict), so a replacement can never start inside another task's working copy.
-  A re-leased slot names `bin/fm-teardown.sh <id> --retire-record` instead, and an unproven one, including every record that carries no recorded lease claim, names what a person can confirm by hand, because ownership is never inferred.
+  A re-leased slot names `bin/fm-teardown.sh <id> --retire-record` instead, and an unproven one, including every record that carries no recorded lease claim, names what a person can confirm by hand, because ownership is never inferred, and then the supported paths: ordinary teardown once the work has landed, a fresh spawn from the branch, or `bin/fm-teardown.sh <id> --retire-record --unproven-confirmed`, the flag for a record whose ownership could not be proven.
   `fm-control.sh relaunch` applies the same verdict at its checkpoint, before anything is stopped, so the launch owner's check is a backstop rather than the first line.
 
 ## Capability matrix

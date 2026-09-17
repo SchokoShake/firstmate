@@ -93,7 +93,9 @@
 #   teardown's job), a record whose re-lease is unproven (every record without a
 #   recorded lease claim among them, since ownership is never inferred), a
 #   secondmate or Orca record, an own endpoint that holds a live agent or cannot
-#   be proven agent-free, an armed PR merge poll or registered watcher check,
+#   be proven agent-free (on a backend with no recovery-grade agent-state check,
+#   such as zellij or cmux, it cannot run at all and says so rather than asking
+#   for a retry), an armed PR merge poll or registered watcher check,
 #   and an owed public reply, and each refusal names the path that applies
 #   instead, which for an unproven record is --unproven-confirmed.
 #   --unproven-confirmed is a person's explicit acknowledgement that the
@@ -116,8 +118,10 @@
 #   facts alone and inferring no ownership, a record with no recorded lease
 #   claim whose recorded path the pool durably leases to another record's own
 #   claim on that same path, or whose recorded working copy any other record
-#   in this home also names; each such refusal names --retire-record
-#   --unproven-confirmed as the deliberate way through.
+#   in this home also names, and a record with a recorded claim whose recorded
+#   path the pool durably leases to a holder other than that claim; each such
+#   refusal names --retire-record --unproven-confirmed as the deliberate way
+#   through.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
@@ -2531,10 +2535,11 @@ EOF
 # pool has provably re-leased that copy to another holder (bin/fm-slot-lib.sh
 # owns the verdict), each of those steps would land on the other holder's work,
 # and --force authorizes discarding only THIS task's work, so the refusal holds
-# either way and names the record-only path instead. A record with no recorded
-# claim is refused on the same footing, inferring nothing about who owns the
-# copy, as soon as the recorded facts show another record standing on it
-# (FM_SLOT_CONTESTED); the way through is the person's --unproven-confirmed.
+# either way and names the record-only path instead. An unproven record is
+# refused on the same footing, inferring nothing about who owns the copy, as
+# soon as the recorded facts show another holder standing on it
+# (FM_SLOT_CONTESTED, whose shapes bin/fm-slot-lib.sh owns); the way through is
+# the person's --unproven-confirmed.
 refuse_if_slot_released_or_contested() {
   [ "$KIND" != secondmate ] || return 0
   [ "$BACKEND" != orca ] || return 0
@@ -2641,6 +2646,10 @@ retire_record_only() {
     dead|missing) ;;
     alive)
       echo "REFUSED: $ID's own endpoint $T still holds a live agent; stop it first with bin/fm-control.sh $ID exit, then retry." >&2
+      return 1
+      ;;
+    unverified)
+      echo "REFUSED: --retire-record cannot run on the $BACKEND backend, because it has no recovery-grade agent-state check that could prove $ID's own endpoint $T holds no live agent; it works on the tmux and Herdr backends." >&2
       return 1
       ;;
     *)

@@ -35,7 +35,10 @@
 #   scout only when the pool's durable lease proves the record still owns its
 #   worktree (bin/fm-slot-lib.sh owns that verdict): a re-leased slot names
 #   bin/fm-teardown.sh <id> --retire-record instead, and an unproven one names
-#   what a person can confirm by hand.
+#   what a person can confirm by hand and then the supported paths: ordinary
+#   teardown once the work has landed, a fresh spawn from the branch, or
+#   bin/fm-teardown.sh <id> --retire-record --unproven-confirmed, the flag for
+#   a record whose ownership could not be proven.
 #   Nothing it adds to the record lands after a recorded PR's lines, so that
 #   PR's merge poll stays bound across the relaunch.
 #   --base <branch> is the branch this task's work will merge into: the branch the
@@ -1152,7 +1155,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
       if [ "$FM_SLOT_VERDICT" = released ]; then
         echo "error: task $ID's recorded worktree $RELAUNCH_WT is no longer its own: $FM_SLOT_EVIDENCE; refusing to launch a replacement inside another holder's working copy. Retire only this task's record with bin/fm-teardown.sh $ID --retire-record, or spawn a fresh task from its branch" >&2
       else
-        echo "error: cannot prove task $ID still owns its recorded worktree $RELAUNCH_WT: $FM_SLOT_EVIDENCE; refusing to launch a replacement into a working copy that may hold another task's work, because ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed, spawn a fresh task from its branch, or retire the record deliberately by hand" >&2
+        echo "error: cannot prove task $ID still owns its recorded worktree $RELAUNCH_WT: $FM_SLOT_EVIDENCE; refusing to launch a replacement into a working copy that may hold another task's work, because ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh $ID), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh $ID --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record" >&2
       fi
       exit 1
     fi
