@@ -452,6 +452,62 @@ wait-refused" ] || fail "a lock in a removed directory was not simply refused: $
   pass "a lock whose directory was removed is refused, and waited for, without a steal chain"
 }
 
+# A holder can release the lock between an acquirer's failed creation and its
+# look at what is there. The acquirer then finds no lock at all, which must read
+# as free rather than held: a one-shot caller such as the watcher's singleton
+# start would otherwise report a holder that no longer exists.
+test_lock_released_during_acquisition_is_taken() {
+  local dir state lockdir driver out rc
+  dir=$(make_case lock-release-race)
+  state="$dir/state"
+  mkdir -p "$state"
+  lockdir="$state/.contend.lock"
+  driver="$dir/acquire-during-release.sh"
+  cat > "$driver" <<'SH'
+#!/usr/bin/env bash
+. "$1"
+lockdir=$2
+signals=$3
+(
+  fm_lock_acquire_wait "$lockdir" || exit 1
+  : > "$signals/held"
+  while [ ! -e "$signals/release" ]; do sleep 0.05; done
+  fm_lock_release "$lockdir"
+  : > "$signals/released"
+) &
+holder=$!
+while [ ! -e "$signals/held" ]; do sleep 0.05; done
+eval "real_$(declare -f fm_lock_try_create)"
+attempts=0
+fm_lock_try_create() {
+  local rc=0
+  attempts=$((attempts + 1))
+  real_fm_lock_try_create "$@" || rc=$?
+  if [ "$attempts" -eq 1 ]; then
+    : > "$signals/release"
+    while [ ! -e "$signals/released" ]; do sleep 0.05; done
+  fi
+  return "$rc"
+}
+if fm_lock_try_acquire "$lockdir"; then echo acquired; else echo "refused holder=${FM_LOCK_HELD_PID:-none}"; fi
+wait "$holder"
+echo "attempts=$attempts"
+if [ "$(cat "$lockdir/pid" 2>/dev/null)" = "$$" ]; then echo owned; fi
+fm_lock_release "$lockdir"
+if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then echo leaked; fi
+SH
+  mkdir -p "$dir/signals"
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_run_timed 10 bash "$2" "$3" "$4" "$5"' \
+    _ "$ROOT/bin/fm-timeout-lib.sh" "$driver" "$LIB" "$lockdir" "$dir/signals" 2>&1) || rc=$?
+  [ "$rc" -ne 124 ] || fail "acquiring a lock released mid-acquisition never returned"
+  [ "$rc" -eq 0 ] || fail "acquiring a lock released mid-acquisition crashed (rc=$rc): $out"
+  [ "$out" = "acquired
+attempts=2
+owned" ] || fail "a lock released mid-acquisition was not taken with one bounded retry: $out"
+  pass "a lock released while an acquirer was losing to it is taken with one bounded retry"
+}
+
 test_watch_restart_rejects_reused_pid() {
   local dir state fakebin out live pid i
   dir=$(make_case restart-reused-pid)
@@ -1147,6 +1203,7 @@ test_lock_empty_pid_uses_minimum_grace
 test_lock_late_claim_loses_after_recreate
 test_lock_paused_mid_acquire_claim_fails_during_steal
 test_lock_in_removed_directory_is_refused_without_stealing
+test_lock_released_during_acquisition_is_taken
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover

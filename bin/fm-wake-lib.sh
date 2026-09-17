@@ -732,13 +732,18 @@ fm_lock_try_acquire() {
   if fm_lock_try_create "$lockdir"; then
     return 0
   fi
-  # A lock that does not exist has no stale holder to recover. Creation failed
-  # because the lock's directory is gone or unwritable, or it lost a release race
-  # that a caller's retry absorbs. Stealing it would fail the same way one
-  # "$lockdir.steal" deeper, recursing without bound and burning a CPU core for
-  # as long as the directory stays gone.
+  # A lock that does not exist has no stale holder to recover. Either its holder
+  # released it just after creation failed, which one more creation attempt
+  # settles, or the lock's directory is gone or unwritable. Stealing it then
+  # would fail the same way one "$lockdir.steal" deeper, recursing without bound
+  # and burning a CPU core for as long as the directory stays gone.
   if [ ! -e "$lockdir" ] && [ ! -L "$lockdir" ]; then
-    return 1
+    if fm_lock_try_create "$lockdir"; then
+      return 0
+    fi
+    if [ ! -e "$lockdir" ] && [ ! -L "$lockdir" ]; then
+      return 1
+    fi
   fi
 
   # Compare against ${BASHPID:-$$} inline, never via a command substitution:

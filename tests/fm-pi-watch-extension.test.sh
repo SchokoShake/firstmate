@@ -5,7 +5,10 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TMP_ROOT=$(fm_test_tmproot fm-pi-watch-extension)
+TMP_ROOT=$(fm_test_tmproot fm-pi-watch-extension) || TMP_ROOT=
+if [ -z "$TMP_ROOT" ] || [ ! -d "$TMP_ROOT" ]; then
+  fail "could not create the suite's temp root"
+fi
 EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 
 # Arm fixtures loop until their case releases or retires them, so a case that
@@ -14,11 +17,13 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # suite's temp root before removing it.
 cleanup_arm_fixtures() {
   local pid args
-  ps -eo pid=,args= | while read -r pid args; do
-    case "$args" in
-      *"$TMP_ROOT/"*) kill -KILL "$pid" 2>/dev/null || true ;;
-    esac
-  done
+  if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
+    ps -eo pid=,args= | while read -r pid args; do
+      case "$args" in
+        *"$TMP_ROOT/"*) kill -KILL "$pid" 2>/dev/null || true ;;
+      esac
+    done
+  fi
   fm_test_cleanup
 }
 trap cleanup_arm_fixtures EXIT
