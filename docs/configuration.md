@@ -67,8 +67,7 @@ Nothing about the reason, the title, the options a reader could parse out of the
 [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) publishes it: every structured `backlog.records[]` entry carries `ask_id` and `ask_revision`, filled for a row that carries a captain hold and is not yet Done, and `null` on every other row.
 A hold whose `hold-until` deadline has passed is one of those rows and keeps exactly the same `ask_id` and `ask_revision`, because a lapse is neither an answer nor a new question.
 Demoting a lapsed row out of a needs-you feed is the consuming board's decision rather than the identity's, so this contract stays silent about carding.
-No field on the record carries that lapse signal today: a structured record's hold metadata is `hold_reason` and `hold_kind` only.
-Publishing the lapsed flag needs the item line's `(hold-until: ...)` marker, which `bin/fm-fleet-snapshot.sh` does not read yet and which the `fm-hold-default-deadline` task owns, so that task is where the flag comes from.
+The record carries that lapse signal beside the identity as `hold_until`, `held`, and `lapsed`, which `bin/fm-fleet-snapshot.sh` reads from the item line's `(hold-until: ...)` marker and whose meaning its header owns.
 A consumer takes `ask_id` as the question identity as given.
 Deriving one of its own from the row's title, reason, or parsed options reintroduces exactly the coupling this removes, and a row whose id falls outside the privacy-safe slug alphabet publishes `null` rather than an identity, which is the same "no identity" answer a consumer must already handle.
 
