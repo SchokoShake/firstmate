@@ -249,7 +249,13 @@ On the second branch the worktree HEAD is both an ancestor of the newest run's h
 state: done · source: run-step · run passed: PR merged/closed
 ```
 
-A live run whose head the pipeline moved was not observable that day because no validation run was active, so its `pipeline_owned` shape rests on the same `branch_sync` fields and on the regression tests.
+A live pre-push run was also observed that day: while its review step ran, `axi status` printed a `branch_sync` object with `state: pipeline_owned` and `phase: pre_push` whose `pipeline.run` equalled `run.id` and whose `pipeline.submitted_head` was the worktree HEAD, and the reader reported that live run:
+
+```text
+state: working · source: run-step · validating (running)
+```
+
+That run's pipeline had not yet moved its head, so a live run whose head the pipeline moved was not observed, and that case rests on the same `branch_sync` fields and on the regression tests.
 
 Deterministic entry points:
 
