@@ -15,16 +15,23 @@
 #     data/backlog.md and cover In flight, Queued, and Done.
 #     Canonical tasks-axi rows are structured; free-form non-empty lines in
 #     those sections are preserved as unstructured records.
-#     Structured rows preserve captain-hold metadata such as hold_kind and
-#     hold_reason when tasks-axi emits it. They also carry normalized current_role,
-#     requires_child_metadata, blocked_by_ids, unresolved_blocker_ids, and
-#     captain_actionable fields, plus ask_id and ask_revision - the durable
+#     Structured rows preserve captain-hold metadata such as hold_kind,
+#     hold_reason and hold_until when tasks-axi emits it. They also carry
+#     normalized current_role, requires_child_metadata, blocked_by_ids,
+#     unresolved_blocker_ids, captain_actionable, held and lapsed fields.
+#     held is a LIVE captain hold: a queued or in-flight row whose hold-kind
+#     is captain. A Done line keeps its hold markers, so marker presence alone
+#     would publish an ANSWERED question as an unanswered one. Any other hold is
+#     a scheduling gate, not a captain question, and publishes neither flag.
+#     lapsed is a held row whose deadline has passed; it never suppresses held,
+#     because a lapse demotes the question rather than answering it.
+#     They also carry ask_id and ask_revision - the durable
 #     question identity of a row still being asked about, null on every other
 #     structured row. bin/fm-ask-lib.sh owns that identity and its revision, and
 #     a consumer takes ask_id as given rather than deriving a question identity
 #     from the row's title, reason, or the options it could parse out of them.
-#     Repeated blocker tokens remain ordered; a blocker resolves only when its
-#     structured record is Done, and missing ids stay open.
+#     Repeated blocker tokens remain ordered; a blocker
+#     resolves only when its structured record is Done, and missing ids stay open.
 #     The item-line grammar backlog_json reads is stated as data in
 #     tests/fixtures/backlog-item-line/ and pinned by
 #     tests/fm-backlog-item-line-contract.test.sh; docs/architecture.md ("Cross-repo
@@ -164,6 +171,9 @@ validate_positive_bound FM_SNAPSHOT_REGISTRY_TIMEOUT "$FM_SNAPSHOT_REGISTRY_TIME
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-timeout-lib.sh"  # fm_run_timed: the shared hard bound
+# shellcheck source=bin/fm-captain-hold-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-captain-hold-lib.sh"  # fm_captain_hold_today: the date basis a hold lapses on
 
 usage() {
   cat <<'EOF'
@@ -278,14 +288,18 @@ first_pr_url_in_file() {  # <file>
 }
 
 backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
-  local backlog=${1:-$BACKLOG}
+  local backlog=${1:-$BACKLOG} today
   if [ ! -f "$backlog" ]; then
     jq -n --arg path "$backlog" '{path:$path,present:false,records:[]}'
     return 0
   fi
 
+  # The local date, not the UTC SNAPSHOT_NOW: bin/fm-captain-hold-lib.sh owns
+  # why. An unreadable date leaves every row unlapsed rather than guessing.
+  today=$(fm_captain_hold_today) || today=''
+
   # shellcheck disable=SC2094
-  jq -Rn --arg path "$backlog" '
+  jq -Rn --arg path "$backlog" --arg today "$today" '
     def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
     def section_state:
       if . == "In flight" then "in_flight"
@@ -304,7 +318,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
     def links($rest): [$rest | scan(url_pattern)];
     def strip_trailing_metadata:
       reduce range(0; 20) as $_ (.;
-        sub("[[:space:]]*\\([[:space:]]*(?:(?:repo|kind|priority|hold|hold-kind):[[:space:]]*[^)]*|(?:since|merged|reported|done)[[:space:]]+[^)]*)[[:space:]]*\\)[[:space:]]*$"; ""));
+        sub("[[:space:]]*\\([[:space:]]*(?:(?:repo|kind|priority|hold|hold-kind|hold-until):[[:space:]]*[^)]*|(?:since|merged|reported|done)[[:space:]]+[^)]*)[[:space:]]*\\)[[:space:]]*$"; ""));
     def strip_title_artifacts:
       sub("[[:space:]]+-[[:space:]]+data/[^[:space:])]+/report\\.md$"; "")
       | sub("[[:space:]]+data/[^[:space:])]+/report\\.md$"; "")
@@ -364,6 +378,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
              priority:metadata($rest; "priority"),
              hold_reason:metadata($rest; "hold"),
              hold_kind:metadata($rest; "hold-kind"),
+             hold_until:metadata($rest; "hold-until"),
              blocked_by:cap($rest; ".*blocked-by:[[:space:]]*(?<v>[^[:space:])]+).*"),
              blocked_by_ids:blocked_by_ids($rest),
              blocked_reason:blocked_reason($rest),
@@ -422,6 +437,11 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
           | .captain_actionable =
               (.state == "queued" and .kind == "captain" and .hold_kind == "captain"
                and .hold_reason != null and (.unresolved_blocker_ids | length) == 0)
+          | .held = ((.state == "queued" or .state == "in_flight")
+                     and .hold_kind == "captain")
+          | .lapsed = (.held and $today != "" and .hold_until != null
+                       and (.hold_until | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))
+                       and .hold_until <= $today)
         else . end)
     | del(.section,.order)
   ' < "$backlog" | fm_ask_annotate_backlog_json "$(fm_ask_ledger_path "$(dirname "$backlog")")"

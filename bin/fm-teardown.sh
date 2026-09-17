@@ -1099,7 +1099,7 @@ backlog_refresh_reminder() {
         fi
         ;;
     esac
-    printf '%s\n' "Backlog: $ID just finished. Run $done_cmd, then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due."
+    printf '%s\n' "Backlog: $ID just finished. Run $done_cmd, then run bin/fm-ready.sh for dependency-cleared candidates - it is firstmate's own dispatchable set and withholds lapsed captain holds, which are still unanswered questions - check date gates, and dispatch only work whose blockers are gone and date is due."
   else
     printf '%s\n' "Backlog: $ID just finished. Update data/backlog.md - move $ID to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due."
   fi

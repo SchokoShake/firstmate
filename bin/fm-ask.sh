@@ -29,12 +29,10 @@
 # untouched and therefore preserves the identity. That is the point: the safe path
 # is the one an author already takes.
 #
-# `again` never carries the row's existing hold deadline into the rewritten hold. A
-# re-ask is a new instance of the same question, so it passes no --until at all and
-# takes whatever the shared tasks-axi hold write applies by default, which today is
-# no deadline. Carrying the old date forward would re-ask a lapsed question into a
-# card that is demoted the moment it is asked, and inventing one here would put a
-# second owner on a deadline this script does not own.
+# `again` writes the rewritten hold with a fresh default deadline, today plus the
+# default window, whatever deadline the row carried before.
+# bin/fm-captain-hold-lib.sh owns that rule and the window. A default that cannot
+# be computed fails the re-ask before anything is written.
 #
 # The revision is read before it is used, and a ledger that exists but cannot be
 # read, or whose line for this subject carries a malformed value, fails the command
@@ -79,6 +77,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-ask-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-ask-lib.sh"
+# shellcheck source=bin/fm-captain-hold-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-captain-hold-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
@@ -192,7 +193,7 @@ command_revision() {
 }
 
 command_again() {
-  local id=${1:-} reason='' previous next ledger_existed=0 bump_error hold_error pairs
+  local id=${1:-} reason='' fresh_until previous next ledger_existed=0 bump_error hold_error pairs
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -213,6 +214,9 @@ command_again() {
   esac
   require_captain_ask "$id" || exit 1
   refuse_decision_hold "$id"
+  if ! fresh_until=$(fm_captain_hold_default_until) || [ -z "$fresh_until" ]; then
+    fail "could not compute the default hold deadline for $id; nothing was written"
+  fi
 
   fm_lock_acquire_wait "$LEDGER_LOCK"
   LEDGER_LOCK_HELD=1
@@ -221,7 +225,7 @@ command_again() {
   next=$((previous + 1))
   bump_error=$(fm_ask_write_revision "$LEDGER" "$id" "$next" 2>&1) \
     || fail "could not record revision $next for $id in $LEDGER: $bump_error"
-  if ! hold_error=$(tasks_axi hold "$id" --reason="$reason" --kind captain 2>&1); then
+  if ! hold_error=$(tasks_axi hold "$id" --reason="$reason" --kind captain --until "$fresh_until" 2>&1); then
     fm_ask_write_revision "$LEDGER" "$id" "$previous" \
       || fail "could not write the new question on $id, and revision $next is now recorded with the old wording; re-run with the intended reason. tasks-axi said:"$'\n'"$hold_error"
     if [ "$ledger_existed" = 0 ] && pairs=$(fm_ask_ledger_pairs "$LEDGER") && [ -z "$pairs" ]; then

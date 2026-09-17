@@ -10,8 +10,13 @@ The command runs tasks-axi in the active `FM_HOME`, so the existing backlog rema
 It never reads report bodies, review artifacts, terminal output, or chat.
 
 The `hold` subcommand maps an originating work id and stable decision key to `<origin-id>-decision-<decision-key>`.
-It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry.
-It rejects an identity collision, a changed title, and attempts to reopen an already resolved identity.
+It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry, with the lapse deadline owned by `bin/fm-captain-hold-lib.sh`.
+It rejects an identity collision, a changed title, attempts to reopen an already resolved identity, and a deadline that is not a future calendar date.
+
+Every gate reads `hold_kind` rather than `held`, so a lapsed decision still counts as durably recorded for `complete` and `verify` and still accepts the captain's answer through `resolve` and `decline`; [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) owns why, along with the keep-versus-reset rule a repeated `hold` follows.
+A retry of `hold` keeps a deadline the clock has not reached, so it cannot silently shorten a window the captain was already given, while a lapsed or absent one takes the default.
+A re-ask is the other case and never carries a deadline forward, under the re-ask rule that library owns.
+A decision is re-asked under a new decision key, whose new row takes the default, while `bin/fm-ask.sh again` refuses decision holds and writes every other captain ask with a fresh default.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.
@@ -23,7 +28,7 @@ For an open keyed status decision, it appends a `captain-held [key=<key>]: ...` 
 Scout teardown calls the script's read-only `verify` subcommand after checking for the report and before removing any source state.
 The `--force` path remains the explicit captain-approved discard escape hatch.
 
-The `resolve` and `decline` subcommands close active holds, while `repair` attests a hold already closed outside the script.
+The `resolve` and `decline` subcommands close open holds whether or not their deadline has passed, while `repair` attests a hold already closed outside the script.
 All three require a non-empty captain decision file and record the same resolution block in the hold body with the decision digest, routed identities, and a `Resolution mode:` naming the path.
 An exact retry is idempotent, while a changed decision or, for `resolve`, a changed routed-task set is rejected.
 
@@ -36,13 +41,13 @@ It refuses while any task in the same backlog is still blocked by the hold, beca
 Every candidate found in the listing prefilter is confirmed against its own structured record before the refusal is reported.
 
 The `repair` subcommand records the resolution block on a hold that was already closed outside the script, such as by a direct `tasks-axi done`, so an origin whose decision was genuinely answered stops failing `verify`.
-It refuses a hold that is still actively held, never reopens a closed hold, and never clears a dependency edge, so an unanswered decision keeps blocking teardown until the captain's word closes it.
+It refuses a hold that is still open, whether or not its deadline has passed, never reopens a closed hold, and never clears a dependency edge, so an unanswered decision keeps blocking teardown until the captain's word closes it.
 It also requires the identity to carry the captain-hold provenance that tasks-axi preserves through a close, so an ordinary captain-kind task that was never held cannot be repaired into a resolved decision.
 
 ## Structured read surfaces
 
-`bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)` and `(hold-kind: captain)` metadata alongside existing backlog fields.
-It resolves every repeated `blocked-by:` edge against structured Done records, keeps missing blockers unresolved, and classifies only an unblocked captain hold as actionable.
+`bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)`, `(hold-kind: captain)` and `(hold-until: ...)` metadata alongside existing backlog fields.
+It resolves every repeated `blocked-by:` edge against structured Done records, keeps missing blockers unresolved, and classifies only an unblocked captain hold as actionable, lapsed or not; its header owns the `held` and `lapsed` flags.
 Its secondmate-home summary classifies an actionable captain hold as `captain_decision` and preserves blocked captain holds as queued work in the owning home.
 
 `bin/fm-bearings-snapshot.sh` projects actionable captain holds into `decisions_open` and leaves blocked captain holds in ordinary queued gates.

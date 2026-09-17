@@ -8,7 +8,11 @@
 # and `tasks-axi mv --help` exposes [<id>...] for atomic multi-ID moves required
 # by secondmate handoffs.
 # FM_TASKS_AXI_MIN follows the axi-family floor policy owned beside the floor
-# constants in bin/fm-bootstrap.sh.
+# constants in bin/fm-bootstrap.sh. The floor is what guarantees `tasks-axi list`
+# offers held, hold_kind and hold_until as --fields extras, which is how
+# bin/fm-captain-hold-lib.sh tells a lapsed captain hold from a dispatchable row;
+# a build below the floor reports MISSING there rather than degrading into a
+# ready listing nothing screened.
 # The feature probes are a separate concern and stay as defense in depth for
 # stripped or forked builds that advertise a current version without those flags.
 # `config/backlog-backend=manual` opts out of tasks-axi for routine firstmate
@@ -36,7 +40,7 @@
 # Both layers are bounded by process lifetime, so a tasks-axi install or upgrade
 # is picked up by the next process rather than being cached to disk.
 
-FM_TASKS_AXI_MIN=0.2.4
+FM_TASKS_AXI_MIN=0.2.5
 
 FM_TASKS_AXI_COMPATIBLE_MEMO=${FM_TASKS_AXI_COMPATIBLE:-}
 unset FM_TASKS_AXI_COMPATIBLE

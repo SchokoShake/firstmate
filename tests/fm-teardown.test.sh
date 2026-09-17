@@ -180,7 +180,7 @@ add_compatible_tasks_axi() {
   cat > "$case_dir/fakebin/tasks-axi" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' '0.2.4'
+  printf '%s\n' '0.2.5'
   exit 0
 fi
 if [ "${1:-}" = update ] && [ "${2:-}" = --help ]; then
@@ -589,8 +589,12 @@ test_teardown_prompts_tasks_axi_done_when_compatible() {
   out=$(run_teardown "$case_dir") || fail "teardown failed with compatible tasks-axi"
   printf '%s\n' "$out" | grep -F 'tasks-axi done task-x1 --pr https://github.com/example/repo/pull/7' >/dev/null \
     || fail "teardown did not prompt tasks-axi done: $out"
+  # Teardown is the fleet's most frequent dispatch trigger, so its nudge must
+  # name firstmate's own ready path.
+  printf '%s\n' "$out" | grep -F 'bin/fm-ready.sh' >/dev/null \
+    || fail "teardown did not prompt firstmate's own dispatchable set: $out"
   printf '%s\n' "$out" | grep -F 'tasks-axi ready' >/dev/null \
-    || fail "teardown did not prompt tasks-axi ready: $out"
+    && fail "teardown sent the dispatcher to the unfiltered ready set: $out"
   printf '%s\n' "$out" | grep -F 'check date gates' >/dev/null \
     || fail "teardown did not preserve date-gate check: $out"
   printf '%s\n' "$out" | grep -F 'keep Done to the 10 most recent' >/dev/null \

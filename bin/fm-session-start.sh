@@ -163,6 +163,9 @@
 #     hold_kind/hold_reason and blocked_by. Those are the rows AGENTS.md
 #     sections 7 and 10 make actionable at startup, so they are never bounded
 #     away.
+#   - A captain hold whose deadline has passed is listed in full BESIDE the held
+#     group, marked lapsed, never bounded away, and withheld from the
+#     dispatchable-now listing through the ready path bin/fm-ready.sh owns.
 #   - Only the plain queued (dispatchable-now) listing is bounded, by
 #     FM_SESSION_START_QUEUED_LIMIT, default 20. Anything it omits is disclosed
 #     with an exact remainder count and the command that shows the rest, so a
@@ -173,15 +176,18 @@
 # backend probe remains the compatibility owner and this script asks
 # `tasks-axi list` for the compact identity fields plus blocked_by, hold_kind,
 # and hold_reason, never body. The groups are the tool's own filters
-# (`--state in_flight`, `--state held`, `--state queued --blocked`, and
-# `tasks-axi ready`), so this script never reimplements task state; the groups
-# can overlap, because an in-flight item that is also held appears under both.
+# (`--state in_flight`, `--state held`, `--state queued --blocked`, and the ready
+# set underneath fm_captain_hold_ready), so this script never reimplements task
+# state; the groups can overlap, because an in-flight item that is also held
+# appears under both.
+# The lapsed group is the tool's own verdict too, read through
+# bin/fm-captain-hold-lib.sh.
 # When manual mode is selected, or tasks-axi is unavailable or incompatible,
 # this script prints only backlog section headings and item title lines, so
 # title-line hold and blocked-by metadata remain visible while indented bodies
 # stay out of the startup digest; the same never-bound-a-held-or-blocked-row
 # rule applies, recognized there from the title line's own hold/blocked-by
-# markers.
+# markers - which a lapsed hold still carries, so it is kept there too.
 # Full bodies are targeted follow-up only: `tasks-axi show <id> --full` when
 # compatible tasks-axi is available, or `data/backlog.md` when the file body is
 # truly needed.
@@ -371,6 +377,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-line-cap-lib.sh
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
+# shellcheck source=bin/fm-captain-hold-lib.sh
+. "$SCRIPT_DIR/fm-captain-hold-lib.sh"
 
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
@@ -386,6 +394,12 @@ case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=5 ;; esac
 QUEUED_LIMIT=${FM_SESSION_START_QUEUED_LIMIT:-20}
 case "$QUEUED_LIMIT" in ''|*[!0-9]*|0) QUEUED_LIMIT=20 ;; esac
 BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason
+# The same identity fields for the lapsed-hold query, minus hold_kind, which
+# bin/fm-captain-hold-lib.sh appends beside the two other fields it decides on.
+LAPSED_FIELDS=blocked_by,hold_reason
+# Where THIS digest shows a withheld row: tasks-axi has already dropped it from
+# `--state held`, so the pointer names the digest's own lapsed listing.
+LAPSED_POINTER='each is listed in full under lapsed in the held group above'
 
 RULE='================================================================================'
 SUBRULE='--------------------------------------------------------------------------------'
@@ -477,9 +491,9 @@ strip_axi_help() {
 }
 
 # Bound the dispatchable-now listing without rewriting the tool's own rendering:
-# `tasks-axi ready` rows are the indented lines under its ready[N]{...} header,
-# and every other line it prints (its count, its public-followup line) passes
-# through untouched. Whatever is cut is disclosed exactly.
+# the rows are the indented lines under the ready[N]{...} header, and every other
+# line passes through untouched. Whatever is cut is disclosed exactly, with a
+# pointer to bin/fm-ready.sh rather than the unfiltered `tasks-axi ready`.
 print_ready_queued_bounded() {
   local ready=$1 path=$2
   printf '%s\n' "$ready" | awk -v max="$QUEUED_LIMIT" -v path="$path" '
@@ -495,7 +509,7 @@ print_ready_queued_bounded() {
       if (total > 0) {
         printf "(shown %d of %d ready queued item(s))\n", shown, total
         if (total > shown) {
-          printf "(%d more queued - tasks-axi ready --file %s)\n", total - shown, path
+          printf "(%d more queued - bin/fm-ready.sh --file %s)\n", total - shown, path
         }
       }
     }
@@ -503,22 +517,30 @@ print_ready_queued_bounded() {
 }
 
 print_backlog_tasks_axi_compact() {
-  local path=$1 in_flight held blocked ready err
+  local path=$1 in_flight held blocked lapsed ready err
   if ! in_flight=$(tasks-axi list --file "$path" --state in_flight --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$in_flight
   elif ! held=$(tasks-axi list --file "$path" --state held --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$held
   elif ! blocked=$(tasks-axi list --file "$path" --state queued --blocked --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$blocked
-  elif ! ready=$(tasks-axi ready --file "$path" 2>&1); then
+  elif ! lapsed=$(fm_captain_hold_lapsed_rows "$path" "$LAPSED_FIELDS"); then
+    err=$lapsed
+  elif ! ready=$(fm_captain_hold_ready "$path" "$LAPSED_POINTER" \
+    "$(fm_captain_hold_lapsed_row_ids "$lapsed")"); then
     err=$ready
   else
-    printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to %s; task bodies omitted)\n' \
+    printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, lapsed-hold, and blocked row shown in full; ready queued bounded to %s; task bodies omitted)\n' \
       "$QUEUED_LIMIT"
     printf '\nin flight:\n'
     printf '%s\n' "$in_flight" | strip_axi_help
     printf '\nheld (captain- or time-gated; an in-flight item that is also held appears in both groups):\n'
     printf '%s\n' "$held" | strip_axi_help
+    if [ -n "$lapsed" ]; then
+      printf 'lapsed[%s]{id,state,kind,repo,title,%s,%s} (deadline passed; still an unanswered captain hold, never dispatchable):\n' \
+        "$(printf '%s\n' "$lapsed" | wc -l | tr -d ' ')" "$LAPSED_FIELDS" "$FM_CAPTAIN_HOLD_LAPSE_FIELDS"
+      printf '%s\n' "$lapsed"
+    fi
     printf '\nblocked queued:\n'
     printf '%s\n' "$blocked" | strip_axi_help
     printf '\nready queued (dispatchable now):\n'

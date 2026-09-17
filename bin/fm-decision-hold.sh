@@ -19,10 +19,16 @@
 # All backlog mutations run in the active FM_HOME, which keeps main-home and
 # secondmate-home ownership aligned with the work that discovered the decision.
 #
+# `hold` gives every decision a deadline by default, overridden by `--hold-until`
+# and opted out of by `--hold-until none`. bin/fm-captain-hold-lib.sh owns the
+# window and what lapsing means. Because a lapsed hold is still an unanswered
+# decision, every gate below reads hold_kind rather than held.
+#
 # Usage:
 #   fm-decision-hold.sh id <origin-id> <decision-key>
 #   fm-decision-hold.sh hold <origin-id> <decision-key> \
-#     --title <title> --reason <reason> [--repo <repo>]
+#     --title <title> --reason <reason> [--repo <repo>] \
+#     [--hold-until <YYYY-MM-DD>|none]
 #   fm-decision-hold.sh complete <origin-id> (--none | <decision-key>...)
 #   fm-decision-hold.sh verify <origin-id>
 #   fm-decision-hold.sh resolve <origin-id> <decision-key> \
@@ -52,14 +58,14 @@
 #
 # `decline` is the unrouted path for a decision the captain answered with no
 # follow-up work. It takes no --routed-to task, records `(none)` as the routed
-# identities, and closes an actively held hold. It refuses while any task is still
-# blocked by the hold, because releasing routed work without recording it is
-# `resolve`'s job.
+# identities, and closes an open hold whether or not its deadline has passed. It
+# refuses while any task is still blocked by the hold, because releasing routed
+# work without recording it is `resolve`'s job.
 #
 # `repair` records the missing resolution block on a hold that was already closed
 # outside this script, so `verify` stops failing on an origin whose decision was
 # genuinely answered. It never reopens a hold, never clears a dependency edge, and
-# refuses a hold that is still actively held, so an unanswered decision keeps
+# refuses a hold that is still open, lapsed or not, so an unanswered decision keeps
 # blocking teardown until `resolve` or `decline` closes it with the captain's word.
 # It also refuses an identity that does not carry surviving captain-hold
 # provenance, so an ordinary captain-kind task cannot be repaired into a decision.
@@ -71,6 +77,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
+# shellcheck source=bin/fm-captain-hold-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-captain-hold-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-classify-lib.sh"
@@ -119,6 +128,12 @@ validate_one_line() {  # <label> <value>
   esac
 }
 
+# Without this, a flag typed as the last token dies on `shift 2` under `set -e`
+# with no diagnostic.
+require_flag_value() {  # <flag> <remaining-arg-count>
+  [ "$2" -ge 2 ] || fail "$1 requires a value"
+}
+
 sha256_text() {  # <text>
   if command -v shasum >/dev/null 2>&1; then
     printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
@@ -159,9 +174,10 @@ tasks_axi() {
 }
 
 require_tasks_axi() {
+  local reject
   fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
-  tasks-axi hold --help 2>&1 | grep -F -- '--kind captain' >/dev/null \
-    || fail "tasks-axi does not expose the captain-hold contract"
+  reject=$(fm_captain_hold_contract_reject)
+  [ -z "$reject" ] || fail "$reject"
 }
 
 task_show() {  # <id>
@@ -277,17 +293,29 @@ EOF
   printf '%s' "$found"
 }
 
-verify_hold_active() {  # <hold-id>
-  local id=$1 show state held kind hold_kind
-  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+# An unanswered captain decision, whether its deadline has passed or not;
+# bin/fm-captain-hold-lib.sh owns why that reads hold_kind rather than held.
+verify_hold_open() {  # <hold-id> [<show-output>]
+  local id=$1 show=${2:-} state kind hold_kind
+  if [ "$#" -lt 2 ]; then
+    show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  fi
   state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
   hold_kind=$(show_field "$show" hold_kind)
   [ "$state" = queued ] || fail "captain hold $id is not queued (state=$state)"
-  [ "$held" = yes ] || fail "captain hold $id is not active"
   [ "$kind" = captain ] || fail "backlog item $id is not kind captain"
   [ "$hold_kind" = captain ] || fail "backlog item $id is not held for the captain"
+}
+
+# Additionally still gating dispatch. Only the write path asserts this, to catch
+# a hold born lapsed.
+verify_hold_active() {  # <hold-id>
+  local id=$1 show held
+  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  verify_hold_open "$id" "$show"
+  held=$(show_field "$show" held)
+  [ "$held" = yes ] || fail "captain hold $id is not active"
 }
 
 verify_hold_resolved() {  # <hold-id>
@@ -302,20 +330,19 @@ verify_hold_resolved() {  # <hold-id>
 }
 
 verify_hold_durable() {  # <hold-id>
-  local id=$1 show state held kind hold_kind body
+  local id=$1 show state kind hold_kind body
   show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
   state=$(show_field "$show" state)
-  held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
   hold_kind=$(show_field "$show" hold_kind)
   body=$(show_field "$show" body)
-  if [ "$state" = queued ] && [ "$held" = yes ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
+  if [ "$state" = queued ] && [ "$kind" = captain ] && [ "$hold_kind" = captain ]; then
     return 0
   fi
   if [ "$state" = "done" ] && [ "$kind" = captain ] && body_has_resolution_record "$body"; then
     return 0
   fi
-  fail "captain decision $id is neither actively held nor durably resolved"
+  fail "captain decision $id is neither open nor durably resolved"
 }
 
 verify_resolution_identity() {
@@ -344,23 +371,26 @@ command_id() {
 }
 
 command_hold() {
-  local origin=${1:-} key=${2:-} title='' reason='' repo='' id show state kind existing_title body
+  local origin=${1:-} key=${2:-} title='' reason='' repo='' hold_until='' reject until_date
+  local id show state kind existing_title existing_until='' body
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --title) shift; title=${1:-} ;;
-      --reason) shift; reason=${1:-} ;;
-      --repo) shift; repo=${1:-} ;;
+      --title) require_flag_value "$1" "$#"; title=$2; shift 2 ;;
+      --reason) require_flag_value "$1" "$#"; reason=$2; shift 2 ;;
+      --repo) require_flag_value "$1" "$#"; repo=$2; shift 2 ;;
+      --hold-until) require_flag_value "$1" "$#"; hold_until=$2; shift 2 ;;
       *) usage >&2; exit 2 ;;
     esac
-    shift
   done
   validate_slug origin-id "$origin"
   validate_slug decision-key "$key"
   validate_one_line title "$title"
   validate_one_line reason "$reason"
   case "$reason" in *'('*|*')'*) fail "reason must not contain parentheses (tasks-axi hold contract)" ;; esac
+  reject=$(fm_captain_hold_until_reject "$hold_until")
+  [ -z "$reject" ] || fail "$reject"
   require_tasks_axi
   origin_exists_here "$origin" || fail "origin $origin is not owned by the active home $FM_HOME"
   id=$(hold_id "$origin" "$key")
@@ -371,6 +401,7 @@ command_hold() {
     [ "$state" != "done" ] || fail "captain decision $id is already durably resolved; use a new decision key for a new decision"
     [ "$kind" = captain ] || fail "existing backlog identity $id is not kind captain"
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
+    existing_until=$(show_field "$show" hold_until)
   else
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)
@@ -383,7 +414,9 @@ command_hold() {
     tasks_axi add "$id" "$title" --kind captain --repo "$repo" --body "$body" >/dev/null \
       || fail "could not create captain decision item $id"
   fi
-  tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null \
+  until_date=$(fm_captain_hold_effective_until "$hold_until" "$existing_until") \
+    || fail "could not compute the default captain-hold deadline"
+  fm_captain_hold_write "$id" "$reason" "$until_date" \
     || fail "could not activate captain hold $id"
   verify_hold_active "$id"
   printf '%s\n' "$id"
@@ -503,11 +536,15 @@ command_resolve() {
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --decision-file) shift; decision_file=${1:-} ;;
-      --routed-to) shift; validate_slug routed-task "${1:-}"; routed="${routed}${routed:+ }${1:-}" ;;
+      --decision-file) require_flag_value "$1" "$#"; decision_file=$2; shift 2 ;;
+      --routed-to)
+        require_flag_value "$1" "$#"
+        validate_slug routed-task "$2"
+        routed="${routed}${routed:+ }$2"
+        shift 2
+        ;;
       *) usage >&2; exit 2 ;;
     esac
-    shift
   done
   validate_slug origin-id "$origin"
   validate_slug decision-key "$key"
@@ -524,8 +561,8 @@ command_resolve() {
     printf 'resolved: %s\n' "$id"
     return 0
   fi
-  verify_hold_active "$id"
-  hold_show=$(task_show "$id")
+  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  verify_hold_open "$id" "$hold_show"
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
@@ -568,10 +605,9 @@ parse_decision_only_flags() {  # <args...>; prints the --decision-file value
   local decision_file=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --decision-file) shift; decision_file=${1:-} ;;
+      --decision-file) require_flag_value "$1" "$#"; decision_file=$2; shift 2 ;;
       *) usage >&2; exit 2 ;;
     esac
-    shift
   done
   printf '%s' "$decision_file"
 }
@@ -597,7 +633,7 @@ command_decline() {
   state=$(show_field "$hold_show" state)
   [ "$state" != "done" ] \
     || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
-  verify_hold_active "$id"
+  verify_hold_open "$id" "$hold_show"
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)

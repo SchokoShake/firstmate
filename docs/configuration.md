@@ -41,7 +41,7 @@ Secondmate handoffs are separate and unconditional: `fm-backlog-handoff.sh` keep
 It moves in-scope `## Queued` items only and refuses `## In flight` and historical `## Done` records, which stay with their home for pruning or archiving.
 Handoff item bodies must use at least two leading spaces, and the helper refuses a selected item with a single-space or tab-indented continuation rather than risk orphaning it.
 Because bootstrap requires `tasks-axi` on `PATH` on every profile, that delegation works fleet-wide, and the `config/backlog-backend=manual` knob governs firstmate's own hand-editing of its backlog, not this validated helper.
-Compatible means the installed build passes the shared version and feature probe owned by [`bin/fm-tasks-axi-lib.sh`](../bin/fm-tasks-axi-lib.sh), including the atomic multi-ID move required by handoff delegation.
+Compatible means the installed build passes the shared version floor and feature probe owned by [`bin/fm-tasks-axi-lib.sh`](../bin/fm-tasks-axi-lib.sh), including the atomic multi-ID move required by handoff delegation.
 Bootstrap requires compatible `tasks-axi` on every profile; see "Toolchain" below for missing-tool reporting and silent default-backend behavior.
 Set the local, gitignored `config/backlog-backend` file to `manual` to force manual backlog editing and suppress the verbose `BOOTSTRAP_INFO: tasks-axi available` fact, not missing-tool reporting.
 Absent or `tasks-axi` selects the default tasks-axi backend.
@@ -50,6 +50,9 @@ The file format is unchanged in both modes; tasks-axi and manual edits produce t
 A task's PR URL belongs to the item's `pr` field and never to its title, because the markdown backend keeps both in the same item line and a later `tasks-axi update <id> --title` replaces that line and drops the URL with it.
 [`bin/fm-backlog-pr.sh`](../bin/fm-backlog-pr.sh) is the single owner of that convention: it records the URL through `--pr` while writing a title with no URL in it, carries the recorded link across a title change, and restores a link that was already lost from the task's own `pr=` metadata.
 tasks-axi's `pr` field holds only a GitHub pull request URL, so a GitLab merge request stays in the task's `pr=` metadata and is reported as skipped rather than written into the backlog item at all.
+
+Every captain hold firstmate writes carries a lapse deadline by default; [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) owns the window, the `--hold-until` override, the `none` opt-out and what lapsing means.
+Dispatchable work is read through [`bin/fm-ready.sh`](../bin/fm-ready.sh), never `tasks-axi ready` directly; that script owns why and what it withholds.
 
 ## Captain-ask identity and revisions (data/ask-revisions)
 
@@ -64,8 +67,7 @@ Nothing about the reason, the title, the options a reader could parse out of the
 [`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) publishes it: every structured `backlog.records[]` entry carries `ask_id` and `ask_revision`, filled for a row that carries a captain hold and is not yet Done, and `null` on every other row.
 A hold whose `hold-until` deadline has passed is one of those rows and keeps exactly the same `ask_id` and `ask_revision`, because a lapse is neither an answer nor a new question.
 Demoting a lapsed row out of a needs-you feed is the consuming board's decision rather than the identity's, so this contract stays silent about carding.
-No field on the record carries that lapse signal today: a structured record's hold metadata is `hold_reason` and `hold_kind` only.
-Publishing the lapsed flag needs the item line's `(hold-until: ...)` marker, which `bin/fm-fleet-snapshot.sh` does not read yet and which the `fm-hold-default-deadline` task owns, so that task is where the flag comes from.
+The record carries that lapse signal beside the identity as `hold_until`, `held`, and `lapsed`, which `bin/fm-fleet-snapshot.sh` reads from the item line's `(hold-until: ...)` marker and whose meaning its header owns.
 A consumer takes `ask_id` as the question identity as given.
 Deriving one of its own from the row's title, reason, or parsed options reintroduces exactly the coupling this removes, and a row whose id falls outside the privacy-safe slug alphabet publishes `null` rather than an identity, which is the same "no identity" answer a consumer must already handle.
 
@@ -82,9 +84,7 @@ It is durable private fleet data rather than runtime state, because a subject th
 [`bin/fm-ask.sh`](../bin/fm-ask.sh) is the only writer and the one command that re-asks: `fm-ask.sh again <task-id> --reason "<the new question>"` bumps the revision and writes the new reason together.
 A question that itself begins with `--` is written in the `--reason="<the new question>"` form.
 Running that command is itself the declaration that this is a new question, so it re-asks even when the wording is unchanged, and the revision can move without the prose moving.
-A re-ask never carries the row's existing hold deadline forward and never invents one: it is written through the same `tasks-axi hold` call as any other hold, so it takes whatever deadline that command applies by default.
-Today that default is no deadline, so the re-asked question stays live until it is answered or given one.
-Carrying the old date forward would re-ask a lapsed question straight back into a card a board demotes the moment it is asked.
+A re-ask never carries the row's existing hold deadline forward: it is written with a fresh default deadline, under the re-ask rule [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) owns.
 Every other way of changing a hold - `tasks-axi hold --reason`, a hold refresh, a resync, a restart, and `fm-decision-hold.sh`'s own `resolve`, `decline`, and `repair` - leaves the ledger untouched and therefore preserves the identity, so the safe path is the one an author already takes.
 A decision hold re-asks by minting a new decision key through `fm-decision-hold.sh hold` instead, which is already one command and already refuses to reopen a resolved decision; `fm-ask.sh again` refuses any row whose id has the `<origin-id>-decision-<key>` shape and says so.
 
@@ -644,6 +644,7 @@ FM_STATE_OVERRIDE=       # alternate state dir, mainly for tests
 FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
+FM_CAPTAIN_HOLD_NOW=     # pin today's date for captain-hold deadlines, mainly for tests
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity reads in fm-wake-lib.sh and fm-teardown.sh, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
