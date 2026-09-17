@@ -1,0 +1,155 @@
+===== today (local clock): 2026-09-17  expected default deadline: today + 7 days =====
+
+===== 1. DEFAULT APPLIED: fm-decision-hold.sh hold with no --hold-until =====
+
+$ bin/fm-decision-hold.sh hold sample-route-review route --title Pick the sample route --reason captain must choose route A or B --repo sample
+sample-route-review-decision-route
+[exit 0]
+
+# backlog line for sample-route-review-decision-route:
+- [ ] sample-route-review-decision-route - Pick the sample route (repo: sample) (kind: captain) (since 2026-09-17) (hold: captain must choose route A or B) (hold-kind: captain) (hold-until: 2026-09-24)
+
+===== 2. EXPLICIT OVERRIDE HONOURED =====
+
+$ bin/fm-decision-hold.sh hold sample-route-review access --title Grant sample access --reason captain must approve access --repo sample --hold-until 2026-12-01
+sample-route-review-decision-access
+[exit 0]
+
+# backlog line for sample-route-review-decision-access:
+- [ ] sample-route-review-decision-access - Grant sample access (repo: sample) (kind: captain) (since 2026-09-17) (hold: captain must approve access) (hold-kind: captain) (hold-until: 2026-12-01)
+
+===== 3. NO-DEADLINE OPT-OUT HONOURED (--hold-until none) =====
+
+$ bin/fm-decision-hold.sh hold sample-route-review vision --title Open-ended product vision --reason captain is thinking it over --repo sample --hold-until none
+sample-route-review-decision-vision
+[exit 0]
+
+# backlog line for sample-route-review-decision-vision:
+- [ ] sample-route-review-decision-vision - Open-ended product vision (repo: sample) (kind: captain) (since 2026-09-17) (hold: captain is thinking it over) (hold-kind: captain)
+
+===== 4. IDEMPOTENT RE-HOLD keeps an unreached deadline (2026-12-01 must survive) =====
+
+$ bin/fm-decision-hold.sh hold sample-route-review access --title Grant sample access --reason captain must approve access --repo sample
+sample-route-review-decision-access
+[exit 0]
+
+# backlog line for sample-route-review-decision-access:
+- [ ] sample-route-review-decision-access - Grant sample access (repo: sample) (kind: captain) (since 2026-09-17) (hold: captain must approve access) (hold-kind: captain) (hold-until: 2026-12-01)
+
+===== 5. bin/fm-captain-hold.sh (main-side thread / stow producer) =====
+
+$ bin/fm-captain-hold.sh main-thread --reason captain must confirm the rollout
+held: main-thread until 2026-09-24
+[exit 0]
+
+# backlog line for main-thread:
+- [ ] main-thread - Main-side thread that needs the captain (repo: sample) (hold: captain must confirm the rollout) (hold-kind: captain) (hold-until: 2026-09-24)
+
+$ bin/fm-captain-hold.sh main-thread --reason captain must confirm the rollout --hold-until 2026-02-30
+fm-captain-hold: --hold-until is not a real calendar date: 2026-02-30
+[exit 1]
+
+$ bin/fm-captain-hold.sh main-thread --reason captain must confirm the rollout --hold-until 2026-01-01
+fm-captain-hold: --hold-until must be later than 2026-09-17: 2026-01-01
+[exit 1]
+
+$ bin/fm-captain-hold.sh main-thread --reason
+fm-captain-hold: --reason requires a value
+[exit 1]
+
+$ bin/fm-captain-hold.sh answered-question --reason new question on a done row
+fm-captain-hold: backlog item answered-question is already done; hold a new item for a new captain question
+[exit 1]
+
+$ bin/fm-captain-hold.sh no-such-item --reason x
+fm-captain-hold: backlog item no-such-item does not exist in <scratch-home>/data/backlog.md; create it with tasks-axi add first
+[exit 1]
+
+===== 6. EXISTING HOLDS UNTOUCHED: pre-existing rows byte-identical after all writes above =====
+unchanged: - [ ] old-open-question - Pre-branch captain question with no deadline (repo: sample) (hold: waiting on captain) (hold-kind: captain)
+unchanged: - [ ] old-dated-question - Pre-branch captain question already lapsed (repo: sample) (hold: captain must pick a vendor) (hold-kind: captain) (hold-until: 2026-08-01)
+unchanged: - [ ] live-question - Captain question still inside its window (repo: sample) (hold: captain must pick a colour) (hold-kind: captain) (hold-until: 2099-01-01)
+unchanged: - [ ] s1 - Time gated ship work (repo: sample) (kind: ship) (hold: waiting on release) (hold-until: 2000-01-01)
+unchanged: - [ ] plain-work - Ordinary ready work (repo: sample) (kind: ship)
+unchanged: - [x] answered-question - Answered captain question with surviving markers (repo: sample) (hold: captain must pick a name) (hold-kind: captain) (hold-until: 2026-08-01)
+
+===== 7. LAPSE IS DEMOTION: tasks-axi's own view of the lapsed captain hold =====
+
+$ tasks-axi show old-dated-question --full
+task:
+  id: old-dated-question
+  title: Pre-branch captain question already lapsed
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: captain must pick a vendor
+  hold_kind: captain
+  hold_until: 2026-08-01
+  kind: task
+  repo: sample
+  priority: "-"
+  created: "-"
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+[exit 0]
+
+===== 8. READY PATH: raw tasks-axi ready (offers the lapsed captain hold) vs bin/fm-ready.sh =====
+
+$ tasks-axi ready
+count: 3
+ready[3]{id,state,kind,repo,title}:
+  old-dated-question,queued,task,sample,Pre-branch captain question already lapsed
+  s1,queued,ship,sample,Time gated ship work
+  plain-work,queued,ship,sample,Ordinary ready work
+ready_public_followups: 0 delivery-ready obligations
+help[1]:
+  - Run `tasks-axi start <id>` to dispatch one of these
+[exit 0]
+
+$ bin/fm-ready.sh
+count: 2
+ready[2]{id,state,kind,repo,title}:
+  s1,queued,ship,sample,Time gated ship work
+  plain-work,queued,ship,sample,Ordinary ready work
+(1 lapsed captain hold(s) withheld from this group; each is still an unanswered captain hold, shown in session start's held group and by tasks-axi list --file <scratch-home>/data/backlog.md --state queued --fields hold_kind,hold_until,held)
+ready_public_followups: 0 delivery-ready obligations
+help[1]:
+  - Run `tasks-axi start <id> --file=<scratch-home>/data/backlog.md` to dispatch one of these
+[exit 0]
+
+===== 9. FLEET SNAPSHOT held / lapsed flags (captain-only scope, done-row guard) =====
+
+$ bin/fm-fleet-snapshot.sh --json | jq <id,state,hold_kind,hold_until,held,lapsed,captain_actionable>
+sample-route-review                  in_flight  -        -           held=false  lapsed=false  captain_actionable=false
+old-open-question                    queued     captain  -           held=true   lapsed=false  captain_actionable=false
+old-dated-question                   queued     captain  2026-08-01  held=true   lapsed=true   captain_actionable=false
+live-question                        queued     captain  2099-01-01  held=true   lapsed=false  captain_actionable=false
+s1                                   queued     -        2000-01-01  held=false  lapsed=false  captain_actionable=false
+plain-work                           queued     -        -           held=false  lapsed=false  captain_actionable=false
+main-thread                          queued     captain  2026-09-24  held=true   lapsed=false  captain_actionable=false
+sample-route-review-decision-route   queued     captain  2026-09-24  held=true   lapsed=false  captain_actionable=true
+sample-route-review-decision-access  queued     captain  2026-12-01  held=true   lapsed=false  captain_actionable=true
+sample-route-review-decision-vision  queued     captain  -           held=true   lapsed=false  captain_actionable=true
+answered-question                    done       captain  2026-08-01  held=false  lapsed=false  captain_actionable=false
+
+===== 10. RE-HOLD of a LAPSED hold takes a fresh default; nothing was closed or unheld =====
+
+$ bin/fm-captain-hold.sh old-dated-question --reason captain must pick a vendor
+held: old-dated-question until 2026-09-24
+[exit 0]
+
+# backlog line for old-dated-question:
+- [ ] old-dated-question - Pre-branch captain question already lapsed (repo: sample) (hold: captain must pick a vendor) (hold-kind: captain) (hold-until: 2026-09-24)
+
+$ bin/fm-ready.sh
+count: 2
+ready[2]{id,state,kind,repo,title}:
+  s1,queued,ship,sample,Time gated ship work
+  plain-work,queued,ship,sample,Ordinary ready work
+ready_public_followups: 0 delivery-ready obligations
+help[1]:
+  - Run `tasks-axi start <id> --file=<scratch-home>/data/backlog.md` to dispatch one of these
+[exit 0]

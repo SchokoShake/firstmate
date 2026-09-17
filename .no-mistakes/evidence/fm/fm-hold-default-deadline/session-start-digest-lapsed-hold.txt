@@ -1,0 +1,27 @@
+# bin/fm-session-start.sh digest, real tasks-axi 0.2.5, scratch home, local date 2026-09-17
+# backlog: lapsed captain hold (2026-08-01), live captain hold (2099-01-01), opened time gate s1 (2000-01-01), plain work
+
+in flight:
+count: 0
+tasks: 0 in_flight tasks in this backlog
+
+held (captain- or time-gated; an in-flight item that is also held appears in both groups):
+count: 1
+tasks[1]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason}:
+  live-question,queued,captain,sample,Captain question still inside its window,none,captain,captain must pick a colour
+lapsed[1]{id,state,kind,repo,title,blocked_by,hold_reason,hold_kind,hold_until,held} (deadline passed; still an unanswered captain hold, never dispatchable):
+  old-dated-question,queued,captain,sample,Captain question whose deadline passed,none,captain must pick a vendor,captain,2026-08-01,no
+
+blocked queued:
+count: 0
+tasks: 0 blocked queued tasks in this backlog
+
+ready queued (dispatchable now):
+count: 2
+ready[2]{id,state,kind,repo,title}:
+  s1,queued,ship,sample,Time gated ship work
+  plain-work,queued,ship,sample,Ordinary ready work
+(1 lapsed captain hold(s) withheld from this group; each is listed in full under lapsed in the held group above)
+ready_public_followups: 0 delivery-ready obligations
+(shown 2 of 2 ready queued item(s))
+Full task bodies remain available on demand: tasks-axi show <id> --full when compatible tasks-axi is available, or data/backlog.md.

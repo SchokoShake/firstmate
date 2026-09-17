@@ -1,0 +1,50 @@
+# change touching ONLY bin/fm-captain-hold-lib.sh:
+ M bin/fm-captain-hold-lib.sh
+
+$ bin/fm-test-run.sh --list --changed --base HEAD
+tests/fm-arm-pretool-check.test.sh
+tests/fm-ask-user-authority.test.sh
+tests/fm-board-session.test.sh
+tests/fm-brief.test.sh
+tests/fm-calm-pi-extension.test.sh
+tests/fm-cd-pretool-check.test.sh
+tests/fm-classify-decision-key.test.sh
+tests/fm-composer-ghost.test.sh
+tests/fm-composer-lib.test.sh
+tests/fm-crew-state.test.sh
+tests/fm-decision-hold-lifecycle.test.sh
+tests/fm-documentation-audiences.test.sh
+tests/fm-ensure-agents-md.test.sh
+tests/fm-grok-harness.test.sh
+tests/fm-herdr-lab.test.sh
+tests/fm-inbox-post.test.sh
+tests/fm-kimi-harness.test.sh
+tests/fm-lint.test.sh
+tests/fm-muse-harness.test.sh
+tests/fm-operational-input.test.sh
+tests/fm-pi-primary-types.test.sh
+tests/fm-send-popup-settle.test.sh
+tests/fm-send-settle.test.sh
+tests/fm-subagent-pretool-check.test.sh
+tests/fm-supervision-instructions.test.sh
+tests/fm-task-delivery.test.sh
+tests/fm-test-isolation-proof.test.sh
+tests/fm-test-run.test.sh
+tests/fm-tmux-submit-busy.test.sh
+tests/fm-trace-context-lib.test.sh
+tests/fm-transition-lib.test.sh
+tests/fm-vendor-auth-probe.test.sh
+tests/fm-bootstrap.test.sh
+tests/fm-fleet-sync.test.sh
+tests/fm-gate-refuse.test.sh
+tests/fm-gotmp.test.sh
+tests/fm-session-start.test.sh
+tests/fm-sessionstart-nudge.test.sh
+tests/fm-startup-network.test.sh
+tests/fm-tangle-guard.test.sh
+tests/fm-update.test.sh
+tests/fm-backlog-item-line-contract.test.sh
+tests/fm-bearings-snapshot.test.sh
+tests/fm-fleet-snapshot-view.test.sh
+tests/fm-snapshot-branch-parent-contract.test.sh
+[exit 0]
