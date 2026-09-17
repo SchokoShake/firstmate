@@ -65,7 +65,7 @@
 # `repair` records the missing resolution block on a hold that was already closed
 # outside this script, so `verify` stops failing on an origin whose decision was
 # genuinely answered. It never reopens a hold, never clears a dependency edge, and
-# refuses a hold that is still actively held, so an unanswered decision keeps
+# refuses a hold that is still open, lapsed or not, so an unanswered decision keeps
 # blocking teardown until `resolve` or `decline` closes it with the captain's word.
 # It also refuses an identity that does not carry surviving captain-hold
 # provenance, so an ordinary captain-kind task cannot be repaired into a decision.

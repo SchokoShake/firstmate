@@ -16,7 +16,7 @@ It rejects an identity collision, a changed title, attempts to reopen an already
 Every gate reads `hold_kind` rather than `held`, so a lapsed decision still counts as durably recorded for `complete` and `verify` and still accepts the captain's answer through `resolve` and `decline`; [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) owns why, along with the keep-versus-reset rule a repeated `hold` follows.
 A retry of `hold` keeps a deadline the clock has not reached, so it cannot silently shorten a window the captain was already given, while a lapsed or absent one takes the default.
 A RE-ASK is the other case and takes the opposite rule: re-asking a question never carries the old deadline forward, so the default supplies a fresh one and the re-asked question lapses again on its own clock rather than being reborn already lapsed.
-Adopting that at the re-ask call site is a follow-up on the sibling `fm-reask-explicit-revision` branch, which owns `bin/fm-ask.sh`.
+`bin/fm-decision-hold.sh` has no re-ask subcommand, so the re-ask write path owns applying that rule at its own call site.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.
@@ -41,13 +41,13 @@ It refuses while any task in the same backlog is still blocked by the hold, beca
 Every candidate found in the listing prefilter is confirmed against its own structured record before the refusal is reported.
 
 The `repair` subcommand records the resolution block on a hold that was already closed outside the script, such as by a direct `tasks-axi done`, so an origin whose decision was genuinely answered stops failing `verify`.
-It refuses a hold that is still actively held, never reopens a closed hold, and never clears a dependency edge, so an unanswered decision keeps blocking teardown until the captain's word closes it.
+It refuses a hold that is still open, whether or not its deadline has passed, never reopens a closed hold, and never clears a dependency edge, so an unanswered decision keeps blocking teardown until the captain's word closes it.
 It also requires the identity to carry the captain-hold provenance that tasks-axi preserves through a close, so an ordinary captain-kind task that was never held cannot be repaired into a resolved decision.
 
 ## Structured read surfaces
 
-`bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)` and `(hold-kind: captain)` metadata alongside existing backlog fields.
-It resolves every repeated `blocked-by:` edge against structured Done records, keeps missing blockers unresolved, and classifies only an unblocked captain hold as actionable.
+`bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)`, `(hold-kind: captain)` and `(hold-until: ...)` metadata alongside existing backlog fields.
+It resolves every repeated `blocked-by:` edge against structured Done records, keeps missing blockers unresolved, and classifies only an unblocked captain hold as actionable, lapsed or not; its header owns the `held` and `lapsed` flags.
 Its secondmate-home summary classifies an actionable captain hold as `captain_decision` and preserves blocked captain holds as queued work in the owning home.
 
 `bin/fm-bearings-snapshot.sh` projects actionable captain holds into `decisions_open` and leaves blocked captain holds in ordinary queued gates.
