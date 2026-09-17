@@ -31,7 +31,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-captain-hold.sh`     | Hold one existing backlog item for the captain, with the default lapse deadline  |
 | `fm-captain-hold-lib.sh` | Shared owner of a captain hold's lapse deadline, its overrides, and what lapsing demotes rather than answers |
 | `fm-ready.sh`            | Print firstmate's dispatchable-now set, withholding the lapsed captain holds `tasks-axi ready` still offers |
-| `fm-brief.sh`            | Scaffold ship (explicit `--mode`), scout, secondmate-charter, and Herdr-lab briefs   |
+| `fm-brief.sh`            | Scaffold ship (explicit `--mode`, `--stack` for a native GitHub stack), scout, secondmate-charter, and Herdr-lab briefs |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |
 | `fm-install-herdr.sh`    | Install CI's exact-version Herdr pin with official asset URL, SHA-256, and protocol checks |
 | `fm-install-treehouse.sh`| Install CI's exact-version Treehouse pin for real-Herdr E2E that needs spawn worktrees |
