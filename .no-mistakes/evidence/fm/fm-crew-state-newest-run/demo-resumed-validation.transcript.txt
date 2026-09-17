@@ -1,0 +1,47 @@
+worktree HEAD (submitted head): c3971e07   live run head (gate-only review fix): 4eec123d
+pipeline head resolves in worktree: no
+
+$ no-mistakes runs   (plain listing; still offers the superseded run)
+  running      fm/feat-resume 4eec123d  2026-09-02 19:13
+  failed       fm/feat-resume c3971e07  2026-09-02 16:05
+
+### Case A: newest run is live (review fix round 1), push provenance names the worktree HEAD
+$ no-mistakes axi status
+    run:
+      id: "01LIVE"
+      branch: fm/feat-resume
+      status: running
+      head: 4eec123d
+      findings: none
+      steps[3]{step,status,findings,duration_ms}:
+        intent,completed,0,7
+        review,fixing,1,812000
+        test,pending,0,0
+    branch_sync:
+      state: pipeline_owned
+      local:
+        branch: fm/feat-resume
+        head: c3971e0772945c8eae3e05aa21dc1b2da345a519
+      pipeline:
+        run: "01LIVE"
+        status: running
+        submitted_head: c3971e0772945c8eae3e05aa21dc1b2da345a519
+        current_head: 4eec123dfb3bf8a966ed5699b4410da6dab3330a
+OLD fm-crew-state.sh resume -> state: failed · source: run-step · run failed
+NEW fm-crew-state.sh resume -> state: working · source: run-step · validating (running)
+
+### Case B: newest run cannot be bound to the current head (no provenance)
+$ no-mistakes axi status
+    run:
+      id: "01LIVE"
+      branch: fm/feat-resume
+      status: running
+      head: 4eec123d
+      findings: none
+      steps[3]{step,status,findings,duration_ms}:
+        intent,completed,0,7
+        review,fixing,1,812000
+        test,pending,0,0
+OLD fm-crew-state.sh resume -> state: failed · source: run-step · run failed
+NEW fm-crew-state.sh resume -> state: unknown · source: pane · harness state unavailable (unknown missing)
+

@@ -1,0 +1,10 @@
+== OLD CODE (313bbb6): test_resumed_validation_reports_newest_run
+not ok - the live run's step is the state (failed:parked:fix:) (missing: 'state: parked')
+--- output ---
+state: failed · source: run-step · run failed
+exit=1
+== OLD CODE (313bbb6): test_newest_run_not_matching_current_head_is_not_attributed
+not ok - an unbound newest run is not attributed (unexpected: 'source: run-step')
+--- output ---
+state: failed · source: run-step · run failed · status-log superseded (run failed)
+exit=1
