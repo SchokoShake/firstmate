@@ -9,29 +9,47 @@
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
 # including a merge request on a self-hosted GitLab instance.
+# A task that ships as a native GitHub stack is recorded with every PR, bottom
+# to top. Nothing is recorded or armed unless bin/fm-stack-check.sh proves that
+# GitHub reports exactly those PRs as one stack in that order; its proof line is
+# printed. pr=, pr_head=, pr_base=, the merge poll, and the backlog link then
+# follow the top PR, because a stack merges bottom-up, so the top PR merging
+# means every layer has landed. A task whose brief carries the stacked-chain
+# contract line from bin/fm-brief.sh --stack is refused with a single PR URL,
+# unless that URL is the pr= already recorded, which the first record proved:
+# that is how bin/fm-control.sh relaunch re-arms the poll.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
+#        fm-pr-check.sh <task-id> <bottom-pr-url> [<pr-url>...] <top-pr-url>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
-if [ "$#" -ne 2 ]; then
+if [ "$#" -lt 2 ]; then
   echo "error: invalid PR check request" >&2
   exit 2
 fi
 ID=$1
-RAW_URL=$2
-if ! fm_pr_task_id_valid "$ID" || ! fm_pr_url_parse "$RAW_URL"; then
+shift
+if ! fm_pr_task_id_valid "$ID"; then
   echo "error: invalid PR check request" >&2
   exit 2
 fi
+for RAW_URL in "$@"; do
+  if ! fm_pr_url_parse "$RAW_URL"; then
+    echo "error: invalid PR check request" >&2
+    exit 2
+  fi
+done
+# The last URL parsed above is the one recorded: the only PR, or a stack's top.
 URL=$FM_PR_URL
 PROVIDER=$FM_PR_PROVIDER
 HOST=$FM_PR_HOST
@@ -42,6 +60,20 @@ NUMBER=$FM_PR_NUMBER
 META="$STATE/$ID.meta"
 if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" != 1 ]; then
   echo "error: task metadata is unavailable" >&2
+  exit 1
+fi
+
+# Prove a stack before any side effect, and never let a stacked-chain task be
+# recorded as a lone PR.
+if [ "$#" -gt 1 ]; then
+  "$SCRIPT_DIR/fm-stack-check.sh" "$@" || {
+    echo "error: not recorded: GitHub does not report these PRs as one native stack in this order" >&2
+    exit 1
+  }
+elif grep -q '^Delivery contract: mode=[^ ]* stack=native$' "$DATA/$ID/brief.md" 2>/dev/null \
+  && ! grep -qxF "pr=$URL" "$META"; then
+  RECORDED=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
+  echo "error: $URL is one PR of stacked task $ID (recorded: ${RECORDED:-nothing yet}); record the stack with every PR bottom to top so bin/fm-stack-check.sh can prove it. Firstmate never merges a stacked PR; the captain merges stacks" >&2
   exit 1
 fi
 

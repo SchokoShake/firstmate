@@ -209,7 +209,7 @@ family_for_basename() {
       printf '%s\n' backend-dispatch
       ;;
     fm-pr-check-security.test.sh|fm-pr-merge.test.sh|fm-pr-slug-contract.test.sh|\
-    fm-review-diff.test.sh|\
+    fm-review-diff.test.sh|fm-stack-check.test.sh|\
     fm-teardown.test.sh|fm-teardown-retire-record.test.sh|fm-x-mode.test.sh)
       printf '%s\n' pr-forge
       ;;
@@ -439,6 +439,7 @@ tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 19
 tests/fm-shared-captain-inheritance.test.sh 3506
 tests/fm-spawn-dispatch-profile.test.sh 41351
 tests/fm-spawn-worktree-settle.test.sh 4598
+tests/fm-stack-check.test.sh 474
 tests/fm-startup-memory-budget.test.sh 4260
 tests/fm-subagent-pretool-check.test.sh 901
 tests/fm-supervision-events.test.sh 413
@@ -965,7 +966,7 @@ families_for_changed_path() {
       printf '%s\n' backend-dispatch
       ;;
     bin/fm-pr-*|bin/fm-merge-local.sh|bin/fm-merge-policy-lib.sh|bin/fm-teardown.sh|\
-    bin/fm-review-diff.sh|bin/fm-x-*|bin/fm-check*)
+    bin/fm-review-diff.sh|bin/fm-stack-check.sh|bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
       ;;
     bin/fm-nm-run-lib.sh)

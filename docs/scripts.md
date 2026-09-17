@@ -31,7 +31,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-captain-hold.sh`     | Hold one existing backlog item for the captain, with the default lapse deadline  |
 | `fm-captain-hold-lib.sh` | Shared owner of a captain hold's lapse deadline, its overrides, and what lapsing demotes rather than answers |
 | `fm-ready.sh`            | Print firstmate's dispatchable-now set, withholding the lapsed captain holds `tasks-axi ready` still offers |
-| `fm-brief.sh`            | Scaffold ship (explicit `--mode`), scout, secondmate-charter, and Herdr-lab briefs   |
+| `fm-brief.sh`            | Scaffold ship (explicit `--mode`, `--stack` for a native GitHub stack), scout, secondmate-charter, and Herdr-lab briefs |
 | `fm-herdr-lab.sh`        | Provision and guardedly operate an isolated, never-default Herdr lab session         |
 | `fm-install-herdr.sh`    | Install CI's exact-version Herdr pin with official asset URL, SHA-256, and protocol checks |
 | `fm-install-treehouse.sh`| Install CI's exact-version Treehouse pin for real-Herdr E2E that needs spawn worktrees |
@@ -113,7 +113,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-lib.sh`           | Own canonical task and PR validation plus private atomic PR-poll publication and identity-bound retirement |
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
-| `fm-pr-check.sh`         | Record validated `pr=`, `pr_head=`, and `pr_base=` values, record the same URL on the backlog item, then atomically arm a static merge poll |
+| `fm-pr-check.sh`         | Record validated `pr=`, `pr_head=`, and `pr_base=` values, record the same URL on the backlog item, then atomically arm a static merge poll; a stack is recorded on its top PR only after `fm-stack-check.sh` proves it |
+| `fm-stack-check.sh`      | Prove that PRs, given bottom to top, are one native GitHub stack in that order with chained bases |
 | `fm-backlog-pr.sh`       | Own the backlog PR-link convention: `record` a task's PR URL in the item's `pr` field, `retitle` without losing recorded links, and `repair` a lost link from task metadata |
 | `fm-pr-merge.sh`         | Record PR metadata, then merge a task's canonical full GitHub URL                    |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode |
