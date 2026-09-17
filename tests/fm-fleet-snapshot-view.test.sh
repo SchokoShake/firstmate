@@ -845,13 +845,9 @@ BACKLOG
   pass "a captain hold with a deadline parses a clean title and stays actionable once lapsed"
 }
 
-# Closing a captain decision does NOT clear its hold markers: `tasks-axi done`
-# leaves hold, hold-kind and hold-until on the Done line, and both close paths in
-# bin/fm-decision-hold.sh finish with done and never unhold, so this is the end
-# state of every answered question. Reading held off marker presence alone
-# therefore published an ANSWERED question as an unanswered lapsed hold, which
-# the board would demote as if nobody had replied. tasks-axi reports held: no for
-# such a row and the snapshot has to agree.
+# `tasks-axi done` leaves hold, hold-kind and hold-until on the Done line and both
+# close paths in bin/fm-decision-hold.sh never unhold, so this is the end state
+# of every answered question.
 test_an_answered_hold_publishes_as_answered_not_lapsed() {
   local home fakebin out
   home=$(make_home hold-until-answered)
@@ -892,11 +888,8 @@ BACKLOG
   pass "an answered captain decision publishes as answered even with its hold markers intact"
 }
 
-# tasks-axi decides whether a hold is still gating from the LOCAL date, so the
-# snapshot's lapsed verdict has to read the same basis. Reading the UTC
-# SNAPSHOT_NOW instead would let a home east of UTC publish lapsed on a hold
-# tasks-axi still reports as active in the hours after local midnight. The
-# boundary is exact: a hold is inactive ON its deadline, not the day after.
+# The UTC snapshot clock still reads the 13th while the local date is the 14th.
+# The boundary is exact: a hold is inactive ON its deadline, not the day after.
 test_lapsed_flag_reads_the_local_date_basis() {
   local home fakebin out
   home=$(make_home hold-until-local-date)
@@ -922,16 +915,53 @@ BACKLOG
       and $tomorrow.held == true and $tomorrow.lapsed == false
   ' >/dev/null || fail "the lapsed verdict did not follow the local date basis: $out"
 
-  # `tasks-axi hold <id> --reason ...` with no --kind writes only a hold marker
-  # and still reports held: yes, so held may not be read off hold-kind alone.
   printf '%s' "$out" | jq -e '
     (.backlog.records // []) as $rows
     | ($rows | map(select(.id == "kindless-hold")) | first) as $kindless
     | ($rows | map(select(.id == "not-held")) | first) as $open
-    | $kindless.held == true and $kindless.lapsed == false
+    | $kindless.held == false and $kindless.lapsed == false
+      and $kindless.hold_reason == "waiting on release"
       and $open.held == false and $open.lapsed == false
-  ' >/dev/null || fail "held did not follow the row's surviving hold markers: $out"
+  ' >/dev/null || fail "a row that is not a captain hold published a captain-hold flag: $out"
   pass "the snapshot's lapsed flag reads the same local date tasks-axi lapses a hold on"
+}
+
+# held and lapsed describe the captain's unanswered questions, never scheduling.
+# A time gate whose date has passed is work that became startable, so publishing
+# it as a lapsed hold would have the board demote it as an ignored question.
+test_held_and_lapsed_are_scoped_to_captain_holds() {
+  local home fakebin out
+  home=$(make_home hold-scope)
+  cat > "$home/data/backlog.md" <<'BACKLOG'
+# Backlog
+
+## In flight
+## Queued
+- [ ] cap-lapsed - Choose the sample access level (repo: sample) (kind: captain) (hold: captain access choice pending) (hold-kind: captain) (hold-until: 2000-01-01)
+- [ ] cap-live - Choose the sample route (repo: sample) (kind: captain) (hold: captain route choice pending) (hold-kind: captain) (hold-until: 2099-01-08)
+- [ ] s1 - Time gated ship work (repo: sample) (kind: ship) (hold: waiting on release) (hold-until: 2000-01-01)
+- [ ] s2 - Time gated ship work still closed (repo: sample) (kind: ship) (hold: waiting on release) (hold-until: 2099-01-08)
+- [ ] s3 - Externally gated ship work (repo: sample) (kind: ship) (hold: waiting on vendor) (hold-kind: external) (hold-until: 2000-01-01)
+## Done
+BACKLOG
+  fakebin=$(make_fakebin "$home")
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json)
+  printf '%s' "$out" | jq -e '
+    (.backlog.records // []) as $rows
+    | ($rows | map(select(.id == "cap-lapsed")) | first) as $lapsed
+    | ($rows | map(select(.id == "cap-live")) | first) as $live
+    | $lapsed.held == true and $lapsed.lapsed == true
+      and $live.held == true and $live.lapsed == false
+  ' >/dev/null || fail "a captain hold lost its held or lapsed flag: $out"
+  printf '%s' "$out" | jq -e '
+    (.backlog.records // []) as $rows
+    | [ $rows[] | select(.id == "s1" or .id == "s2" or .id == "s3") ]
+    | length == 3
+      and all(.[]; .held == false and .lapsed == false
+                   and .hold_reason != null and .hold_until != null)
+      and all(.[]; .title | test("hold") | not)
+  ' >/dev/null || fail "a time gate that is not a captain hold published held or lapsed: $out"
+  pass "held and lapsed are published for captain holds only, never for a time gate"
 }
 
 test_empty_fleet_json
@@ -983,4 +1013,5 @@ test_view_renders_snapshot
 test_view_renders_dead_secondmate_agent_status
 test_held_row_with_a_deadline_parses_a_clean_title
 test_lapsed_flag_reads_the_local_date_basis
+test_held_and_lapsed_are_scoped_to_captain_holds
 test_an_answered_hold_publishes_as_answered_not_lapsed

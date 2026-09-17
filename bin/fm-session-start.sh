@@ -164,15 +164,8 @@
 #     sections 7 and 10 make actionable at startup, so they are never bounded
 #     away.
 #   - A captain hold whose deadline has passed is listed in full BESIDE the held
-#     group, marked lapsed, and withheld from the dispatchable-now listing.
-#     tasks-axi drops it from `--state held` and hands it to `tasks-axi ready`
-#     the moment the deadline passes, so without this the digest would offer a
-#     question the captain has not answered as work to dispatch, and the bound
-#     could then cut it away entirely. Lapsing demotes a hold; it never answers
-#     one. The withholding is not done here: this digest is one caller of
-#     fm_captain_hold_ready in bin/fm-captain-hold-lib.sh, the single firstmate
-#     ready path bin/fm-ready.sh and every other reader of dispatchable work
-#     share, so the rule lives in one place rather than in each reader.
+#     group, marked lapsed, never bounded away, and withheld from the
+#     dispatchable-now listing through the ready path bin/fm-ready.sh owns.
 #   - Only the plain queued (dispatchable-now) listing is bounded, by
 #     FM_SESSION_START_QUEUED_LIMIT, default 20. Anything it omits is disclosed
 #     with an exact remainder count and the command that shows the rest, so a
@@ -187,8 +180,8 @@
 # set underneath fm_captain_hold_ready), so this script never reimplements task
 # state; the groups can overlap, because an in-flight item that is also held
 # appears under both.
-# The lapsed group is the tool's own verdict too, read from the `held: no` it
-# reports beside a surviving hold_kind rather than from any clock of ours.
+# The lapsed group is the tool's own verdict too, read through
+# bin/fm-captain-hold-lib.sh.
 # When manual mode is selected, or tasks-axi is unavailable or incompatible,
 # this script prints only backlog section headings and item title lines, so
 # title-line hold and blocked-by metadata remain visible while indented bodies
@@ -404,9 +397,8 @@ BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason
 # The same identity fields for the lapsed-hold query, minus hold_kind, which
 # bin/fm-captain-hold-lib.sh appends beside the two other fields it decides on.
 LAPSED_FIELDS=blocked_by,hold_reason
-# Where THIS digest really shows a withheld row: its own lapsed listing, which it
-# renders inside the held group rather than in the `--state held` set tasks-axi
-# has already dropped a lapsed row from.
+# Where THIS digest shows a withheld row: tasks-axi has already dropped it from
+# `--state held`, so the pointer names the digest's own lapsed listing.
 LAPSED_POINTER='each is listed in full under lapsed in the held group above'
 
 RULE='================================================================================'
@@ -500,10 +492,8 @@ strip_axi_help() {
 
 # Bound the dispatchable-now listing without rewriting the tool's own rendering:
 # the rows are the indented lines under the ready[N]{...} header, and every other
-# line passes through untouched. Whatever is cut is disclosed exactly, and the
-# pointer to the rest names firstmate's own ready path rather than
-# `tasks-axi ready`, which would hand the reader back the lapsed holds
-# fm_captain_hold_ready just withheld.
+# line passes through untouched. Whatever is cut is disclosed exactly, with a
+# pointer to bin/fm-ready.sh rather than the unfiltered `tasks-axi ready`.
 print_ready_queued_bounded() {
   local ready=$1 path=$2
   printf '%s\n' "$ready" | awk -v max="$QUEUED_LIMIT" -v path="$path" '

@@ -810,11 +810,8 @@ test_unanswered_decision_still_blocks_completion_and_teardown() {
   pass "an unanswered decision still blocks completion and resists both unrouted close paths"
 }
 
-# The whole point of the default: before it, 0 of 77 captain holds carried a
-# deadline, so a question the captain had chosen not to answer sat in the
-# needs-you feed forever beside questions they had never seen. The clock is
-# pinned to a far-future date so the expected deadlines are literals here rather
-# than date arithmetic reimplemented from the code under test.
+# The clock is pinned to a far-future date so the expected deadlines are literals
+# rather than date arithmetic reimplemented from the code under test.
 test_captain_holds_carry_a_default_deadline() {
   local home id row
   home=$(make_home default-deadline)
@@ -892,8 +889,7 @@ test_captain_holds_carry_a_default_deadline() {
 }
 
 # AGENTS.md section 10's other captain hold: a main-side thread with no
-# investigation behind it. It goes through the same default so the deadline is
-# not an option nobody passes.
+# investigation behind it.
 test_main_side_captain_hold_uses_the_same_default() {
   local home row
   home=$(make_home main-side-hold)
@@ -950,11 +946,8 @@ test_main_side_captain_hold_uses_the_same_default() {
   pass "a main-side captain hold takes the same deadline default"
 }
 
-# Lapse is demotion, never deletion. Past its deadline a hold stops gating
-# dispatch and keeps its reason, kind and date, so it is still a captain hold
-# with an answer owed: it must keep blocking teardown and must still be
-# answerable, and it must survive teardown exactly as an unlapsed hold does.
-# Giving holds a clock without this makes a late answer unrecordable.
+# A lapsed hold must keep blocking teardown, survive it exactly as an unlapsed
+# hold does, and still take the captain's late answer.
 test_lapsed_hold_is_demoted_not_deleted() {
   local home id show
   home=$(make_home lapsed-hold)
@@ -1040,12 +1033,9 @@ test_existing_holds_without_a_deadline_are_untouched() {
   pass "captain holds written before the default keep working untouched"
 }
 
-# Giving every hold a clock makes lapsing reachable, and tasks-axi's own `ready`
-# set counts a lapsed captain hold as startable work. Forking tasks-axi is out of
-# bounds, so firstmate withholds it on its own side, in one owned ready path that
-# every reader of dispatchable work goes through. Withholding is presentation
-# only: the hold stays queued, keeps its reason, kind and deadline, and is
-# disclosed rather than dropped silently.
+# The three cases side by side against the real tool: a lapsed captain hold is
+# withheld and disclosed, a live captain hold is not ready, and a lapsed time
+# gate stays dispatchable and out of the withheld count.
 test_lapsed_hold_is_never_offered_as_dispatchable_work() {
   local home before raw ready show disclosed
   home=$(make_home ready-withholding)
@@ -1059,6 +1049,14 @@ test_lapsed_hold_is_never_offered_as_dispatchable_work() {
     || fail "could not hold the live question"
   tasks_in "$home" hold sample-lapsed-question --reason "captain lapsed choice pending" \
     --kind captain --until 2000-01-01 >/dev/null || fail "could not lapse the fixture hold"
+  tasks_in "$home" add sample-time-gate "Time gated ship work" --kind ship --repo sample >/dev/null \
+    || fail "could not create the time-gate fixture"
+  tasks_in "$home" hold sample-time-gate --reason "waiting on release" \
+    --until 2000-01-01 >/dev/null || fail "could not open the fixture time gate"
+  tasks_in "$home" add sample-external-gate "Externally gated ship work" --kind ship --repo sample >/dev/null \
+    || fail "could not create the external-gate fixture"
+  tasks_in "$home" hold sample-external-gate --reason "waiting on vendor" \
+    --kind external --until 2000-01-01 >/dev/null || fail "could not open the fixture external gate"
 
   # The defect, reproduced against the real tool rather than assumed: `ready`
   # offers the unanswered question. If this ever stops holding, the withholding
@@ -1076,8 +1074,12 @@ test_lapsed_hold_is_never_offered_as_dispatchable_work() {
     "an unanswered captain question was offered as dispatchable work"
   assert_not_contains "$ready" "sample-live-question" \
     "a live captain hold was offered as dispatchable work"
-  assert_contains "$ready" "count: 1" "the dispatchable count still included the withheld hold"
-  assert_contains "$ready" "ready[1]{" "the dispatchable header still counted the withheld hold"
+  assert_contains "$ready" "sample-time-gate,queued,ship,sample,Time gated ship work" \
+    "a time gate that opened was withheld as if it were a captain question"
+  assert_contains "$ready" "sample-external-gate,queued,ship,sample,Externally gated ship work" \
+    "a non-captain hold that lapsed was withheld as if it were a captain question"
+  assert_contains "$ready" "count: 3" "the dispatchable count is not the three rows actually listed"
+  assert_contains "$ready" "ready[3]{" "the dispatchable header is not the three rows actually listed"
   # The disclosure must name surfaces that really show the withheld rows, and its
   # query must carry the SAME backlog this run filtered so it resolves from any
   # directory rather than whichever backlog the cwd happens to select.
@@ -1101,10 +1103,7 @@ test_lapsed_hold_is_never_offered_as_dispatchable_work() {
   pass "a lapsed captain hold stays held and is never offered as dispatchable work"
 }
 
-# Under `set -eu` a flag typed as the final token consumes the shift meant for
-# its own value, so the loop-bottom shift fails and the script dies with exit 1
-# and no diagnostic at all, before its own validation can report the real
-# mistake. Every flag on both hold paths must report instead.
+# Every flag on both hold paths must report a missing value rather than die mute.
 test_a_flag_without_its_value_reports_rather_than_exiting_mute() {
   local home id
   home=$(make_home flag-without-value)
@@ -1189,10 +1188,8 @@ test_reholding_a_lapsed_question_comes_back_with_a_fresh_clock() {
   pass "re-holding a lapsed or deadline-free question gives it a fresh clock"
 }
 
-# The lapse query needs held, hold_kind and hold_until as list fields, which the
-# tasks-axi floor in bin/fm-tasks-axi-lib.sh is what guarantees. A build under
-# that floor must refuse rather than hand back a dispatchable listing nothing
-# screened, because an unscreened ready set is exactly what this path replaces.
+# A build under the floor in bin/fm-tasks-axi-lib.sh must refuse rather than hand
+# back a dispatchable listing nothing screened.
 test_a_build_below_the_tasks_axi_floor_refuses_rather_than_degrades() {
   local home out rc
   home=$(make_home below-floor)

@@ -116,6 +116,7 @@ init_changed_fixture_repo() {
   : >"$repo/tests/lib.sh"
   : >"$repo/tests/fm-backend-herdr-eventwait.test.py"
   : >"$repo/bin/fm-supervisor-target-lib.sh"
+  : >"$repo/bin/fm-captain-hold-lib.sh"
   : >"$repo/bin/unmapped-source.sh"
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
@@ -158,6 +159,17 @@ test_changed_dependency_selection_and_unmapped_failure() {
   assert_contains "$listed" "tests/fm-afk-return.test.sh" "supervisor target selects afk coverage"
   git -C "$repo" add bin/fm-supervisor-target-lib.sh
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm supervisor-change
+
+  # No fixture suite names the hold library, so only its explicit mapping can
+  # reach the two suites that consume it through another script.
+  printf '\n' >>"$repo/bin/fm-captain-hold-lib.sh"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-brief.test.sh" "captain-hold library selects pure contract coverage"
+  assert_contains "$listed" "tests/fm-session-start.test.sh" "captain-hold library selects session-start coverage"
+  assert_contains "$listed" "tests/fm-bearings-snapshot.test.sh" "captain-hold library selects snapshot coverage"
+  assert_not_contains "$listed" "tests/fm-pr-merge.test.sh" "captain-hold library over-selected an unrelated family"
+  git -C "$repo" add bin/fm-captain-hold-lib.sh
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm captain-hold-lib-change
 
   printf '\n' >>"$repo/.agents/skills/example/SKILL.md"
   printf '\n' >>"$repo/.claude/settings.json"

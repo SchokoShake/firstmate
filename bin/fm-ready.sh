@@ -2,28 +2,19 @@
 # fm-ready.sh - firstmate's dispatchable-now set: the one answer to "what work
 # can be picked up right now?".
 #
-# `tasks-axi ready` is the tool's own answer, and it counts a lapsed captain hold
-# as dispatchable. Past a hold's deadline tasks-axi reports the row `held: no`
-# while keeping hold_reason, hold_kind and hold_until on it, drops it from
-# `--state held`, and offers it in `ready` as work anyone may start. A lapsed
-# hold is still a question the captain owes an answer on, so handing it to a
-# dispatcher is the one thing lapsing must never mean.
+# `tasks-axi ready` offers a lapsed captain hold as work anyone may start, and
+# forking tasks-axi is out of bounds, so firstmate withholds it on its own side.
+# Every firstmate reader of dispatchable work goes through this path and never
+# through raw `tasks-axi ready`: an agent at a prompt runs this script, and
+# bin/fm-session-start.sh's digest calls the same fm_captain_hold_ready.
 #
-# Forking or patching tasks-axi is out of bounds, so `ready` keeps returning the
-# lapsed row and firstmate withholds it on its own side. This script is where an
-# agent at a prompt does that, and bin/fm-captain-hold-lib.sh's
-# fm_captain_hold_ready underneath it is where bin/fm-session-start.sh's startup
-# digest does. Nothing in firstmate may read raw `tasks-axi ready` instead, so
-# the rule holds at every reader rather than in whichever one remembered it.
+# Only a lapsed CAPTAIN hold is withheld. A lapsed hold of any other kind is a
+# time gate that opened, which is how that work becomes startable.
 #
 # WITHHOLDING IS PRESENTATION ONLY. Nothing here closes, unholds, resolves,
-# deletes or rewrites a hold, and `tasks-axi show <id> --full` still reports the
-# reason, kind and deadline of every withheld row. What is withheld is counted on
-# its own line rather than dropped silently, and that line names the surfaces
-# that really show those rows: session start's held group, and a query carrying
-# the SAME backlog this run filtered, so it resolves from any directory and for
-# a --file or FM_DATA_OVERRIDE home rather than whichever backlog the cwd
-# happens to select.
+# deletes or rewrites a hold. The withheld count is disclosed on its own line
+# with a query carrying the SAME backlog this run filtered, so it resolves from
+# any directory and for a --file or FM_DATA_OVERRIDE home.
 #
 # Usage:
 #   fm-ready.sh [--file <backlog-path>]

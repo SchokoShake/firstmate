@@ -942,6 +942,15 @@ families_for_changed_path() {
       printf '%s\n' pure-contract-unit
       printf '%s\n' secondmate
       ;;
+    bin/fm-captain-hold-lib.sh)
+      # Sourced by the hold producers and bin/fm-ready.sh (pure-contract-unit),
+      # bin/fm-session-start.sh's digest (session-bootstrap) and
+      # bin/fm-fleet-snapshot.sh's lapsed flag (snapshot-bearings); the last two
+      # suites never name the library, so a reference scan would miss them.
+      printf '%s\n' pure-contract-unit
+      printf '%s\n' session-bootstrap
+      printf '%s\n' snapshot-bearings
+      ;;
     bin/fm-pr-lib.sh)
       # Shared forge-record validation, sourced by both bin/fm-pr-check.sh
       # (pr-forge) and bin/fm-spawn.sh, whose --base uses the same branch-name

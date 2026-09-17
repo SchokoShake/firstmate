@@ -123,7 +123,9 @@ SH
 # past its limit. FM_FAKE_TASKS_AXI_LAPSED names captain holds whose deadline has
 # passed, and reproduces what tasks-axi 0.2.5 really does with one: it leaves the
 # held group, keeps hold_kind and hold_until beside `held: no`, and turns up in
-# the dispatchable ready set.
+# the dispatchable ready set. FM_FAKE_TASKS_AXI_TIME_GATES names kindless time
+# gates whose date has passed, which tasks-axi reports the same way minus the
+# hold kind.
 make_fake_tasks_axi_compact() {
   local fakebin=$1
   cat > "$fakebin/tasks-axi" <<'SH'
@@ -133,6 +135,7 @@ log=${FM_FAKE_TASKS_AXI_LOG:-}
 [ -n "$log" ] && printf '%s\n' "$*" >> "$log"
 ready_count=${FM_FAKE_TASKS_AXI_READY:-2}
 lapsed_ids=${FM_FAKE_TASKS_AXI_LAPSED:-}
+time_gate_ids=${FM_FAKE_TASKS_AXI_TIME_GATES:-}
 require_file() {
   case "$*" in *'--file '*) return 0 ;; esac
   printf '%s\n' 'missing explicit backlog file' >&2
@@ -166,7 +169,7 @@ case "${1:-}" in
   ready)
     require_file "$@"
     lapsed_count=0
-    for lapsed in $lapsed_ids; do lapsed_count=$((lapsed_count + 1)); done
+    for lapsed in $lapsed_ids $time_gate_ids; do lapsed_count=$((lapsed_count + 1)); done
     printf 'count: %s\n' "$((ready_count + lapsed_count))"
     printf 'ready[%s]{id,state,kind,repo,title}:\n' "$((ready_count + lapsed_count))"
     i=1
@@ -176,6 +179,9 @@ case "${1:-}" in
     done
     for lapsed in $lapsed_ids; do
       printf '  %s,queued,captain,firstmate,Lapsed captain question %s\n' "$lapsed" "$lapsed"
+    done
+    for gate in $time_gate_ids; do
+      printf '  %s,queued,ship,firstmate,Time gated work %s\n' "$gate" "$gate"
     done
     printf 'ready_public_followups: 0 delivery-ready obligations\n'
     printf 'help[1]:\n'
@@ -209,7 +215,7 @@ case "${1:-}" in
         ;;
       *'--state queued'*'hold_until,held'*)
         lapsed_count=0
-        for lapsed in $lapsed_ids; do lapsed_count=$((lapsed_count + 1)); done
+        for lapsed in $lapsed_ids $time_gate_ids; do lapsed_count=$((lapsed_count + 1)); done
         printf 'count: %s\n' "$((lapsed_count + 1))"
         printf 'tasks[%s]{id,state,kind,repo,title,blocked_by,hold_reason,hold_kind,hold_until,held}:\n' \
           "$((lapsed_count + 1))"
@@ -217,6 +223,10 @@ case "${1:-}" in
         for lapsed in $lapsed_ids; do
           printf '  %s,queued,captain,firstmate,Lapsed captain question %s,none,captain choice pending,captain,2020-01-01,no\n' \
             "$lapsed" "$lapsed"
+        done
+        for gate in $time_gate_ids; do
+          printf '  %s,queued,ship,firstmate,Time gated work %s,none,waiting on release,"-",2020-01-01,no\n' \
+            "$gate" "$gate"
         done
         ;;
       *)
@@ -1827,11 +1837,8 @@ EOF
   pass "compatible tasks-axi backlog rendering drops done rows and keeps every in-flight, held, and blocked row"
 }
 
-# `tasks-axi ready` counts a captain hold as dispatchable the moment its deadline
-# passes, so the digest that composes this turn's queue has to hold it back
-# itself. Offering an agent a question the captain has never answered as work to
-# pick up is the one thing lapsing must never mean, and the queued bound could
-# then cut the same row away entirely.
+# The digest must hold a lapsed captain hold back from the dispatchable group
+# and keep it out of reach of the queued bound.
 test_backlog_lapsed_captain_hold_stays_held_and_never_dispatchable() {
   local rec root home fakebin out ready_group
   rec=$(new_world backlog-lapsed-hold)
@@ -1881,6 +1888,45 @@ EOF
     "the digest withheld lapsed captain holds without pointing at where it lists them"
 
   pass "a lapsed captain hold stays in the held group and is never dispatchable work"
+}
+
+# The withholding is for the captain's unanswered questions only. A time gate
+# whose date has passed is work that became startable, so the digest must keep
+# offering it and must not count or list it as a lapsed hold.
+test_backlog_opened_time_gate_stays_dispatchable() {
+  local rec root home fakebin out ready_group
+  rec=$(new_world backlog-opened-time-gate)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_tasks_axi_compact "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  write_long_body_backlog "$home/data/backlog.md"
+
+  out=$(FM_FAKE_TASKS_AXI_READY=1 \
+    FM_FAKE_TASKS_AXI_LAPSED="stale-captain-question" \
+    FM_FAKE_TASKS_AXI_TIME_GATES="opened-time-gate" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  ready_group=$(printf '%s\n' "$out" | awk '
+    /^ready queued \(dispatchable now\):$/ { on = 1; next }
+    on && /^Full task bodies remain available/ { exit }
+    on
+  ')
+  assert_contains "$ready_group" "opened-time-gate,queued,ship,firstmate,Time gated work opened-time-gate" \
+    "a time gate that opened was withheld as if it were a captain question"
+  assert_not_contains "$ready_group" "stale-captain-question" \
+    "an unanswered captain question was offered as dispatchable work"
+  assert_contains "$ready_group" "count: 2" \
+    "the dispatchable count is not the ready row plus the opened time gate"
+  assert_contains "$ready_group" "(1 lapsed captain hold(s) withheld from this group;" \
+    "the withheld count included a time gate or missed the captain hold"
+  assert_contains "$out" "lapsed[1]{" "the lapsed listing counted a row that is not a captain hold"
+  assert_not_contains "$out" "opened-time-gate,queued,ship,firstmate,Time gated work opened-time-gate,none" \
+    "an opened time gate was listed as a lapsed captain hold"
+
+  pass "an opened time gate stays dispatchable and is never counted as a lapsed captain hold"
 }
 
 # The bound may only ever cut the dispatchable-now listing, and whatever it cuts
@@ -2718,6 +2764,7 @@ test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_lapsed_captain_hold_stays_held_and_never_dispatchable
+test_backlog_opened_time_gate_stays_dispatchable
 test_backlog_queued_bound_discloses_its_remainder
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback

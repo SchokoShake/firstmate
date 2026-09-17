@@ -915,6 +915,41 @@
         "status": "agree",
         "note": "the same line once the deadline has passed: lapsing is demotion, so the row still parses as held and captain-actionable on both sides and only the lapsed flag changes"
       }
+    },
+    {
+      "name": "time-gate-with-passed-deadline",
+      "section": "Queued",
+      "line": "- [ ] time-gate-lapsed - Time gated ship work (repo: sample) (kind: ship) (hold: waiting on release) (hold-until: 2000-01-01)",
+      "expect": {
+        "structured": true,
+        "id": "time-gate-lapsed",
+        "checked": false,
+        "title": "Time gated ship work",
+        "repo": "sample",
+        "kind": "ship",
+        "priority": null,
+        "hold_reason": "waiting on release",
+        "hold_kind": null,
+        "hold_until": "2000-01-01",
+        "held": false,
+        "lapsed": false,
+        "blocked_by_ids": [],
+        "blocked_reason": null,
+        "pr_url": null,
+        "report_path": null,
+        "local_note": null,
+        "since": null,
+        "merged": null,
+        "reported": null,
+        "done": null,
+        "current_role": "queued",
+        "captain_actionable": false,
+        "body_excerpt": null
+      },
+      "peer": {
+        "status": "agree",
+        "note": "a scheduling gate, not a captain hold: once its date passes tasks-axi reports the row queued, held: no with no hold kind and offers it in ready, so neither side treats it as a question the captain owes an answer on, and the title is clean for the same reason as the two captain cases above"
+      }
     }
   ]
 }

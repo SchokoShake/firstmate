@@ -128,10 +128,8 @@ validate_one_line() {  # <label> <value>
   esac
 }
 
-# A flag typed as the last token would otherwise consume the shift meant for its
-# own value, leaving `set -e` to kill the script on the next one with no
-# diagnostic at all, before any of this script's own validation can report the
-# real mistake. Every flag loop below asks this before reading a value.
+# Without this, a flag typed as the last token dies on `shift 2` under `set -e`
+# with no diagnostic.
 require_flag_value() {  # <flag> <remaining-arg-count>
   [ "$2" -ge 2 ] || fail "$1 requires a value"
 }
@@ -295,13 +293,8 @@ EOF
   printf '%s' "$found"
 }
 
-# An unanswered captain decision, whether its deadline has passed or not.
-# hold_kind is the field that survives a lapse and does not survive an unhold,
-# so it is what separates a question nobody has answered from a row somebody
-# released.
-#
-# The show output is passed in by a caller that already has it, so one check
-# never costs a second `tasks-axi show --full` on the hold write path.
+# An unanswered captain decision, whether its deadline has passed or not;
+# bin/fm-captain-hold-lib.sh owns why that reads hold_kind rather than held.
 verify_hold_open() {  # <hold-id> [<show-output>]
   local id=$1 show=${2:-} state kind hold_kind
   if [ "$#" -lt 2 ]; then
@@ -315,8 +308,8 @@ verify_hold_open() {  # <hold-id> [<show-output>]
   [ "$hold_kind" = captain ] || fail "backlog item $id is not held for the captain"
 }
 
-# Additionally still gating dispatch. Only the write path asserts this, so a
-# deadline that lands in the past is caught as a hold that was born lapsed.
+# Additionally still gating dispatch. Only the write path asserts this, to catch
+# a hold born lapsed.
 verify_hold_active() {  # <hold-id>
   local id=$1 show held
   show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"

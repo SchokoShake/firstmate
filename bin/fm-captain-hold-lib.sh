@@ -3,54 +3,29 @@
 # Usage: . bin/fm-captain-hold-lib.sh
 #
 # A captain hold with no deadline never lapses, so a question the captain has
-# decided not to answer keeps competing for attention with questions they have
-# not seen yet. tasks-axi has carried `hold --until` the whole time and every
-# reader downstream renders and lapses it; no firstmate producer ever passed one.
-# This library makes the deadline the default so that stops being true.
-#
-# The default window is FM_CAPTAIN_HOLD_DEFAULT_DAYS days. Callers expose it as
-# `--hold-until`, which takes a YYYY-MM-DD date to override the default or the
-# literal `none` for a genuinely open-ended question. The two firstmate paths
-# that create a captain hold both resolve the value here:
-#
-#   bin/fm-decision-hold.sh    an investigation's or visual review's decision.
-#   bin/fm-captain-hold.sh     a main-side thread held for the captain.
+# chosen not to answer keeps competing with ones they have not seen. Every
+# firstmate producer resolves its deadline here: bin/fm-decision-hold.sh,
+# bin/fm-captain-hold.sh, and the stow skill through the latter. Each exposes
+# `--hold-until <YYYY-MM-DD>` to override the default window and
+# `--hold-until none` for a genuinely open-ended question.
 #
 # LAPSE IS DEMOTION, NEVER DELETION. Past the deadline tasks-axi reports the row
-# `held: no` and keeps hold_reason, hold_kind and hold_until on it, so a lapsed
-# hold is still a captain hold with an answer owed - it has only stopped gating
-# dispatch. `tasks-axi unhold` clears all three, which is what separates a hold
-# somebody released from one that merely ran out of clock. Every gate that asks
-# "is this decision still open?" must therefore read hold_kind, never held.
-# Re-running `hold` on a lapsed row reactivates it with a fresh deadline, which
-# is how firstmate deliberately re-asks a question that went unanswered.
-# tasks-axi's own `ready` set counts a lapsed hold as dispatchable, and forking
-# tasks-axi is not on the table, so firstmate withholds it on its own side. That
-# happens in exactly one place: fm_captain_hold_ready, the dispatchable-now set
-# every firstmate reader of ready work goes through - bin/fm-ready.sh for an
-# agent at a prompt, bin/fm-session-start.sh's digest for the startup queue.
-# Nothing may read raw `tasks-axi ready` instead. Withholding is presentation
-# only: the row stays queued with its reason, kind and deadline intact, and each
-# caller discloses how many it withheld together with where its own surface
-# shows them, so lapsing demotes a question rather than hiding or answering it.
+# `held: no` and keeps hold_reason, hold_kind and hold_until on it; only
+# `tasks-axi unhold` clears them. A lapsed hold is therefore still a captain hold
+# with an answer owed, and every gate asking "is this decision still open?" reads
+# hold_kind, never held. Re-running `hold` on a lapsed row gives it a fresh
+# deadline. bin/fm-ready.sh owns keeping a lapsed hold out of dispatchable work.
 #
-# Dates are integer day numbers here rather than date(1) arithmetic: BSD and GNU
-# date disagree on every flag that would do this, and a deadline that silently
-# fails to compute is a hold that never lapses - the exact bug the default
-# exists to fix. The conversions assume proleptic Gregorian dates in positive
-# years, which every date reachable from `date +%Y-%m-%d` satisfies.
+# Dates are integer day numbers rather than date(1) arithmetic, because BSD and
+# GNU date disagree on every flag that would do this. The conversions assume
+# proleptic Gregorian dates in positive years.
 
-# Seven days. The scout census that produced this default recorded eleven open
-# captain holds aged 47, 27, 15, 12, 9, 8, 6, 2, 1, 0 and 0 days, and named the
-# holds "over a week old" as the ones that had stopped being live questions. A
-# week is the line that census already drew: it lapses exactly the six holds the
-# report calls the failure and leaves the five recent ones gating dispatch.
+# The scout report's line: holds over a week old had stopped being live questions.
 FM_CAPTAIN_HOLD_DEFAULT_DAYS=7
 
-# The LOCAL date, because tasks-axi decides whether a hold is still gating from
-# the local date too. Reading UTC here would let a home east of it accept, write,
-# and immediately lapse the same deadline in the hours after local midnight.
-# FM_CAPTAIN_HOLD_NOW pins today's date so a test can assert an exact deadline.
+# The LOCAL date, because tasks-axi decides hold activity from it too; UTC would
+# let a home east of it write a deadline the tool already counts as lapsed.
+# FM_CAPTAIN_HOLD_NOW pins today's date for tests.
 fm_captain_hold_today() {
   local today=${FM_CAPTAIN_HOLD_NOW:-}
   if [ -z "$today" ]; then
@@ -107,10 +82,8 @@ fm_captain_hold_default_until() {
   fm_captain_hold_civil_from_days "$(( days + FM_CAPTAIN_HOLD_DEFAULT_DAYS ))"
 }
 
-# fm_captain_hold_until_reject <value>
-#   Prints a one-line reason when <value> cannot be used as a deadline and
-#   nothing when it can, so each caller reports it with its own error prefix.
-#   An empty value is the default and is always accepted.
+# Prints a one-line reason when <value> cannot be a deadline and nothing when it
+# can, so each caller reports it under its own prefix. Empty means the default.
 fm_captain_hold_until_reject() {  # <value>
   local value=$1 today days today_days
   case "$value" in
@@ -131,16 +104,12 @@ fm_captain_hold_until_reject() {  # <value>
     return 0
   fi
   today_days=$(fm_captain_hold_days_from_civil "${today%%-*}" "$(fm_captain_hold_month "$today")" "${today##*-}")
-  # tasks-axi holds are inactive on and after the deadline, so today's date would
-  # write a hold that is already lapsed rather than one that gates anything.
+  # tasks-axi holds are inactive ON the deadline, so today is already lapsed.
   if [ "$days" -le "$today_days" ]; then
     printf '%s\n' "--hold-until must be later than $today: $value"
   fi
 }
 
-# fm_captain_hold_until_is_future <value>
-#   True when <value> is a real calendar date the clock has not reached, which
-#   is what makes an existing deadline worth keeping on an idempotent re-hold.
 fm_captain_hold_until_is_future() {  # <value>
   case "$1" in
     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
@@ -149,9 +118,8 @@ fm_captain_hold_until_is_future() {  # <value>
   [ -z "$(fm_captain_hold_until_reject "$1")" ]
 }
 
-# fm_captain_hold_resolve_until <value>
-#   Prints the date to pass to `tasks-axi hold --until`, or nothing when the
-#   hold is deliberately open-ended. Reject the value first.
+# Prints the date for `tasks-axi hold --until`, or nothing for a deliberately
+# open-ended hold. Reject the value first.
 fm_captain_hold_resolve_until() {  # <value>
   case "$1" in
     '') fm_captain_hold_default_until ;;
@@ -160,11 +128,9 @@ fm_captain_hold_resolve_until() {  # <value>
   esac
 }
 
-# fm_captain_hold_effective_until <explicit> <existing>
-#   The deadline to write. An explicit value always wins; otherwise a deadline
-#   the clock has not reached is kept rather than reset, so an idempotent re-hold
-#   cannot shorten a window the captain was already given, while an absent,
-#   lapsed or unreadable one takes the default.
+# An explicit value always wins. Otherwise a deadline the clock has not reached
+# is kept, so an idempotent re-hold cannot shorten a window the captain was
+# already given; an absent, lapsed or unreadable one takes the default.
 fm_captain_hold_effective_until() {  # <explicit> <existing>
   if [ -z "$1" ] && fm_captain_hold_until_is_future "$2"; then
     printf '%s\n' "$2"
@@ -173,11 +139,8 @@ fm_captain_hold_effective_until() {  # <explicit> <existing>
   fm_captain_hold_resolve_until "$1"
 }
 
-# fm_captain_hold_contract_reject
-#   Prints a one-line reason when the installed tasks-axi cannot carry a captain
-#   hold with a deadline and nothing when it can, so each caller reports it with
-#   its own error prefix. Defense in depth for a stripped or forked build that
-#   advertises a compatible version without the flags.
+# Same reporting shape as fm_captain_hold_until_reject. Defense in depth for a
+# stripped or forked build that advertises a compatible version without the flags.
 fm_captain_hold_contract_reject() {
   local hold_help
   hold_help=$(tasks-axi hold --help 2>&1) || {
@@ -192,9 +155,7 @@ fm_captain_hold_contract_reject() {
     || printf '%s\n' "tasks-axi does not expose the hold deadline contract"
 }
 
-# fm_captain_hold_write <id> <reason> <until>
-#   Applies the hold in the active FM_HOME, with the deadline when there is one.
-#   An empty <until> is the deliberate open-ended hold, not a missing value.
+# An empty <until> is the deliberate open-ended hold, not a missing value.
 fm_captain_hold_write() {  # <id> <reason> <until>
   if [ -n "$3" ]; then
     (cd "$FM_HOME" && tasks-axi hold "$1" --reason "$2" --kind captain --until "$3" >/dev/null)
@@ -203,17 +164,13 @@ fm_captain_hold_write() {  # <id> <reason> <until>
   fi
 }
 
-# The three fields that decide whether a captain hold has lapsed, appended after
-# any caller-chosen ones. They are last because none of them can contain a comma,
-# so a title or hold reason that does cannot shift them out of position.
+# Appended after any caller-chosen fields: none of these can contain a comma, so
+# a title or hold reason that does cannot shift them out of position.
 FM_CAPTAIN_HOLD_LAPSE_FIELDS=hold_kind,hold_until,held
 
-# fm_captain_hold_lapsed_rows <backlog-path> [<extra-fields>]
-#   Prints tasks-axi's own listing row for every queued row whose captain hold
-#   has lapsed. tasks-axi answers "has this deadline passed?" itself, so this
-#   reads its verdict rather than re-deriving the clock the hold was written
-#   against: past the date it reports `held: no` while hold_kind survives, and
-#   that pair exists on no other row.
+# tasks-axi's own listing row for every queued row whose CAPTAIN hold has lapsed,
+# read from the tool's verdict rather than a clock of ours. A lapsed hold of any
+# other kind is a scheduling gate that opened and is never listed.
 fm_captain_hold_lapsed_rows() {  # <backlog-path> [<extra-fields>]
   local listing
   listing=$(tasks-axi list --file "$1" --state queued \
@@ -234,26 +191,15 @@ fm_captain_hold_lapsed_rows() {  # <backlog-path> [<extra-fields>]
   '
 }
 
-# fm_captain_hold_lapsed_row_ids <rows>
-#   The ids of an fm_captain_hold_lapsed_rows listing, one per line, so a caller
-#   that already has the rows does not query the same verdict twice.
 fm_captain_hold_lapsed_row_ids() {  # <rows>
   [ -n "$1" ] || return 0
   printf '%s\n' "$1" | sed 's/^[[:space:]]*//; s/,.*//'
 }
 
-# fm_captain_hold_withhold_lapsed <lapsed-ids> <where-listed>
-#   Reads a `tasks-axi ready` rendering on stdin and writes it back without the
-#   rows whose id is in <lapsed-ids>, with the tool's own count and ready[N]
-#   header restated so they describe what is actually listed, and one disclosure
-#   line after the rows so the withholding is never silent. Everything else the
-#   tool printed passes through untouched.
-#
-#   <where-listed> completes that disclosure with where the caller's own surface
-#   really shows the withheld rows. Each surface differs - the startup digest
-#   lists them under its own header, a bare ready listing shows them nowhere -
-#   so the pointer belongs to the caller rather than to a single wording here
-#   that would be wrong on one of them.
+# Filters a `tasks-axi ready` rendering on stdin: drops the <lapsed-ids> rows,
+# restates the count and ready[N] header to match, and discloses the withheld
+# count after the rows. <where-listed> is the caller's own pointer, because each
+# surface shows the withheld rows somewhere different or nowhere at all.
 fm_captain_hold_withhold_lapsed() {  # <lapsed-ids> <where-listed>
   FM_CAPTAIN_HOLD_LAPSED_IDS="$1" awk -v where="$2" '
     function row_id(line,   id) {
@@ -304,18 +250,9 @@ fm_captain_hold_withhold_lapsed() {  # <lapsed-ids> <where-listed>
   '
 }
 
-# fm_captain_hold_ready <backlog-path> <where-listed> [<lapsed-ids>]
-#   Firstmate's dispatchable-now set: tasks-axi's own `ready` rendering with
-#   every lapsed captain hold withheld. This is the single owner of "a lapsed
-#   captain hold is never dispatchable work", so every firstmate reader of ready
-#   work calls it rather than `tasks-axi ready`. <where-listed> is the caller's
-#   own pointer to where its surface shows the withheld rows. Pass <lapsed-ids>
-#   when the caller has already listed them for its own display; otherwise they
-#   are queried here.
-#
-#   A failed lapse query returns non-zero with the tool's own error rather than
-#   an empty withheld set, because a ready listing nobody could screen is the
-#   raw dispatchable set this function exists to replace.
+# Firstmate's dispatchable-now set, the function under bin/fm-ready.sh. Pass
+# <lapsed-ids> when the caller already listed them; otherwise they are queried
+# here. A failed lapse query fails the call rather than withholding nothing.
 fm_captain_hold_ready() {  # <backlog-path> <where-listed> [<lapsed-ids>]
   local path=$1 where=$2 lapsed_ids=${3:-} rows ready
   if [ "$#" -lt 3 ]; then

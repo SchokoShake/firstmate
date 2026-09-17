@@ -1,18 +1,11 @@
 #!/usr/bin/env bash
 # fm-captain-hold.sh - hold an existing backlog item for the captain, with a deadline.
 #
-# This is firstmate's path for a main-side thread that is waiting on the captain
-# and is not an investigation's or visual review's decision: a pending choice, a
-# relay reminder, anything worth durable tracking under AGENTS.md section 10.
-# bin/fm-decision-hold.sh owns the decision path and its identities; this script
-# owns nothing but the hold itself.
-#
-# It exists so the deadline is not an option nobody passes. tasks-axi has carried
-# `hold --until` all along and every reader downstream renders and lapses it, yet
-# no hold firstmate had ever written carried one. tasks-axi has no configuration
-# surface for a default (.tasks.toml configures only the markdown backend's path,
-# archive and retention) and forking it is not on the table, so the default lives
-# in the one wrapper both firstmate hold paths go through.
+# Firstmate's path for a main-side thread waiting on the captain that is not an
+# investigation's or visual review's decision (AGENTS.md section 10);
+# bin/fm-decision-hold.sh owns that path and its identities. The default deadline
+# lives in this wrapper because tasks-axi has no configuration surface for one:
+# .tasks.toml configures only the markdown backend's path, archive and retention.
 #
 # Usage:
 #   fm-captain-hold.sh <id> --reason <reason> [--hold-until <YYYY-MM-DD>|none]
@@ -60,9 +53,8 @@ shift
 
 REASON=''
 HOLD_UNTIL=''
-# A flag typed as the last token would otherwise consume the shift meant for its
-# own value, leaving `set -e` to kill the script on the next one with no
-# diagnostic at all, before any of the checks below can report the real mistake.
+# Without the count check, a flag typed as the last token dies on `shift 2`
+# under `set -e` with no diagnostic.
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --reason|--hold-until)
@@ -98,8 +90,7 @@ SHOW=$(tasks_axi show "$ID" --full 2>/dev/null) \
 show_field() {  # <field>
   printf '%s\n' "$SHOW" | sed -n "s/^  $1: //p" | head -1
 }
-# tasks-axi applies a hold to a done row too, and nothing surfaces it afterwards,
-# so the captain would never see the question.
+# tasks-axi would hold a done row too, and no surface shows one to the captain.
 STATE=$(show_field state)
 [ "$STATE" != "done" ] \
   || fail "backlog item $ID is already done; hold a new item for a new captain question"
