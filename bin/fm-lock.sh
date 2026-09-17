@@ -73,7 +73,10 @@ if ! fm_lock_try_acquire "$CLAIM_LOCK"; then
     echo "error: the prior session's bounded startup sweep is finishing; operate read-only until it releases the fleet lock" >&2
     exit 1
   fi
-  fm_lock_acquire_wait "$CLAIM_LOCK"
+  if ! fm_lock_acquire_wait "$CLAIM_LOCK"; then
+    echo "error: cannot take the fleet lock claim mutex; operate read-only until resolved" >&2
+    exit 1
+  fi
 fi
 CLAIM_LOCK_HELD=1
 
