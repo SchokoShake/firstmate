@@ -41,6 +41,17 @@ run_ask() {  # <home> <args...>
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$ASK" "$@"
 }
 
+# tasks-axi judges hold activity on the real clock, so the pinned day sits far
+# enough ahead that the deadline it yields is still live when this runs.
+HOLD_NOW=2099-02-25
+FRESH_UNTIL=2099-03-04
+
+run_ask_on() {  # <today> <home> <args...>
+  local today=$1
+  shift
+  FM_CAPTAIN_HOLD_NOW="$today" run_ask "$@"
+}
+
 run_ask_ledger_in() {  # <home> <ledger-dir> <args...>
   local home=$1 ledger_dir=$2
   shift 2
@@ -315,24 +326,71 @@ test_concurrent_re_asks_keep_every_ledger_line() {
   pass "concurrent re-asks in one home serialize on the ledger and none drops another's line"
 }
 
-# A re-ask is a new instance of the same question, so it must not inherit the
-# deadline the previous instance was given, and must not mint one of its own.
-test_again_drops_the_hold_deadline() {
-  local home id row
+# A re-ask is a new question, so it takes today plus the default window whatever
+# the row carried. The earlier deadline lies beyond the fresh one, so keeping a
+# deadline the clock has not reached would show up as the old date surviving.
+test_again_writes_a_fresh_default_deadline() {
+  local home id bare row
   home=$(make_home deadline)
   id=placement-axes-p13
   axi "$home" add "$id" "adopt the new placement axes" --kind ship --repo myapp --start >/dev/null
-  axi "$home" hold "$id" --reason "confirm the rollout window" --kind captain --until 2099-01-01 >/dev/null
-  [ "$(shown_field "$home" "$id" hold_until)" = 2099-01-01 ] || fail "the fixture lost its hold deadline"
-  run_ask "$home" again "$id" --reason "the Friday train closed; pick the next window" >/dev/null \
+  axi "$home" hold "$id" --reason "confirm the rollout window" --kind captain --until 2099-12-31 >/dev/null
+  [ "$(shown_field "$home" "$id" hold_until)" = 2099-12-31 ] || fail "the fixture lost its hold deadline"
+  run_ask_on "$HOLD_NOW" "$home" again "$id" --reason "the Friday train closed; pick the next window" >/dev/null \
     || fail "the re-ask of a dated hold failed"
-  [ "$(shown_field "$home" "$id" hold_until)" != 2099-01-01 ] \
-    || fail "the re-ask carried the previous question's deadline into the new one"
+  [ "$(shown_field "$home" "$id" hold_until)" = "$FRESH_UNTIL" ] \
+    || fail "the re-ask of a hold with a future deadline wrote $(shown_field "$home" "$id" hold_until), not the fresh default $FRESH_UNTIL"
   [ "$(shown_field "$home" "$id" held)" = yes ] || fail "the re-asked dated question is not a live hold"
   row=$(grep -F -- "- [ ] $id " "$home/data/backlog.md") || fail "the re-asked dated row vanished from the backlog"
   assert_contains "$row" "the Friday train closed" "the re-ask of a dated hold did not write the new question"
   [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the re-ask of a dated hold did not bump the revision"
-  pass "a re-ask drops the deadline the previous question carried"
+
+  bare=placement-axes-p25
+  compose_action_card "$home" "$bare"
+  row=$(grep -F -- "- [ ] $bare " "$home/data/backlog.md") || fail "the deadline-free fixture row is missing"
+  assert_not_contains "$row" "hold-until:" "the fixture hold was not written without a deadline"
+  run_ask_on "$HOLD_NOW" "$home" again "$bare" --reason "the Friday train closed; pick the next window" >/dev/null \
+    || fail "the re-ask of a hold with no deadline failed"
+  [ "$(shown_field "$home" "$bare" hold_until)" = "$FRESH_UNTIL" ] \
+    || fail "the re-ask of a hold with no deadline wrote $(shown_field "$home" "$bare" hold_until), not the fresh default $FRESH_UNTIL"
+  [ "$(shown_field "$home" "$bare" held)" = yes ] || fail "the re-asked deadline-free question is not a live hold"
+  pass "a re-ask writes the fresh default deadline over a future deadline and over none"
+}
+
+# A default that cannot be computed must stop the re-ask before its first write,
+# never fall back to a hold that cannot lapse.
+test_an_uncomputable_default_deadline_fails_the_re_ask_before_any_write() {
+  local home id other out rc backlog_before ledger_before
+  home=$(make_home uncomputable-deadline)
+  id=placement-axes-p26
+  axi "$home" add "$id" "adopt the new placement axes" --kind ship --repo myapp --start >/dev/null
+  axi "$home" hold "$id" --reason "confirm the rollout window" --kind captain --until 2099-12-31 >/dev/null
+  backlog_before=$(cat "$home/data/backlog.md")
+
+  rc=0; out=$(run_ask_on not-a-date "$home" again "$id" --reason "the Friday train closed; pick the next window" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask whose default deadline cannot be computed"
+  assert_contains "$out" "could not compute the default hold deadline" \
+    "a re-ask with no computable deadline must say why it stopped"
+  assert_absent "$home/data/ask-revisions" "a re-ask with no computable deadline wrote the revision ledger"
+  [ "$backlog_before" = "$(cat "$home/data/backlog.md")" ] \
+    || fail "a re-ask with no computable deadline rewrote the backlog"
+  [ "$(run_ask "$home" revision "$id")" = 1 ] || fail "a re-ask with no computable deadline moved the revision"
+
+  other=placement-axes-p27
+  compose_action_card "$home" "$other"
+  run_ask_on "$HOLD_NOW" "$home" again "$other" --reason "the window moved; pick another" >/dev/null \
+    || fail "the re-ask that gives the ledger its content failed"
+  ledger_before=$(cat "$home/data/ask-revisions")
+  backlog_before=$(cat "$home/data/backlog.md")
+  rc=0; run_ask_on not-a-date "$home" again "$id" --reason "the Friday train closed" >/dev/null 2>&1 || rc=$?
+  expect_code 1 "$rc" "a re-ask with no computable deadline in a home that has re-asked before"
+  [ "$ledger_before" = "$(cat "$home/data/ask-revisions")" ] \
+    || fail "a re-ask with no computable deadline changed the revision ledger"
+  [ "$backlog_before" = "$(cat "$home/data/backlog.md")" ] \
+    || fail "a re-ask with no computable deadline rewrote the backlog in a home that has re-asked before"
+  [ "$(shown_field "$home" "$id" hold_until)" = 2099-12-31 ] \
+    || fail "a re-ask with no computable deadline changed the deadline the row carried"
+  pass "a re-ask whose default deadline cannot be computed fails before the ledger or the row is touched"
 }
 
 # "-" is a legal hold reason as well as how tasks-axi renders an absent field, and
@@ -376,11 +434,11 @@ test_a_lapsed_hold_stays_askable_and_re_asks_live() {
   expect_code 1 "$rc" "an identity asked of a row carrying no hold"
   assert_contains "$out" "is not held" "a row with no hold at all must still have no question identity"
 
-  run_ask "$home" again "$id" --reason "the rollout window lapsed; pick the next one" >/dev/null \
+  run_ask_on "$HOLD_NOW" "$home" again "$id" --reason "the rollout window lapsed; pick the next one" >/dev/null \
     || fail "the deliberate re-ask of a lapsed hold failed"
   [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "the re-ask of a lapsed hold did not bump the revision"
-  [ "$(shown_field "$home" "$id" hold_until)" != 2020-01-01 ] \
-    || fail "the re-ask carried the lapsed deadline back, so the new question is asked already demoted"
+  [ "$(shown_field "$home" "$id" hold_until)" = "$FRESH_UNTIL" ] \
+    || fail "the re-ask of a lapsed hold wrote $(shown_field "$home" "$id" hold_until), not the fresh default $FRESH_UNTIL"
   [ "$(shown_field "$home" "$id" held)" = yes ] \
     || fail "the re-asked question is not a live hold; it was asked already lapsed"
   pass "a lapsed captain hold keeps its identity, stays askable, and re-asks as a live question"
@@ -704,7 +762,8 @@ test_a_failed_bump_names_the_ledger_and_the_cause
 test_a_question_beginning_with_dashes_is_writable
 test_a_quoted_reason_rewrites_without_re_asking
 test_concurrent_re_asks_keep_every_ledger_line
-test_again_drops_the_hold_deadline
+test_again_writes_a_fresh_default_deadline
+test_an_uncomputable_default_deadline_fails_the_re_ask_before_any_write
 test_a_lapsed_hold_stays_askable_and_re_asks_live
 test_a_hold_whose_reason_is_a_dash_is_still_a_question
 test_an_unreadable_ledger_never_answers_revision_one

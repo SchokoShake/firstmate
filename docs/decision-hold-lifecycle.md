@@ -15,8 +15,8 @@ It rejects an identity collision, a changed title, attempts to reopen an already
 
 Every gate reads `hold_kind` rather than `held`, so a lapsed decision still counts as durably recorded for `complete` and `verify` and still accepts the captain's answer through `resolve` and `decline`; [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) owns why, along with the keep-versus-reset rule a repeated `hold` follows.
 A retry of `hold` keeps a deadline the clock has not reached, so it cannot silently shorten a window the captain was already given, while a lapsed or absent one takes the default.
-A RE-ASK is the other case and takes the opposite rule: re-asking a question never carries the old deadline forward, so the default supplies a fresh one and the re-asked question lapses again on its own clock rather than being reborn already lapsed.
-`bin/fm-decision-hold.sh` has no re-ask subcommand, so the re-ask write path owns applying that rule at its own call site.
+A re-ask is the other case and never carries a deadline forward, under the re-ask rule that library owns.
+A decision is re-asked under a new decision key, whose new row takes the default, while `bin/fm-ask.sh again` refuses decision holds and writes every other captain ask with a fresh default.
 
 The `complete` subcommand unions the reviewed keys into `decision_keys=` and appends `decisions_reviewed=1` while originating task metadata is live.
 A post-teardown visual review can complete against the surviving report and durable holds without recreating volatile task metadata.

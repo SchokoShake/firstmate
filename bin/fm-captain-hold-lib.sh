@@ -5,9 +5,10 @@
 # A captain hold with no deadline never lapses, so a question the captain has
 # chosen not to answer keeps competing with ones they have not seen. Every
 # firstmate producer resolves its deadline here: bin/fm-decision-hold.sh,
-# bin/fm-captain-hold.sh, and the stow skill through the latter. Each exposes
-# `--hold-until <YYYY-MM-DD>` to override the default window and
-# `--hold-until none` for a genuinely open-ended question.
+# bin/fm-captain-hold.sh, the stow skill through the latter, and
+# `bin/fm-ask.sh again`. All but the last expose `--hold-until <YYYY-MM-DD>` to
+# override the default window and `--hold-until none` for a genuinely open-ended
+# question.
 #
 # LAPSE IS DEMOTION, NEVER DELETION. Past the deadline tasks-axi reports the row
 # `held: no` and keeps hold_reason, hold_kind and hold_until on it; only
@@ -131,6 +132,9 @@ fm_captain_hold_resolve_until() {  # <value>
 # An explicit value always wins. Otherwise a deadline the clock has not reached
 # is kept, so an idempotent re-hold cannot shorten a window the captain was
 # already given; an absent, lapsed or unreadable one takes the default.
+# A RE-ASK is the opposite case and never comes through here: `bin/fm-ask.sh again`
+# asks a new question, so it always takes fm_captain_hold_default_until and carries
+# no deadline forward, whether the row's was future, lapsed or absent.
 fm_captain_hold_effective_until() {  # <explicit> <existing>
   if [ -z "$1" ] && fm_captain_hold_until_is_future "$2"; then
     printf '%s\n' "$2"

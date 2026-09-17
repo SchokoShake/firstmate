@@ -84,9 +84,7 @@ It is durable private fleet data rather than runtime state, because a subject th
 [`bin/fm-ask.sh`](../bin/fm-ask.sh) is the only writer and the one command that re-asks: `fm-ask.sh again <task-id> --reason "<the new question>"` bumps the revision and writes the new reason together.
 A question that itself begins with `--` is written in the `--reason="<the new question>"` form.
 Running that command is itself the declaration that this is a new question, so it re-asks even when the wording is unchanged, and the revision can move without the prose moving.
-A re-ask never carries the row's existing hold deadline forward and never invents one: it is written through the same `tasks-axi hold` call as any other hold, so it takes whatever deadline that command applies by default.
-Today that default is no deadline, so the re-asked question stays live until it is answered or given one.
-Carrying the old date forward would re-ask a lapsed question straight back into a card a board demotes the moment it is asked.
+A re-ask never carries the row's existing hold deadline forward: it is written with a fresh default deadline, under the re-ask rule [`bin/fm-captain-hold-lib.sh`](../bin/fm-captain-hold-lib.sh) owns.
 Every other way of changing a hold - `tasks-axi hold --reason`, a hold refresh, a resync, a restart, and `fm-decision-hold.sh`'s own `resolve`, `decline`, and `repair` - leaves the ledger untouched and therefore preserves the identity, so the safe path is the one an author already takes.
 A decision hold re-asks by minting a new decision key through `fm-decision-hold.sh hold` instead, which is already one command and already refuses to reopen a resolved decision; `fm-ask.sh again` refuses any row whose id has the `<origin-id>-decision-<key>` shape and says so.
 
