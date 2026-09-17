@@ -66,8 +66,8 @@ A pane can still disappear between verification and the operation; downstream su
 
 Every pane operation passes an explicit `--pane-id` because a new session can focus its release-notes plugin pane, whose numeric plugin id is in a separate namespace from terminal pane ids.
 
-`pane_cwd` follows a top-level shell `cd` but not the foreground subshell opened by `treehouse get`.
-Worktree discovery therefore sends begin and end markers around `pwd`, captures the marked block, and joins wrapped path lines.
+`pane_cwd` follows a top-level shell `cd`, which is how spawn now moves a pane into its leased worktree, but not a `cd` made inside a nested foreground subshell.
+Worktree discovery still sends begin and end markers around `pwd`, captures the marked block, and joins wrapped path lines, so it reads the live shell's cwd however the pane got there.
 This active probe is scoped to spawn-time worktree discovery and is not advertised as a general live-cwd API.
 
 `new-tab` has no no-focus flag and temporarily focuses the created tab in attached clients.

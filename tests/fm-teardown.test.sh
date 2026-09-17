@@ -2005,6 +2005,40 @@ test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
   pass "herdr projection teardown surfaces failed focus restoration without turning confirmed cleanup into a hard failure"
 }
 
+# fm-spawn.sh moves the endpoint's own shell into the task worktree with a
+# top-level cd, and `treehouse return` ends every process still rooted there.
+# The endpoint must therefore be closed first, under the session presentation
+# lock the preflight already holds, so the pane leaves through the backend's
+# focus-preserving close instead of dying with its shell when the worktree is
+# returned. Observed through the order of the fake herdr and treehouse calls.
+test_herdr_endpoint_close_precedes_worktree_return() {
+  local case_dir log closed close_line return_line
+  case_dir=$(make_case herdr-close-before-return)
+  write_meta "$case_dir" local-only ship
+  configure_flat_herdr_teardown_case "$case_dir"
+  log="$case_dir/calls.log"; closed="$case_dir/closed"; : > "$log"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf 'treehouse %s\n' "\$*" >> "$log"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_BACKEND_HERDR_IDLE_SHELL_PROOF_POLLS=1 \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-close-before-return: forced teardown failed: $(cat "$case_dir/stderr")"
+  [ -e "$closed" ] || fail "herdr-close-before-return: teardown never closed the exact pane"
+  close_line=$(grep -n '^pane close wG:pQ' "$log" | head -n 1 | cut -d: -f1)
+  return_line=$(grep -n '^treehouse return ' "$log" | head -n 1 | cut -d: -f1)
+  [ -n "$close_line" ] || fail "herdr-close-before-return: the fake herdr never saw the pane close"
+  [ -n "$return_line" ] || fail "herdr-close-before-return: the worktree was never returned"
+  [ "$close_line" -lt "$return_line" ] \
+    || fail "herdr-close-before-return: the worktree return ran before the endpoint close: $(tr '\n' ';' < "$log")"
+  grep -q "teardown task-x1 complete" "$case_dir/stdout" \
+    || fail "herdr-close-before-return: teardown did not report completion"
+  pass "herdr teardown closes the exact endpoint under the presentation lock before returning the worktree whose shell it holds"
+}
+
 # --- Fix 1: conclude/abort the task's own parked no-mistakes run before the
 # worker is removed, and Fix 2: reap leaked descendant processes rooted under
 # the task's own worktree/tasktmp - both exercised through the real teardown
@@ -2233,6 +2267,58 @@ test_leaked_worktree_process_is_reaped() {
   assert_grep "reaping leaked worktree process" "$case_dir/stderr" \
     "leaked-process-reap: teardown did not report reaping the leaked process"
   pass "a leaked descendant process rooted under the task's worktree is reaped by teardown, not left surviving"
+}
+
+# fm-spawn.sh moves the endpoint's own top-level shell into the leased worktree
+# with a plain cd, so that shell's cwd is the worktree for the task's whole
+# life. It is the endpoint, not a leak: closing the endpoint is what ends it,
+# through the backend's focus-preserving path, and reaping it first lets the
+# terminal remove the pane on its own outside that path. The backend names
+# that one process (here the fake tmux's pane_pid); everything else rooted in
+# the worktree is still reaped.
+test_endpoint_shell_in_worktree_is_left_to_endpoint_close() {
+  local case_dir rc endpoint_pid leaked_pid
+  case_dir=$(make_case endpoint-shell-left-alone)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  endpoint_pid=$!
+  disown
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  leaked_pid=$!
+  disown
+  sleep 0.3
+  kill -0 "$endpoint_pid" 2>/dev/null || fail "endpoint-shell-left-alone: setup endpoint process did not start"
+  kill -0 "$leaked_pid" 2>/dev/null || fail "endpoint-shell-left-alone: setup leaked process did not start"
+  cat > "$case_dir/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = display-message ] && [ "\${*: -1}" = '#{pane_pid}' ]; then
+  printf '%s\n' '$endpoint_pid'
+fi
+exit 0
+EOF
+  chmod +x "$case_dir/fakebin/tmux"
+
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  if ! kill -0 "$endpoint_pid" 2>/dev/null; then
+    kill -KILL "$leaked_pid" 2>/dev/null || true
+    fail "endpoint-shell-left-alone: teardown reaped the endpoint's own shell instead of leaving it to the endpoint close"
+  fi
+  kill -KILL "$endpoint_pid" 2>/dev/null || true
+  if kill -0 "$leaked_pid" 2>/dev/null; then
+    kill -KILL "$leaked_pid" 2>/dev/null || true
+    fail "endpoint-shell-left-alone: the leaked worktree process survived teardown"
+  fi
+  expect_code 0 "$rc" "endpoint-shell-left-alone: teardown should still succeed"
+  grep -F "reaping leaked worktree process(es) for task-x1: " "$case_dir/stderr" | grep -Fw "$leaked_pid" >/dev/null 2>&1 \
+    || fail "endpoint-shell-left-alone: teardown did not report reaping the leaked process"
+  if grep -F "reaping leaked worktree process" "$case_dir/stderr" | grep -Fw "$endpoint_pid" >/dev/null 2>&1; then
+    fail "endpoint-shell-left-alone: teardown listed the endpoint's own shell among the leaked processes"
+  fi
+  pass "the endpoint's own shell rooted in the worktree is left to the endpoint close while a leaked sibling is still reaped"
 }
 
 test_leaked_tasktmp_process_is_reaped() {
@@ -2824,6 +2910,7 @@ test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconf
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
 test_herdr_projection_teardown_surfaces_restore_failure_without_blocking_cleanup
+test_herdr_endpoint_close_precedes_worktree_return
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows
@@ -2853,6 +2940,7 @@ test_not_found_status_after_abort_confirms_completion
 test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
+test_endpoint_shell_in_worktree_is_left_to_endpoint_close
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal

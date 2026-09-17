@@ -8,10 +8,11 @@
 # default (tmux, `backend=` absent) path stays byte-identical. Sourced only
 # through bin/fm-backend.sh's fm_backend_source, never directly.
 #
-# Worktree acquisition (running `treehouse get` inside the pane, and polling
-# its cwd) is unchanged by this extraction: P1 scopes only the session
-# provider, not the worktree provider, so fm-spawn.sh still drives that part
-# inline with these same send/current-path primitives.
+# Worktree acquisition (leasing the slot with `treehouse get --lease` from
+# fm-spawn.sh's own process, moving the pane there with a top-level cd, and
+# polling its cwd) is outside this extraction: P1 scopes only the session
+# provider, not the worktree provider, so fm-spawn.sh drives that part inline
+# with these same send/current-path primitives.
 #
 # The verified composer/busy-detection and verify-and-retry-submit primitives
 # already live in bin/fm-tmux-lib.sh, shared with the away-mode daemon
@@ -105,10 +106,22 @@ fm_backend_tmux_current_path() {  # <target>
   tmux display-message -p -t "$1" '#{pane_current_path}' 2>/dev/null
 }
 
+# fm_backend_tmux_endpoint_shell_pid: the pid of the pane's own root process,
+# the shell fm-spawn.sh moved into the task's worktree with a top-level cd, or
+# failure on any tmux error or a non-numeric answer. fm-teardown.sh's
+# leaked-process reap leaves exactly that process to the endpoint close.
+fm_backend_tmux_endpoint_shell_pid() {  # <target>
+  local pid
+  pid=$(tmux display-message -p -t "$1" '#{pane_pid}' 2>/dev/null) || return 1
+  pid=$(printf '%s' "$pid" | tr -d '[:space:]')
+  case "$pid" in ''|*[!0-9]*|0|1) return 1 ;; esac
+  printf '%s\n' "$pid"
+}
+
 # fm_backend_tmux_send_text_line: send one line of TEXT then Enter, with no
-# composer verification - used for the fixed spawn-time commands
-# (`treehouse get`, the GOTMPDIR export) that already ran this exact sequence
-# inline in fm-spawn.sh. Mirrors `tmux send-keys -t "$T" "<text>" Enter`.
+# composer verification - used for the fixed spawn-time commands (the cd into
+# the leased worktree, the GOTMPDIR export) that already ran this exact
+# sequence inline in fm-spawn.sh. Mirrors `tmux send-keys -t "$T" "<text>" Enter`.
 fm_backend_tmux_send_text_line() {  # <target> <text>
   tmux send-keys -t "$1" "$2" Enter
 }

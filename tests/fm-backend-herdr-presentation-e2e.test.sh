@@ -140,6 +140,21 @@ if [ "${1:-} ${2:-}" = "pane get" ] && [ -d "$ACTIVE_SEEDED_CONTROL" ] \
   refusal_probe=1
   refusal_before=$(focus_snapshot || printf ambiguous/ambiguous)
 fi
+# fm-spawn.sh moves an armed post-create abort pane into its leased path with
+# the shell builtin cd, so by the time the spawn aborts the pane is a lone idle
+# shell and the focus-safe cleanup removes it through Herdr's pane-death path,
+# which issues no pane.close call for this audit to record. Keep that pane busy
+# with a foreground sleep, exactly as the interactive treehouse subshell kept
+# it busy before the spawn leased its slot itself, so the cleanup takes the
+# plain pane close the audit records; that close ends the sleep with the pane.
+if [ "${1:-} ${2:-}" = "pane run" ] && [ -d "$POST_CREATE_ABORT_CONTROL" ]; then
+  for task_dir in "$POST_CREATE_ABORT_CONTROL"/abort-*; do
+    [ -d "$task_dir" ] || continue
+    [ "${3:-}" = "$(cat "$task_dir/task-pane" 2>/dev/null || true)" ] || continue
+    set -- "$1" "$2" "$3" "${4:-}; sleep 120" "${@:5}"
+    break
+  done
+fi
 before=
 [ -z "$mutation" ] || before=$(focus_snapshot || printf ambiguous/ambiguous)
 if out=$(env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"); then
@@ -207,7 +222,12 @@ set -u
   done
   printf '\n'
 } >> "$TREEHOUSE_CALL_LOG"
+# Armed post-create abort: the lease reports a real directory that is not an
+# isolated git worktree, so the spawn moves its already-created pane there and
+# fails its worktree validation only after the pane exists.
 if [ -d "$POST_CREATE_ABORT_CONTROL" ] && [ "${1:-}" = get ]; then
+  mkdir -p "$POST_CREATE_ABORT_CONTROL/not-a-worktree"
+  printf '%s\n' "$POST_CREATE_ABORT_CONTROL/not-a-worktree"
   exit 0
 fi
 exec "$REAL_TREEHOUSE" "$@"
@@ -428,7 +448,14 @@ normalize_meta() {  # <meta>
     -e 's|^herdr_tab_id=.*$|herdr_tab_id=<herdr-container-id>|' \
     -e 's|^herdr_pane_id=.*$|herdr_pane_id=<herdr-container-id>|' \
     -e 's|^spawn_gen=.*$|spawn_gen=<spawn-incarnation>|' \
+    -e 's|^lease_holder=(fm-task:[^:]*):.*$|lease_holder=\1:<lease-token>|' \
     "$1"
+}
+
+# Each spawn's treehouse lease holder label carries a fresh token, exactly like
+# its spawn incarnation, so the command sequence compares with that token masked.
+normalize_treehouse_log() {  # <log>
+  sed -E 's#(fm-task:[^:[:space:]]*):l[0-9]+\.[0-9]+\.[0-9]+#\1:<lease-token>#g' "$1"
 }
 
 log_line_count() { wc -l < "$HERDR_CALL_LOG" | tr -d '[:space:]'; }
@@ -605,7 +632,7 @@ assert_raw_presentation_mutations_preserved_since "$SHAPE_FOCUS_AUDIT_START" "pr
 ON_META="$TMP_ROOT/on.meta"
 cp "$HOME_DIR/state/shape.meta" "$ON_META"
 ON_WT=$(remember_meta_worktree "$ON_META")
-cmp -s "$TMP_ROOT/off-treehouse.log" "$TREEHOUSE_CALL_LOG" \
+cmp -s <(normalize_treehouse_log "$TMP_ROOT/off-treehouse.log") <(normalize_treehouse_log "$TREEHOUSE_CALL_LOG") \
   || fail "Treehouse command sequence changed between opted-out and projected spawns"
 JOURNAL="$HOME_DIR/state/shape.herdr-presentation"
 [ -f "$JOURNAL" ] || fail "projected spawn did not publish its presentation journal"
