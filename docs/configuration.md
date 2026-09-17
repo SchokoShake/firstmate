@@ -10,7 +10,7 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 
 This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
 The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
-`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, and scout reports.
+`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, captain-ask revisions, briefs, and scout reports.
 `state/` holds runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, inactive terminal-outcome receipts under `state/terminal-outcomes/`, away-mode state, generated Relay artifacts, private secondmate config-reread generations with their retry and quarantine state, and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 `config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
 
@@ -50,6 +50,43 @@ The file format is unchanged in both modes; tasks-axi and manual edits produce t
 A task's PR URL belongs to the item's `pr` field and never to its title, because the markdown backend keeps both in the same item line and a later `tasks-axi update <id> --title` replaces that line and drops the URL with it.
 [`bin/fm-backlog-pr.sh`](../bin/fm-backlog-pr.sh) is the single owner of that convention: it records the URL through `--pr` while writing a title with no URL in it, carries the recorded link across a title change, and restores a link that was already lost from the task's own `pr=` metadata.
 tasks-axi's `pr` field holds only a GitHub pull request URL, so a GitLab merge request stays in the task's `pr=` metadata and is reported as skipped rather than written into the backlog item at all.
+
+## Captain-ask identity and revisions (data/ask-revisions)
+
+A captain-held backlog row is a question firstmate is putting to the captain, and any surface that raises it as a card needs to know when two sightings of that row are the same question.
+Deriving that from the row's prose is what made an answered question come back: firstmate rewrites a hold reason to make it clearer or action-first, and a prose-derived identity turns that rewrite into a brand-new question the captain's earlier answer no longer settles.
+
+So the identity names the subject and re-asking is a deliberate act.
+[`bin/fm-ask-lib.sh`](../bin/fm-ask-lib.sh) is the single owner of the form, `fm-ask/1:<subject>:<hold-kind>:<revision>`, and of the revision ledger below; its header owns the exact grammar and the reason each part is in it.
+The subject is the backlog item id, which for a decision hold is the durable `<origin-id>-decision-<key>` that [`bin/fm-decision-hold.sh`](../bin/fm-decision-hold.sh) mints and keeps through every rewrite of the reason.
+Nothing about the reason, the title, the options a reader could parse out of the prose, or a consuming board's own card kind is in the identity.
+
+[`bin/fm-fleet-snapshot.sh`](../bin/fm-fleet-snapshot.sh) publishes it: every structured `backlog.records[]` entry carries `ask_id` and `ask_revision`, filled for a row that carries a captain hold and is not yet Done, and `null` on every other row.
+A hold whose `hold-until` deadline has passed is one of those rows and keeps exactly the same `ask_id` and `ask_revision`, because a lapse is neither an answer nor a new question.
+Demoting a lapsed row out of a needs-you feed is the consuming board's decision rather than the identity's, so this contract stays silent about carding.
+No field on the record carries that lapse signal today: a structured record's hold metadata is `hold_reason` and `hold_kind` only.
+Publishing the lapsed flag needs the item line's `(hold-until: ...)` marker, which `bin/fm-fleet-snapshot.sh` does not read yet and which the `fm-hold-default-deadline` task owns, so that task is where the flag comes from.
+A consumer takes `ask_id` as the question identity as given.
+Deriving one of its own from the row's title, reason, or parsed options reintroduces exactly the coupling this removes, and a row whose id falls outside the privacy-safe slug alphabet publishes `null` rather than an identity, which is the same "no identity" answer a consumer must already handle.
+
+The revision is producer-owned and is 1 until firstmate deliberately re-asks.
+`data/ask-revisions` records it as one `<subject>=<revision>` line per re-asked subject, with `#` comments and blank lines ignored and the last line for a subject winning.
+An absent file and an absent line both mean revision 1, so the file stays absent until firstmate actually re-asks.
+A line with no `=` or whose key is not a slug is ignored, so a human annotation is tolerated.
+A line whose key is a valid subject but whose value is not a positive integer is not read as revision 1: the snapshot publishes `null` `ask_id` and `ask_revision` for that subject only, and `fm-ask.sh` fails naming the line until it is corrected.
+That differs from an absent line on purpose, because silently returning a re-asked subject to an earlier revision is what lets an old answer settle a genuinely new question.
+A ledger that exists but cannot be read is not treated as an empty one: `fm-ask.sh` refuses instead of answering 1, and the snapshot publishes `null` for every row rather than a revision it could not read.
+A re-ask rewrites only its own subject's line, so comments and every other line a human wrote survive it.
+It is durable private fleet data rather than runtime state, because a subject that dropped back to an earlier revision would let an old answer settle a genuinely new question.
+
+[`bin/fm-ask.sh`](../bin/fm-ask.sh) is the only writer and the one command that re-asks: `fm-ask.sh again <task-id> --reason "<the new question>"` bumps the revision and writes the new reason together.
+A question that itself begins with `--` is written in the `--reason="<the new question>"` form.
+Running that command is itself the declaration that this is a new question, so it re-asks even when the wording is unchanged, and the revision can move without the prose moving.
+A re-ask never carries the row's existing hold deadline forward and never invents one: it is written through the same `tasks-axi hold` call as any other hold, so it takes whatever deadline that command applies by default.
+Today that default is no deadline, so the re-asked question stays live until it is answered or given one.
+Carrying the old date forward would re-ask a lapsed question straight back into a card a board demotes the moment it is asked.
+Every other way of changing a hold - `tasks-axi hold --reason`, a hold refresh, a resync, a restart, and `fm-decision-hold.sh`'s own `resolve`, `decline`, and `repair` - leaves the ledger untouched and therefore preserves the identity, so the safe path is the one an author already takes.
+A decision hold re-asks by minting a new decision key through `fm-decision-hold.sh hold` instead, which is already one command and already refuses to reopen a resolved decision; `fm-ask.sh again` refuses any row whose id has the `<origin-id>-decision-<key>` shape and says so.
 
 ## Runtime backend (config/backend / FM_BACKEND)
 

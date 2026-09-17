@@ -77,6 +77,7 @@ config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitig
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/x-mode.env    generated Relay watcher cadence; LOCAL, gitignored; applied for you by whatever launches a watcher (bin/fm-cadence-lib.sh)
 data/                personal fleet records; LOCAL, gitignored as a whole
+  ask-revisions      captain-ask revisions; written only by bin/fm-ask.sh, absent until firstmate re-asks
   backlog.md         task queue, dependencies, history
   captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
   captain-shared.md  main-authoritative shared captain preferences propagated read-only to secondmate homes; LOCAL, gitignored, owned by secondmate-provisioning
@@ -123,6 +124,7 @@ state/               runtime records and signals; gitignored
   .status-presentation-cursor .status-presentation-lock  fleet-wide per-task status identity/byte-offset manifest and serialization lock preventing already-presented status lines from being replayed as new; owned by fm-classify-lib.sh, with each task's row retired by teardown
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
+  .ask-revisions.lock  serialization lock for the revision bump and restore bin/fm-ask.sh again performs on data/ask-revisions
   .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch
   .cursor-park-owner .cursor-park-owner.lock .turnend-cursor-blocks   Cursor stop-hook owner record, publication and commit lock, and bounded repair-nag budget; never touch
   .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
@@ -496,6 +498,7 @@ Use compatible `tasks-axi` when the configured backend selects it and the docume
 `secondmate-provisioning` and `bin/fm-backlog-handoff.sh` own cross-home handoff safety.
 
 A task's PR URL belongs to the item's `pr` field and never to its title, because a later title change replaces the whole item line and drops a URL written into it; `bin/fm-backlog-pr.sh` owns that convention, and its `retitle` is how a title changes without losing the recorded link.
+A captain hold keeps one question identity through every rewrite of its reason, and firstmate re-asks only by deliberately bumping that row's revision with `bin/fm-ask.sh again`, which owns the identity, the revision, and the decision-hold case.
 Keep free-form notes free of temporary paths, moving versions, ephemeral identifiers, and copied state that will rot.
 Inspect the current task note before replacing its considered body, and archive the superseded body when recoverability matters rather than appending by default.
 Verify volatile details against their authoritative config, live system, or API before acting, and correct or delete stale prose immediately.

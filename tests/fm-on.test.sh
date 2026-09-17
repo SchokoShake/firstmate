@@ -11,7 +11,32 @@ TMP_ROOT=$(fm_test_tmproot fm-on)
 # and physicalize macOS's /var -> /private/var alias before transport validation.
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+# kill only signals, so the detached remote worker can still be writing into
+# $TMP_ROOT/remote-jobs/worker.lock when rm -rf runs, which failed CI with
+# "Directory not empty" after every assertion passed.
+# Wait for the worker to exit, then retry rm -rf until the quiesced tree is gone.
+fm_on_teardown() {
+  local worker_pid i
+  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
+    worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid" 2>/dev/null || true)
+    if [ -n "$worker_pid" ]; then
+      kill "$worker_pid" 2>/dev/null || true
+      i=0
+      while [ "$i" -lt 500 ] && kill -0 "$worker_pid" 2>/dev/null; do
+        sleep 0.01
+        i=$((i + 1))
+      done
+    fi
+  fi
+  i=0
+  while [ "$i" -lt 50 ]; do
+    rm -rf -- "$TMP_ROOT" 2>/dev/null && return 0
+    sleep 0.02
+    i=$((i + 1))
+  done
+  rm -rf -- "$TMP_ROOT" 2>/dev/null || true
+}
+trap fm_on_teardown EXIT
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
