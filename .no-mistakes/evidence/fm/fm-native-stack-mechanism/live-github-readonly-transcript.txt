@@ -1,0 +1,50 @@
+Live, read-only run of bin/fm-stack-check.sh with the real gh against GitHub (no stub), 2026-09-17.
+
+## Open native stack #843 (zeigmal_mono 841 -> 842)
+
+$ bin/fm-stack-check.sh https://github.com/zeigmal/zeigmal_mono/pull/841 https://github.com/zeigmal/zeigmal_mono/pull/842
+stack ok: #843 base=feat-outdoor-tour-navigation size=2: https://github.com/zeigmal/zeigmal_mono/pull/841 https://github.com/zeigmal/zeigmal_mono/pull/842
+[exit 0]
+
+## Same stack, given top to bottom
+
+$ bin/fm-stack-check.sh https://github.com/zeigmal/zeigmal_mono/pull/842 https://github.com/zeigmal/zeigmal_mono/pull/841
+error: https://github.com/zeigmal/zeigmal_mono/pull/842 (given position 1 of 2): GitHub places it at position 2 of stack #843
+error: https://github.com/zeigmal/zeigmal_mono/pull/842 (given position 1 of 2): targets 'fm/outdoor-start-nav-maps-stack-n1', not the stack base 'feat-outdoor-tour-navigation'
+error: https://github.com/zeigmal/zeigmal_mono/pull/841 (given position 2 of 2): GitHub places it at position 1 of stack #843
+error: https://github.com/zeigmal/zeigmal_mono/pull/841 (given position 2 of 2): targets 'feat-outdoor-tour-navigation', not 'fm/outdoor-start-nav-maps-stack-n1-2', the branch of https://github.com/zeigmal/zeigmal_mono/pull/842 below it
+not proven: GitHub does not report these 2 PRs as one native stack in this order
+[exit 1]
+
+## Merged native stack #813 (811 merged, 812 retargeted to the stack base)
+
+$ bin/fm-stack-check.sh https://github.com/zeigmal/zeigmal_mono/pull/811 https://github.com/zeigmal/zeigmal_mono/pull/812
+stack ok: #813 base=feat/placement-tool size=2: https://github.com/zeigmal/zeigmal_mono/pull/811 https://github.com/zeigmal/zeigmal_mono/pull/812
+[exit 0]
+
+## A real chain with no stack: zeigmal_cms 372's base is 370's head branch, GitHub reports no stack
+
+$ bin/fm-stack-check.sh https://github.com/zeigmal/zeigmal_cms/pull/370 https://github.com/zeigmal/zeigmal_cms/pull/372
+error: https://github.com/zeigmal/zeigmal_cms/pull/370 (given position 1 of 2): GitHub reports no stack for this PR
+error: https://github.com/zeigmal/zeigmal_cms/pull/372 (given position 2 of 2): GitHub reports no stack for this PR
+not proven: GitHub does not report these 2 PRs as one native stack in this order
+[exit 1]
+
+## Mixed: zeigmal_cms 374 is in stack #386, 379 merely chains onto its branch
+
+$ bin/fm-stack-check.sh https://github.com/zeigmal/zeigmal_cms/pull/374 https://github.com/zeigmal/zeigmal_cms/pull/379
+error: https://github.com/zeigmal/zeigmal_cms/pull/379 (given position 2 of 2): GitHub reports no stack for this PR
+not proven: GitHub does not report these 2 PRs as one native stack in this order
+[exit 1]
+
+## zeigmal_cms 377/382, the chain wrongly called a stack earlier on 2026-09-17, has since been linked: GitHub now reports stack #392
+
+$ bin/fm-stack-check.sh https://github.com/zeigmal/zeigmal_cms/pull/377 https://github.com/zeigmal/zeigmal_cms/pull/382
+stack ok: #392 base=main size=2: https://github.com/zeigmal/zeigmal_cms/pull/377 https://github.com/zeigmal/zeigmal_cms/pull/382
+[exit 0]
+
+## Raw REST stack field behind that last result:
+$ gh api -H "X-GitHub-Api-Version: 2026-03-10" repos/zeigmal/zeigmal_cms/pulls/377 --jq .stack
+{"base":{"ref":"main","sha":"4b2192016d3d996a659b19e0e410627e336336db"},"id":1213792,"number":392,"position":1,"size":2}
+$ gh api -H "X-GitHub-Api-Version: 2026-03-10" repos/zeigmal/zeigmal_cms/pulls/382 --jq .stack
+{"base":{"ref":"main","sha":"4b2192016d3d996a659b19e0e410627e336336db"},"id":1213792,"number":392,"position":2,"size":2}
