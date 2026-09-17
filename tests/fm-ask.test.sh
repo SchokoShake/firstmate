@@ -41,6 +41,12 @@ run_ask() {  # <home> <args...>
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$ASK" "$@"
 }
 
+run_ask_ledger_in() {  # <home> <ledger-dir> <args...>
+  local home=$1 ledger_dir=$2
+  shift 2
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_DATA_OVERRIDE="$ledger_dir" "$ASK" "$@"
+}
+
 run_decision_hold() {  # <home> <args...>
   local home=$1
   shift
@@ -155,10 +161,13 @@ test_again_refuses_without_a_new_question() {
 }
 
 # The one write this script owns can fail for reasons only tasks-axi knows, and the
-# ledger's presence is what says firstmate has re-asked in this home.
+# ledger's presence is what says firstmate has re-asked in this home. The ledger
+# lives in its own directory here so the backlog's can be made unwritable alone.
 test_a_failed_re_ask_reports_why_and_leaves_the_ledger_as_it_found_it() {
-  local home id other out rc before
+  local home ledger_dir id other out rc before
   home=$(make_home write-failure)
+  ledger_dir="$home/ledger"
+  mkdir -p "$ledger_dir"
   id=placement-axes-p19
   compose_action_card "$home" "$id"
 
@@ -167,25 +176,72 @@ test_a_failed_re_ask_reports_why_and_leaves_the_ledger_as_it_found_it() {
   assert_contains "$out" "--reason is required" "a blank reason states nothing and must say so"
   assert_absent "$home/data/ask-revisions" "a blank re-ask wrote the revision ledger"
 
-  # tasks-axi refuses a reason that begins with -- and says why on stdout.
-  rc=0; out=$(run_ask "$home" again "$id" --reason "--kind" 2>&1) || rc=$?
-  expect_code 1 "$rc" "a re-ask whose reason tasks-axi refuses"
+  chmod 555 "$home/data"
+  if [ -w "$home/data" ]; then
+    chmod 755 "$home/data"
+    pass "skipped: this user writes a mode-555 backlog directory anyway"
+    return 0
+  fi
+
+  # tasks-axi cannot write the hold and says why on stdout.
+  rc=0; out=$(run_ask_ledger_in "$home" "$ledger_dir" again "$id" --reason "the window moved" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask whose hold write tasks-axi cannot make"
   assert_contains "$out" "could not write the new question" "a failed re-ask must name what it could not do"
-  assert_contains "$out" "VALIDATION_ERROR" "a failed re-ask must carry what tasks-axi said about it"
-  [ "$(run_ask "$home" revision "$id")" = 1 ] || fail "the failed re-ask left the revision bumped"
-  assert_absent "$home/data/ask-revisions" \
+  assert_contains "$out" "permission denied" "a failed re-ask must carry what tasks-axi said about it"
+  [ "$(run_ask_ledger_in "$home" "$ledger_dir" revision "$id")" = 1 ] || fail "the failed re-ask left the revision bumped"
+  assert_absent "$ledger_dir/ask-revisions" \
     "a failed first re-ask left a revision ledger in a home that has never re-asked"
 
+  chmod 755 "$home/data"
   other=placement-axes-p20
   compose_action_card "$home" "$other"
-  run_ask "$home" again "$other" --reason "the window moved; pick another" >/dev/null \
+  run_ask_ledger_in "$home" "$ledger_dir" again "$other" --reason "the window moved; pick another" >/dev/null \
     || fail "the re-ask that gives the ledger its content failed"
-  before=$(cat "$home/data/ask-revisions")
-  rc=0; run_ask "$home" again "$id" --reason "--kind" >/dev/null 2>&1 || rc=$?
+  before=$(cat "$ledger_dir/ask-revisions")
+  chmod 555 "$home/data"
+  rc=0; run_ask_ledger_in "$home" "$ledger_dir" again "$id" --reason "the window moved" >/dev/null 2>&1 || rc=$?
+  chmod 755 "$home/data"
   expect_code 1 "$rc" "a failed re-ask in a home that has re-asked before"
-  [ "$before" = "$(cat "$home/data/ask-revisions")" ] \
+  [ "$before" = "$(cat "$ledger_dir/ask-revisions")" ] \
     || fail "a failed re-ask changed a ledger it did not create"
   pass "a re-ask that cannot be written says why and leaves the ledger as it found it"
+}
+
+# The bump is the first write, so its failure has to say where and why on its own.
+test_a_failed_bump_names_the_ledger_and_the_cause() {
+  local home id out rc
+  home=$(make_home bump-failure)
+  id=placement-axes-p23
+  compose_action_card "$home" "$id"
+  rc=0; out=$(run_ask_ledger_in "$home" "$home/no-such-dir" again "$id" --reason "the window moved" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask whose ledger directory does not exist"
+  assert_contains "$out" "$home/no-such-dir/ask-revisions" "a failed bump must name the ledger it could not write"
+  assert_contains "$out" "ledger directory does not exist" "a failed bump must say why the write failed"
+  [ "$(shown_field "$home" "$id" hold_reason)" = "confirm the rollout window" ] \
+    || fail "a re-ask whose bump failed still rewrote the question"
+  pass "a revision bump that cannot be recorded names the ledger and the cause"
+}
+
+# tasks-axi reads a bare value beginning with -- as a flag, so the reason reaches it
+# in the --reason=<value> form, which this script accepts too.
+test_a_question_beginning_with_dashes_is_writable() {
+  local home id
+  home=$(make_home dashdash-reason)
+  id=placement-axes-p21
+  compose_action_card "$home" "$id"
+  run_ask "$home" again "$id" --reason "--until is unset; pick a window" >/dev/null \
+    || fail "a re-ask whose reason begins with -- was refused"
+  [ "$(run_ask "$home" revision "$id")" = 2 ] || fail "a reason beginning with -- did not bump the revision"
+  assert_grep "(hold: --until is unset; pick a window) (hold-kind: captain)" "$home/data/backlog.md" \
+    "a reason beginning with -- was not written as the hold reason"
+
+  run_ask "$home" again "$id" --reason="--kind was never the question; pick a window" >/dev/null \
+    || fail "a re-ask in the --reason=<value> form was refused"
+  [ "$(run_ask "$home" revision "$id")" = 3 ] || fail "the --reason=<value> form did not bump the revision"
+  assert_grep "(hold: --kind was never the question; pick a window) (hold-kind: captain)" "$home/data/backlog.md" \
+    "the --reason=<value> form did not write the hold reason"
+  [ "$(shown_field "$home" "$id" hold_kind)" = captain ] || fail "a reason naming a flag changed the hold kind"
+  pass "a question beginning with -- is written and bumps the revision in either --reason form"
 }
 
 # Running `again` is itself the declaration that this is a new question, so it
@@ -546,20 +602,60 @@ test_snapshot_publishes_an_identity_only_for_an_open_captain_ask() {
   pass "the snapshot publishes a question identity for exactly the open captain asks"
 }
 
-test_a_malformed_ledger_entry_degrades_to_revision_one() {
-  local home id
+# A malformed value on a valid subject is not an absent line: reading it as
+# revision 1 would return a re-asked subject to an identity an old answer settles.
+test_a_malformed_revision_value_publishes_no_identity() {
+  local home id other absent out rc command expected
   home=$(make_home malformed-ledger)
   id=placement-axes-p8
+  other=placement-axes-p22
+  absent=placement-axes-p24
   compose_action_card "$home" "$id"
-  cat > "$home/data/ask-revisions" <<EOF
-# a hand-edit that went wrong
-$id=not-a-number
+  compose_action_card "$home" "$other"
+  compose_action_card "$home" "$absent"
+  expected="# a hand-edit that went wrong
+$id=four
+$other=3
 other/subject=4
-EOF
-  [ "$(run_ask "$home" revision "$id")" = 1 ] || fail "a malformed revision was trusted"
-  [ "$(published_ask_id "$home" "$id")" = "fm-ask/1:$id:captain:1" ] \
-    || fail "a malformed ledger entry produced an identity instead of falling back to revision 1"
-  pass "a malformed ledger entry is ignored rather than minting an identity"
+a line the ledger does not recognize"
+  printf '%s\n' "$expected" > "$home/data/ask-revisions"
+
+  for command in id revision; do
+    rc=0; out=$(run_ask "$home" "$command" "$id" 2>&1) || rc=$?
+    expect_code 1 "$rc" "fm-ask.sh $command on a subject whose ledger value is malformed"
+    assert_contains "$out" "$id=four" "fm-ask.sh $command must name the malformed ledger line"
+    assert_contains "$out" "$home/data/ask-revisions" "fm-ask.sh $command must name the ledger holding the malformed line"
+  done
+  rc=0; out=$(run_ask "$home" again "$id" --reason "the Friday train closed; pick the next window" 2>&1) || rc=$?
+  expect_code 1 "$rc" "a re-ask of a subject whose ledger value is malformed"
+  assert_contains "$out" "$id=four" "a refused re-ask must name the malformed ledger line"
+  [ "$(shown_field "$home" "$id" hold_reason)" = "confirm the rollout window" ] \
+    || fail "a re-ask refused over a malformed revision still rewrote the question"
+  [ "$(cat "$home/data/ask-revisions")" = "$expected" ] || fail "a refused re-ask rewrote the ledger"
+
+  [ "$(published_ask_id "$home" "$id")" = null ] \
+    || fail "a malformed revision value published an identity instead of null"
+  [ "$(published_ask_revision "$home" "$id")" = null ] \
+    || fail "a malformed revision value published a revision instead of null"
+  [ "$(published_ask_id "$home" "$other")" = "fm-ask/1:$other:captain:3" ] \
+    || fail "a malformed value on one subject took another subject's identity with it"
+  [ "$(published_ask_id "$home" "$absent")" = "fm-ask/1:$absent:captain:1" ] \
+    || fail "a subject with no ledger line stopped reading as revision 1"
+  [ "$(run_ask "$home" revision "$absent")" = 1 ] || fail "an absent line stopped meaning revision 1"
+
+  # The malformed line and the ignored ones survive another subject's re-ask.
+  run_ask "$home" again "$other" --reason "the next window slipped too" >/dev/null \
+    || fail "a malformed line for one subject blocked another subject's re-ask"
+  expected=${expected/"$other=3"/"$other=4"}
+  [ "$(cat "$home/data/ask-revisions")" = "$expected" ] \
+    || fail "a re-ask did not preserve the lines it does not own; the ledger reads:"$'\n'"$(cat "$home/data/ask-revisions")"
+
+  # The last line for a subject wins, so a later valid line is the correction.
+  printf '%s=5\n' "$id" >> "$home/data/ask-revisions"
+  [ "$(run_ask "$home" revision "$id")" = 5 ] || fail "a corrected line did not restore the subject's revision"
+  [ "$(published_ask_id "$home" "$id")" = "fm-ask/1:$id:captain:5" ] \
+    || fail "a corrected line did not restore the published identity"
+  pass "a malformed revision value fails loudly and publishes null for that subject only"
 }
 
 test_a_leading_zero_revision_is_read_as_its_number() {
@@ -604,6 +700,8 @@ test_again_bumps_the_identity_and_writes_the_new_question
 test_again_refuses_without_a_new_question
 test_again_re_asks_on_the_authors_word_not_on_changed_prose
 test_a_failed_re_ask_reports_why_and_leaves_the_ledger_as_it_found_it
+test_a_failed_bump_names_the_ledger_and_the_cause
+test_a_question_beginning_with_dashes_is_writable
 test_a_quoted_reason_rewrites_without_re_asking
 test_concurrent_re_asks_keep_every_ledger_line
 test_again_drops_the_hold_deadline
@@ -616,7 +714,7 @@ test_again_refuses_a_decision_hold
 test_a_refusal_names_the_hold_it_found
 test_close_paths_leave_the_revision_alone
 test_snapshot_publishes_an_identity_only_for_an_open_captain_ask
-test_a_malformed_ledger_entry_degrades_to_revision_one
+test_a_malformed_revision_value_publishes_no_identity
 test_a_leading_zero_revision_is_read_as_its_number
 test_snapshot_publishes_no_identity_on_a_done_row_sharing_an_open_rows_id
 

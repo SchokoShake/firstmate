@@ -9,6 +9,7 @@
 #   fm-ask.sh id <task-id>
 #   fm-ask.sh revision <task-id>
 #   fm-ask.sh again <task-id> --reason <reason>
+#   fm-ask.sh again <task-id> --reason=<reason>
 #
 # `id` and `revision` are read-only and answer for a row carrying a captain hold
 # that is not yet Done; a row that is not being asked about has no question
@@ -36,14 +37,18 @@
 # second owner on a deadline this script does not own.
 #
 # The revision is read before it is used, and a ledger that exists but cannot be
-# read fails the command instead of answering 1: a subject silently dropped back to
-# revision 1 is how an old answer settles a genuinely new question.
+# read, or whose line for this subject carries a malformed value, fails the command
+# instead of answering 1: a subject silently dropped back to revision 1 is how an
+# old answer settles a genuinely new question.
 #
-# --reason is required, because a re-ask has to say what is now being asked. It is
-# never compared against the reason already on the row: running `again` IS the
-# declaration that this is a new question, so it re-asks even when the wording is
-# unchanged. Nothing else moves the revision, and no similarity test stands between
-# the author and a question they deliberately asked again.
+# --reason is required, because a re-ask has to say what is now being asked. The
+# reason is never compared against the one already on the row: running `again` IS
+# the declaration that this is a new question, so it re-asks even when the wording
+# is unchanged. Nothing else moves the revision, and no similarity test stands
+# between the author and a question they deliberately asked again.
+#
+# The --reason=<reason> form is how a question that itself begins with "--" is
+# written, and it is the form the reason reaches tasks-axi in either way.
 #
 # The bump lands BEFORE the reason. If the reason write then fails the revision is
 # restored and the failure carries what tasks-axi said, so an interrupted re-ask
@@ -162,8 +167,13 @@ refuse_decision_hold() {  # <task-id>
 }
 
 read_revision() {  # <task-id>
-  fm_ask_revision "$LEDGER" "$1" \
-    || fail "could not read the revision ledger $LEDGER; $1 has a recorded revision this cannot answer for"
+  local answer rc=0
+  answer=$(fm_ask_revision "$LEDGER" "$1") || rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$answer" ;;
+    2) fail "the revision ledger $LEDGER records a malformed revision for $1 at $answer; correct that line to the subject's real revision, because reading it as revision 1 would let an old answer settle a new question" ;;
+    *) fail "could not read the revision ledger $LEDGER; $1 has a recorded revision this cannot answer for" ;;
+  esac
 }
 
 command_id() {
@@ -182,12 +192,13 @@ command_revision() {
 }
 
 command_again() {
-  local id=${1:-} reason='' previous next ledger_existed=0 hold_error pairs
+  local id=${1:-} reason='' previous next ledger_existed=0 bump_error hold_error pairs
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --reason) shift; reason=${1:-} ;;
+      --reason=*) reason=${1#--reason=} ;;
       *) usage >&2; exit 2 ;;
     esac
     [ "$#" -eq 0 ] || shift
@@ -208,8 +219,9 @@ command_again() {
   [ ! -f "$LEDGER" ] || ledger_existed=1
   previous=$(read_revision "$id") || exit 1
   next=$((previous + 1))
-  fm_ask_write_revision "$LEDGER" "$id" "$next" || fail "could not record revision $next for $id"
-  if ! hold_error=$(tasks_axi hold "$id" --reason "$reason" --kind captain 2>&1); then
+  bump_error=$(fm_ask_write_revision "$LEDGER" "$id" "$next" 2>&1) \
+    || fail "could not record revision $next for $id in $LEDGER: $bump_error"
+  if ! hold_error=$(tasks_axi hold "$id" --reason="$reason" --kind captain 2>&1); then
     fm_ask_write_revision "$LEDGER" "$id" "$previous" \
       || fail "could not write the new question on $id, and revision $next is now recorded with the old wording; re-run with the intended reason. tasks-axi said:"$'\n'"$hold_error"
     if [ "$ledger_existed" = 0 ] && pairs=$(fm_ask_ledger_pairs "$LEDGER") && [ -z "$pairs" ]; then

@@ -41,10 +41,15 @@
 # publishes no identity for any row. Answering 1 for a subject already recorded
 # higher would hand an old answer a genuinely new question.
 #
-# An entry whose key is not a privacy-safe slug or whose value is not a positive
-# integer is ignored rather than repaired, so a hand-edit that went wrong degrades
-# to revision 1 - the board's behaviour before any of this existed - instead of
-# minting an identity from a malformed line.
+# A line with no "=" or whose key is not a privacy-safe slug is ignored, so a human
+# annotation is tolerated. A line whose key IS a valid subject but whose value is
+# not a positive integer is a different thing: that subject was re-asked and its
+# revision is now unknowable, so it gets no identity at all - bin/fm-ask.sh fails
+# naming the line and the snapshot publishes null for that subject only. Reading it
+# as revision 1, as an absent line legitimately is, would silently return the
+# subject to an earlier revision and let an old answer settle a genuinely new
+# question. As everywhere in the ledger the last line for a subject wins, so a
+# later valid line repairs an earlier malformed one.
 #
 # A re-ask rewrites only its own subject's line, so comments and every other line
 # a human wrote survive it.
@@ -54,8 +59,10 @@ fm_ask_ledger_path() {  # [<data-dir>]
   printf '%s/ask-revisions\n' "$data"
 }
 
-# The one reading of a ledger line, shared by every awk program below: fm_ask_pair
-# returns 1 and fills out["key"] and out["val"] for a valid pair, 0 otherwise.
+# The one reading of a ledger line, shared by every awk program below. fm_ask_pair
+# fills out["key"] and out["val"] and returns 1 for a valid pair, returns 2 with
+# only out["key"] filled for a valid subject carrying a malformed value, and
+# returns 0 for a line the ledger ignores.
 _FM_ASK_LEDGER_AWK='
 function fm_ask_pair(line, out,    f, n) {
   if (line ~ /^[[:space:]]*(#|$)/) return 0
@@ -63,17 +70,24 @@ function fm_ask_pair(line, out,    f, n) {
   if (n < 2) return 0
   out["key"] = f[1]; sub(/^[[:space:]]+/, "", out["key"]); sub(/[[:space:]]+$/, "", out["key"])
   out["val"] = f[2]; sub(/^[[:space:]]+/, "", out["val"]); sub(/[[:space:]]+$/, "", out["val"])
-  if (out["key"] !~ /^[A-Za-z0-9._-]+$/ || out["val"] !~ /^[0-9]+$/ || out["val"] + 0 < 1) return 0
+  if (out["key"] !~ /^[A-Za-z0-9._-]+$/) return 0
+  if (out["val"] !~ /^[0-9]+$/ || out["val"] + 0 < 1) return 2
   out["val"] = out["val"] + 0
   return 1
 }
 '
 
-fm_ask_ledger_pairs() {  # <ledger-path>; prints "<subject>\t<revision>", one per subject
+# Prints "<subject>\t<revision>", one per subject. A subject whose winning line
+# carries a malformed value prints "<subject>\t!line <n>: <the line>" instead.
+fm_ask_ledger_pairs() {  # <ledger-path>
   local ledger=$1 pairs
   [ -f "$ledger" ] || return 0
   pairs=$(LC_ALL=C awk "$_FM_ASK_LEDGER_AWK"'
-    { if (fm_ask_pair($0, p)) pairs[p["key"]] = p["val"] }
+    {
+      kind = fm_ask_pair($0, p)
+      if (kind == 1) pairs[p["key"]] = p["val"]
+      else if (kind == 2) pairs[p["key"]] = "!line " NR ": " $0
+    }
     END { for (k in pairs) printf "%s\t%s\n", k, pairs[k] }
   ' "$ledger") || return 1
   [ -z "$pairs" ] || printf '%s\n' "$pairs"
@@ -87,12 +101,16 @@ fm_ask_is_subject() {  # <subject>
 }
 
 # The lookup rule, over pairs already read. fm_ask_ledger_pairs keeps one entry
-# per subject, so the first match is the answer.
+# per subject, so the first match is the answer. A subject whose value is malformed
+# has no revision: this prints the offending ledger line instead and returns 2.
 fm_ask_revision_in() {  # <pairs-text> <subject>
   local key value
   if fm_ask_is_subject "$2"; then
     while IFS=$'\t' read -r key value; do
       [ "$key" = "$2" ] || continue
+      case "$value" in
+        '!'*) printf '%s\n' "${value#!}"; return 2 ;;
+      esac
       printf '%s\n' "$value"
       return 0
     done <<EOF
@@ -102,6 +120,8 @@ EOF
   printf '1\n'
 }
 
+# Returns 1 when the ledger cannot be read, and 2 with the offending line printed
+# when the subject's value is malformed.
 fm_ask_revision() {  # <ledger-path> <subject>
   local pairs
   pairs=$(fm_ask_ledger_pairs "$1") || return 1
@@ -116,14 +136,17 @@ fm_ask_id() {  # <subject> <hold-kind> <revision>
 # subject's own line: the last line naming it is rewritten in place, an earlier
 # duplicate is dropped, a subject with no line is appended, and a revision of 1
 # removes the line so the ledger keeps naming exactly the re-asked subjects.
+# Every failure says why on stderr, in its own words or the failing tool's.
 fm_ask_write_revision() {  # <ledger-path> <subject> <revision>
   local ledger=$1 subject=$2 revision=$3 tmp dir
-  fm_ask_is_subject "$subject" || return 1
-  case "$revision" in ''|*[!0-9]*) return 1 ;; esac
+  fm_ask_is_subject "$subject" || { printf 'subject is not a privacy-safe slug: %s\n' "$subject" >&2; return 1; }
+  case "$revision" in
+    ''|*[!0-9]*) printf 'revision is not a positive integer: %s\n' "$revision" >&2; return 1 ;;
+  esac
   revision=$((10#$revision))
-  [ "$revision" -ge 1 ] || return 1
+  [ "$revision" -ge 1 ] || { printf 'revision is not a positive integer: %s\n' "$revision" >&2; return 1; }
   dir=$(dirname "$ledger")
-  [ -d "$dir" ] || return 1
+  [ -d "$dir" ] || { printf 'ledger directory does not exist: %s\n' "$dir" >&2; return 1; }
   tmp=$(mktemp "$ledger.XXXXXX") || return 1
   {
     if [ -f "$ledger" ]; then
@@ -168,9 +191,10 @@ fm_ask_write_revision() {  # <ledger-path> <subject> <revision>
 # Both payloads reach jq on stdin, never as an argument: the annotated document is
 # unbounded, and the map grows with the fleet's captain holds.
 #
-# A ledger that cannot be read leaves every record null, which is the same "no
-# identity" answer a consumer already handles for an out-of-alphabet id, rather than
-# a published revision 1 the ledger never said.
+# A ledger that cannot be read leaves every record null, and a subject whose ledger
+# value is malformed leaves that one record null, which is the same "no identity"
+# answer a consumer already handles for an out-of-alphabet id, rather than a
+# published revision 1 the ledger never said.
 fm_ask_annotate_backlog_json() {  # [<ledger-path>]
   local ledger=${1:-$(fm_ask_ledger_path)} parsed pairs subject revision entries='' sep='' ask_row
   ask_row='def ask_row: .structured == true and .state != "done" and .hold_kind == "captain" and .hold_reason != null and .id != null;'
@@ -178,7 +202,7 @@ fm_ask_annotate_backlog_json() {  # [<ledger-path>]
   if pairs=$(fm_ask_ledger_pairs "$ledger"); then
     while IFS= read -r subject; do
       fm_ask_is_subject "$subject" || continue
-      revision=$(fm_ask_revision_in "$pairs" "$subject")
+      revision=$(fm_ask_revision_in "$pairs" "$subject") || continue
       entries="$entries$sep\"$subject\":{\"ask_id\":\"$(fm_ask_id "$subject" captain "$revision")\",\"ask_revision\":$revision}"
       sep=','
     done <<EOF

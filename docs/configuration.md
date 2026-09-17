@@ -71,12 +71,16 @@ Deriving one of its own from the row's title, reason, or parsed options reintrod
 
 The revision is producer-owned and is 1 until firstmate deliberately re-asks.
 `data/ask-revisions` records it as one `<subject>=<revision>` line per re-asked subject, with `#` comments and blank lines ignored and the last line for a subject winning.
-An absent file and an absent line both mean revision 1, so the file stays empty until firstmate actually re-asks, and an entry whose key is not a slug or whose value is not a positive integer is ignored rather than repaired.
+An absent file and an absent line both mean revision 1, so the file stays empty until firstmate actually re-asks.
+A line with no `=` or whose key is not a slug is ignored, so a human annotation is tolerated.
+A line whose key is a valid subject but whose value is not a positive integer is not read as revision 1: the snapshot publishes `null` `ask_id` and `ask_revision` for that subject only, and `fm-ask.sh` fails naming the line until it is corrected.
+That differs from an absent line on purpose, because silently returning a re-asked subject to an earlier revision is what lets an old answer settle a genuinely new question.
 A ledger that exists but cannot be read is not treated as an empty one: `fm-ask.sh` refuses instead of answering 1, and the snapshot publishes `null` for every row rather than a revision it could not read.
 A re-ask rewrites only its own subject's line, so comments and every other line a human wrote survive it.
 It is durable private fleet data rather than runtime state, because a subject that dropped back to an earlier revision would let an old answer settle a genuinely new question.
 
 [`bin/fm-ask.sh`](../bin/fm-ask.sh) is the only writer and the one command that re-asks: `fm-ask.sh again <task-id> --reason "<the new question>"` bumps the revision and writes the new reason together.
+A question that itself begins with `--` is written in the `--reason="<the new question>"` form.
 Running that command is itself the declaration that this is a new question, so it re-asks even when the wording is unchanged, and the revision can move without the prose moving.
 A re-ask never carries the row's existing hold deadline forward and never invents one: it is written through the same `tasks-axi hold` call as any other hold, so it takes whatever deadline that command applies by default.
 Today that default is no deadline, so the re-asked question stays live until it is answered or given one.
