@@ -31,7 +31,7 @@
 # every teardown that prunes state/<id>.* - a subject that dropped back to an
 # earlier revision would let an old answer settle a genuinely new question.
 #
-# An absent file and an absent line both mean revision 1, so the ledger stays empty
+# An absent file and an absent line both mean revision 1, so the ledger stays absent
 # until firstmate actually re-asks, and only bin/fm-ask.sh writes it. That is what
 # makes "a reason rewrite never re-asks" true by construction rather than by
 # remembering to preserve something: no rewrite path touches this file at all.

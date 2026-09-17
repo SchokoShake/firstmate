@@ -71,7 +71,7 @@ Deriving one of its own from the row's title, reason, or parsed options reintrod
 
 The revision is producer-owned and is 1 until firstmate deliberately re-asks.
 `data/ask-revisions` records it as one `<subject>=<revision>` line per re-asked subject, with `#` comments and blank lines ignored and the last line for a subject winning.
-An absent file and an absent line both mean revision 1, so the file stays empty until firstmate actually re-asks.
+An absent file and an absent line both mean revision 1, so the file stays absent until firstmate actually re-asks.
 A line with no `=` or whose key is not a slug is ignored, so a human annotation is tolerated.
 A line whose key is a valid subject but whose value is not a positive integer is not read as revision 1: the snapshot publishes `null` `ask_id` and `ask_revision` for that subject only, and `fm-ask.sh` fails naming the line until it is corrected.
 That differs from an absent line on purpose, because silently returning a re-asked subject to an earlier revision is what lets an old answer settle a genuinely new question.
