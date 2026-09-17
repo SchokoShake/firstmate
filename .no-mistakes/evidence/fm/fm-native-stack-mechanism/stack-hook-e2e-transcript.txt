@@ -1,0 +1,76 @@
+## A. Scaffold the stacked-chain brief
+$ bin/fm-brief.sh task-a some-proj --mode direct-PR --stack
+scaffolded: <tmp>/home/data/task-a/brief.md (ship, mode=direct-PR, native stack; replace {TASK})
+
+--- brief.md: rule 1 and definition of done ---
+21:1. Never push to the default branch or to any branch outside this task's stack. Never merge a PR, and never run `gh stack merge`.
+# Definition of done
+Delivery contract: mode=direct-PR stack=native
+This task ships **direct-PR as one native GitHub stack**: the dependent changes land as a chain of PRs that GitHub itself links into a stack, without the no-mistakes pipeline.
+PRs whose bases merely point at each other are NOT a stack: GitHub creates the stack as a server-side object only through `gh stack`, and nothing short of that object satisfies this task.
+Do NOT run /no-mistakes: it validates against the default branch only and cannot ship a stack.
+
+Build or update the stack with the `gh stack` extension; `gh stack <command> --help` is authoritative for its flags.
+- New work: start the bottom layer with `gh stack init --base <trunk> fm/task-a`, add each layer above it with `gh stack add fm/task-a-<n>`, one concern per layer, then run `gh stack submit --auto` to push every branch, open the PRs with chained bases, and create the stack; its new PRs are drafts unless you add `--open`.
+- Existing PRs: adopt them with `gh stack link <bottom> ... <top>`, naming each by PR number or URL from bottom to top; it corrects their bases and creates or extends the stack. Keep those PR numbers: never close, recreate, or replace a PR to build the stack.
+- After a rebase or restack, run `gh stack submit --auto` again so GitHub's stack matches your branches.
+If `gh stack` is unavailable, or GitHub reports that stacked pull requests are not enabled for the repository, append `blocked: {why}` and stop; never fall back to chained bases.
+
+Run the project's local checks at every layer's own head, and put the exact commands and their results in that layer's PR body, so every layer carries its own evidence whether or not CI runs for it.
+When every layer is committed, pushed, and in the stack, prove it: `<fm-root>/bin/fm-stack-check.sh <bottom-pr-url> ... <top-pr-url>` must exit 0.
+Then append `done: {the one line fm-stack-check.sh printed}` to the status file and stop.
+Never report done without that passing output.
+The captain merges the stack; firstmate never merges a stacked PR and relays the outcome.
+
+## B. --stack is refused outside direct-PR ship briefs
+$ bin/fm-brief.sh t-b some-proj --mode no-mistakes --stack
+error: --stack requires --mode direct-PR: no-mistakes validates against the default branch only and cannot ship a stack, and local-only opens no PR
+[exit 1]
+$ bin/fm-brief.sh t-c some-proj --mode local-only --stack
+error: --stack requires --mode direct-PR: no-mistakes validates against the default branch only and cannot ship a stack, and local-only opens no PR
+[exit 1]
+$ bin/fm-brief.sh t-d some-proj --scout --stack
+error: --stack applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract
+[exit 1]
+
+## C. Worker opened two PRs whose bases chain, but GitHub reports no stack -> nothing recorded
+$ bin/fm-pr-check.sh task-a https://github.com/o/r/pull/21 https://github.com/o/r/pull/22
+error: https://github.com/o/r/pull/21 (given position 1 of 2): GitHub reports no stack for this PR
+error: https://github.com/o/r/pull/22 (given position 2 of 2): GitHub reports no stack for this PR
+not proven: GitHub does not report these 2 PRs as one native stack in this order
+error: not recorded: GitHub does not report these PRs as one native stack in this order
+[exit 1]
+  state/task-a.meta pr lines: 
+  merge poll armed: no
+
+## D. Firstmate tries to record the stacked task as a lone PR -> refused
+$ bin/fm-pr-check.sh task-a https://github.com/o/r/pull/22
+error: https://github.com/o/r/pull/22 is one PR of stacked task task-a (recorded: nothing yet); record the stack with every PR bottom to top so bin/fm-stack-check.sh can prove it. Firstmate never merges a stacked PR; the captain merges stacks
+[exit 1]
+  state/task-a.meta pr lines: 
+  merge poll armed: no
+
+## E. After gh stack link, GitHub reports stack #70 -> proven, recorded on the top PR, poll armed
+$ bin/fm-pr-check.sh task-a https://github.com/o/r/pull/21 https://github.com/o/r/pull/22
+stack ok: #70 base=main size=2: https://github.com/o/r/pull/21 https://github.com/o/r/pull/22
+skipped: tasks-axi is absent or older than 0.2.5, so the backlog was not written
+armed: state/task-a.check.sh
+[exit 0]
+  state/task-a.meta pr lines: pr=https://github.com/o/r/pull/22 pr_head=0123456789abcdef0123456789abcdef01234567 pr_base=fm/task-a-2 
+  merge poll armed: yes
+
+## F. Relaunch re-arm with the recorded top PR alone -> allowed
+$ bin/fm-pr-check.sh task-a https://github.com/o/r/pull/22
+skipped: tasks-axi is absent or older than 0.2.5, so the backlog was not written
+armed: state/task-a.check.sh
+[exit 0]
+  state/task-a.meta pr lines: pr=https://github.com/o/r/pull/22 pr_head=0123456789abcdef0123456789abcdef01234567 pr_base=fm/task-a-2 
+  merge poll armed: yes
+
+## G. A lower layer alone -> refused, names the recorded PR
+$ bin/fm-pr-check.sh task-a https://github.com/o/r/pull/21
+error: https://github.com/o/r/pull/21 is one PR of stacked task task-a (recorded: https://github.com/o/r/pull/22); record the stack with every PR bottom to top so bin/fm-stack-check.sh can prove it. Firstmate never merges a stacked PR; the captain merges stacks
+[exit 1]
+  state/task-a.meta pr lines: pr=https://github.com/o/r/pull/22 pr_head=0123456789abcdef0123456789abcdef01234567 pr_base=fm/task-a-2 
+  merge poll armed: yes
+
