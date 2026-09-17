@@ -1,0 +1,365 @@
+### 1. compose an ordinary captain hold
+
+$ axi hold axes-p3 --reason confirm the rollout window --kind captain
+ok: hold axes-p3 -> held (captain)
+task:
+  id: axes-p3
+  title: adopt the new placement axes
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: confirm the rollout window
+  hold_kind: captain
+  hold_until: "-"
+  kind: ship
+  repo: myapp
+  priority: "-"
+  created: 2026-09-17
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi unhold axes-p3` to resume dispatch
+  - Run `tasks-axi ready --include-held` to review paused work
+[exit 0]
+
+$ ask id axes-p3
+fm-ask/1:axes-p3:captain:1
+[exit 0]
+
+$ ask revision axes-p3
+1
+[exit 0]
+
+$ snap
+{"id":"axes-p3","state":"in_flight","hold_kind":"captain","hold_reason":"confirm the rollout window","ask_id":"fm-ask/1:axes-p3:captain:1","ask_revision":1}
+{"id":"plain-row","state":"queued","hold_kind":null,"hold_reason":null,"ask_id":null,"ask_revision":null}
+[exit 0]
+
+$ ledger
+(data/ask-revisions absent)
+[exit 0]
+
+### 2. rewrite the reason, refresh the hold: identity must not move, ledger untouched
+
+$ axi hold axes-p3 --reason ship the axes now; Recommended: Friday train. Alternatives: next release --kind captain
+ok: hold axes-p3 -> held (captain)
+task:
+  id: axes-p3
+  title: adopt the new placement axes
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: "ship the axes now; Recommended: Friday train. Alternatives: next release"
+  hold_kind: captain
+  hold_until: "-"
+  kind: ship
+  repo: myapp
+  priority: "-"
+  created: 2026-09-17
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi unhold axes-p3` to resume dispatch
+  - Run `tasks-axi ready --include-held` to review paused work
+[exit 0]
+
+$ axi hold axes-p3 --reason ship the axes now; Recommended: Friday train. Alternatives: next release --kind captain
+ok: hold axes-p3 already held
+already: true
+task:
+  id: axes-p3
+  title: adopt the new placement axes
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: "ship the axes now; Recommended: Friday train. Alternatives: next release"
+  hold_kind: captain
+  hold_until: "-"
+  kind: ship
+  repo: myapp
+  priority: "-"
+  created: 2026-09-17
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi unhold axes-p3` to resume dispatch
+  - Run `tasks-axi ready --include-held` to review paused work
+[exit 0]
+
+$ ask id axes-p3
+fm-ask/1:axes-p3:captain:1
+[exit 0]
+
+$ snap
+{"id":"axes-p3","state":"in_flight","hold_kind":"captain","hold_reason":"ship the axes now; Recommended: Friday train. Alternatives: next release","ask_id":"fm-ask/1:axes-p3:captain:1","ask_revision":1}
+{"id":"plain-row","state":"queued","hold_kind":null,"hold_reason":null,"ask_id":null,"ask_revision":null}
+[exit 0]
+
+$ ledger
+(data/ask-revisions absent)
+[exit 0]
+
+### 3. the one deliberate re-ask command
+
+$ ask again axes-p3 --reason the Friday train was cancelled; pick a new window
+fm-ask/1:axes-p3:captain:2
+[exit 0]
+
+$ ask id axes-p3
+fm-ask/1:axes-p3:captain:2
+[exit 0]
+
+$ snap
+{"id":"axes-p3","state":"in_flight","hold_kind":"captain","hold_reason":"the Friday train was cancelled; pick a new window","ask_id":"fm-ask/1:axes-p3:captain:2","ask_revision":2}
+{"id":"plain-row","state":"queued","hold_kind":null,"hold_reason":null,"ask_id":null,"ask_revision":null}
+[exit 0]
+
+$ ledger
+# Captain-ask revisions, written only by bin/fm-ask.sh again.
+# An absent subject is revision 1; see bin/fm-ask-lib.sh.
+axes-p3=2
+[exit 0]
+
+### 4. re-ask with unchanged wording still re-asks (no nag guard); a question starting with -- is writable
+
+$ ask again axes-p3 --reason the Friday train was cancelled; pick a new window
+fm-ask/1:axes-p3:captain:3
+[exit 0]
+
+$ ask again axes-p3 --reason=--force or --dry-run for the migration
+fm-ask/1:axes-p3:captain:4
+[exit 0]
+
+$ axi show axes-p3 --full
+task:
+  id: axes-p3
+  title: adopt the new placement axes
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: "--force or --dry-run for the migration"
+  hold_kind: captain
+  hold_until: "-"
+  kind: ship
+  repo: myapp
+  priority: "-"
+  created: 2026-09-17
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+[exit 0]
+
+$ ask again axes-p3 --reason --a bare value beginning with dashes
+fm-ask/1:axes-p3:captain:5
+[exit 0]
+
+$ axi show axes-p3 --full
+task:
+  id: axes-p3
+  title: adopt the new placement axes
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: "--a bare value beginning with dashes"
+  hold_kind: captain
+  hold_until: "-"
+  kind: ship
+  repo: myapp
+  priority: "-"
+  created: 2026-09-17
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+[exit 0]
+
+$ ledger
+# Captain-ask revisions, written only by bin/fm-ask.sh again.
+# An absent subject is revision 1; see bin/fm-ask-lib.sh.
+axes-p3=5
+[exit 0]
+
+### 5. --reason is required
+
+$ ask again axes-p3
+fm-ask: --reason is required; a re-ask must state what is now being asked
+[exit 1]
+
+$ ask again axes-p3 --reason
+fm-ask: --reason is required; a re-ask must state what is now being asked
+[exit 1]
+
+$ ask again axes-p3 --reason    
+fm-ask: --reason is required; a re-ask must state what is now being asked
+[exit 1]
+
+$ ask revision axes-p3
+5
+[exit 0]
+
+### 6. refusals: unheld row, decision hold
+
+$ ask id plain-row
+fm-ask: backlog item plain-row is not held; only a held row is a question to the captain
+[exit 1]
+
+$ dh hold axes-p3 cutover --title Cutover timing --reason cut over on Friday or wait --repo myapp
+axes-p3-decision-cutover
+[exit 0]
+
+$ axi hold axes-p3-decision-cutover --reason Decide: cut over Friday. Alternatives: wait a week --kind captain
+ok: hold axes-p3-decision-cutover -> held (captain)
+task:
+  id: axes-p3-decision-cutover
+  title: Cutover timing
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: "Decide: cut over Friday. Alternatives: wait a week"
+  hold_kind: captain
+  hold_until: "-"
+  kind: captain
+  repo: myapp
+  priority: "-"
+  created: 2026-09-17
+  closed: "-"
+  deps: none
+  links: none
+  body: "Origin: axes-p3\nDecision key: cutover\nState: awaiting captain decision."
+help[2]:
+  - Run `tasks-axi unhold axes-p3-decision-cutover` to resume dispatch
+  - Run `tasks-axi ready --include-held` to review paused work
+[exit 0]
+
+$ ask id axes-p3-decision-cutover
+fm-ask/1:axes-p3-decision-cutover:captain:1
+[exit 0]
+
+$ ask again axes-p3-decision-cutover --reason something new
+fm-ask: axes-p3-decision-cutover is a decision hold; re-ask it with a new decision key through fm-decision-hold.sh hold, which mints a new durable identity
+[exit 1]
+
+$ snap
+{"id":"axes-p3","state":"in_flight","hold_kind":"captain","hold_reason":"--a bare value beginning with dashes","ask_id":"fm-ask/1:axes-p3:captain:5","ask_revision":5}
+{"id":"plain-row","state":"queued","hold_kind":null,"hold_reason":null,"ask_id":null,"ask_revision":null}
+{"id":"axes-p3-decision-cutover","state":"queued","hold_kind":"captain","hold_reason":"Decide: cut over Friday. Alternatives: wait a week","ask_id":"fm-ask/1:axes-p3-decision-cutover:captain:1","ask_revision":1}
+[exit 0]
+
+### 7. close paths leave the ledger alone; a Done row publishes null
+
+$ dh decline axes-p3 cutover --decision-file /tmp/fm-ask-demo.rMuqxA/decision.txt
+declined: axes-p3-decision-cutover
+[exit 0]
+ledger byte-identical across decline
+
+$ snap
+{"id":"axes-p3","state":"in_flight","hold_kind":"captain","hold_reason":"--a bare value beginning with dashes","ask_id":"fm-ask/1:axes-p3:captain:5","ask_revision":5}
+{"id":"plain-row","state":"queued","hold_kind":null,"hold_reason":null,"ask_id":null,"ask_revision":null}
+{"id":"axes-p3-decision-cutover","state":"done","hold_kind":"captain","hold_reason":"Decide: cut over Friday. Alternatives: wait a week","ask_id":null,"ask_revision":null}
+[exit 0]
+
+### 8. human-edited ledger: comments survive, malformed value fails loudly, snapshot nulls that subject only
+
+$ ledger
+# Captain-ask revisions, written only by bin/fm-ask.sh again.
+# An absent subject is revision 1; see bin/fm-ask-lib.sh.
+axes-p3=5
+# captain note: keep this
+axes-p3=four
+not a ledger line
+[exit 0]
+
+$ ask id axes-p3
+fm-ask: the revision ledger <home>/data/ask-revisions records a malformed revision for axes-p3 at line 5: axes-p3=four; correct that line to the subject's real revision, because reading it as revision 1 would let an old answer settle a new question
+[exit 1]
+
+$ ask again axes-p3 --reason try anyway
+fm-ask: the revision ledger <home>/data/ask-revisions records a malformed revision for axes-p3 at line 5: axes-p3=four; correct that line to the subject's real revision, because reading it as revision 1 would let an old answer settle a new question
+[exit 1]
+
+$ ask id other-q
+fm-ask/1:other-q:captain:1
+[exit 0]
+
+$ snap
+{"id":"other-q","state":"in_flight","hold_kind":"captain","hold_reason":"which vendor","ask_id":"fm-ask/1:other-q:captain:1","ask_revision":1}
+{"id":"axes-p3","state":"in_flight","hold_kind":"captain","hold_reason":"--a bare value beginning with dashes","ask_id":null,"ask_revision":null}
+{"id":"plain-row","state":"queued","hold_kind":null,"hold_reason":null,"ask_id":null,"ask_revision":null}
+{"id":"axes-p3-decision-cutover","state":"done","hold_kind":"captain","hold_reason":"Decide: cut over Friday. Alternatives: wait a week","ask_id":null,"ask_revision":null}
+[exit 0]
+
+repair by hand to 08 (leading zero reads as 8):
+
+$ ask id axes-p3
+fm-ask/1:axes-p3:captain:8
+[exit 0]
+
+$ ask again axes-p3 --reason after the repair
+fm-ask/1:axes-p3:captain:9
+[exit 0]
+
+$ ledger
+# Captain-ask revisions, written only by bin/fm-ask.sh again.
+# An absent subject is revision 1; see bin/fm-ask-lib.sh.
+# captain note: keep this
+axes-p3=9
+not a ledger line
+[exit 0]
+
+### 9. failed hold write restores the revision and reports tasks-axi's output
+
+$ ask2 again other-q --reason cannot be written
+fm-ask: could not write the new question on other-q; revision 1 is unchanged. tasks-axi said:
+error: "EACCES: permission denied, open '<home>/data/backlog.md.lock'"
+code: UNKNOWN
+[exit 1]
+
+$ ask2 id other-q
+fm-ask/1:other-q:captain:1
+[exit 0]
+
+and a bump that cannot be recorded names the ledger and the cause:
+
+$ ask again other-q --reason ledger dir is read-only
+fm-ask: could not record revision 2 for other-q in <home>/data/ask-revisions: mktemp: Permission denied (os error 13) at path "<home>/data/ask-revisions.rQBy9F"
+[exit 1]
+
+$ ask id other-q
+fm-ask/1:other-q:captain:1
+[exit 0]
+
+$ ledger
+# Captain-ask revisions, written only by bin/fm-ask.sh again.
+# An absent subject is revision 1; see bin/fm-ask-lib.sh.
+# captain note: keep this
+axes-p3=9
+not a ledger line
+[exit 0]
+
+### 10. unreadable ledger refuses instead of answering 1
+
+$ ask id axes-p3
+awk: fatal: cannot open file `<home>/data/ask-revisions' for reading: Permission denied
+fm-ask: could not read the revision ledger <home>/data/ask-revisions; axes-p3 has a recorded revision this cannot answer for
+[exit 1]
+
+$ snap
+awk: fatal: cannot open file `<home>/data/ask-revisions' for reading: Permission denied
+{"id":"other-q","state":"in_flight","hold_kind":"captain","hold_reason":"which vendor","ask_id":null,"ask_revision":null}
+{"id":"axes-p3","state":"in_flight","hold_kind":"captain","hold_reason":"after the repair","ask_id":null,"ask_revision":null}
+{"id":"plain-row","state":"queued","hold_kind":null,"hold_reason":null,"ask_id":null,"ask_revision":null}
+{"id":"axes-p3-decision-cutover","state":"done","hold_kind":"captain","hold_reason":"Decide: cut over Friday. Alternatives: wait a week","ask_id":null,"ask_revision":null}
+[exit 0]
