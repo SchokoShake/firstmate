@@ -439,6 +439,7 @@ tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh 19
 tests/fm-shared-captain-inheritance.test.sh 3506
 tests/fm-spawn-dispatch-profile.test.sh 41351
 tests/fm-spawn-worktree-settle.test.sh 4598
+tests/fm-stack-check.test.sh 474
 tests/fm-startup-memory-budget.test.sh 4260
 tests/fm-subagent-pretool-check.test.sh 901
 tests/fm-supervision-events.test.sh 413
