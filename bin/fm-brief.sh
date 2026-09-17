@@ -43,6 +43,7 @@
 # done requires one NATIVE GitHub stack built with gh stack, per-layer local
 # checks in each PR body, and a done line quoting a passing
 # bin/fm-stack-check.sh proof; PRs whose bases merely chain never satisfy it.
+# The captain merges the stack: firstmate never merges a stacked PR.
 # Its contract line reads "Delivery contract: mode=direct-PR stack=native";
 # bin/fm-pr-check.sh reads it, and its header owns what that line refuses.
 # The generated ship brief records the chosen mode as a fixed machine-readable
