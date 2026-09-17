@@ -1,0 +1,2 @@
+ok - fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree
+not ok - the task PR head must be re-read from the forge on relaunch, got 'feature/relaunch'

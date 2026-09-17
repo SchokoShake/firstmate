@@ -1,0 +1,152 @@
+tree under test: base 313bbb6 (pre-fix)
+==================================================================
+SCENARIO A: bin/fm-control.sh rl35 relaunch, task records pr=, trace context ON
+==================================================================
+$ bin/fm-pr-check.sh rl35 https://github.com/example/repo/pull/35
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    skipped: rl35 is not an item in this home's backlog
+    armed: state/rl35.check.sh
+
+## BEFORE the relaunch
+--- state/rl35.meta (the task record; the poll is bound to the PR lines that END it)
+    window=fmses:fm-rl35
+    endpoint_task_id=rl35
+    worktree=<case>/wt
+    project=<case>/proj
+    harness=claude
+    kind=ship
+    mode=no-mistakes
+    yolo=off
+    tasktmp=/tmp/fm-rl35
+    model=default
+    effort=default
+    pr=https://github.com/example/repo/pull/35
+    pr_head=0123456789abcdef0123456789abcdef01234567
+    pr_base=main
+--- $ bin/fm-pr-check-migrate.sh --checks-safe   (what every watcher start runs)
+    (silent) exit=0
+--- state/rl35.check.sh: PRESENT (poll armed)
+--- quarantined artifacts for rl35:
+    (none)
+
+$ bin/fm-control.sh rl35 relaunch --note 'continuing after review'
+    warning: <case>/home/data/rl35/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+    relaunched rl35 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl35 worktree=<case>/wt
+    exit=0
+
+## IMMEDIATELY AFTER the relaunch (no fm-pr-check.sh run by the caller)
+--- state/rl35.meta (the task record; the poll is bound to the PR lines that END it)
+    window=fmses:fm-rl35
+    endpoint_task_id=rl35
+    worktree=<case>/wt
+    project=<case>/proj
+    harness=claude
+    kind=ship
+    mode=no-mistakes
+    yolo=off
+    tasktmp=/tmp/fm-rl35
+    model=default
+    effort=default
+    busy_gen=g1789639251.4099497.16543
+    spawn_gen=s1789639252.4099028.28465
+    pr=https://github.com/example/repo/pull/35
+    pr_head=0123456789abcdef0123456789abcdef01234567
+    pr_base=main
+    control_relaunch_tx=4098441.20260917T100051Z.26396
+    traceparent=00-baa315948820513179a6161f1df2f490-264eb718107cd24d-01
+--- $ bin/fm-pr-check-migrate.sh --checks-safe   (what every watcher start runs)
+    PR_CHECK_MIGRATION: quarantined polls remain unarmed; review state/.pr-check-migration.log before rearming
+    exit=0
+--- state/rl35.check.sh: MISSING (poll not armed)
+--- quarantined artifacts for rl35:
+    <case>/home/state/.pr-check-quarantine/rl35.diagnostic.ambiguous
+    <case>/home/state/.pr-check-quarantine/rl35.registration.W5Scxe
+    <case>/home/state/.pr-check-quarantine/rl35.data.kXNIe4
+    <case>/home/state/.pr-check-quarantine/rl35.check.bK31u2
+--- relaunch journal: phase=complete
+--- forge (gh stub) calls made during the whole scenario:
+    pr view https://github.com/example/repo/pull/35 --json headRefOid -q .headRefOid
+    pr view https://github.com/example/repo/pull/35 --json baseRefName -q .baseRefName
+
+==================================================================
+SCENARIO B: direct bin/fm-spawn.sh rl40 --relaunch (no fm-control), task records pr=, trace context ON
+==================================================================
+$ bin/fm-spawn.sh rl40 --relaunch --harness claude
+    warning: <case>/home/data/rl40/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+    spawned rl40 harness=claude kind=ship mode=no-mistakes yolo=off window=fmses:fm-rl40 worktree=<case>/wt
+    exit=0
+--- state/rl40.meta (the task record; the poll is bound to the PR lines that END it)
+    window=fmses:fm-rl40
+    endpoint_task_id=rl40
+    worktree=<case>/wt
+    project=<case>/proj
+    harness=claude
+    kind=ship
+    mode=no-mistakes
+    yolo=off
+    tasktmp=/tmp/fm-rl40
+    model=default
+    effort=default
+    busy_gen=g1789639256.4105197.13962
+    spawn_gen=s1789639256.4104867.11099
+    pr=https://github.com/example/repo/pull/40
+    pr_head=0123456789abcdef0123456789abcdef01234567
+    pr_base=main
+    traceparent=00-73c1e2d3ca264c239aa7da93de03af5f-f7c8fa6c76947134-01
+--- $ bin/fm-pr-check-migrate.sh --checks-safe   (what every watcher start runs)
+    PR_CHECK_MIGRATION: quarantined polls remain unarmed; review state/.pr-check-migration.log before rearming
+    exit=0
+--- state/rl40.check.sh: MISSING (poll not armed)
+--- quarantined artifacts for rl40:
+    <case>/home/state/.pr-check-quarantine/rl40.diagnostic.ambiguous
+    <case>/home/state/.pr-check-quarantine/rl40.registration.p6aBKw
+    <case>/home/state/.pr-check-quarantine/rl40.data.HbQ45N
+    <case>/home/state/.pr-check-quarantine/rl40.check.IeX3wg
+
+==================================================================
+SCENARIO C: bin/fm-control.sh rl37 relaunch, task WITHOUT pr=
+==================================================================
+    warning: <case>/home/data/rl37/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+    relaunched rl37 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl37 worktree=<case>/wt
+    exit=0
+--- state/rl37.meta (the task record; the poll is bound to the PR lines that END it)
+    window=fmses:fm-rl37
+    endpoint_task_id=rl37
+    worktree=<case>/wt
+    project=<case>/proj
+    harness=claude
+    kind=ship
+    mode=no-mistakes
+    yolo=off
+    tasktmp=/tmp/fm-rl37
+    model=default
+    effort=default
+    busy_gen=g1789639260.4110781.31216
+    spawn_gen=s1789639260.4110352.28162
+    control_relaunch_tx=4109724.20260917T100100Z.20252
+--- $ bin/fm-pr-check-migrate.sh --checks-safe   (what every watcher start runs)
+    (silent) exit=0
+--- state/rl37.check.sh: MISSING (poll not armed)
+--- quarantined artifacts for rl37:
+    (none)
+--- poll artifacts in state/: (end)
+--- forge calls: 0
+--- final journal phase=complete
+
+==================================================================
+SCENARIO D: re-arm fails (poll script cannot be replaced) -> relaunch refused and rolled back
+==================================================================
+    warning: <case>/home/data/rl38/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+    relaunched rl38 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl38 worktree=<case>/wt
+    exit=0
+--- agent pane command still: claude  (old agent never stopped)
+--- '/exit' sent to the agent: 1
+--- brief.md checksum before=2775086851 32 after=1728290192 227
+--- control_relaunch_tx in record: '4113143.20260917T100102Z.14113' (no new generation published)
+--- journal: phase=complete rollback=

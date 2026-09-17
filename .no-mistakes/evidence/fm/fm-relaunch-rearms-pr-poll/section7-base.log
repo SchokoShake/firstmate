@@ -1,0 +1,10 @@
+not ok - migration right after the relaunch must be silent, not quarantine the task's merge poll
+PR_CHECK_MIGRATION: quarantined polls remain unarmed; review state/.pr-check-migration.log before rearming
+not ok - a watcher starting at any record replacement during the relaunch must find the merge poll armed
+probe
+PR_CHECK_MIGRATION: quarantined polls remain unarmed; review state/.pr-check-migration.log before rearming
+probe
+ok - fm-control relaunch: a task without a PR is relaunched with no merge poll work
+not ok - a merge poll that cannot be re-armed should refuse the relaunch
+warning: /tmp/fm-control-relaunch.z0oeqc/prpoll-fail-10607/home/data/rl38/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched rl38 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl38 worktree=/tmp/fm-control-relaunch.z0oeqc/prpoll-fail-10607/wt: expected exit 1, got 0

@@ -1,0 +1,9 @@
+not ok - migration right after the relaunch must be silent, not quarantine the task's merge poll
+PR_CHECK_MIGRATION: quarantined polls remain unarmed; review state/.pr-check-migration.log before rearming
+not ok - a watcher starting at any record replacement during the relaunch must find the merge poll armed
+probe
+probe
+PR_CHECK_MIGRATION: quarantined polls remain unarmed; review state/.pr-check-migration.log before rearming
+probe
+ok - fm-control relaunch: a task without a PR is relaunched with no merge poll work
+ok - fm-control relaunch: a merge poll that cannot be re-armed refuses before the agent is stopped
