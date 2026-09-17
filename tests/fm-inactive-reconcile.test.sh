@@ -8,7 +8,9 @@ set -u
 RECON="$ROOT/bin/fm-inactive-reconcile.sh"
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 WATCH="$ROOT/bin/fm-watch.sh"
+REAL_CREW_STATE="$ROOT/bin/fm-crew-state.sh"
 TMP_ROOT=$(fm_test_tmproot fm-inactive-reconcile)
+fm_git_identity fmtest fmtest@example.invalid
 
 set_mtime() { # <epoch> <path>
   local epoch=$1 path=$2 stamp
@@ -96,12 +98,94 @@ write_mate_meta() {
   age "$MAIN/state/mate.meta" "$MAIN/state/mate.status"
 }
 
+# CREW_STATE_BIN selects the current-state reader; the canned fake by default.
 run_reconcile() { # <home> [--startup]
   local home=$1 option=${2:-}
   PATH="$WORLD/fakebin:$PATH" FM_ROOT_OVERRIDE="$WORLD/root" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_INACTIVE_RECONCILE_SECS=60 FM_INACTIVE_CREW_STATE_BIN="$WORLD/fakebin/fm-crew-state.sh" \
+    FM_INACTIVE_RECONCILE_SECS=60 FM_INACTIVE_CREW_STATE_BIN="${CREW_STATE_BIN:-$WORLD/fakebin/fm-crew-state.sh}" \
     FM_FORGE_LOG="$WORLD/forge.log" "$RECON" scan ${option:+"$option"}
+}
+
+# For cases read by the real fm-crew-state.sh: turns <home>'s recorded worktree
+# for <id> into a git repository on <branch>, installs a fake no-mistakes that
+# prints FM_FAKE_AXI_STATUS for `axi status` and FM_FAKE_RUNS_LIST for the plain
+# `runs` listing, and echoes the worktree HEAD.
+real_state_worktree() { # <home> <id> <branch>
+  local wt="$1/projects/$2"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  git -C "$wt" commit -q --allow-empty -m init
+  git -C "$wt" checkout -q -b "$3"
+  cat > "$WORLD/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  'axi status') printf '%s\n' "${FM_FAKE_AXI_STATUS:-}" ;;
+  'runs '*) printf '%s\n' "${FM_FAKE_RUNS_LIST:-}" ;;
+esac
+SH
+  chmod +x "$WORLD/fakebin/no-mistakes"
+  git -C "$wt" rev-parse HEAD
+}
+
+# A review fix the pipeline committed on top of <worktree>'s submission in a
+# separate gate clone, so the worktree's object store never receives it.
+pipeline_fix_head() { # <worktree>
+  git clone -q "$1" "$1.gate"
+  git -C "$1.gate" commit -q --allow-empty -m 'no-mistakes(review): apply review fix'
+  git -C "$1.gate" rev-parse HEAD
+}
+
+axi_status_failed() { # <branch> <run-id> <head>
+  cat <<EOF
+run:
+  id: "$2"
+  branch: $1
+  status: failed
+  head: ${3:0:8}
+  findings: none
+  steps[2]{step,status,findings,duration_ms}:
+    intent,completed,0,7
+    review,failed,0,1200
+outcome: failed
+error: "step review failed: agent review: exit status 1"
+EOF
+}
+
+# A run parked at its review gate after the pipeline moved its head. With
+# <submitted>, no-mistakes' push provenance for the run names that submission.
+axi_status_parked() { # <branch> <run-id> <head> [<submitted>]
+  cat <<EOF
+run:
+  id: "$2"
+  branch: $1
+  status: running
+  awaiting_agent: parked 4m10s
+  head: ${3:0:8}
+  findings: 1 awaiting
+  steps[2]{step,status,findings,duration_ms}:
+    intent,completed,0,7
+    review,awaiting_approval,1,812000
+EOF
+  [ -z "${4:-}" ] || cat <<EOF
+branch_sync:
+  state: pipeline_owned
+  local:
+    branch: $1
+    head: $4
+  pipeline:
+    run: "$2"
+    status: running
+    submitted_head: $4
+    current_head: $3
+EOF
+  cat <<'EOF'
+gate:
+  step: review
+  status: awaiting_approval
+  findings[1]{id,severity,file,action,description}:
+    r1,warning,a.go,ask-user,changes product behavior
+EOF
 }
 
 wake_count() { # <home> <key prefix>
@@ -432,6 +516,48 @@ test_notice_recovery_does_not_duplicate_wake() {
   pass "notice recovery remains idempotent across queue acknowledgement"
 }
 
+# Regression through the real current-state reader: a resumed validation keeps
+# an earlier failed run on its branch, whose head is still the worktree HEAD,
+# beside the live run parked at its review gate after the pipeline moved its
+# head. The live run is the task's state, so no terminal outcome is raised - and
+# none either when the newest run cannot be bound to the current head at all.
+# The same wiring does raise one when the newest run failed on the current head.
+test_real_state_resumed_validation_raises_no_terminal_outcome() {
+  local head pipe listing
+  make_world real-state-failed; write_child "$MAIN" child 'failed: validation run failed at review'
+  head=$(real_state_worktree "$MAIN" child fm/child)
+  FM_FAKE_AXI_STATUS=$(axi_status_failed fm/child 01EARLIER "$head") \
+    CREW_STATE_BIN="$REAL_CREW_STATE" run_reconcile "$MAIN" --startup
+  [ "$(outcome_count "$MAIN" pending)" = 1 ] \
+    || fail "a newest run that failed on the current head raised no terminal outcome"
+  grep -Fq 'child=child state=failed' "$MAIN/state/.wake-queue" \
+    || fail "a newest run that failed on the current head queued no presentation"
+
+  make_world real-state-resumed
+  write_child "$MAIN" child 'needs-decision [key=r1]: review gate finding r1 needs a decision'
+  head=$(real_state_worktree "$MAIN" child fm/child)
+  pipe=$(pipeline_fix_head "$MAIN/projects/child")
+  listing=$(printf '  running      fm/child %s  2026-09-02 19:13\n  failed       fm/child %s  2026-09-02 16:05\n' \
+    "${pipe:0:8}" "${head:0:8}")
+  FM_FAKE_AXI_STATUS=$(axi_status_parked fm/child 01LIVE "$pipe" "$head") FM_FAKE_RUNS_LIST=$listing \
+    CREW_STATE_BIN="$REAL_CREW_STATE" run_reconcile "$MAIN" --startup
+  [ "$(outcome_count "$MAIN" pending)" = 0 ] \
+    || fail "the earlier failed run raised a terminal outcome while the live run was parked"
+  ! grep -Fq 'inactive-outcome:' "$MAIN/state/.wake-queue" 2>/dev/null \
+    || fail "the earlier failed run queued a terminal presentation while the live run was parked"
+
+  make_world real-state-unbound; write_child "$MAIN" child 'working: rerunning validation'
+  head=$(real_state_worktree "$MAIN" child fm/child)
+  pipe=$(pipeline_fix_head "$MAIN/projects/child")
+  listing=$(printf '  running      fm/child %s  2026-09-02 19:13\n  failed       fm/child %s  2026-09-02 16:05\n' \
+    "${pipe:0:8}" "${head:0:8}")
+  FM_FAKE_AXI_STATUS=$(axi_status_parked fm/child 01LIVE "$pipe") FM_FAKE_RUNS_LIST=$listing \
+    CREW_STATE_BIN="$REAL_CREW_STATE" run_reconcile "$MAIN" --startup
+  [ "$(outcome_count "$MAIN" pending)" = 0 ] \
+    || fail "an older failed run raised a terminal outcome for a newest run not matching the current head"
+  pass "a resumed validation raises no terminal outcome from its earlier run"
+}
+
 # Forge command shims fail loudly. A successful scan proves this path never uses
 # them while reconciling a local terminal outcome.
 test_reconciliation_never_calls_forge() {
@@ -456,6 +582,7 @@ test_watcher_hook_and_idle_secondmate_exemption
 test_stalled_state_read_is_bounded_and_scan_progresses
 test_full_scan_budget_includes_wake_lock_wait
 test_notice_recovery_does_not_duplicate_wake
+test_real_state_resumed_validation_raises_no_terminal_outcome
 test_reconciliation_never_calls_forge
 
 echo "all inactive reconciliation tests passed"

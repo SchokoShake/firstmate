@@ -2,7 +2,7 @@
 
 Audience: maintainer verification.
 
-This record supports current session-start, turn-end, watcher-continuity, and wedge-alarm guarantees.
+This record supports current session-start, validation-run attribution, turn-end, watcher-continuity, and wedge-alarm guarantees.
 Operator behavior and active limits remain in the linked current guides.
 Task-specific chronology, temporary paths, run identifiers, and delivery transcripts remain in private reports or PR evidence.
 
@@ -203,6 +203,59 @@ Deterministic entry points:
 tests/fm-busy-state.test.sh
 tests/fm-busy-adapter-wiring.test.sh
 tests/fm-crew-state.test.sh
+```
+
+## Validation run attribution
+
+[`bin/fm-crew-state.sh`](../../bin/fm-crew-state.sh) attributes a run through `fm_nm_status_run_matches_worktree` in [`bin/fm-nm-run-lib.sh`](../../bin/fm-nm-run-lib.sh), which relies on two properties of `no-mistakes axi status` run inside a task worktree.
+Both were verified read-only on 2026-09-17 against no-mistakes v1.48.0 (build 2ac3769), running that rule against the real CLI on two historical firstmate branches that each carry several runs.
+
+The answer is branch-scoped and carries only one run: on a branch holding an older failed run and a newer completed run, and on a branch holding two cancelled, six failed, and one completed run, it printed only the newest run.
+The tagged v1.32.2, v1.48.0, and v1.75.2 sources select that run the same way in `resolveRun`: the checked-out branch's active run, else that branch's most recent run, and v1.75.2 never answers with another branch's run.
+
+When no-mistakes holds push provenance for the displayed run, it appends a `branch_sync` object for that same run, whose `pipeline.submitted_head` is the full commit the run was submitted from.
+Excerpt of the second branch's output, trimmed to the fields the rule reads, with the run identifier that both `id` and `pipeline.run` carried replaced by a placeholder:
+
+```text
+run:
+  id: "<run-id>"
+  head: 0b929f10
+branch_sync:
+  local:
+    head: 4709576823ddd90d38cbf7a5df0e865b2bf94877
+  pipeline:
+    run: "<run-id>"
+    submitted_head: 4709576823ddd90d38cbf7a5df0e865b2bf94877
+    current_head: 0b929f10d8fa049ec19a2716ecceaa71af9ee45f
+```
+
+Commands, in a disposable task worktree with a clean tree, with a scratch state directory holding a probe task whose metadata records only `kind=ship` and that worktree:
+
+```sh
+git checkout <branch>
+no-mistakes axi status
+FM_STATE_OVERRIDE=<scratch-state> bin/fm-crew-state.sh probe
+```
+
+On the first branch the newest run's head was not on the worktree HEAD's history and no `branch_sync` object was printed, so the reader attributed no run, although that branch's older failed run had been submitted from exactly that HEAD:
+
+```text
+state: unknown · source: none · no backend target recorded
+```
+
+On the second branch the worktree HEAD is both an ancestor of the newest run's head and the submitted head its provenance names, so that run was attributed:
+
+```text
+state: done · source: run-step · run passed: PR merged/closed
+```
+
+A live run whose head the pipeline moved was not observable that day because no validation run was active, so its `pipeline_owned` shape rests on the same `branch_sync` fields and on the regression tests.
+
+Deterministic entry points:
+
+```sh
+tests/fm-crew-state.test.sh
+tests/fm-inactive-reconcile.test.sh
 ```
 
 ## Turn-end guard
