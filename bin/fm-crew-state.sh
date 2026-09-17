@@ -20,14 +20,24 @@
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta.
-#   2. Matching no-mistakes run for this crew's branch AND current code identity,
-#      active or terminal (from `axi status`, or the coarse `no-mistakes runs`
-#      fallback)? Branch name alone is not enough: a historical run on a reused
-#      branch whose head was rewritten or diverged must not be attributed.
+#   2. The branch's newest no-mistakes run, active or terminal, matching this
+#      crew's current code identity? `axi status` run in the worktree is
+#      branch-scoped: it answers with the checked-out branch's active run, else
+#      that branch's most recent run, and with another branch's run only when
+#      this branch has none. That one run is the only candidate - an older run on
+#      the same branch is never consulted, so a superseded failed or cancelled
+#      run can never stand in for the live run of a resumed validation.
+#      Branch name alone is not enough: a historical run on a reused branch whose
+#      head was rewritten or diverged must not be attributed.
 #      A run matches when its head equals the worktree HEAD, or the worktree HEAD
 #      is an ancestor of the run head (pipeline fix commits advanced the run on
-#      the same line of history). Local work that advanced past the run head, or
-#      diverged from it, invalidates attribution.
+#      the same line of history), or no-mistakes' push provenance for that run
+#      names the worktree HEAD as its submitted head (the pipeline moved the head
+#      with commits the worktree does not have, or rebased it). Local work
+#      committed after the run's submission, or a rewritten local branch,
+#      invalidates attribution.
+#      bin/fm-nm-run-lib.sh's fm_nm_status_run_matches_worktree owns that rule.
+#      A newest run that does not match leaves this crew with no run.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -74,12 +84,6 @@ META="$STATE/$ID.meta"
 LOG="$STATE/$ID.status"
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
-# How many of the most recent `no-mistakes runs` rows the cross-branch fallback
-# (nm_runs_status_for_branch, below) scans. Generous enough to still find a
-# branch's own run on a busy multi-crew fleet without listing the entire
-# history every call.
-FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
-case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
 SEP=' · '
 
 # Emit the one canonical line and exit 0. Detail is optional.
@@ -170,7 +174,7 @@ crew_busy_verdict() {  # <target>
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
 # trim, strip_quotes, the bounded nm_run call, nm_field's TOON parse, and the
-# branch+head attribution rule below are thin wrappers over the ONE owner in
+# code-identity attribution rule below are thin wrappers over the ONE owner in
 # bin/fm-nm-run-lib.sh, shared with fm-teardown.sh's pre-teardown run abort.
 
 trim() { fm_nm_trim "$@"; }
@@ -304,112 +308,25 @@ nm_ci_checks_state() {
     *) printf 'unknown' ;;
   esac
 }
-# Coarse fallback for cross-branch attribution. `no-mistakes axi status` (bare)
-# reports the active-or-most-recent run for the CURRENT branch when one
-# exists, else falls back to some other branch's run purely as informational
-# display (verified empirically: querying a worktree with its own active run
-# reliably returns that run, even under concurrent load from several other
-# validating crews on the same underlying repo). A crew whose branch genuinely
-# has no run yet therefore sees another branch's answer here.
-#
-# This fallback used to shell out to `no-mistakes axi` (bare, no subcommand)
-# expecting a `runs[N]{id,branch,status,...}:` TOON table and re-query the
-# matched id via `axi status --run <id>`. Verified against the real installed
-# CLI (v1.32.2): the `axi` surface exposes only abort/logs/respond/run/status -
-# there is no runs-listing subcommand under `axi` at all, so that table never
-# appears and the lookup was silently dead code; whenever the bare `axi
-# status` answer was not this crew's own branch, attribution always failed and
-# the caller fell straight through to the pane/log fallback below. (The
-# PRIMARY cause of the 2026-07 herdr false-surface incidents turned out to be
-# a separate bug in bin/fm-watch.sh's stale_is_terminal precedence - see that
-# file's history - but this cross-branch path was independently confirmed
-# dead code and is worth having actually work.)
-#
-# The real run-listing command is the top-level `no-mistakes runs` (verified:
-# `no-mistakes --help` lists it separately from `axi`). It is plain, human-
-# oriented text - no run id, no JSON/TOON, newest-first, columns
-# "<status> <branch> <short-sha> <date> [<pr-url>]" separated by runs of
-# spaces (verified: no quoting, so splitting on the first two whitespace runs
-# is exact) - but branch + coarse status is exactly what this predicate needs:
-# is a run for THIS branch active right now. Echoes the first (most recent)
-# matching row's status word (running/completed/cancelled/failed), or empty
-# when the branch has no run within FM_CREW_STATE_RUNS_LIMIT rows.
-nm_runs_status_for_branch() {  # <branch>
-  local branch=$1 out row st rest br sha
-  out=$(nm_run runs --limit "$FM_CREW_STATE_RUNS_LIMIT")
-  [ -n "$out" ] || return 0
-  while IFS= read -r row; do
-    row=$(trim "$row")
-    [ -n "$row" ] || continue
-    st=${row%% *}
-    rest=${row#* }
-    rest=$(trim "$rest")
-    br=${rest%% *}
-    rest=${rest#* }
-    rest=$(trim "$rest")
-    sha=${rest%% *}
-    if [ "$br" = "$branch" ]; then
-      # Same code-identity rule as axi status: skip a same-branch row whose
-      # short-sha does not match this worktree (rewritten or advanced tip).
-      if ! nm_coarse_head_matches_worktree "$sha"; then
-        continue
-      fi
-      printf '%s' "$st"
-      return 0
-    fi
-  done <<< "$out"
-  return 0
-}
-
 # CREW_BRANCH is empty at detached HEAD (a just-spawned crew, or a scout's
 # scratch worktree); with no branch there is no run to attribute to this crew.
 CREW_BRANCH=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 
-# 0 if the active axi-status run's head field matches this worktree's code
-# identity. Branch match is a precondition (caller). Rule owned by
-# fm_nm_head_matches_worktree in bin/fm-nm-run-lib.sh.
-nm_run_head_matches_worktree() {
-  local run_head
-  run_head=$(strip_quotes "$(nm_field head)")
-  fm_nm_head_matches_worktree "$WT" "$run_head"
-}
-
-# Coarse runs-list rows are "<status> <branch> <short-sha> ...". 0 if the short
-# sha for this branch row matches the worktree head under the same rules as
-# nm_run_head_matches_worktree (equal, or local is ancestor of run tip).
-nm_coarse_head_matches_worktree() {  # <short-sha>
-  fm_nm_head_matches_worktree "$WT" "$1"
-}
-
 HAVE_RUN=0
-# RUN_SOURCE distinguishes the two ways HAVE_RUN=1 can happen: "full" means
-# $RUN_OUT is real `axi status` TOON with step/gate detail; "coarse" means only
-# a bare status word came back from the runs-list fallback above, so the
-# run-step block below skips the TOON field parsing entirely for this crew.
-RUN_SOURCE=full
-COARSE_STATUS=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
+# The one branch-scoped `axi status` answer is the whole lookup (header, step 2):
+# another branch's run means this branch has none, and a same-branch run that
+# does not match the current code leaves this crew with no run. Nothing looks
+# further back through the branch's history, and no plain-text run listing is
+# parsed, because the next row back is an older run that a resumed validation
+# has already superseded.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
-  if [ -n "$RUN_OUT" ]; then
-    run_branch=$(strip_quotes "$(nm_field branch)")
-    if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
-      HAVE_RUN=1
-    else
-      # The active-or-most-recent run is for another branch, or same branch with
-      # a rewritten/diverged head (the CLI is alive and answered; only the
-      # attribution missed) - try the coarse fallback.
-      # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
-      # primary call means the CLI itself did not respond, so retrying it
-      # immediately with a second bounded call would just double the wait
-      # for no better answer.
-      COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
-      if [ -n "$COARSE_STATUS" ]; then
-        HAVE_RUN=1
-        RUN_SOURCE=coarse
-      fi
-    fi
+  run_branch=$(strip_quotes "$(nm_field branch)")
+  if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] \
+    && fm_nm_status_run_matches_worktree "$WT" "$RUN_OUT"; then
+    HAVE_RUN=1
   fi
 fi
 
@@ -421,85 +338,65 @@ if [ "$HAVE_RUN" = 1 ]; then
   CI_STEP_STATUS=""
   CI_LOG_STATE=""
   RUN_STATUS=""
-  if [ "$RUN_SOURCE" = coarse ]; then
-    # No step/gate detail is available from the plain runs list - only ever
-    # true/working, done, or failed. A crew genuinely parked at a gate still
-    # gets full detail once `axi status` reports its own branch again (e.g.
-    # once its own step is the most-recently-touched one), and its own
-    # needs-decision/blocked status-log append (a captain-relevant VERB) is
-    # surfaced through signal_reason_is_actionable regardless of this
-    # coarse-vs-full distinction, so a real gate is never silently missed.
-    case "$COARSE_STATUS" in
-      running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
-      completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
-      failed)    RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
-      cancelled) RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
-      *)         RUN_STATE=unknown; RUN_DETAIL="runs list status: $COARSE_STATUS" ;;
-    esac
-  else
-    status=$(strip_quotes "$(nm_field status)")
-    RUN_STATUS=$status
-    outcome=$(strip_quotes "$(nm_field outcome)")
-    awaiting=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)
-    gate_status=$(nm_gate_status)
-    has_gate=0
-    nm_has_gate && has_gate=1
+  status=$(strip_quotes "$(nm_field status)")
+  RUN_STATUS=$status
+  outcome=$(strip_quotes "$(nm_field outcome)")
+  awaiting=$(printf '%s\n' "$RUN_OUT" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)
+  gate_status=$(nm_gate_status)
+  has_gate=0
+  nm_has_gate && has_gate=1
 
-    if [ -n "$outcome" ]; then
-      case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
-        checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
-        failed)        RUN_STATE=failed; RUN_DETAIL="run failed" ;;
-        cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled" ;;
-        *)             RUN_STATE=unknown; RUN_DETAIL="outcome: $outcome" ;;
-      esac
-    elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
-      if [ "$has_gate" = 1 ]; then
-        gate=$(nm_gate_line_name)
-      else
-        gate=$(nm_gate_name)
-      fi
-      [ -n "$gate" ] || gate=$status
-      [ -n "$gate" ] || gate=gate
-      RUN_STATE=parked
-      RUN_DETAIL="parked at $gate"
-      fcount=$(nm_gate_findings_count)
-      [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
-      if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
-        RUN_DETAIL="$RUN_DETAIL (ask-user: authority decision)"
-      fi
+  if [ -n "$outcome" ]; then
+    case "$outcome" in
+      passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
+      checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
+      failed)        RUN_STATE=failed; RUN_DETAIL="run failed" ;;
+      cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled" ;;
+      *)             RUN_STATE=unknown; RUN_DETAIL="outcome: $outcome" ;;
+    esac
+  elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
+    if [ "$has_gate" = 1 ]; then
+      gate=$(nm_gate_line_name)
     else
-      case "$status" in
-        ci)             RUN_STATE=working; RUN_DETAIL="ci running" ;;
-        running|fixing) RUN_STATE=working; RUN_DETAIL="validating ($status)" ;;
-        completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
-        failed)         RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
-        cancelled)      RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
-        "")             RUN_STATE=working; RUN_DETAIL="run active" ;;
-        *)              RUN_STATE=working; RUN_DETAIL="run active ($status)" ;;
+      gate=$(nm_gate_name)
+    fi
+    [ -n "$gate" ] || gate=$status
+    [ -n "$gate" ] || gate=gate
+    RUN_STATE=parked
+    RUN_DETAIL="parked at $gate"
+    fcount=$(nm_gate_findings_count)
+    [ -n "$fcount" ] && RUN_DETAIL="$RUN_DETAIL: $fcount finding(s)"
+    if printf '%s\n' "$RUN_OUT" | grep -q 'ask-user'; then
+      RUN_DETAIL="$RUN_DETAIL (ask-user: authority decision)"
+    fi
+  else
+    case "$status" in
+      ci)             RUN_STATE=working; RUN_DETAIL="ci running" ;;
+      running|fixing) RUN_STATE=working; RUN_DETAIL="validating ($status)" ;;
+      completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
+      failed)         RUN_STATE=failed;  RUN_DETAIL="run failed" ;;
+      cancelled)      RUN_STATE=failed;  RUN_DETAIL="run cancelled" ;;
+      "")             RUN_STATE=working; RUN_DETAIL="run active" ;;
+      *)              RUN_STATE=working; RUN_DETAIL="run active ($status)" ;;
+    esac
+    if [ "$RUN_STATE" = working ]; then
+      CI_STEP_STATUS=$(nm_effective_ci_step_status)
+      case "$CI_STEP_STATUS" in
+        running)
+          CI_LOG_STATE=$(nm_ci_checks_state)
+          if [ "$CI_LOG_STATE" = green ]; then
+            RUN_STATE="done"
+            RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)"
+          fi
+          ;;
+        fixing)
+          CI_LOG_STATE=not-ready
+          ;;
       esac
-      if [ "$RUN_STATE" = working ]; then
-        CI_STEP_STATUS=$(nm_effective_ci_step_status)
-        case "$CI_STEP_STATUS" in
-          running)
-            CI_LOG_STATE=$(nm_ci_checks_state)
-            if [ "$CI_LOG_STATE" = green ]; then
-              RUN_STATE="done"
-              RUN_DETAIL="checks green: PR ready for review (still monitoring for merge/close)"
-            fi
-            ;;
-          fixing)
-            CI_LOG_STATE=not-ready
-            ;;
-        esac
-      fi
     fi
   fi
 
   if [ "$RUN_STATE" = working ] && log_reports_ci_ready; then
-    if [ "$RUN_SOURCE" = coarse ]; then
-      emit "done" status-log "$(status_line_note "$LOG_LINE")${SEP}run still monitoring PR"
-    fi
     [ -n "$CI_STEP_STATUS" ] || CI_STEP_STATUS=$(nm_effective_ci_step_status)
     if [ "$RUN_STATUS" = fixing ]; then
       CI_LOG_STATE=not-ready
