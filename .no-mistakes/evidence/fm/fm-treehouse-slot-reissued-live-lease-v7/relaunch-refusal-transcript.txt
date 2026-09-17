@@ -1,0 +1,30 @@
+
+########## R1: a record with no recorded lease claim (every pre-lease record) reads unproven
+--- agent in endpoint: claude   keys sent: 0 bytes   journal: none
+--- record cksum: 910150920 277   brief cksum: 3138649914 33
+
+$ bin/fm-control.sh evd47 relaunch --note "x"
+error: cannot prove task evd47 still owns its recorded worktree <case>/pool/1/wt: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to <case>/pool/1/wt, and ownership is not inferred; refusing to relaunch a replacement into a working copy that may hold another task's work, because ownership is never inferred. Stop the agent with bin/fm-control.sh evd47 exit, then spawn the task afresh from its branch through bin/fm-spawn.sh, which takes a durable lease under the task's own claim; or confirm by hand whose work the copy holds and tear the task down normally once its work has landed
+[exit 1]
+--- agent in endpoint: claude   keys sent: 0 bytes   journal: none
+--- record cksum: 910150920 277   brief cksum: 3138649914 33
+
+########## R2: a claimed record whose slot the pool now leases to another record's claim reads released
+--- agent in endpoint: claude   keys sent: 0 bytes   journal: none
+--- record cksum: 1659725660 322   brief cksum: 677199836 33
+
+$ bin/fm-control.sh evd48 relaunch --note "x"
+error: task evd48's recorded worktree <case>/pool/1/wt is no longer its own: the pool leases <case>/pool/1/wt to fm-task:evd49:l1789026480.7.7, task evd49's own recorded claim on that same working copy, not to this record's claim fm-task:evd48:l1789026480.7.7; refusing to relaunch a replacement inside another holder's working copy. Stop the agent with bin/fm-control.sh evd48 exit, then retire only this task's record with bin/fm-teardown.sh evd48 --retire-record or spawn the task afresh from its branch through bin/fm-spawn.sh, which takes a durable lease under the task's own claim
+[exit 1]
+--- agent in endpoint: claude   keys sent: 0 bytes   journal: none
+--- record cksum: 1659725660 322   brief cksum: 677199836 33
+
+########## R3: a record the pool leases to its own claim still relaunches
+--- agent in endpoint: claude   keys sent: 0 bytes   journal: none
+--- record cksum: 1786762254 312   brief cksum: 981234417 33
+
+$ bin/fm-control.sh evd50 relaunch --note "x"
+warning: <case>/home/data/evd50/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched evd50 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-evd50 worktree=<case>/pool/1/wt
+[exit 0]
+--- agent in endpoint: claude   journal: present

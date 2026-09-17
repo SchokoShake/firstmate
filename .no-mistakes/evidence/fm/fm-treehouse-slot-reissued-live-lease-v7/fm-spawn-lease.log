@@ -1,0 +1,10 @@
+ok - fm-spawn: a fresh spawn takes a durable treehouse lease, records its holder, and cds the pane into it
+ok - fm-spawn: a leased slot another record still names is held aside, handed back, and never used
+ok - fm-spawn: gives up after a bounded search and hands back every slot it held aside
+ok - fm-spawn: a spawn that stops before publishing its record hands its clean lease back
+ok - fm-spawn: an aborted spawn keeps the lease on a slot with uncommitted work rather than discarding it
+# all fm-spawn-lease tests passed
+
+real	0m7.816s
+user	0m1.377s
+sys	0m1.472s

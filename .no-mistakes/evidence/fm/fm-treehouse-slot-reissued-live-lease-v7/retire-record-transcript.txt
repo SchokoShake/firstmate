@@ -1,0 +1,262 @@
+
+########## SCENARIO A: slot re-leased. old-r1 and new-r1 both name pool slot 1; the pool leases it to new-r1's recorded claim
+pool: {"worktrees":[{"name":"1","path":"<case>/pool/1/repo","created_at":"2026-07-02T11:44:26Z","leased":true,"lease_holder":"fm-task:new-r1:l1789026480.244338.3761"}]}
+<case>/home/state/old-r1.meta:lease_holder=fm-task:old-r1:l1788765990.150863.30112
+<case>/home/state/new-r1.meta:lease_holder=fm-task:new-r1:l1789026480.244338.3761
+--- state/ files: 35
+.count-firstmate_fm-new-r1 .count-firstmate_fm-old-r1 .hash-firstmate_fm-new-r1 .hash-firstmate_fm-old-r1 .hb-surfaced-new-r1 .hb-surfaced-old-r1 
+.new-r1.open-decisions-cursor .old-r1.open-decisions-cursor .paused-firstmate_fm-new-r1 .paused-firstmate_fm-old-r1 
+.paused-rechecked-firstmate_fm-new-r1 .paused-rechecked-firstmate_fm-old-r1 .paused-resurfaced-firstmate_fm-new-r1 
+.paused-resurfaced-firstmate_fm-old-r1 .pr-check-quarantine/new-r1.diagnostic.ambiguous .pr-check-quarantine/old-r1.diagnostic.ambiguous 
+.seen-new-r1_status .seen-new-r1_turn-ended .seen-old-r1_status .seen-old-r1_turn-ended .stale-firstmate_fm-new-r1 .stale-firstmate_fm-old-r1 
+.status-presentation-cursor .subsuper-paused-new-r1 .subsuper-paused-old-r1 new-r1.busy-gen new-r1.busy-state new-r1.meta new-r1.status 
+new-r1.turn-ended old-r1.busy-gen old-r1.busy-state old-r1.meta old-r1.status old-r1.turn-ended
+--- status-presentation rows: old-r1,new-r1
+--- working copy sentinel: the current holder is mid-edit
+--- pool record cksum: 304836605 208
+--- treehouse calls: 0   endpoint kills: 0
+
+########## A1: ordinary teardown of the superseded record refuses, with and without --force
+
+$ bin/fm-teardown.sh old-r1
+REFUSED: old-r1's recorded working copy <case>/pool/1/repo is no longer its own: the pool leases <case>/pool/1/repo to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy, not to this record's claim fm-task:old-r1:l1788765990.150863.30112.
+Tearing it down would reset that copy and kill the processes in it, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh old-r1 --retire-record
+[exit 1]
+
+$ bin/fm-teardown.sh old-r1 --force
+REFUSED: old-r1's recorded working copy <case>/pool/1/repo is no longer its own: the pool leases <case>/pool/1/repo to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy, not to this record's claim fm-task:old-r1:l1788765990.150863.30112.
+Tearing it down would reset that copy and kill the processes in it, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh old-r1 --retire-record
+[exit 1]
+
+########## A2: --retire-record refuses the record that still owns the slot
+
+$ bin/fm-teardown.sh new-r1 --retire-record
+REFUSED: new-r1 still owns its working copy: the pool leases <case>/pool/1/repo to this record's own claim fm-task:new-r1:l1789026480.244338.3761.
+Dropping only the record would strand that lease and keep the pool slot consumed; tear the task down normally once its work has landed: bin/fm-teardown.sh new-r1
+[exit 1]
+
+########## A3: --retire-record --dry-run on the superseded record changes nothing
+
+$ bin/fm-teardown.sh old-r1 --retire-record --dry-run
+dry run: old-r1's working copy <case>/pool/1/repo was re-leased: the pool leases <case>/pool/1/repo to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy, not to this record's claim fm-task:old-r1:l1788765990.150863.30112
+dry run: would remove <case>/home/state/old-r1.turn-ended
+dry run: would remove <case>/home/state/old-r1.meta
+dry run: would remove <case>/home/state/.seen-old-r1_status
+dry run: would remove <case>/home/state/.seen-old-r1_turn-ended
+dry run: would remove <case>/home/state/.hb-surfaced-old-r1
+dry run: would remove <case>/home/state/.subsuper-paused-old-r1
+dry run: would remove <case>/home/state/.hash-firstmate_fm-old-r1
+dry run: would remove <case>/home/state/.count-firstmate_fm-old-r1
+dry run: would remove <case>/home/state/.stale-firstmate_fm-old-r1
+dry run: would remove <case>/home/state/.paused-firstmate_fm-old-r1
+dry run: would remove <case>/home/state/.paused-rechecked-firstmate_fm-old-r1
+dry run: would remove <case>/home/state/.paused-resurfaced-firstmate_fm-old-r1
+dry run: would remove <case>/home/state/old-r1.status
+dry run: would remove <case>/home/state/.old-r1.open-decisions-cursor
+dry run: would remove <case>/home/state/old-r1.busy-gen
+dry run: would remove <case>/home/state/old-r1.busy-state
+dry run: would remove <case>/home/state/.pr-check-quarantine/old-r1.diagnostic.ambiguous
+dry run: would leave the working copy, the pool's lease on it, and endpoint firstmate:fm-old-r1 untouched
+[exit 0]
+--- state/ files: 35
+.count-firstmate_fm-new-r1 .count-firstmate_fm-old-r1 .hash-firstmate_fm-new-r1 .hash-firstmate_fm-old-r1 .hb-surfaced-new-r1 .hb-surfaced-old-r1 
+.new-r1.open-decisions-cursor .old-r1.open-decisions-cursor .paused-firstmate_fm-new-r1 .paused-firstmate_fm-old-r1 
+.paused-rechecked-firstmate_fm-new-r1 .paused-rechecked-firstmate_fm-old-r1 .paused-resurfaced-firstmate_fm-new-r1 
+.paused-resurfaced-firstmate_fm-old-r1 .pr-check-quarantine/new-r1.diagnostic.ambiguous .pr-check-quarantine/old-r1.diagnostic.ambiguous 
+.seen-new-r1_status .seen-new-r1_turn-ended .seen-old-r1_status .seen-old-r1_turn-ended .stale-firstmate_fm-new-r1 .stale-firstmate_fm-old-r1 
+.status-presentation-cursor .subsuper-paused-new-r1 .subsuper-paused-old-r1 new-r1.busy-gen new-r1.busy-state new-r1.meta new-r1.status 
+new-r1.turn-ended old-r1.busy-gen old-r1.busy-state old-r1.meta old-r1.status old-r1.turn-ended
+--- status-presentation rows: old-r1,new-r1
+--- working copy sentinel: the current holder is mid-edit
+--- pool record cksum: 304836605 208
+--- treehouse calls: 0   endpoint kills: 0
+
+########## A4: --retire-record retires only old-r1's record
+
+$ bin/fm-teardown.sh old-r1 --retire-record
+retire-record: removed <case>/home/state/old-r1.turn-ended
+retire-record: removed <case>/home/state/old-r1.meta
+retire-record: removed <case>/home/state/.seen-old-r1_status
+retire-record: removed <case>/home/state/.seen-old-r1_turn-ended
+retire-record: removed <case>/home/state/.hb-surfaced-old-r1
+retire-record: removed <case>/home/state/.subsuper-paused-old-r1
+retire-record: removed <case>/home/state/.hash-firstmate_fm-old-r1
+retire-record: removed <case>/home/state/.count-firstmate_fm-old-r1
+retire-record: removed <case>/home/state/.stale-firstmate_fm-old-r1
+retire-record: removed <case>/home/state/.paused-firstmate_fm-old-r1
+retire-record: removed <case>/home/state/.paused-rechecked-firstmate_fm-old-r1
+retire-record: removed <case>/home/state/.paused-resurfaced-firstmate_fm-old-r1
+retire-record: removed <case>/home/state/old-r1.status
+retire-record: removed <case>/home/state/.old-r1.open-decisions-cursor
+retire-record: removed <case>/home/state/old-r1.busy-gen
+retire-record: removed <case>/home/state/old-r1.busy-state
+retire-record: removed <case>/home/state/.pr-check-quarantine/old-r1.diagnostic.ambiguous
+retire-record: removed old-r1's row from <case>/home/state/.status-presentation-cursor
+retired record old-r1 (the pool leases <case>/pool/1/repo to fm-task:new-r1:l1789026480.244338.3761, task new-r1's own recorded claim on that same working copy, not to this record's claim fm-task:old-r1:l1788765990.150863.30112); left working copy <case>/pool/1/repo, its pool lease, and every process in it untouched
+Backlog: old-r1 just finished. Run tasks-axi done old-r1 --pr https://github.com/example/repo/pull/829, then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+--- state/ files: 18
+.count-firstmate_fm-new-r1 .hash-firstmate_fm-new-r1 .hb-surfaced-new-r1 .new-r1.open-decisions-cursor .paused-firstmate_fm-new-r1 
+.paused-rechecked-firstmate_fm-new-r1 .paused-resurfaced-firstmate_fm-new-r1 .pr-check-quarantine/new-r1.diagnostic.ambiguous .seen-new-r1_status 
+.seen-new-r1_turn-ended .stale-firstmate_fm-new-r1 .status-presentation-cursor .subsuper-paused-new-r1 new-r1.busy-gen new-r1.busy-state new-r1.meta 
+new-r1.status new-r1.turn-ended
+--- status-presentation rows: new-r1
+--- working copy sentinel: the current holder is mid-edit
+--- pool record cksum: 304836605 208
+--- treehouse calls: 0   endpoint kills: 0
+
+########## SCENARIO B: pre-lease pair. stale-r1 and holder-r1 name one working copy, neither carries a recorded claim
+pool: {"worktrees":[{"name":"1","path":"<case>/pool/1/repo","created_at":"2026-07-02T11:44:26Z","owner_pid":999999,"owner_started_at":1789026475860}]}
+--- state/ files: 35
+.count-firstmate_fm-holder-r1 .count-firstmate_fm-stale-r1 .hash-firstmate_fm-holder-r1 .hash-firstmate_fm-stale-r1 .hb-surfaced-holder-r1 
+.hb-surfaced-stale-r1 .holder-r1.open-decisions-cursor .paused-firstmate_fm-holder-r1 .paused-firstmate_fm-stale-r1 
+.paused-rechecked-firstmate_fm-holder-r1 .paused-rechecked-firstmate_fm-stale-r1 .paused-resurfaced-firstmate_fm-holder-r1 
+.paused-resurfaced-firstmate_fm-stale-r1 .pr-check-quarantine/holder-r1.diagnostic.ambiguous .pr-check-quarantine/stale-r1.diagnostic.ambiguous 
+.seen-holder-r1_status .seen-holder-r1_turn-ended .seen-stale-r1_status .seen-stale-r1_turn-ended .stale-firstmate_fm-holder-r1 
+.stale-firstmate_fm-stale-r1 .stale-r1.open-decisions-cursor .status-presentation-cursor .subsuper-paused-holder-r1 .subsuper-paused-stale-r1 
+holder-r1.busy-gen holder-r1.busy-state holder-r1.meta holder-r1.status holder-r1.turn-ended stale-r1.busy-gen stale-r1.busy-state stale-r1.meta 
+stale-r1.status stale-r1.turn-ended
+--- status-presentation rows: stale-r1,holder-r1
+--- working copy sentinel: the current holder is mid-edit
+--- pool record cksum: 3324440171 191
+--- treehouse calls: 0   endpoint kills: 0
+
+########## B1: ordinary teardown refuses BOTH records, with and without --force
+
+$ bin/fm-teardown.sh stale-r1
+REFUSED: stale-r1's ownership of its recorded working copy <case>/pool/1/repo could not be proven: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to <case>/pool/1/repo, and ownership is not inferred; record(s) holder-r1 also name <case>/pool/1/repo as their working copy.
+Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+$ bin/fm-teardown.sh stale-r1 --force
+REFUSED: stale-r1's ownership of its recorded working copy <case>/pool/1/repo could not be proven: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to <case>/pool/1/repo, and ownership is not inferred; record(s) holder-r1 also name <case>/pool/1/repo as their working copy.
+Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+$ bin/fm-teardown.sh holder-r1
+REFUSED: holder-r1's ownership of its recorded working copy <case>/pool/1/repo could not be proven: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to <case>/pool/1/repo, and ownership is not inferred; record(s) stale-r1 also name <case>/pool/1/repo as their working copy.
+Tearing it down would reset that copy and kill the processes in it, which may be another task's work, and --force cannot authorize discarding another holder's work.
+Retire only this task's record and leave the working copy alone: bin/fm-teardown.sh holder-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+########## B2: --retire-record alone refuses an unproven record
+
+$ bin/fm-teardown.sh stale-r1 --retire-record
+REFUSED: cannot prove stale-r1's working copy <case>/pool/1/repo was re-leased: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to <case>/pool/1/repo, and ownership is not inferred; record(s) holder-r1 also name <case>/pool/1/repo as their working copy.
+Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh stale-r1), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+########## B3: --unproven-confirmed is valid only with --retire-record; --force never implies it
+
+$ bin/fm-teardown.sh stale-r1 --unproven-confirmed
+error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]
+[exit 2]
+
+$ bin/fm-teardown.sh stale-r1 --force --unproven-confirmed
+error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]
+[exit 2]
+
+$ bin/fm-teardown.sh stale-r1 --retire-record --force
+error: invalid teardown request; usage: fm-teardown.sh <task-id> [--force | --retire-record [--dry-run] [--unproven-confirmed]]
+[exit 2]
+
+(next command runs with FM_UNPROVEN_CONFIRMED=1 UNPROVEN_CONFIRMED=1 FM_FORCE=1 exported: no environment variable stands in for the flag)
+$ bin/fm-teardown.sh stale-r1 --retire-record
+REFUSED: cannot prove stale-r1's working copy <case>/pool/1/repo was re-leased: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to <case>/pool/1/repo, and ownership is not inferred; record(s) holder-r1 also name <case>/pool/1/repo as their working copy.
+Only a proven re-lease lets the record go alone, and ownership is never inferred. Confirm by hand whose work the copy holds, then tear the task down normally once its work has landed (bin/fm-teardown.sh stale-r1), spawn a fresh task from its branch, or retire only the record with bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed; that flag is for a record whose ownership could not be proven, and it touches nothing but the record.
+[exit 1]
+
+########## B4: the deliberate acknowledgement, dry run first
+
+$ bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed --dry-run
+dry run: stale-r1's ownership of its working copy <case>/pool/1/repo could not be proven, which --unproven-confirmed acknowledges: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to <case>/pool/1/repo, and ownership is not inferred; record(s) holder-r1 also name <case>/pool/1/repo as their working copy
+dry run: would remove <case>/home/state/stale-r1.turn-ended
+dry run: would remove <case>/home/state/stale-r1.meta
+dry run: would remove <case>/home/state/.seen-stale-r1_status
+dry run: would remove <case>/home/state/.seen-stale-r1_turn-ended
+dry run: would remove <case>/home/state/.hb-surfaced-stale-r1
+dry run: would remove <case>/home/state/.subsuper-paused-stale-r1
+dry run: would remove <case>/home/state/.hash-firstmate_fm-stale-r1
+dry run: would remove <case>/home/state/.count-firstmate_fm-stale-r1
+dry run: would remove <case>/home/state/.stale-firstmate_fm-stale-r1
+dry run: would remove <case>/home/state/.paused-firstmate_fm-stale-r1
+dry run: would remove <case>/home/state/.paused-rechecked-firstmate_fm-stale-r1
+dry run: would remove <case>/home/state/.paused-resurfaced-firstmate_fm-stale-r1
+dry run: would remove <case>/home/state/stale-r1.status
+dry run: would remove <case>/home/state/.stale-r1.open-decisions-cursor
+dry run: would remove <case>/home/state/stale-r1.busy-gen
+dry run: would remove <case>/home/state/stale-r1.busy-state
+dry run: would remove <case>/home/state/.pr-check-quarantine/stale-r1.diagnostic.ambiguous
+dry run: would leave the working copy, the pool's lease on it, and endpoint firstmate:fm-stale-r1 untouched
+[exit 0]
+--- state/ files: 35
+.count-firstmate_fm-holder-r1 .count-firstmate_fm-stale-r1 .hash-firstmate_fm-holder-r1 .hash-firstmate_fm-stale-r1 .hb-surfaced-holder-r1 
+.hb-surfaced-stale-r1 .holder-r1.open-decisions-cursor .paused-firstmate_fm-holder-r1 .paused-firstmate_fm-stale-r1 
+.paused-rechecked-firstmate_fm-holder-r1 .paused-rechecked-firstmate_fm-stale-r1 .paused-resurfaced-firstmate_fm-holder-r1 
+.paused-resurfaced-firstmate_fm-stale-r1 .pr-check-quarantine/holder-r1.diagnostic.ambiguous .pr-check-quarantine/stale-r1.diagnostic.ambiguous 
+.seen-holder-r1_status .seen-holder-r1_turn-ended .seen-stale-r1_status .seen-stale-r1_turn-ended .stale-firstmate_fm-holder-r1 
+.stale-firstmate_fm-stale-r1 .stale-r1.open-decisions-cursor .status-presentation-cursor .subsuper-paused-holder-r1 .subsuper-paused-stale-r1 
+holder-r1.busy-gen holder-r1.busy-state holder-r1.meta holder-r1.status holder-r1.turn-ended stale-r1.busy-gen stale-r1.busy-state stale-r1.meta 
+stale-r1.status stale-r1.turn-ended
+--- status-presentation rows: stale-r1,holder-r1
+--- working copy sentinel: the current holder is mid-edit
+--- pool record cksum: 3324440171 191
+--- treehouse calls: 0   endpoint kills: 0
+
+########## B5: the deliberate acknowledgement, real run
+
+$ bin/fm-teardown.sh stale-r1 --retire-record --unproven-confirmed
+retire-record: stale-r1's ownership of its working copy <case>/pool/1/repo could not be proven, which --unproven-confirmed acknowledges: the record carries no lease claim, so it predates durable leases and nothing recorded ties it to <case>/pool/1/repo, and ownership is not inferred; record(s) holder-r1 also name <case>/pool/1/repo as their working copy
+retire-record: --unproven-confirmed removes exactly these records of stale-r1 and nothing else:
+retire-record: will remove <case>/home/state/stale-r1.turn-ended
+retire-record: will remove <case>/home/state/stale-r1.meta
+retire-record: will remove <case>/home/state/.seen-stale-r1_status
+retire-record: will remove <case>/home/state/.seen-stale-r1_turn-ended
+retire-record: will remove <case>/home/state/.hb-surfaced-stale-r1
+retire-record: will remove <case>/home/state/.subsuper-paused-stale-r1
+retire-record: will remove <case>/home/state/.hash-firstmate_fm-stale-r1
+retire-record: will remove <case>/home/state/.count-firstmate_fm-stale-r1
+retire-record: will remove <case>/home/state/.stale-firstmate_fm-stale-r1
+retire-record: will remove <case>/home/state/.paused-firstmate_fm-stale-r1
+retire-record: will remove <case>/home/state/.paused-rechecked-firstmate_fm-stale-r1
+retire-record: will remove <case>/home/state/.paused-resurfaced-firstmate_fm-stale-r1
+retire-record: will remove <case>/home/state/stale-r1.status
+retire-record: will remove <case>/home/state/.stale-r1.open-decisions-cursor
+retire-record: will remove <case>/home/state/stale-r1.busy-gen
+retire-record: will remove <case>/home/state/stale-r1.busy-state
+retire-record: will remove <case>/home/state/.pr-check-quarantine/stale-r1.diagnostic.ambiguous
+retire-record: will remove stale-r1's row from <case>/home/state/.status-presentation-cursor
+retire-record: removed <case>/home/state/stale-r1.turn-ended
+retire-record: removed <case>/home/state/stale-r1.meta
+retire-record: removed <case>/home/state/.seen-stale-r1_status
+retire-record: removed <case>/home/state/.seen-stale-r1_turn-ended
+retire-record: removed <case>/home/state/.hb-surfaced-stale-r1
+retire-record: removed <case>/home/state/.subsuper-paused-stale-r1
+retire-record: removed <case>/home/state/.hash-firstmate_fm-stale-r1
+retire-record: removed <case>/home/state/.count-firstmate_fm-stale-r1
+retire-record: removed <case>/home/state/.stale-firstmate_fm-stale-r1
+retire-record: removed <case>/home/state/.paused-firstmate_fm-stale-r1
+retire-record: removed <case>/home/state/.paused-rechecked-firstmate_fm-stale-r1
+retire-record: removed <case>/home/state/.paused-resurfaced-firstmate_fm-stale-r1
+retire-record: removed <case>/home/state/stale-r1.status
+retire-record: removed <case>/home/state/.stale-r1.open-decisions-cursor
+retire-record: removed <case>/home/state/stale-r1.busy-gen
+retire-record: removed <case>/home/state/stale-r1.busy-state
+retire-record: removed <case>/home/state/.pr-check-quarantine/stale-r1.diagnostic.ambiguous
+retire-record: removed stale-r1's row from <case>/home/state/.status-presentation-cursor
+retired record stale-r1 on --unproven-confirmed (the record carries no lease claim, so it predates durable leases and nothing recorded ties it to <case>/pool/1/repo, and ownership is not inferred; record(s) holder-r1 also name <case>/pool/1/repo as their working copy); left working copy <case>/pool/1/repo, whatever the pool holds on it, and every process in it untouched
+Backlog: stale-r1 just finished. Run tasks-axi done stale-r1 --pr https://github.com/example/repo/pull/829, then run tasks-axi ready for dependency-cleared candidates, check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+--- state/ files: 18
+.count-firstmate_fm-holder-r1 .hash-firstmate_fm-holder-r1 .hb-surfaced-holder-r1 .holder-r1.open-decisions-cursor .paused-firstmate_fm-holder-r1 
+.paused-rechecked-firstmate_fm-holder-r1 .paused-resurfaced-firstmate_fm-holder-r1 .pr-check-quarantine/holder-r1.diagnostic.ambiguous 
+.seen-holder-r1_status .seen-holder-r1_turn-ended .stale-firstmate_fm-holder-r1 .status-presentation-cursor .subsuper-paused-holder-r1 
+holder-r1.busy-gen holder-r1.busy-state holder-r1.meta holder-r1.status holder-r1.turn-ended
+--- status-presentation rows: holder-r1
+--- working copy sentinel: the current holder is mid-edit
+--- pool record cksum: 3324440171 191
+--- treehouse calls: 0   endpoint kills: 0
