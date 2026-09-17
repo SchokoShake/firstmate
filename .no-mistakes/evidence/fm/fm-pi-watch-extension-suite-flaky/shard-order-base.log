@@ -1,0 +1,8 @@
+== BASE 2804ff7 (main): startup-network -> pi-watch-extension, pinned to cpus 12-15, 3 rounds
+round 1: startup-network rc=0 | workers left when Pi suite starts=5, when it ends=7 | Pi suite rc=1 ok=18 18s
+    not ok - OpenCode watch plugin must arm only when this session owns the fleet lock: expected exit 0, got 1
+round 2: startup-network rc=0 | workers left when Pi suite starts=5, when it ends=9 | Pi suite rc=1 ok=18 17s
+    not ok - OpenCode watch plugin must arm only when this session owns the fleet lock: expected exit 0, got 1
+round 3: startup-network rc=0 | workers left when Pi suite starts=5, when it ends=6 | Pi suite rc=1 ok=18 18s
+    not ok - OpenCode watch plugin must arm only when this session owns the fleet lock: expected exit 0, got 1
+== BASE 2804ff7 (main) result: Pi suite passed 0 of 3 rounds

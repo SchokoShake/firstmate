@@ -1,0 +1,5 @@
+== TARGET 651212b (fix): startup-network -> pi-watch-extension, pinned to cpus 16-19, 3 rounds
+round 1: startup-network rc=0 | workers left when Pi suite starts=4, when it ends=0 | Pi suite rc=0 ok=30 11s
+round 2: startup-network rc=0 | workers left when Pi suite starts=4, when it ends=0 | Pi suite rc=0 ok=30 11s
+round 3: startup-network rc=0 | workers left when Pi suite starts=5, when it ends=0 | Pi suite rc=0 ok=30 10s
+== TARGET 651212b (fix) result: Pi suite passed 3 of 3 rounds

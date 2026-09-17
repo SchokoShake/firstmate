@@ -1,0 +1,8 @@
+== BASE 2804ff7 (main): tests/fm-pi-watch-extension.test.sh pinned to cpu 5 with 20 spinners, 3 runs (fm-base-2804ff7.2660555, node v24.18.0)
+run 1: FAIL rc=1 ok=5 28s
+    not ok - Pi must deliver the actionable wake after bounded hung-successor recovery: expected exit 0, got 1
+run 2: FAIL rc=1 ok=5 31s
+    not ok - Pi must deliver the actionable wake after bounded hung-successor recovery: expected exit 0, got 1
+run 3: FAIL rc=1 ok=5 30s
+    not ok - Pi must deliver the actionable wake after bounded hung-successor recovery: expected exit 0, got 1
+== BASE 2804ff7 (main) result: 0 of 3 passed

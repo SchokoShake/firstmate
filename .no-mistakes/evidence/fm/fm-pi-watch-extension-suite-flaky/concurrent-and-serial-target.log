@@ -1,0 +1,13 @@
+== TARGET 651212b: 8 concurrent copies of tests/fm-pi-watch-extension.test.sh x 3 rounds, all pinned to cpus 16-19
+round 1: PASS PASS PASS PASS PASS PASS PASS PASS
+round 2: PASS PASS PASS PASS PASS PASS PASS PASS
+round 3: PASS PASS PASS PASS PASS PASS PASS PASS
+== concurrent result: 24 of 24 passed
+
+== TARGET 651212b: serial, unloaded, 5 runs
+run 1: PASS ok=30 10s
+run 2: PASS ok=30 11s
+run 3: PASS ok=30 10s
+run 4: PASS ok=30 11s
+run 5: PASS ok=30 10s
+== serial result: 5 of 5 passed

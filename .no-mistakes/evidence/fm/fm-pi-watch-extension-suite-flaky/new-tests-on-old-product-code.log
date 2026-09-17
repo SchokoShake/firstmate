@@ -1,0 +1,18 @@
+== New regression tests (from 651212b) run against the PREVIOUS product code (bin/ at base 2804ff7)
+   (tree = git archive of 2804ff7 with only the two test files replaced; tests/lib.sh is byte-identical)
+
+-- tests/fm-watcher-lock.test.sh            rc=1
+not ok - acquiring or waiting for a lock in a removed directory never returned
+   (fm_run_timed's 10s bound converted the old unbounded .steal recursion / endless wait into a failure)
+
+-- tests/fm-startup-network.test.sh         rc=1
+not ok - the worker kept waiting on its locks after its home was removed
+
+== Same tests against the fixed product code (651212b)
+-- tests/fm-watcher-lock.test.sh            rc=0
+ok - a lock whose directory was removed is refused, and waited for, without a steal chain
+ok - a lock released while an acquirer was losing to it is taken with one bounded retry
+-- tests/fm-startup-network.test.sh         rc=0
+ok - fm-startup-network: a worker whose home is removed exits instead of waiting forever
+ok - fm-startup-network: a worker delivering its wake exits when its home is removed
+ok - fm-startup-network: a fleet-lock takeover that loses its home mid-claim fails closed

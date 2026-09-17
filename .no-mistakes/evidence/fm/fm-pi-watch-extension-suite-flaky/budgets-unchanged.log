@@ -1,0 +1,37 @@
+== Timing budgets configured by tests/fm-pi-watch-extension.test.sh: base 2804ff7 vs target 651212b
+identical (count  assignment):
+      3 FM_OPENCODE_ARM_READY_TIMEOUT_MS=250
+      3 FM_PI_ARM_READY_TIMEOUT_MS=250
+      4 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=20
+      1 FM_WATCH_REARM_RETRY_BASE_MS=10000
+     13 FM_WATCH_REARM_RETRY_BASE_MS=5
+     13 FM_WATCH_REARM_RETRY_LIMIT=2
+     13 FM_WATCH_REARM_RETRY_MAX_MS=10
+      1 FM_WATCH_REARM_RETRY_MAX_MS=10000
+
+== Real-time waits removed/added in the suite (setTimeout/sleep literals), base -> target
++    await sleep(10);
+-  await new Promise((resolve) => setTimeout(resolve, 10));
+-await new Promise((resolve) => setTimeout(resolve, 100));
++await clock.sleep(100);
+-  await new Promise((resolve) => setTimeout(resolve, 10));
+-await new Promise((resolve) => setTimeout(resolve, 80));
++await clock.sleep(80);
+-    await new Promise((resolve) => setTimeout(resolve, 10));
+-  await new Promise((resolve) => setTimeout(resolve, 10));
+-await new Promise((resolve) => setTimeout(resolve, 80));
++await clock.sleep(80);
+-await new Promise((resolve) => setTimeout(resolve, 120));
+-  await new Promise((resolve) => setTimeout(resolve, 10));
+-await new Promise((resolve) => setTimeout(resolve, 100));
++await clock.sleep(100);
+-  await new Promise((resolve) => setTimeout(resolve, 10));
+-await new Promise((resolve) => setTimeout(resolve, 80));
++await clock.sleep(80);
+-    await new Promise((resolve) => setTimeout(resolve, 10));
+-  await new Promise((resolve) => setTimeout(resolve, 10));
+-await new Promise((resolve) => setTimeout(resolve, 80));
++await clock.sleep(80);
+
+== Plugin / extension files changed between base and target:
+    none

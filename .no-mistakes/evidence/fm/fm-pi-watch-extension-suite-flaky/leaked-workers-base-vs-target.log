@@ -1,0 +1,31 @@
+== BASE 2804ff7: tests/fm-startup-network.test.sh (base tests, base bin), then watch what it leaves behind
+suite rc=0
+t+0s: leftover workers=5
+    2870563  4.0       01:06 bash /tmp/fm-startup-network-tests.Ke9UCJ/start-nonblocking/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 
+    2890031  4.8       00:43 bash /tmp/fm-startup-network-tests.Ke9UCJ/lock-changed/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 --gen
+    2895417  4.0       00:34 bash /tmp/fm-startup-network-tests.Ke9UCJ/single-flight/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 --ge
+    2909837  4.7       00:19 bash /tmp/fm-startup-network-tests.Ke9UCJ/owner-handoff/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867483 --ge
+    2914742  3.0       00:15 bash /tmp/fm-startup-network-tests.Ke9UCJ/sweep-lease/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 --gene
+t+5s: leftover workers=5
+    2870563  4.2       01:11 bash /tmp/fm-startup-network-tests.Ke9UCJ/start-nonblocking/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 
+    2890031  5.1       00:48 bash /tmp/fm-startup-network-tests.Ke9UCJ/lock-changed/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 --gen
+    2895417  4.3       00:39 bash /tmp/fm-startup-network-tests.Ke9UCJ/single-flight/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 --ge
+    2909837  5.2       00:24 bash /tmp/fm-startup-network-tests.Ke9UCJ/owner-handoff/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867483 --ge
+    2914742  3.9       00:20 bash /tmp/fm-startup-network-tests.Ke9UCJ/sweep-lease/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 --gene
+t+15s: leftover workers=12
+    2870563  4.9       01:21 bash /tmp/fm-startup-network-tests.Ke9UCJ/start-nonblocking/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 
+    2890031  5.8       00:58 bash /tmp/fm-startup-network-tests.Ke9UCJ/lock-changed/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 --gen
+    2895417  5.3       00:49 bash /tmp/fm-startup-network-tests.Ke9UCJ/single-flight/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 --ge
+    2909837  6.4       00:34 bash /tmp/fm-startup-network-tests.Ke9UCJ/owner-handoff/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867483 --ge
+    2914742  5.7       00:30 bash /tmp/fm-startup-network-tests.Ke9UCJ/sweep-lease/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2867484 --gene
+-- killing the leaked base workers so they stop loading the host
+after kill: leftover workers=0
+
+== TARGET 651212b: same suite, same observation
+suite rc=0
+t+0s: leftover workers=4
+    2967122  3.8       01:09 bash /tmp/fm-startup-network-tests.vWXYoh/start-nonblocking/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2966256 
+    2990485  4.4       00:40 bash /tmp/fm-startup-network-tests.vWXYoh/lock-changed/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2966256 --gen
+    3021969  4.1       00:17 bash /tmp/fm-startup-network-tests.vWXYoh/owner-handoff/root/bin/fm-startup-network.sh run --locked 1 --lock-pid 2966255 --ge
+t+5s: leftover workers=0
+t+15s: leftover workers=0

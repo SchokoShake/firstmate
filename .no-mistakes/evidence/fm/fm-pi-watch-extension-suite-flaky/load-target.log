@@ -1,0 +1,7 @@
+== TARGET 651212b (fix): tests/fm-pi-watch-extension.test.sh pinned to cpu 11 with 20 spinners, 5 runs (651212b, node v24.18.0)
+run 1: PASS rc=0 ok=30 133s
+run 2: PASS rc=0 ok=30 135s
+run 3: PASS rc=0 ok=30 118s
+run 4: PASS rc=0 ok=30 119s
+run 5: PASS rc=0 ok=30 124s
+== TARGET 651212b (fix) result: 5 of 5 passed
