@@ -342,7 +342,7 @@ verify_hold_durable() {  # <hold-id>
   if [ "$state" = "done" ] && [ "$kind" = captain ] && body_has_resolution_record "$body"; then
     return 0
   fi
-  fail "captain decision $id is neither actively held nor durably resolved"
+  fail "captain decision $id is neither open nor durably resolved"
 }
 
 verify_resolution_identity() {
