@@ -263,6 +263,111 @@ EOF
   pass "fm-startup-network: a report-publication failure is failed, diagnosed, and still wakes"
 }
 
+# The worker outlives the command that launched it, so the home it waits to
+# deliver into can be removed underneath it: a retired home, or a test fixture
+# cleaned up at exit. Its locks can never be taken there again, so a worker that
+# kept waiting for them would keep loading the host long after its caller ended.
+test_a_worker_whose_home_is_removed_exits() {
+  local rec home root log claimant held holder worker_pid survived=0 waited=0
+  rec=$(new_world home-removed)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  held="$(dirname "$log")/publication-lock-held"
+  sleep 30 &
+  claimant=$!
+  FM_FAKE_BOOTSTRAP_LOG="$log" run_stage "$home" "$root" start --locked 0 --harvest-pid "$claimant"
+  run_stage "$home" "$root" wait 30 >/dev/null || fail "the removed-home worker never published"
+  worker_pid=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status")
+  kill -0 "$worker_pid" 2>/dev/null \
+    || fail "the worker stopped before the removal it is meant to outlive"
+
+  # Holding the publication lock puts the worker provably inside its lock wait,
+  # rather than between a lock and its next status read, when the home goes.
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2"
+    : > "$3"
+    exec sleep 30
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state/.startup-network.lock" "$held" &
+  holder=$!
+  while [ ! -e "$held" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -e "$held" ] || fail "the test could not take the worker's publication lock"
+  # Renamed away in one step, so the worker loses the whole home at once.
+  mv "$home" "$home.removed" || fail "the fixture home could not be moved away"
+  waited=0
+  while kill -0 "$worker_pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$worker_pid" 2>/dev/null; then
+    survived=1
+    kill "$worker_pid" 2>/dev/null || true
+  fi
+  kill "$holder" "$claimant" 2>/dev/null || true
+  wait "$holder" "$claimant" 2>/dev/null || true
+  [ "$survived" -eq 0 ] || fail "the worker kept waiting on its locks after its home was removed"
+  pass "fm-startup-network: a worker whose home is removed exits instead of waiting forever"
+}
+
+# A worker whose claimant is gone appends its wake while it holds the publication
+# lock. A home removed during that append, as when a fixture's cleanup deletes the
+# claim before the rest of the home, must end the worker too.
+test_a_worker_delivering_its_wake_exits_when_its_home_is_removed() {
+  local rec home root log claimant queue_held holder worker_pid survived=0 waited=0
+  rec=$(new_world home-removed-mid-wake)
+  IFS='|' read -r home root log <<EOF
+$rec
+EOF
+  queue_held="$(dirname "$log")/wake-queue-lock-held"
+  sleep 30 &
+  claimant=$!
+  FM_FAKE_BOOTSTRAP_LOG="$log" run_stage "$home" "$root" start --locked 0 --harvest-pid "$claimant"
+  run_stage "$home" "$root" wait 30 >/dev/null || fail "the mid-wake worker never published"
+  worker_pid=$(sed -n 's/^pid=//p' "$home/state/.startup-network.status")
+
+  # With the wake queue held, a dead claimant sends the worker into its wake
+  # append; removing the claim is the worker's own signal that it is past the
+  # point of no return.
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2"
+    : > "$3"
+    exec sleep 30
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state/.wake-queue.lock" "$queue_held" &
+  holder=$!
+  while [ ! -e "$queue_held" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ -e "$queue_held" ] || fail "the test could not take the wake queue lock"
+  kill "$claimant" 2>/dev/null || true
+  wait "$claimant" 2>/dev/null || true
+  waited=0
+  while [ -e "$home/state/.startup-network.claim" ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  [ ! -e "$home/state/.startup-network.claim" ] || fail "the worker never started delivering its wake"
+  mv "$home" "$home.removed" || fail "the fixture home could not be moved away"
+  waited=0
+  while kill -0 "$worker_pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$worker_pid" 2>/dev/null; then
+    survived=1
+    kill "$worker_pid" 2>/dev/null || true
+  fi
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  [ "$survived" -eq 0 ] || fail "the worker kept waiting to deliver its wake after its home was removed"
+  pass "fm-startup-network: a worker delivering its wake exits when its home is removed"
+}
+
 # The worker outlives the command that launched it. If another session took the
 # lock meanwhile, running the mutating sweeps would sweep underneath that
 # session, so they are refused - and the refusal is reported, not silent.
@@ -616,6 +721,8 @@ test_start_returns_without_holding_the_callers_stdout
 test_harvest_acknowledgement_suppresses_the_wake_and_no_claim_produces_it
 test_a_claimant_crash_after_publish_still_queues_the_wake
 test_a_report_publication_failure_is_failed_and_still_wakes
+test_a_worker_whose_home_is_removed_exits
+test_a_worker_delivering_its_wake_exits_when_its_home_is_removed
 test_mutating_sweeps_are_refused_when_the_lock_changed_hands
 test_the_stage_bound_is_reported_not_swallowed
 test_an_abandoned_run_reads_as_needing_a_rerun

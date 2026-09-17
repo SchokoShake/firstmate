@@ -423,6 +423,35 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
   pass "paused mid-acquire claimant backs off to active stealer"
 }
 
+# A detached worker can outlive the home its locks live in. Once that directory
+# is gone no lock can be created there: an acquirer that read the absent lock as
+# stale recursed through ever-deeper .steal mutexes, burning a core for minutes,
+# and a waiter kept waiting for good. The bound only turns either regression into
+# a failure instead of a hang.
+test_lock_in_removed_directory_is_refused_without_stealing() {
+  local dir state lockdir driver out rc
+  dir=$(make_case lock-removed-dir)
+  state="$dir/state"
+  lockdir="$state/.contend.lock"
+  driver="$dir/acquire-after-removal.sh"
+  cat > "$driver" <<'SH'
+#!/usr/bin/env bash
+. "$1"
+rm -rf "$STATE"
+if fm_lock_try_acquire "$2"; then echo acquired; else echo refused; fi
+if fm_lock_acquire_wait "$2"; then echo waited-and-acquired; else echo wait-refused; fi
+if [ -e "$STATE" ]; then echo recreated; fi
+SH
+  rc=0
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '. "$1"; fm_run_timed 10 bash "$2" "$3" "$4"' \
+    _ "$ROOT/bin/fm-timeout-lib.sh" "$driver" "$LIB" "$lockdir" 2>&1) || rc=$?
+  [ "$rc" -ne 124 ] || fail "acquiring or waiting for a lock in a removed directory never returned"
+  [ "$rc" -eq 0 ] || fail "lock acquisition in a removed directory crashed (rc=$rc): $out"
+  [ "$out" = "refused
+wait-refused" ] || fail "a lock in a removed directory was not simply refused: $out"
+  pass "a lock whose directory was removed is refused, and waited for, without a steal chain"
+}
+
 test_watch_restart_rejects_reused_pid() {
   local dir state fakebin out live pid i
   dir=$(make_case restart-reused-pid)
@@ -1117,6 +1146,7 @@ test_lock_does_not_steal_live_lock
 test_lock_empty_pid_uses_minimum_grace
 test_lock_late_claim_loses_after_recreate
 test_lock_paused_mid_acquire_claim_fails_during_steal
+test_lock_in_removed_directory_is_refused_without_stealing
 test_watch_restart_rejects_reused_pid
 test_watch_restart_attaches_to_healthy_peer
 test_watcher_self_evicts_on_lock_takeover

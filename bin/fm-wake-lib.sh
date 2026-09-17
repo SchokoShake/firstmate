@@ -732,6 +732,14 @@ fm_lock_try_acquire() {
   if fm_lock_try_create "$lockdir"; then
     return 0
   fi
+  # A lock that does not exist has no stale holder to recover. Creation failed
+  # because the lock's directory is gone or unwritable, or it lost a release race
+  # that a caller's retry absorbs. Stealing it would fail the same way one
+  # "$lockdir.steal" deeper, recursing without bound and burning a CPU core for
+  # as long as the directory stays gone.
+  if [ ! -e "$lockdir" ] && [ ! -L "$lockdir" ]; then
+    return 1
+  fi
 
   # Compare against ${BASHPID:-$$} inline, never via a command substitution:
   # $() forks a subshell whose BASHPID is not this frame's pid.
@@ -824,9 +832,17 @@ fm_lock_try_acquire() {
   return "$rc"
 }
 
+# Waits until the lock is held, and fails only once the lock's directory no
+# longer exists: a lock can never be taken there again, as when a process
+# outlives the home it was working in.
 fm_lock_acquire_wait() {
-  local lockdir=$1
+  local lockdir=$1 parent
+  case "$lockdir" in
+    */*) parent=${lockdir%/*}; parent=${parent:-/} ;;
+    *) parent=. ;;
+  esac
   while ! fm_lock_try_acquire "$lockdir"; do
+    [ -d "$parent" ] || return 1
     sleep 0.1
   done
 }
@@ -942,7 +958,7 @@ fm_wake_append() {
   recovery_marker="$STATE/.watcher-down"
   status=0
 
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
   _fm_recovery_marker_publish "$recovery_marker" downtime || status=$?
   if [ "$status" -eq 0 ]; then
     seq=$(cat "$seq_file" 2>/dev/null || echo 0)
