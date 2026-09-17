@@ -72,12 +72,8 @@ if [ "$#" -gt 1 ]; then
   }
 elif grep -q '^Delivery contract: mode=[^ ]* stack=native$' "$DATA/$ID/brief.md" 2>/dev/null \
   && ! grep -qxF "pr=$URL" "$META"; then
-  RECORDED_TOP=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
-  if [ -n "$RECORDED_TOP" ]; then
-    echo "error: $URL is not the recorded top PR of stacked task $ID; merging the top PR merges every layer below it, and the recorded top PR is $RECORDED_TOP" >&2
-  else
-    echo "error: $URL is not the recorded top PR of stacked task $ID; merging the top PR merges every layer below it, and no top PR is recorded yet: first record the stack with every PR bottom to top so bin/fm-stack-check.sh can prove it" >&2
-  fi
+  RECORDED=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
+  echo "error: $URL is one PR of stacked task $ID (recorded: ${RECORDED:-nothing yet}); record the stack with every PR bottom to top so bin/fm-stack-check.sh can prove it. Firstmate never merges a stacked PR; the captain merges stacks" >&2
   exit 1
 fi
 

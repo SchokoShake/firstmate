@@ -444,7 +444,7 @@ Run the project's local checks at every layer's own head, and put the exact comm
 When every layer is committed, pushed, and in the stack, prove it: \`$FM_ROOT/bin/fm-stack-check.sh <bottom-pr-url> ... <top-pr-url>\` must exit 0.
 Then append \`done: {the one line fm-stack-check.sh printed}\` to the status file and stop.
 Never report done without that passing output.
-The configured merge authority merges the stack bottom-up; firstmate relays the outcome.
+The captain merges the stack; firstmate never merges a stacked PR and relays the outcome.
 EOF
     else
       RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'

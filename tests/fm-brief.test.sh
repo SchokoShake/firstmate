@@ -329,6 +329,8 @@ test_stack_brief_requires_a_proven_native_stack() {
   assert_grep "never fall back to chained bases" "$brief" "a stack brief allowed a chained-base fallback"
   assert_grep "Never merge a PR, and never run \`gh stack merge\`" "$brief" \
     "a stack brief did not forbid merging the stack"
+  assert_grep "The captain merges the stack; firstmate never merges a stacked PR" "$brief" \
+    "a stack brief did not leave merging the stack to the captain"
   assert_grep "Verify isolation before anything else" "$brief" "a stack brief lost the worktree-isolation assertion"
   assert_grep "{TASK}" "$brief" "a stack brief lost the {TASK} placeholder"
   assert_no_grep "done: PR {url}" "$brief" "a stack brief kept the single-PR done line"

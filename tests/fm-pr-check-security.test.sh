@@ -795,12 +795,12 @@ test_stack_recording_requires_github_proof() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "a stacked-chain task was recorded with a single PR"
-  assert_grep "https://github.com/o/r/pull/22 is not the recorded top PR of stacked task task-a" "$dir/stderr" \
-    "the single-PR refusal did not say the URL is not the recorded top PR"
-  assert_grep "merging the top PR merges every layer below it" "$dir/stderr" \
-    "the single-PR refusal did not say the top PR merges every layer"
-  assert_grep "no top PR is recorded yet: first record the stack with every PR bottom to top so bin/fm-stack-check.sh can prove it" "$dir/stderr" \
-    "the single-PR refusal did not say the stack must first be recorded"
+  assert_grep "https://github.com/o/r/pull/22 is one PR of stacked task task-a (recorded: nothing yet)" "$dir/stderr" \
+    "the single-PR refusal did not say nothing is recorded for the stacked task"
+  assert_grep "record the stack with every PR bottom to top so bin/fm-stack-check.sh can prove it" "$dir/stderr" \
+    "the single-PR refusal did not say how to record the stack"
+  assert_grep "Firstmate never merges a stacked PR; the captain merges stacks" "$dir/stderr" \
+    "the single-PR refusal did not say firstmate never merges a stacked PR"
   after=$(state_snapshot "$dir/home/state")
   [ "$after" = "$before" ] || fail "a refused single-PR stack record changed task state"
   [ ! -s "$dir/gh.log" ] || fail "a refused single-PR stack record called gh"
@@ -831,12 +831,11 @@ test_stack_recording_requires_github_proof() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "a stack task was re-recorded on a PR other than its recorded top"
-  assert_grep "https://github.com/o/r/pull/21 is not the recorded top PR of stacked task task-a" "$dir/stderr" \
-    "the lower-layer refusal did not say the URL is not the recorded top PR"
-  assert_grep "merging the top PR merges every layer below it" "$dir/stderr" \
-    "the lower-layer refusal did not say the top PR merges every layer"
-  assert_grep "the recorded top PR is https://github.com/o/r/pull/22" "$dir/stderr" \
-    "the lower-layer refusal did not name the recorded top PR"
+  assert_grep "https://github.com/o/r/pull/21 is one PR of stacked task task-a (recorded: https://github.com/o/r/pull/22)" "$dir/stderr" \
+    "the lower-layer refusal did not name the PR already recorded for the stacked task"
+  assert_grep "Firstmate never merges a stacked PR; the captain merges stacks" "$dir/stderr" \
+    "the lower-layer refusal did not say firstmate never merges a stacked PR"
+  assert_no_grep "merges every layer" "$dir/stderr" "the refusal still describes a top-PR merge path"
   pass "fm-pr-check records a stack only when GitHub proves it, and a stacked task never as a lone PR"
 }
 
