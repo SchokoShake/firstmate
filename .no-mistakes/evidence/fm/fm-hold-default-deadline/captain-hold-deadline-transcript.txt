@@ -1,155 +1,150 @@
-===== today (local clock): 2026-09-17  expected default deadline: today + 7 days =====
+real local date: 2026-09-17   tasks-axi 0.2.5
 
-===== 1. DEFAULT APPLIED: fm-decision-hold.sh hold with no --hold-until =====
+=== 0. pre-existing holds written before this change (one with no deadline, one lapsed, one future)
+- [ ] old-open - legacy open-ended question (repo: myapp) (kind: ship) (since 2026-09-17) (hold: legacy question, no deadline) (hold-kind: captain)
+- [ ] old-lapsed - legacy lapsed question (repo: myapp) (kind: ship) (since 2026-09-17) (hold: legacy question, lapsed) (hold-kind: captain) (hold-until: 2020-01-01)
+- [ ] old-future - legacy future question (repo: myapp) (kind: ship) (since 2026-09-17) (hold: legacy question, long window) (hold-kind: captain) (hold-until: 2099-12-31)
 
-$ bin/fm-decision-hold.sh hold sample-route-review route --title Pick the sample route --reason captain must choose route A or B --repo sample
-sample-route-review-decision-route
+=== 1. fm-captain-hold.sh with NO --hold-until -> default today+7
+$ fm fm-captain-hold.sh thread-a --reason which rollout window?
+held: thread-a until 2026-09-24
 [exit 0]
-
-# backlog line for sample-route-review-decision-route:
-- [ ] sample-route-review-decision-route - Pick the sample route (repo: sample) (kind: captain) (since 2026-09-17) (hold: captain must choose route A or B) (hold-kind: captain) (hold-until: 2026-09-24)
-
-===== 2. EXPLICIT OVERRIDE HONOURED =====
-
-$ bin/fm-decision-hold.sh hold sample-route-review access --title Grant sample access --reason captain must approve access --repo sample --hold-until 2026-12-01
-sample-route-review-decision-access
-[exit 0]
-
-# backlog line for sample-route-review-decision-access:
-- [ ] sample-route-review-decision-access - Grant sample access (repo: sample) (kind: captain) (since 2026-09-17) (hold: captain must approve access) (hold-kind: captain) (hold-until: 2026-12-01)
-
-===== 3. NO-DEADLINE OPT-OUT HONOURED (--hold-until none) =====
-
-$ bin/fm-decision-hold.sh hold sample-route-review vision --title Open-ended product vision --reason captain is thinking it over --repo sample --hold-until none
-sample-route-review-decision-vision
-[exit 0]
-
-# backlog line for sample-route-review-decision-vision:
-- [ ] sample-route-review-decision-vision - Open-ended product vision (repo: sample) (kind: captain) (since 2026-09-17) (hold: captain is thinking it over) (hold-kind: captain)
-
-===== 4. IDEMPOTENT RE-HOLD keeps an unreached deadline (2026-12-01 must survive) =====
-
-$ bin/fm-decision-hold.sh hold sample-route-review access --title Grant sample access --reason captain must approve access --repo sample
-sample-route-review-decision-access
-[exit 0]
-
-# backlog line for sample-route-review-decision-access:
-- [ ] sample-route-review-decision-access - Grant sample access (repo: sample) (kind: captain) (since 2026-09-17) (hold: captain must approve access) (hold-kind: captain) (hold-until: 2026-12-01)
-
-===== 5. bin/fm-captain-hold.sh (main-side thread / stow producer) =====
-
-$ bin/fm-captain-hold.sh main-thread --reason captain must confirm the rollout
-held: main-thread until 2026-09-24
-[exit 0]
-
-# backlog line for main-thread:
-- [ ] main-thread - Main-side thread that needs the captain (repo: sample) (hold: captain must confirm the rollout) (hold-kind: captain) (hold-until: 2026-09-24)
-
-$ bin/fm-captain-hold.sh main-thread --reason captain must confirm the rollout --hold-until 2026-02-30
-fm-captain-hold: --hold-until is not a real calendar date: 2026-02-30
-[exit 1]
-
-$ bin/fm-captain-hold.sh main-thread --reason captain must confirm the rollout --hold-until 2026-01-01
-fm-captain-hold: --hold-until must be later than 2026-09-17: 2026-01-01
-[exit 1]
-
-$ bin/fm-captain-hold.sh main-thread --reason
-fm-captain-hold: --reason requires a value
-[exit 1]
-
-$ bin/fm-captain-hold.sh answered-question --reason new question on a done row
-fm-captain-hold: backlog item answered-question is already done; hold a new item for a new captain question
-[exit 1]
-
-$ bin/fm-captain-hold.sh no-such-item --reason x
-fm-captain-hold: backlog item no-such-item does not exist in <scratch-home>/data/backlog.md; create it with tasks-axi add first
-[exit 1]
-
-===== 6. EXISTING HOLDS UNTOUCHED: pre-existing rows byte-identical after all writes above =====
-unchanged: - [ ] old-open-question - Pre-branch captain question with no deadline (repo: sample) (hold: waiting on captain) (hold-kind: captain)
-unchanged: - [ ] old-dated-question - Pre-branch captain question already lapsed (repo: sample) (hold: captain must pick a vendor) (hold-kind: captain) (hold-until: 2026-08-01)
-unchanged: - [ ] live-question - Captain question still inside its window (repo: sample) (hold: captain must pick a colour) (hold-kind: captain) (hold-until: 2099-01-01)
-unchanged: - [ ] s1 - Time gated ship work (repo: sample) (kind: ship) (hold: waiting on release) (hold-until: 2000-01-01)
-unchanged: - [ ] plain-work - Ordinary ready work (repo: sample) (kind: ship)
-unchanged: - [x] answered-question - Answered captain question with surviving markers (repo: sample) (hold: captain must pick a name) (hold-kind: captain) (hold-until: 2026-08-01)
-
-===== 7. LAPSE IS DEMOTION: tasks-axi's own view of the lapsed captain hold =====
-
-$ tasks-axi show old-dated-question --full
-task:
-  id: old-dated-question
-  title: Pre-branch captain question already lapsed
-  state: queued
-  blocked: no
-  blocked_by: none
-  held: no
-  hold_reason: captain must pick a vendor
+  held: yes
+  hold_reason: which rollout window?
   hold_kind: captain
-  hold_until: 2026-08-01
-  kind: task
-  repo: sample
-  priority: "-"
-  created: "-"
-  closed: "-"
-  deps: none
-  links: none
-  body: ""
+  hold_until: 2026-09-24
+
+=== 2. explicit --hold-until override
+$ fm fm-captain-hold.sh thread-b --reason which vendor? --hold-until 2026-12-01
+held: thread-b until 2026-12-01
 [exit 0]
+  held: yes
+  hold_reason: which vendor?
+  hold_kind: captain
+  hold_until: 2026-12-01
 
-===== 8. READY PATH: raw tasks-axi ready (offers the lapsed captain hold) vs bin/fm-ready.sh =====
+=== 3. documented opt-out: --hold-until none
+$ fm fm-captain-hold.sh thread-c --reason long-term direction? --hold-until none
+held: thread-c with no deadline
+[exit 0]
+  held: yes
+  hold_reason: long-term direction?
+  hold_kind: captain
+  hold_until: "-"
 
-$ tasks-axi ready
-count: 3
-ready[3]{id,state,kind,repo,title}:
-  old-dated-question,queued,task,sample,Pre-branch captain question already lapsed
-  s1,queued,ship,sample,Time gated ship work
-  plain-work,queued,ship,sample,Ordinary ready work
+=== 4. fm-decision-hold.sh hold with NO --hold-until -> default today+7
+$ fm fm-decision-hold.sh hold scout-1 adopt-axes --title Adopt the new axes? --reason adopt or defer
+scout-1-decision-adopt-axes
+[exit 0]
+decision hold id: scout-1-decision-adopt-axes
+  held: yes
+  hold_reason: adopt or defer
+  hold_kind: captain
+  hold_until: 2026-09-24
+
+=== 5. fm-ask.sh again -> FRESH default, whatever the row carried (future / lapsed / none)
+-- old-future before:
+  held: yes
+  hold_reason: "legacy question, long window"
+  hold_kind: captain
+  hold_until: 2099-12-31
+-- old-lapsed before:
+  held: no
+  hold_reason: "legacy question, lapsed"
+  hold_kind: captain
+  hold_until: 2020-01-01
+-- old-open before:
+  held: yes
+  hold_reason: "legacy question, no deadline"
+  hold_kind: captain
+  hold_until: "-"
+-- ask-future before re-ask:
+  held: yes
+  hold_reason: first wording
+  hold_kind: captain
+  hold_until: 2099-12-31
+$ fm fm-ask.sh again ask-future --reason second wording, a new question
+fm-ask/1:ask-future:captain:2
+[exit 0]
+-- ask-future after re-ask (revision 2):
+  held: yes
+  hold_reason: "second wording, a new question"
+  hold_kind: captain
+  hold_until: 2026-09-24
+-- ask-lapsed before re-ask:
+  held: no
+  hold_reason: first wording
+  hold_kind: captain
+  hold_until: 2020-01-01
+$ fm fm-ask.sh again ask-lapsed --reason second wording, a new question
+fm-ask/1:ask-lapsed:captain:2
+[exit 0]
+-- ask-lapsed after re-ask (revision 2):
+  held: yes
+  hold_reason: "second wording, a new question"
+  hold_kind: captain
+  hold_until: 2026-09-24
+-- ask-none before re-ask:
+  held: yes
+  hold_reason: first wording
+  hold_kind: captain
+  hold_until: "-"
+$ fm fm-ask.sh again ask-none --reason second wording, a new question
+fm-ask/1:ask-none:captain:2
+[exit 0]
+-- ask-none after re-ask (revision 2):
+  held: yes
+  hold_reason: "second wording, a new question"
+  hold_kind: captain
+  hold_until: 2026-09-24
+
+=== 6. contrast: idempotent re-hold through fm-captain-hold.sh KEEPS a future deadline
+$ fm fm-captain-hold.sh thread-b --reason which vendor?
+held: thread-b until 2026-12-01
+[exit 0]
+  held: yes
+  hold_reason: which vendor?
+  hold_kind: captain
+  hold_until: 2026-12-01
+
+=== 7. uncomputable default fails the re-ask before anything is written
+$ FM_CAPTAIN_HOLD_NOW=not-a-date fm-ask.sh again ask-future --reason x
+fm-ask: could not compute the default hold deadline for ask-future; nothing was written
+[exit 1]
+ledger unchanged
+backlog unchanged
+
+=== 8. existing holds untouched by all of the above; lapsed hold is still a hold, not dispatchable
+pre-existing hold rows byte-identical
+  held: no
+  hold_reason: "legacy question, lapsed"
+  hold_kind: captain
+  hold_until: 2020-01-01
+$ fm fm-ready.sh
+count: 0
+ready[0]{id,state,kind,repo,title}:
+(1 lapsed captain hold(s) withheld from this group; each is still an unanswered captain hold, shown in session start's held group and by tasks-axi list --file /tmp/fm-hold-demo.LAxNsE/data/backlog.md --state queued --fields hold_kind,hold_until,held)
 ready_public_followups: 0 delivery-ready obligations
 help[1]:
-  - Run `tasks-axi start <id>` to dispatch one of these
+  - Run `tasks-axi start <id> --file=/tmp/fm-hold-demo.LAxNsE/data/backlog.md` to dispatch one of these
 [exit 0]
 
-$ bin/fm-ready.sh
-count: 2
-ready[2]{id,state,kind,repo,title}:
-  s1,queued,ship,sample,Time gated ship work
-  plain-work,queued,ship,sample,Ordinary ready work
-(1 lapsed captain hold(s) withheld from this group; each is still an unanswered captain hold, shown in session start's held group and by tasks-axi list --file <scratch-home>/data/backlog.md --state queued --fields hold_kind,hold_until,held)
-ready_public_followups: 0 delivery-ready obligations
-help[1]:
-  - Run `tasks-axi start <id> --file=<scratch-home>/data/backlog.md` to dispatch one of these
-[exit 0]
+=== final backlog
+## In flight
+- [ ] scout-1 - scout the thing (repo: myapp) (kind: scout) (since 2026-09-17)
 
-===== 9. FLEET SNAPSHOT held / lapsed flags (captain-only scope, done-row guard) =====
-
-$ bin/fm-fleet-snapshot.sh --json | jq <id,state,hold_kind,hold_until,held,lapsed,captain_actionable>
-sample-route-review                  in_flight  -        -           held=false  lapsed=false  captain_actionable=false
-old-open-question                    queued     captain  -           held=true   lapsed=false  captain_actionable=false
-old-dated-question                   queued     captain  2026-08-01  held=true   lapsed=true   captain_actionable=false
-live-question                        queued     captain  2099-01-01  held=true   lapsed=false  captain_actionable=false
-s1                                   queued     -        2000-01-01  held=false  lapsed=false  captain_actionable=false
-plain-work                           queued     -        -           held=false  lapsed=false  captain_actionable=false
-main-thread                          queued     captain  2026-09-24  held=true   lapsed=false  captain_actionable=false
-sample-route-review-decision-route   queued     captain  2026-09-24  held=true   lapsed=false  captain_actionable=true
-sample-route-review-decision-access  queued     captain  2026-12-01  held=true   lapsed=false  captain_actionable=true
-sample-route-review-decision-vision  queued     captain  -           held=true   lapsed=false  captain_actionable=true
-answered-question                    done       captain  2026-08-01  held=false  lapsed=false  captain_actionable=false
-
-===== 10. RE-HOLD of a LAPSED hold takes a fresh default; nothing was closed or unheld =====
-
-$ bin/fm-captain-hold.sh old-dated-question --reason captain must pick a vendor
-held: old-dated-question until 2026-09-24
-[exit 0]
-
-# backlog line for old-dated-question:
-- [ ] old-dated-question - Pre-branch captain question already lapsed (repo: sample) (hold: captain must pick a vendor) (hold-kind: captain) (hold-until: 2026-09-24)
-
-$ bin/fm-ready.sh
-count: 2
-ready[2]{id,state,kind,repo,title}:
-  s1,queued,ship,sample,Time gated ship work
-  plain-work,queued,ship,sample,Ordinary ready work
-ready_public_followups: 0 delivery-ready obligations
-help[1]:
-  - Run `tasks-axi start <id> --file=<scratch-home>/data/backlog.md` to dispatch one of these
-[exit 0]
+## Queued
+- [ ] old-open - legacy open-ended question (repo: myapp) (kind: ship) (since 2026-09-17) (hold: legacy question, no deadline) (hold-kind: captain)
+- [ ] old-lapsed - legacy lapsed question (repo: myapp) (kind: ship) (since 2026-09-17) (hold: legacy question, lapsed) (hold-kind: captain) (hold-until: 2020-01-01)
+- [ ] old-future - legacy future question (repo: myapp) (kind: ship) (since 2026-09-17) (hold: legacy question, long window) (hold-kind: captain) (hold-until: 2099-12-31)
+- [ ] thread-a - pick the rollout window (repo: myapp) (kind: ship) (since 2026-09-17) (hold: which rollout window?) (hold-kind: captain) (hold-until: 2026-09-24)
+- [ ] thread-b - pick the vendor (repo: myapp) (kind: ship) (since 2026-09-17) (hold: which vendor?) (hold-kind: captain) (hold-until: 2026-12-01)
+- [ ] thread-c - open-ended strategy question (repo: myapp) (kind: ship) (since 2026-09-17) (hold: long-term direction?) (hold-kind: captain)
+- [ ] scout-1-decision-adopt-axes - Adopt the new axes? (repo: firstmate) (kind: captain) (since 2026-09-17) (hold: adopt or defer) (hold-kind: captain) (hold-until: 2026-09-24)
+  Origin: scout-1
+  Decision key: adopt-axes
+  State: awaiting captain decision.
+- [ ] ask-future - re-ask fixture ask-future (repo: myapp) (kind: ship) (since 2026-09-17) (hold: second wording, a new question) (hold-kind: captain) (hold-until: 2026-09-24)
+- [ ] ask-lapsed - re-ask fixture ask-lapsed (repo: myapp) (kind: ship) (since 2026-09-17) (hold: second wording, a new question) (hold-kind: captain) (hold-until: 2026-09-24)
+- [ ] ask-none - re-ask fixture ask-none (repo: myapp) (kind: ship) (since 2026-09-17) (hold: second wording, a new question) (hold-kind: captain) (hold-until: 2026-09-24)
+## Done

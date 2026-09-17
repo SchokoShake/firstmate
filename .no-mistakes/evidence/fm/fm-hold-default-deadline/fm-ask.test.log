@@ -1,0 +1,25 @@
+ok - a rewritten hold reason keeps the same captain-ask identity and revision
+ok - an idempotent hold refresh keeps the same captain-ask identity
+ok - the deliberate re-ask bumps the revision, moves the identity, and writes the new question
+ok - a re-ask with no question to state is refused and moves nothing
+ok - a re-ask bumps on the explicit command, and only that command bumps it
+ok - a re-ask that cannot be written says why and leaves the ledger as it found it
+ok - a revision bump that cannot be recorded names the ledger and the cause
+ok - a question beginning with -- is written and bumps the revision in either --reason form
+ok - a quoted reason rewrites without re-asking, and re-asks only on the explicit command
+ok - concurrent re-asks in one home serialize on the ledger and none drops another's line
+ok - a re-ask writes the fresh default deadline over a future deadline and over none
+ok - a re-ask whose default deadline cannot be computed fails before the ledger or the row is touched
+ok - a lapsed captain hold keeps its identity, stays askable, and re-asks as a live question
+ok - a captain hold whose reason is a dash is askable and re-askable
+ok - an unreadable ledger refuses and publishes no identity instead of reverting to revision 1
+ok - a re-ask keeps every comment and unrecognized line and rewrites only its own subject
+ok - a decision hold keeps its durable identity through a reason rewrite
+ok - a decision hold is re-asked with a new decision key, not by bumping a revision
+ok - a refusal names the hold state the row is actually in
+ok - resolve, decline and repair leave the revision ledger and the identity alone
+ok - the snapshot publishes a question identity for exactly the open captain asks
+ok - a malformed revision value fails loudly and publishes null for that subject only
+ok - a hand-written leading zero reads as its number and a re-ask bumps from it
+ok - a Done row publishes no identity even when an open row shares its id
+# fm-ask.test.sh: all assertions passed

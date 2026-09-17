@@ -1,0 +1,2 @@
+not ok - the re-ask of a hold with a future deadline wrote "-", not the fresh default 2099-03-04
+rc=1
