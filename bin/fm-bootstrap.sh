@@ -52,8 +52,10 @@
 #          landed in the primary instead of its own worktree; restore it per the line.
 #          treehouse is also MISSING when its installed version lacks
 #          "treehouse get --lease" support.
-#          no-mistakes is also MISSING when its installed version is older than
-#          1.31.2.
+#          no-mistakes and gh are also MISSING when their installed version is
+#          older than NO_MISTAKES_MIN / GH_MIN below; an installed but outdated
+#          no-mistakes names its guarded in-place `no-mistakes update` instead of
+#          a fresh install.
 #          The AXI-family floor policy is owned beside GH_AXI_MIN and
 #          LAVISH_AXI_MIN below; the per-tool owners point there. An installed
 #          build below its floor reports MISSING like no-mistakes, so the operator
@@ -767,7 +769,14 @@ install_cmd() {
     tmux|node|git|gh|curl|jq|orca|zellij) echo "brew install $1  # or the platform's package manager" ;;
     cmux) echo "brew install --cask cmux  # or see https://cmux.com" ;;
     treehouse) echo "curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh" ;;
-    no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
+    no-mistakes)
+      # An installed-but-outdated no-mistakes upgrades in place: `update` restarts
+      # the shared daemon but refuses while any validation run is active.
+      if command -v no-mistakes >/dev/null 2>&1; then
+        echo "no-mistakes update  # refuses while a validation run is active; retry when the fleet is quiet"
+        return 0
+      fi
+      echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi|quota-axi) echo "npm install -g $1" ;;
     *) return 1 ;;
@@ -804,7 +813,11 @@ if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
   BACKEND_TOOLS=""
 fi
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
-NO_MISTAKES_MIN=1.31.2
+# no-mistakes 1.62.0 uploads test screenshots to the PR as GitHub attachments;
+# gh 2.99.0 adds the `gh pr comment --attach` that PR-based briefs use for
+# worker-captured screenshots (bin/fm-brief.sh).
+NO_MISTAKES_MIN=1.62.0
+GH_MIN=2.99.0
 # AXI-FAMILY FLOOR POLICY. Every axi-family floor is the CURRENT LATEST published
 # version of that tool, captain-bumped periodically to keep the whole fleet on the
 # newest axi tools. It is NOT the minimum feature-introduced version. These floors
@@ -1214,6 +1227,9 @@ detect_local_tools() {
   fi
   if command -v no-mistakes >/dev/null 2>&1 && ! tool_version_at_least no-mistakes "$NO_MISTAKES_MIN"; then
     echo "MISSING: no-mistakes (install: $(install_cmd no-mistakes))"
+  fi
+  if command -v gh >/dev/null 2>&1 && ! tool_version_at_least gh "$GH_MIN"; then
+    echo "MISSING: gh (install: $(install_cmd gh))"
   fi
   if command -v gh-axi >/dev/null 2>&1 && ! tool_version_at_least gh-axi "$GH_AXI_MIN"; then
     echo "MISSING: gh-axi (install: $(install_cmd gh-axi))"

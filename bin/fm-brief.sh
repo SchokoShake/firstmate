@@ -419,6 +419,10 @@ echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
 
+# One line for every PR-based ship: worker-captured media goes on the PR as a
+# GitHub attachment comment. gh-axi has no --attach, so this step uses plain gh.
+SCREENSHOTS="Screenshots or recordings you capture yourself go on the PR as one comment right after it opens: \`gh pr comment <PR url> --body-file <md> --attach <file>...\` (gh >= 2.99; plain gh, not gh-axi). Never commit them into the branch and never cite their local paths."
+
 # Ship task: shape Setup / Rule 1 / Definition of done by this task's explicit
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
@@ -443,6 +447,7 @@ If \`gh stack\` is unavailable, or GitHub reports that stacked pull requests are
 
 Run the project's local checks at every layer's own head, and put the exact commands and their results in that layer's PR body, so every layer carries its own evidence whether or not CI runs for it.
 When every layer is committed, pushed, and in the stack, prove it: \`$FM_ROOT/bin/fm-stack-check.sh <bottom-pr-url> ... <top-pr-url>\` must exit 0.
+$SCREENSHOTS
 Then append \`done: {the one line fm-stack-check.sh printed}\` to the status file and stop.
 Never report done without that passing output.
 The captain merges the stack; firstmate never merges a stacked PR and relays the outcome.
@@ -454,7 +459,8 @@ EOF
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
+$SCREENSHOTS
+When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, post any such screenshots, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
     fi
@@ -493,6 +499,8 @@ Two firstmate-specific rules layer on top of that guidance:
   Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
+
+$SCREENSHOTS
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
 EOF

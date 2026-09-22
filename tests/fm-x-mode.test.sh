@@ -738,6 +738,7 @@ SH
   done
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
+[ "${1:-}" = --version ] && { printf '%s\n' 'gh version 2.99.0 (fake)'; exit 0; }
 if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
   exit 0
 fi

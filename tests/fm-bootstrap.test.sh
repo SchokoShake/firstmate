@@ -57,6 +57,10 @@ SH
   chmod +x "$fakebin/gh-axi"
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  printf '%s\n' "${FM_FAKE_GH_VERSION:-gh version 2.99.0 (2026-09-01)}"
+  exit 0
+fi
 if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
   exit 0
 fi
@@ -79,7 +83,7 @@ SH
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' "${FM_FAKE_NO_MISTAKES_VERSION:-no-mistakes version v1.31.2 (fake) 2026-06-27T00:02:18Z}"
+  printf '%s\n' "${FM_FAKE_NO_MISTAKES_VERSION:-no-mistakes version v1.62.0 (fake) 2026-09-02T00:00:00Z}"
   exit 0
 fi
 exit 0
@@ -313,7 +317,8 @@ ROWS
 
 test_no_mistakes_min_version() {
   local label version mode case_dir fakebin out missing n
-  missing='MISSING: no-mistakes (install: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)'
+  # An installed but outdated no-mistakes is upgraded in place, never reinstalled.
+  missing='MISSING: no-mistakes (install: no-mistakes update  # refuses while a validation run is active; retry when the fleet is quiet)'
   n=0
   while IFS='^' read -r label version mode; do
     [ -n "$label" ] || continue
@@ -332,13 +337,42 @@ test_no_mistakes_min_version() {
         [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
     esac
   done <<'ROWS'
-minimum no-mistakes version is accepted^no-mistakes version v1.31.2 (fake)^empty
-newer no-mistakes minor is accepted^no-mistakes version v1.32.0 (fake)^empty
+minimum no-mistakes version is accepted^no-mistakes version v1.62.0 (fake)^empty
+newer no-mistakes minor is accepted^no-mistakes version v1.79.0 (fake)^empty
 newer no-mistakes major is accepted^no-mistakes version v2.0.0 (fake)^empty
-older no-mistakes patch reports an upgrade^no-mistakes version v1.31.1 (fake)^missing
+older no-mistakes minor reports an upgrade^no-mistakes version v1.48.0 (fake)^missing
+older no-mistakes patch reports an upgrade^no-mistakes version v1.61.9 (fake)^missing
 unparseable no-mistakes version reports an upgrade^no-mistakes development build^missing
 ROWS
   pass "bootstrap enforces no-mistakes minimum version"
+}
+
+test_gh_min_version() {
+  local label version mode case_dir fakebin out missing n
+  missing='MISSING: gh (install: brew install gh  # or the platform'"'"'s package manager)'
+  n=0
+  while IFS='^' read -r label version mode; do
+    [ -n "$label" ] || continue
+    n=$((n + 1))
+    case_dir="$TMP_ROOT/gh-$n"
+    mkdir -p "$case_dir/home/config"
+    printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+    fakebin=$(make_fake_toolchain "$case_dir")
+    out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+      FM_FAKE_TREEHOUSE_LEASE_HELP=1 FM_FAKE_GH_VERSION="$version" "$ROOT/bin/fm-bootstrap.sh") \
+      || fail "$label: an outdated tool must be a diagnostic, not a bootstrap failure"
+    case "$mode" in
+      empty)
+        [ -z "$out" ] || fail "$label: expected silence, got: $out" ;;
+      missing)
+        [ "$out" = "$missing" ] || fail "$label: expected '$missing', got: $out" ;;
+    esac
+  done <<'ROWS'
+minimum gh version is accepted^gh version 2.99.0 (2026-09-01)^empty
+newer gh is accepted^gh version 2.101.0 (2026-09-15)^empty
+older gh reports an upgrade without failing bootstrap^gh version 2.95.0 (2026-08-01)^missing
+ROWS
+  pass "bootstrap enforces gh minimum version"
 }
 
 test_gh_axi_min_version() {
@@ -1149,6 +1183,7 @@ ROWS
 }
 
 test_bootstrap_reporting
+test_gh_min_version
 test_no_mistakes_min_version
 test_gh_axi_min_version
 test_lavish_axi_min_version

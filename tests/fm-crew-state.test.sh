@@ -12,7 +12,7 @@
 #   (a) active run-step is authoritative                          -> run-step
 #   (b) needs-decision/blocked log + resumed run = SUPERSEDED     -> run-step
 #   (c) genuine parked run + needs-decision log = NOT superseded  -> run-step
-#   (d) terminal run-step (passed/failed) is authoritative        -> run-step
+#   (d) terminal run-step (passed*/failed/ci-monitor-interrupted)  -> run-step
 #   (e) another branch's run (this branch has none) is never attributed
 #   (f) no run + semantic busy                                    -> pane
 #   (g) no run + semantic idle falls to the status-log verb       -> status-log
@@ -276,6 +276,19 @@ run:
   pr: "https://github.com/o/r/pull/1"
   findings: none
 outcome: passed
+EOF
+}
+
+run_outcome() {  # <branch> <outcome>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/1"
+  findings: none
+outcome: $2
 EOF
 }
 
@@ -795,6 +808,39 @@ test_terminal_failed() {
   assert_contains "$out" "state: failed" "failed run -> failed"
   assert_contains "$out" "source: run-step" "failed -> run-step source"
   pass "terminal failed run is authoritative"
+}
+
+# Newer no-mistakes result words must never read as unknown.
+test_terminal_newer_outcomes() {
+  local outcome n=0
+  for outcome in passed-with-override passed-with-skips; do
+    n=$((n + 1))
+    reset_fakes
+    local d; d=$(new_case "newer-outcome-$n")
+    make_repo_on_branch "$d/wt" "fm/feat-newer-$n"
+    make_fakebin "$d" >/dev/null
+    fm_write_meta "$d/state/feat-newer-$n.meta" "window=fm:fm-feat-newer-$n" "worktree=$d/wt" "kind=ship"
+    FM_FAKE_AXI_STATUS="$(run_outcome "fm/feat-newer-$n" "$outcome")"
+    local out; out=$(run_crew_state "$d" "feat-newer-$n")
+    assert_contains "$out" "state: done" "$outcome run -> done"
+    assert_contains "$out" "source: run-step" "$outcome -> run-step source"
+    assert_contains "$out" "run $outcome" "$outcome is named in the detail"
+  done
+  pass "passed-with-override and passed-with-skips read as done"
+}
+
+test_terminal_ci_monitor_interrupted() {
+  reset_fakes
+  local d; d=$(new_case ci-monitor-interrupted)
+  make_repo_on_branch "$d/wt" fm/feat-cmi
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-cmi.meta" "window=fm:fm-feat-cmi" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_outcome fm/feat-cmi ci-monitor-interrupted)"
+  local out; out=$(run_crew_state "$d" feat-cmi)
+  assert_contains "$out" "state: blocked" "interrupted CI monitoring needs firstmate to check the PR"
+  assert_contains "$out" "source: run-step" "ci-monitor-interrupted -> run-step source"
+  assert_contains "$out" "PR still open" "detail says the PR is still open"
+  pass "ci-monitor-interrupted reads as blocked, not unknown"
 }
 
 # (e) another branch's run: `axi status` in the worktree is branch-scoped - it
@@ -1476,6 +1522,8 @@ test_top_level_fixing_ci_running_after_green_stays_working
 test_top_level_fixing_done_log_stays_working
 test_terminal_passed
 test_terminal_failed
+test_terminal_newer_outcomes
+test_terminal_ci_monitor_interrupted
 test_other_branch_run_ignored
 test_no_run_busy_pane
 test_no_run_footer_text_alone_is_not_working

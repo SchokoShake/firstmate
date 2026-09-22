@@ -33,6 +33,7 @@ exit 0
 SH
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
+[ "${1:-}" = --version ] && { printf '%s\n' 'gh version 2.99.0 (fake)'; exit 0; }
 exit 0
 SH
   cat > "$fakebin/treehouse" <<'SH'
@@ -44,7 +45,7 @@ SH
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' 'no-mistakes version v1.31.2 (fake)'
+  printf '%s\n' 'no-mistakes version v1.62.0 (fake)'
 fi
 SH
   cat > "$fakebin/tasks-axi" <<'SH'

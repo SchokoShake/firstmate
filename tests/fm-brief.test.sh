@@ -344,6 +344,33 @@ test_stack_brief_requires_a_proven_native_stack() {
   pass "fm-brief.sh: the --stack variant gates done on a proven native GitHub stack"
 }
 
+test_pr_based_ships_attach_worker_screenshots() {
+  local home mode id brief line
+  home="$TMP_ROOT/screenshots-home"
+  write_registry "$home"
+  line="gh pr comment <PR url> --body-file <md> --attach <file>..."
+  for mode in no-mistakes direct-PR direct-PR-stack local-only; do
+    id="brief-shots-${mode,,}"
+    if [ "$mode" = direct-PR-stack ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR --stack >/dev/null 2>&1 \
+        || fail "$mode brief should scaffold"
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode "$mode" >/dev/null 2>&1 \
+        || fail "$mode brief should scaffold"
+    fi
+    brief="$home/data/$id/brief.md"
+    if [ "$mode" = local-only ]; then
+      assert_no_grep "$line" "$brief" "local-only brief opens no PR, so it must not ask for a screenshot comment"
+      continue
+    fi
+    [ "$(grep -cF -- "$line" "$brief")" = 1 ] || fail "$mode brief must carry the screenshot comment line exactly once"
+    assert_grep "gh >= 2.99; plain gh, not gh-axi" "$brief" "$mode brief lost the gh floor and gh-axi exception"
+    assert_grep "Never commit them into the branch and never cite their local paths." "$brief" \
+      "$mode brief lost the no-commit, no-local-path rule"
+  done
+  pass "fm-brief.sh: PR-based ships post worker screenshots as one attachment comment"
+}
+
 test_faster_paths_use_configured_authority_without_stacked_review() {
   local home id brief
   home="$TMP_ROOT/configured-authority-home"
@@ -772,6 +799,7 @@ test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
+test_pr_based_ships_attach_worker_screenshots
 test_stack_brief_requires_a_proven_native_stack
 # The two standing commit-hygiene rules must survive in BOTH crewmate scaffolds and
 # stay OUT of the secondmate charter, and the Rules block must stay correctly

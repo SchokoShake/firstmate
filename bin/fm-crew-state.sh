@@ -40,7 +40,9 @@
 #      A newest run that does not match leaves this crew with no run.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
-#      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
+#      passed/passed-with-override/passed-with-skips/checks-passed -> done,
+#      failed/cancelled -> failed, ci-monitor-interrupted (daemon restart left
+#      the PR open and unmonitored) -> blocked. EXCEPT: while
 #      the active step is ci, `axi status` alone cannot tell "still waiting on
 #      checks" from "checks green, waiting on merge" (see nm_ci_checks_state) -
 #      a ci-step log-tail check overrides working -> done once checks read
@@ -348,10 +350,15 @@ if [ "$HAVE_RUN" = 1 ]; then
 
   if [ -n "$outcome" ]; then
     case "$outcome" in
-      passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
+      passed|passed-with-override|passed-with-skips)
+                     RUN_STATE="done"; RUN_DETAIL="run $outcome: PR merged/closed" ;;
       checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
       failed)        RUN_STATE=failed; RUN_DETAIL="run failed" ;;
       cancelled)     RUN_STATE=failed; RUN_DETAIL="run cancelled" ;;
+      # A daemon restart stopped CI monitoring of a still-open PR: the pipeline
+      # no longer rebases or fixes it, so firstmate must check the PR itself.
+      ci-monitor-interrupted)
+                     RUN_STATE=blocked; RUN_DETAIL="CI monitoring interrupted: PR still open, check its CI and merge state" ;;
       *)             RUN_STATE=unknown; RUN_DETAIL="outcome: $outcome" ;;
     esac
   elif [ -n "$awaiting" ] || [ "$status" = awaiting_approval ] || [ "$status" = fix_review ] || [ -n "$gate_status" ] || [ "$has_gate" = 1 ]; then
