@@ -1,0 +1,34 @@
+Host toolchain (real binaries; only --version is ever invoked on them here):
+  gh version 2.95.0 (2026-06-17)
+  https://github.com/cli/cli/releases/tag/v2.95.0
+  no-mistakes version v1.48.0 (2ac3769) 2026-08-08T06:39:01Z
+
+### BEFORE (base fdafbfb): home on the host's real gh 2.95.0 + no-mistakes v1.48.0
+$ fm-bootstrap.sh 
+  (silent stdout: nothing to report)
+  [exit 0]
+
+### AFTER (b63d696): home on the host's real gh 2.95.0 + no-mistakes v1.48.0
+$ fm-bootstrap.sh 
+  MISSING: no-mistakes (install: no-mistakes update  # refuses while a validation run is active; retry when the fleet is quiet)
+  MISSING: gh (install: brew install gh  # or the platform's package manager)
+  [exit 0]
+
+### AFTER: home already upgraded (gh 2.99.0, no-mistakes v1.62.0)
+$ fm-bootstrap.sh 
+  (silent stdout: nothing to report)
+  [exit 0]
+
+### AFTER: fresh home with no no-mistakes installed at all
+$ fm-bootstrap.sh 
+  MISSING: no-mistakes (install: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)
+  [exit 0]
+
+### AFTER: captain approves -> install no-mistakes (installed v1.48.0; the real binary is NOT called for anything but --version)
+$ fm-bootstrap.sh install no-mistakes
+  installing no-mistakes: no-mistakes update
+  [exit 0]
+
+  no-mistakes invocations recorded by the stand-in wrapper:
+    no-mistakes update
+

@@ -1,0 +1,48 @@
+### [base] no-mistakes axi status -> status: completed / outcome: passed
+$ fm-crew-state.sh feat-demo
+  state: done · source: run-step · run passed: PR merged/closed
+
+### [target] no-mistakes axi status -> status: completed / outcome: passed
+$ fm-crew-state.sh feat-demo
+  state: done · source: run-step · run passed: PR merged/closed
+
+### [base] no-mistakes axi status -> status: completed / outcome: passed-with-override
+$ fm-crew-state.sh feat-demo
+  state: unknown · source: run-step · outcome: passed-with-override
+
+### [target] no-mistakes axi status -> status: completed / outcome: passed-with-override
+$ fm-crew-state.sh feat-demo
+  state: done · source: run-step · run passed-with-override: PR merged/closed
+
+### [base] no-mistakes axi status -> status: completed / outcome: passed-with-skips
+$ fm-crew-state.sh feat-demo
+  state: unknown · source: run-step · outcome: passed-with-skips
+
+### [target] no-mistakes axi status -> status: completed / outcome: passed-with-skips
+$ fm-crew-state.sh feat-demo
+  state: done · source: run-step · run passed-with-skips: PR merged/closed
+
+### [base] no-mistakes axi status -> status: ci_monitor_interrupted / outcome: ci-monitor-interrupted
+$ fm-crew-state.sh feat-demo
+  state: unknown · source: run-step · outcome: ci-monitor-interrupted
+
+### [target] no-mistakes axi status -> status: ci_monitor_interrupted / outcome: ci-monitor-interrupted
+$ fm-crew-state.sh feat-demo
+  state: blocked · source: run-step · CI monitoring interrupted: PR still open, check its CI and merge state
+
+### [base] no-mistakes axi status -> status: running / outcome: checks-passed
+$ fm-crew-state.sh feat-demo
+  state: done · source: run-step · checks green: PR ready for review
+
+### [target] no-mistakes axi status -> status: running / outcome: checks-passed
+$ fm-crew-state.sh feat-demo
+  state: done · source: run-step · checks green: PR ready for review
+
+### [base] no-mistakes axi status -> status: failed / outcome: failed
+$ fm-crew-state.sh feat-demo
+  state: failed · source: run-step · run failed
+
+### [target] no-mistakes axi status -> status: failed / outcome: failed
+$ fm-crew-state.sh feat-demo
+  state: failed · source: run-step · run failed
+
