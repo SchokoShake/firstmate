@@ -90,6 +90,7 @@ SH
   chmod +x "$fakebin/gh-axi"
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
+[ "${1:-}" = --version ] && { printf '%s\n' 'gh version 2.99.0 (fake)'; exit 0; }
 exit 0
 SH
   chmod +x "$fakebin/gh"
@@ -105,7 +106,7 @@ SH
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = --version ]; then
-  printf '%s\n' 'no-mistakes version v1.31.2 (fake) 2026-06-27T00:02:18Z'
+  printf '%s\n' 'no-mistakes version v1.62.0 (fake) 2026-06-27T00:02:18Z'
   exit 0
 fi
 exit 0
@@ -1621,6 +1622,7 @@ install_slow_gh() {
   local fakebin=$1 seconds=$2 finished_marker=${3:-}
   cat > "$fakebin/gh" <<SH
 #!/usr/bin/env bash
+[ "\${1:-}" = --version ] && { printf '%s\n' 'gh version 2.99.0 (fake)'; exit 0; }
 if [ "\${1:-}" = auth ]; then
   sleep $seconds
   [ -z '$finished_marker' ] || : > '$finished_marker'
