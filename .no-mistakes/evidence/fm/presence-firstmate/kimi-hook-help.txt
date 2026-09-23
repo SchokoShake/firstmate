@@ -1,0 +1,26 @@
+$ bin/fm-kimi-turnend-hook.sh --help
+Install or remove Firstmate's guarded Kimi crew turn-end hook.
+
+This command is the sole owner of the text-level edit to
+$HOME/.kimi-code/config.toml. It validates the existing TOML but never
+serializes it: install adds or replaces one marker-delimited Firstmate region,
+and remove excises only that region. Missing, malformed, symlinked, partially
+marked, or otherwise surprising config is refused without a config write.
+
+The installed Stop hook always exits 0 and stays silent. It reads cwd from the
+hook payload, checks for a .fm-kimi-turnend pointer before registry work, and
+touches a task turn-end marker only when the pointer names a Firstmate-created
+token in $HOME/.kimi-code/fm-turn-end.d/.
+
+After that marker, and only for an authorised workspace, it also beats the
+optional agent presence row for the board (bin/fm-spawn.sh's header owns the
+contract). Kimi has no turn-START event, so the hook beats "waiting" only. The
+beat runs in a subshell cd'd to the authorised workspace because the CLI
+resolves its subject from the worker's own worktree, and it stays inside the
+hook's silent, always-zero discipline: an uninstalled `agent-presence` is a
+no-op and a failing one cannot change the hook's status.
+
+Usage:
+  fm-kimi-turnend-hook.sh install
+  fm-kimi-turnend-hook.sh remove
+exit=0

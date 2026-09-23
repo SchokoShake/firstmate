@@ -1,0 +1,15 @@
+### A developer edits ONLY bin/fm-spawn.sh and asks the runner which suites that change needs.
+### fm-busy-adapter-wiring.test.sh is the suite that covers fm-spawn's own generated wiring.
+
+--- with bin/fm-test-run.sh from the base commit ---
+exit=0; suites selected: 49
+NOT SELECTED   tests/fm-busy-adapter-wiring.test.sh  <-- the spawn-wiring suite would not have run
+    tests/fm-grok-harness.test.sh
+    tests/fm-kimi-harness.test.sh
+
+--- with bin/fm-test-run.sh from the target commit ---
+exit=0; suites selected: 50
+SELECTED   tests/fm-busy-adapter-wiring.test.sh
+    tests/fm-busy-adapter-wiring.test.sh
+    tests/fm-grok-harness.test.sh
+    tests/fm-kimi-harness.test.sh

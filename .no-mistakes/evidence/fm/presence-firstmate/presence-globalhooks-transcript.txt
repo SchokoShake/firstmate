@@ -1,0 +1,106 @@
+
+========== GROK: one global Stop hook, shared by every task ==========
+spawned presence-grok-1 harness=grok kind=ship mode=no-mistakes yolo=off window=firstmate:fm-presence-grok-1 worktree=/tmp/fm-presence-global.wLIRIf/grok/wt
+
+-- generated global hook body (/tmp/fm-presence-global.wLIRIf/grok/grok-home/hooks/fm-turn-end.sh)
+  #!/usr/bin/env bash
+  set -u
+  auth_dir='/tmp/fm-presence-global.wLIRIf/grok/grok-home/hooks/fm-turn-end.d'
+  workspace=${GROK_WORKSPACE_ROOT:-}
+  [ -n "$workspace" ] || exit 0
+  p="$workspace/.fm-grok-turnend"
+  [ -f "$p" ] || exit 0
+  first=
+  IFS= read -r -n 256 first < "$p" 2>/dev/null || [ -n "$first" ] || exit 0
+  case "$first" in token=*) token=${first#token=} ;; *) exit 0 ;; esac
+  case "$token" in fm.????????????) : ;; *) exit 0 ;; esac
+  case "$token" in *[!A-Za-z0-9._-]*) exit 0 ;; esac
+  t=$(cat "$auth_dir/$token" 2>/dev/null) || exit 0
+  case "$t" in /*.turn-ended) : ;; *) exit 0 ;; esac
+  touch "$t" 2>/dev/null || true
+  ( cd "$workspace" 2>/dev/null || exit 0; if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state waiting >/dev/null 2>/dev/null || true; fi )
+  exit 0
+
+-- authorised workspace (this task's registry token) fires the hook
+  exit=0 stdout+stderr='' turn-end marker=written
+board saw:
+    agent-presence beat --state waiting
+  the beat ran in: /tmp/fm-presence-global.wLIRIf/grok/wt
+  the task worktree is: /tmp/fm-presence-global.wLIRIf/grok/wt
+
+-- ADVERSARIAL: an UNAUTHORISED workspace (forged pointer, no registry token)
+  exit=0 stdout+stderr=''
+board saw:
+    (nothing)
+
+========== KIMI: the global hook body whose version bump this change required ==========
+install: ok
+
+-- the beat line the installer wrote into the global hook
+  22:( cd "$workspace" 2>/dev/null || exit 0; if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state waiting >/dev/null 2>/dev/null || true; fi )
+
+-- a real Kimi Stop payload for the authorised workspace
+  exit=0 stdout+stderr='' turn-end marker=written
+board saw:
+    agent-presence beat --state waiting
+  the beat ran in: /tmp/fm-presence-global.wLIRIf/kimi-wt
+  the task worktree is: /tmp/fm-presence-global.wLIRIf/kimi-wt
+
+-- ADVERSARIAL: a Kimi session in a workspace with no Firstmate token
+  exit=0 stdout+stderr=''
+board saw:
+    (nothing)
+
+-- VERSION BUMP: a hook body written by an OLDER firstmate (no beat in it)
+  hook on disk before upgrade: 3 lines, beat present=0
+  install upgraded it: ok
+  hook on disk after upgrade:  23 lines, beat present=1
+  remove excised an older firstmate hook: ok (hook present=no)
+  config.toml restored byte-for-byte: yes
+
+-- ADVERSARIAL: a hook at that path firstmate does NOT own must still be refused
+  install rc=1 msg=fm-kimi-turnend-hook: refused: Firstmate hook path has unexpected content at /tmp/fm-presence-global.wLIRIf/kimi-home/.kimi-code/fm-turn-end.sh.
+  remove  rc=1 msg=fm-kimi-turnend-hook: refused: Firstmate hook script has unexpected content at /tmp/fm-presence-global.wLIRIf/kimi-home/.kimi-code/fm-turn-end.sh.
+  foreign hook left intact: 1
+
+========== SECONDMATE: a direct report that must NEVER appear on the crew presence board ==========
+Note: switching to 'c3b3db7ba4987239ae6f4d96af218547e5796197'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+spawned design harness=claude kind=secondmate mode=secondmate yolo=off window=firstmate:fm-design worktree=/tmp/fm-presence-global.wLIRIf/design-home
+
+-- turn-boundary wiring installed in the secondmate's own home
+  claude hook settings (.claude/settings.local.json): 0
+  opencode plugins / pi extensions / grok hooks: 0
+
+-- every file under the secondmate home that mentions agent-presence at all
+  tests/lib.sh
+  tests/fm-kimi-harness.test.sh
+  tests/fm-grok-harness.test.sh
+  tests/fm-busy-adapter-wiring.test.sh
+  bin/fm-spawn.sh
+  bin/fm-kimi-turnend-hook.sh
+  .agents/skills/harness-adapters/SKILL.md
+  ... all of which are the firstmate SOURCE tree the seed clones, not generated wiring:
+    top-level dir: .agents
+    top-level dir: bin
+    top-level dir: tests
+
+-- the launch command fm-spawn sent for the secondmate
+  send-keys -t firstmate:fm-design export GOTMPDIR=/tmp/fm-design/gotmp Enter
+  send-keys -t firstmate:fm-design -l FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME='/tmp/fm-presence-global.wLIRIf/mai
+  launch command mentions agent-presence: 0

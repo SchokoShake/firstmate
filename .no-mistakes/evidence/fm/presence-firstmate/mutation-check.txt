@@ -1,0 +1,25 @@
+### Mutation: the presence beat removed from every adapter (presence_cmd renders a no-op,
+### the OpenCode/pi execFile calls deleted, the kimi hook body's line deleted).
+### Expectation: the suites that claim to cover this feature must now FAIL.
+
+$ bash tests/fm-busy-adapter-wiring.test.sh   (on the MUTATED tree)
+ok - pi extension reports agent_start busy, settles idle only via ctx.isIdle(), and keeps turn_end a notification
+ok - pi extension awaits agent_settled before the next agent_start without a test delay
+ok - pi extension events from a superseded incarnation are rejected as stale
+not ok - presence beats were '', expected 'beat --state working'
+exit=1
+
+$ bash tests/fm-grok-harness.test.sh   (on the MUTATED tree)
+ok - grok global hook requires a firstmate registry token
+ok - grok teardown removes pointer and token state
+not ok - presence beats were '', expected 'beat --state waiting'
+exit=1
+
+$ bash tests/fm-kimi-harness.test.sh   (on the MUTATED tree)
+ok - Kimi hook install refuses missing, malformed, and surprising config without writing
+ok - Kimi hook ownership keys off the Firstmate prefix for both install and removal
+ok - Kimi hook install refuses without jq before any config write
+ok - fm-spawn: kimi launches, delivers its brief, and registers a guarded turn-end token
+ok - Kimi hook stays silent and inert without a Firstmate registry token
+not ok - presence beats were '', expected 'beat --state waiting'
+exit=1

@@ -1,0 +1,4 @@
+ok - grok global hook requires a firstmate registry token
+ok - grok teardown removes pointer and token state
+ok - grok global hook beats waiting in the authorised worktree only, and stays silent and zero
+ok - fm-lock recognizes grok harness processes

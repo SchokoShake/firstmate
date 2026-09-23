@@ -1,0 +1,17 @@
+$ bash --version | head -1
+GNU bash, version 5.3.9(1)-release (x86_64-pc-linux-gnu)
+
+# The codex beat reaches its launch command through a bash ${LAUNCH//__PRESENCEWAITING__/...}
+# replacement. patsub_replacement (bash 5.2+) rewrites an unescaped & in the replacement to
+# the matched text, which is why the rendered command must contain no &. Confirm the hazard
+# shell option was actually ACTIVE while fm-spawn ran above:
+$ shopt patsub_replacement
+patsub_replacement  	on
+
+# demonstration of the hazard this rendering avoids, on this same shell:
+$ L='x __P__ y'; R='a && b 2>&1'; echo "${L//__P__/$R}"
+x a __P____P__ b 2>__P__1 y
+  ^ an & in the replacement expands to the matched text (__P__), corrupting the command
+$ R='if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state waiting >/dev/null 2>/dev/null || true; fi'; echo "${L//__P__/$R}"
+x if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state waiting >/dev/null 2>/dev/null || true; fi y
+  ^ the rendered beat carries no &, so it survives the substitution verbatim

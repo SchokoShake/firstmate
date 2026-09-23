@@ -1,0 +1,24 @@
+
+========== CURSOR: presence NOT COVERED until its crewmate stop event is live-verified ==========
+spawn rc=0: spawned presence-cursor-1 harness=cursor kind=ship mode=no-mistakes yolo=off window=firstmate:fm-presence-cursor-1 worktree=/tmp/fm-presence-uncovered.KGR1J6/cursor/wt
+-- cursor crewmate
+  turn-boundary wiring generated in the worktree: 0
+  sidecar the adapter DOES write (a pull-source binding, no writer, no beat):
+    presence-cursor-1.cursor-session
+  launch command sent to the pane mentions agent-presence: 0
+0
+  any generated artifact under the worktree or state mentions agent-presence: 0
+  launch command:
+    send-keys -t firstmate:fm-presence-cursor-1 Enter
+
+========== MUSE: presence NONE, its only hook surface is off in the default build ==========
+spawn rc=0: spawned presence-muse-1 harness=muse kind=ship mode=no-mistakes yolo=off window=firstmate:fm-presence-muse-1 worktree=/tmp/fm-presence-uncovered.KGR1J6/muse/wt
+-- muse crewmate
+  turn-boundary wiring generated in the worktree: 0
+  sidecar the adapter DOES write (a pull-source binding, no writer, no beat):
+    presence-muse-1.muse-session
+  launch command sent to the pane mentions agent-presence: 0
+0
+  any generated artifact under the worktree or state mentions agent-presence: 0
+  launch command:
+    send-keys -t firstmate:fm-presence-muse-1 Enter

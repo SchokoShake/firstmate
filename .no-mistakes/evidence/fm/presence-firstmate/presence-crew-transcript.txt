@@ -1,0 +1,97 @@
+
+========== CLAUDE CREWMATE: real spawn, real hooks, four presence states ==========
+spawn rc=0
+warning: /tmp/fm-presence-drive.YosP8r/claude-crew/home/data/presence-claude-1/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned presence-claude-1 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-presence-claude-1 worktree=/tmp/fm-presence-drive.YosP8r/claude-crew/wt
+
+-- generated settings.local.json (the artifact Claude Code itself reads)
+UserPromptSubmit:
+  '/home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M37BVYP4KRZEJ5GFH74YYCV4/bin/fm-busy-event.sh' apply '/tmp/fm-presence-drive.YosP8r/claude-crew/home/state' 'presence-claude-1' busy --gen 'g1790180744.3487669.28086' --source claude-hook --event user-prompt-submit 2>/dev/null || true; if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state working >/dev/null 2>/dev/null || true; fi
+Stop:
+  touch '/tmp/fm-presence-drive.YosP8r/claude-crew/home/state/presence-claude-1.turn-ended'; '/home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M37BVYP4KRZEJ5GFH74YYCV4/bin/fm-busy-event.sh' apply '/tmp/fm-presence-drive.YosP8r/claude-crew/home/state' 'presence-claude-1' idle --gen 'g1790180744.3487669.28086' --source claude-hook --event stop 2>/dev/null || true; if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state waiting >/dev/null 2>/dev/null || true; fi
+StopFailure:
+  '/home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M37BVYP4KRZEJ5GFH74YYCV4/bin/fm-busy-event.sh' apply '/tmp/fm-presence-drive.YosP8r/claude-crew/home/state' 'presence-claude-1' idle --gen 'g1790180744.3487669.28086' --source claude-hook --event stop-failure 2>/dev/null || true; if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state waiting >/dev/null 2>/dev/null || true; fi
+SessionEnd:
+  '/home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M37BVYP4KRZEJ5GFH74YYCV4/bin/fm-busy-event.sh' apply '/tmp/fm-presence-drive.YosP8r/claude-crew/home/state' 'presence-claude-1' idle --gen 'g1790180744.3487669.28086' --source claude-hook --event session-end 2>/dev/null || true; if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence end >/dev/null 2>/dev/null || true; fi
+
+-- firing each hook exactly as Claude Code would
+  UserPromptSubmit  exit=0 stdout=''
+  Stop              exit=0 stdout=''
+  StopFailure       exit=0 stdout=''
+  SessionEnd        exit=0 stdout=''
+board saw:
+    agent-presence beat --state working
+    agent-presence beat --state waiting
+    agent-presence beat --state waiting
+    agent-presence end
+firstmate busy record after the beats: idle claude-hook
+
+-- ADVERSARIAL 1: bridge-axi not installed (hermetic PATH, no agent-presence resolvable)
+  UserPromptSubmit  exit=0 stdout=''
+  Stop              exit=0 stdout=''
+  StopFailure       exit=0 stdout=''
+  SessionEnd        exit=0 stdout=''
+firstmate busy record: idle claude-hook
+
+-- ADVERSARIAL 2: agent-presence installed but failing (exit 3) and noisy on both streams
+  UserPromptSubmit  exit=0 stdout=''
+  Stop              exit=0 stdout=''
+  StopFailure       exit=0 stdout=''
+  SessionEnd        exit=0 stdout=''
+the failing CLI was still called 4 times; firstmate busy record: idle claude-hook
+
+========== CODEX CREWMATE: the beat rides the launch command through the pane ==========
+spawn rc=0
+spawned presence-codex-1 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-presence-codex-1 worktree=/tmp/fm-presence-drive.YosP8r/codex-crew/wt
+
+-- launch command fm-spawn actually sent to the pane (send-keys), verbatim
+codex --dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch '/tmp/fm-presence-drive.YosP8r/codex-crew/home/state/presence-cod
+ex-1.turn-ended'; if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state waiting >/dev/null 2>/dev/null || true; fi\"]"
+ "$('/home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M37BVYP4KRZEJ5GFH74YYCV4/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-presence-d
+rive.YosP8r/codex-crew/home/data/presence-codex-1/brief.md')"
+
+-- notify program recovered from that launch command and executed
+  touch '/tmp/fm-presence-drive.YosP8r/codex-crew/home/state/presence-codex-1.turn-ended'; if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state waiting >/dev/null 2>/dev/null || true; fi
+  exit=0 stdout='' turn-end marker written=yes
+board saw:
+    agent-presence beat --state waiting
+
+========== OPENCODE CREWMATE: generated plugin driven in a plain Node host ==========
+spawn rc=0
+spawned presence-oc-1 harness=opencode kind=ship mode=no-mistakes yolo=off window=firstmate:fm-presence-oc-1 worktree=/tmp/fm-presence-drive.YosP8r/oc-crew/wt
+
+-- worker session busy -> child session busy/idle -> worker session idle
+board saw:
+    agent-presence beat --state working
+    agent-presence beat --state waiting
+
+-- ADVERSARIAL: a foreign session's idle must not speak for this worker
+board saw:
+    agent-presence beat --state working
+
+========== PI CREWMATE: generated extension driven in a plain Node host ==========
+spawn rc=0
+spawned presence-pi-1 harness=pi kind=ship mode=no-mistakes yolo=off window=firstmate:fm-presence-pi-1 worktree=/tmp/fm-presence-drive.YosP8r/pi-crew/wt
+  after agent-start       beats so far: beat --state working|
+  after turn-end          beats so far: beat --state working|
+  after settle-continuing beats so far: beat --state working|
+  after settle-idle       beats so far: beat --state working|beat --state waiting|
+board saw:
+    agent-presence beat --state working
+    agent-presence beat --state waiting
+
+========== SCOUT: a scout is a covered worker (crewmates AND scouts) ==========
+spawn rc=0
+spawned presence-scout-1 harness=claude kind=scout window=firstmate:fm-presence-scout-1 worktree=/tmp/fm-presence-drive.YosP8r/claude-scout/wt
+board saw:
+    agent-presence beat --state working
+    agent-presence beat --state waiting
+    agent-presence end
+
+========== NO USER-LEVEL HOOK, AND NO UNSUBSTITUTED PLACEHOLDER ANYWHERE ==========
+
+-- every spawn above ran with its own HOME; a user-level ~/.claude/settings.json would be a captain-decision violation
+  user-level claude settings written by any spawn: 0
+
+-- search every generated artifact and every launch command for an unsubstituted __PRESENCE placeholder
+  files still carrying a raw __PRESENCE token: 0

@@ -1,0 +1,15 @@
+ok - pi extension reports agent_start busy, settles idle only via ctx.isIdle(), and keeps turn_end a notification
+ok - pi extension awaits agent_settled before the next agent_start without a test delay
+ok - pi extension events from a superseded incarnation are rejected as stale
+ok - pi extension beats working on agent_start and waiting on a confirmed settle, never on turn_end
+ok - kimi and grok install no unverified semantic wiring and classify through their own gates
+ok - opencode plugin classifies from session.status, scoped to the latched worker session
+ok - opencode plugin beats working and waiting only for the latched worker session
+ok - claude hooks open on UserPromptSubmit and close on Stop, StopFailure, and SessionEnd
+ok - claude hook events from a superseded incarnation are rejected without breaking the hook
+ok - claude hooks beat working at turn start, waiting at both turn ends, and end at session end
+ok - claude presence beats are optional, silent, and cannot fail or pollute a hook
+ok - the Kimi hook's own beat is the same command presence_cmd renders for claude, grok and codex
+ok - codex classifies unknown until a semantic source is verified, never idle or footer-matched
+ok - codex notify touches the turn-end marker and beats waiting, with or without the CLI
+all fm-busy-adapter-wiring tests passed
