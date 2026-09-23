@@ -51,6 +51,7 @@ make_spawn_case() {
 
 run_grok_spawn() {
   local home=$1 proj=$2 wt=$3 fakebin=$4 grok_home=$5 id=$6
+  # shellcheck disable=SC2031 # An ordinary environment prefix on an external command; nothing is expected to outlive it.
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
@@ -109,6 +110,7 @@ EOF
   expect_code 0 "$status" "grok spawn should succeed before teardown"
   token=$(sed -n 's/^token=//p' "$wt/.fm-grok-turnend")
 
+  # shellcheck disable=SC2031 # An ordinary environment prefix on an external command; nothing is expected to outlive it.
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
     GROK_HOME="$grok_home" PATH="$fakebin:$PATH" \
     "$TEARDOWN" "$id" --force >/dev/null 2>&1 \
@@ -135,6 +137,7 @@ esac
 exit 1
 SH
   chmod +x "$fakebin/ps"
+  # shellcheck disable=SC2031 # An ordinary environment prefix on an external command; nothing is expected to outlive it.
   out=$(FM_HOME="$home" PATH="$fakebin:$PATH" "$ROOT/bin/fm-lock.sh" status)
   assert_contains "$out" "lock: held by live harness pid" "fm-lock did not recognize grok as a live holder"
   pass "fm-lock recognizes grok harness processes"
@@ -159,6 +162,7 @@ EOF
 
   # grok exposes no turn-START and no session-end event, so its one hook beats
   # "waiting" and never "working" or "end".
+  # shellcheck disable=SC2031 # An ordinary environment prefix on an external command; nothing is expected to outlive it.
   out=$(PATH="$bin:$PATH" GROK_WORKSPACE_ROOT="$wt" bash "$hook" 2>&1)
   status=$?
   expect_code 0 "$status" "the grok hook must exit zero"
@@ -175,6 +179,7 @@ EOF
   mkdir -p "$evil"
   printf 'token=%s\n' "not-a-token" > "$evil/.fm-grok-turnend"
   : > "$log"
+  # shellcheck disable=SC2031 # An ordinary environment prefix on an external command; nothing is expected to outlive it.
   out=$(PATH="$bin:$PATH" GROK_WORKSPACE_ROOT="$evil" bash "$hook" 2>&1)
   expect_code 0 $? "an unauthorised grok workspace must still exit zero"
   fm_assert_presence_beats "$log"
