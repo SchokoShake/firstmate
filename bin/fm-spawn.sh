@@ -197,11 +197,12 @@
 # AGENT PRESENCE BEAT (optional, crewmates and scouts only). Every adapter whose
 # turn-boundary wiring above exists also carries one added command that announces
 # the worker to the captain's board through bridge-axi's hook-callable
-# `agent-presence` CLI: `beat working` at turn start, `beat waiting` at turn end,
-# and `end` at session end, which retires the row at once instead of waiting out
-# the board's TTL. The command is a strict addition and is governed by three
-# rules the .agents/skills/harness-adapters per-adapter table restates as a
-# matrix:
+# `agent-presence` CLI: `beat --state working` at turn start,
+# `beat --state waiting` at turn end, and `end` at session end, which retires
+# the row at once instead of waiting out the board's TTL. The state is a
+# `--state` OPTION and never a positional, which the CLI rejects as usage. The
+# command is a strict addition and is governed by three rules the
+# .agents/skills/harness-adapters per-adapter table restates as a matrix:
 #   - It runs only when `agent-presence` is on the worker's PATH, so a home with
 #     no bridge-axi installed is a silent no-op rather than a broken hook. This
 #     is an OPTIONAL dependency firstmate is allowed to lose.

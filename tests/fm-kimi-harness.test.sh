@@ -333,6 +333,71 @@ test_kimi_hook_fails_closed_on_missing_malformed_or_partial_config() {
   pass "Kimi hook install refuses missing, malformed, and surprising config without writing"
 }
 
+test_kimi_hook_ownership_is_keyed_to_the_firstmate_prefix() {
+  local home config original snapshot reference hook older foreign out rc
+  home="$TMP_ROOT/hook-ownership"
+  reference="$TMP_ROOT/hook-ownership-reference"
+  config="$home/.kimi-code/config.toml"
+  original="$home/original.toml"
+  snapshot="$home/snapshot.toml"
+  hook="$home/.kimi-code/fm-turn-end.sh"
+  older="$home/older-firstmate-hook.sh"
+  foreign="$home/foreign-hook.sh"
+  mkdir -p "$home/.kimi-code" "$reference/.kimi-code"
+  printf 'default_model = "test"\n' > "$config"
+  cp "$config" "$original"
+  cp "$config" "$reference/.kimi-code/config.toml"
+
+  # The hook script is firstmate's own generated artifact, so a hook left by an
+  # OLDER firstmate is the current one's ownership prefix over a different body.
+  HOME="$reference" "$KIMI_HOOK" install || fail "reference Kimi hook install failed"
+  HOME="$home" "$KIMI_HOOK" install || fail "Kimi hook install failed"
+  { head -n 2 "$hook"; printf 'exit 0\n'; } > "$older"
+  cmp -s "$older" "$reference/.kimi-code/fm-turn-end.sh" \
+    && fail "the older-firstmate fixture must differ from the current hook body"
+  printf '#!/usr/bin/env bash\n# Someone else owns this path.\nexit 0\n' > "$foreign"
+
+  # Ownership keys off the prefix, so removal excises a hook an older firstmate
+  # wrote instead of refusing until some later spawn happens to rewrite it.
+  cp "$older" "$hook"
+  chmod 0700 "$hook"
+  HOME="$home" "$KIMI_HOOK" remove \
+    || fail "Kimi hook removal refused a hook written by an older firstmate"
+  assert_absent "$hook" "removal left an older firstmate's hook script"
+  assert_absent "$home/.kimi-code/fm-turn-end.d" "removal left the Firstmate registry"
+  cmp -s "$original" "$config" || fail "removal did not restore the original config bytes"
+
+  # The same predicate still refuses a path firstmate does not own, so the
+  # loosening did not turn removal into deleting someone else's file.
+  HOME="$home" "$KIMI_HOOK" install || fail "reinstall before the foreign-content case failed"
+  cp "$config" "$snapshot"
+  cp "$foreign" "$hook"
+  chmod 0700 "$hook"
+  rc=0
+  out=$(HOME="$home" "$KIMI_HOOK" remove 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "removal deleted a hook script firstmate does not own"
+  assert_contains "$out" "unexpected content" "foreign-hook removal refusal lacked its concrete reason"
+  cmp -s "$foreign" "$hook" || fail "refused removal changed the foreign hook script"
+  cmp -s "$snapshot" "$config" || fail "refused removal changed config bytes"
+
+  # install is the second consumer of the same ownership predicate.
+  cp "$older" "$hook"
+  chmod 0700 "$hook"
+  HOME="$home" "$KIMI_HOOK" install || fail "install refused a hook written by an older firstmate"
+  cmp -s "$reference/.kimi-code/fm-turn-end.sh" "$hook" \
+    || fail "install did not rewrite an older firstmate's hook to the current body"
+
+  cp "$foreign" "$hook"
+  chmod 0700 "$hook"
+  rc=0
+  out=$(HOME="$home" "$KIMI_HOOK" install 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "install overwrote a hook script firstmate does not own"
+  assert_contains "$out" "unexpected content" "foreign-hook install refusal lacked its concrete reason"
+  cmp -s "$foreign" "$hook" || fail "refused install changed the foreign hook script"
+  cmp -s "$snapshot" "$config" || fail "refused install changed config bytes"
+  pass "Kimi hook ownership keys off the Firstmate prefix for both install and removal"
+}
+
 test_kimi_hook_install_refuses_without_jq() {
   local home config before fakebin out rc
   home="$TMP_ROOT/config-no-jq"
@@ -401,7 +466,7 @@ test_kimi_hook_is_silent_and_requires_registered_workspace_token() {
 }
 
 test_kimi_hook_presence_beat() {
-  local id rec out rc hook target token bin log absent payload hook_path
+  local id rec out rc hook target token bin log payload hook_path no_presence
   id=kimi-presence-z9
   rec=$(make_spawn_case presence "$id")
   read_spawn_record "$rec"
@@ -440,10 +505,9 @@ test_kimi_hook_presence_beat() {
   fm_assert_presence_beats "$log"
 
   # Not installed: the hook is unchanged for every home without bridge-axi.
-  absent="$CASE_DIR/no-presence"
-  mkdir -p "$absent"
   rm -f "$target"
-  out=$(printf '%s' "$payload" | HOME="$HOME_DIR" PATH="$absent:$hook_path" bash "$hook" 2>&1)
+  no_presence=$(fm_presence_absent_path "$CASE_DIR/no-presence" bash cat jq touch) || exit 1
+  out=$(printf '%s' "$payload" | HOME="$HOME_DIR" PATH="$no_presence" bash "$hook" 2>&1)
   expect_code 0 $? "the Kimi hook must exit zero with no agent-presence installed"
   [ -z "$out" ] || fail "the Kimi hook printed with no agent-presence installed: $out"
   assert_present "$target" "an uninstalled agent-presence broke the turn-end marker touch"
@@ -712,6 +776,7 @@ test_kimi_bordered_prompt_needs_no_override() {
 test_kimi_hook_install_is_surgical_idempotent_and_removable
 test_kimi_hook_remove_preserves_owned_newline_boundary
 test_kimi_hook_fails_closed_on_missing_malformed_or_partial_config
+test_kimi_hook_ownership_is_keyed_to_the_firstmate_prefix
 test_kimi_hook_install_refuses_without_jq
 test_kimi_launch_then_send_is_verified
 test_kimi_hook_is_silent_and_requires_registered_workspace_token

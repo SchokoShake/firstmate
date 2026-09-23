@@ -26,6 +26,8 @@ set -u
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-busy-adapter-wiring)
+NO_PRESENCE_PATH=$(fm_presence_absent_path "$TMP_ROOT/no-presence" \
+  bash sh node jq touch awk basename cat date dirname grep head mkdir mv rm rmdir sed sleep stat tail) || exit 1
 
 make_spawn_fakebin() {
   local dir=$1 fakebin
@@ -180,7 +182,7 @@ test_pi_extension_serializes_settle_before_next_start() {
 }
 
 test_pi_extension_presence_beat() {
-  local rec id=presence-pi-1 out state ext bin log absent
+  local rec id=presence-pi-1 out state ext bin log
   rec=$(make_spawn_case pi-presence pi "$id")
   read_case_record "$rec"
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
@@ -210,9 +212,7 @@ test_pi_extension_presence_beat() {
   [ "$(classify pi "$id" "$state")" = "idle pi-ext" ] \
     || fail "the presence beat displaced the agent_settled idle event"
 
-  absent="$CASE_DIR/no-presence"
-  mkdir -p "$absent"
-  out=$(with_path "$absent" drive_pi_ext "$ext" agent-start) \
+  out=$(PATH="$NO_PRESENCE_PATH" drive_pi_ext "$ext" agent-start) \
     || fail "agent_start must still succeed with no agent-presence installed: $out"
   [ "$(classify pi "$id" "$state")" = "busy pi-ext" ] \
     || fail "an uninstalled agent-presence changed the recorded busy state"
@@ -309,7 +309,7 @@ test_opencode_plugin_semantic_lifecycle() {
 }
 
 test_opencode_plugin_presence_beat() {
-  local rec id=presence-oc-1 out state plugin bin log absent
+  local rec id=presence-oc-1 out state plugin bin log
   rec=$(make_spawn_case oc-presence opencode "$id")
   read_case_record "$rec"
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
@@ -355,9 +355,7 @@ test_opencode_plugin_presence_beat() {
   [ "$(classify opencode "$id" "$state")" = "idle opencode-plugin" ] \
     || fail "the presence beat displaced the session.idle idle event"
 
-  absent="$CASE_DIR/no-presence"
-  mkdir -p "$absent"
-  out=$(with_path "$absent" drive_oc_plugin "$plugin" "$(oc_status ses_main busy)") \
+  out=$(PATH="$NO_PRESENCE_PATH" drive_oc_plugin "$plugin" "$(oc_status ses_main busy)") \
     || fail "the plugin must still succeed with no agent-presence installed: $out"
   [ "$(classify opencode "$id" "$state")" = "busy opencode-plugin" ] \
     || fail "an uninstalled agent-presence changed the recorded busy state"
@@ -378,7 +376,7 @@ codex_notify_script() {  # <tmux-call-log>
 }
 
 test_codex_notify_presence_beat() {
-  local rec id=presence-cx-1 out state log script bin beats absent
+  local rec id=presence-cx-1 out state log script bin beats
   rec=$(make_spawn_case codex-presence codex "$id")
   read_case_record "$rec"
   log="$CASE_DIR/tmux-calls.log"
@@ -399,10 +397,8 @@ test_codex_notify_presence_beat() {
   # at every turn end and never working or end.
   fm_assert_presence_beats "$beats" 'beat --state waiting'
 
-  absent="$CASE_DIR/no-presence"
-  mkdir -p "$absent"
   rm -f "$state/$id.turn-ended"
-  out=$(with_path "$absent" bash -c "$script")
+  out=$(PATH="$NO_PRESENCE_PATH" bash -c "$script")
   expect_code 0 $? "the codex notify program must exit zero with no agent-presence: $out"
   [ -f "$state/$id.turn-ended" ] || fail "an uninstalled agent-presence broke the marker touch"
   pass "codex notify touches the turn-end marker and beats waiting, with or without the CLI"
@@ -451,19 +447,17 @@ test_claude_hooks_presence_beat() {
 }
 
 test_claude_presence_is_optional_and_can_never_fail_a_hook() {
-  local rec id=presence-cl-2 out state settings absent broken log ev
+  local rec id=presence-cl-2 out state settings broken log ev
   rec=$(make_spawn_case claude-presence-optional claude "$id")
   read_case_record "$rec"
   out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
   expect_code 0 $? "claude spawn should succeed: $out"
   state="$HOME_DIR/state"
   settings="$WT_DIR/.claude/settings.local.json"
-  absent="$CASE_DIR/no-presence"
-  mkdir -p "$absent"
 
   # Not installed: the PATH probe makes every hook a plain busy-state hook.
   for ev in UserPromptSubmit Stop StopFailure SessionEnd; do
-    out=$(with_path "$absent" run_claude_hook "$settings" "$ev")
+    out=$(PATH="$NO_PRESENCE_PATH" run_claude_hook "$settings" "$ev")
     expect_code 0 $? "$ev hook must exit zero with no agent-presence installed"
     [ -z "$out" ] || fail "$ev hook printed with no agent-presence installed: $out"
   done

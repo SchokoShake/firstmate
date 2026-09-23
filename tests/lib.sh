@@ -332,6 +332,28 @@ assert_present() {
   [ -e "$1" ] || fail "$2"
 }
 
+# fm_presence_absent_path <dir> <tool>...: populate <dir> with a symlink to each
+# named tool and echo it as a COMPLETE PATH, for a case whose precondition is
+# that bridge-axi's OPTIONAL agent-presence CLI is not installed. Prepending an
+# empty directory to the INHERITED PATH does not establish that on a machine
+# that has the CLI - the real one still resolves and the case silently re-tests
+# the installed path - so the PATH is built from the tools the driver needs
+# instead. Refuses if an agent-presence still resolves on the result, so such a
+# case can never pass while proving nothing.
+fm_presence_absent_path() {
+  local dir=$1 tool resolved
+  shift
+  mkdir -p "$dir"
+  for tool in "$@"; do
+    resolved=$(command -v "$tool") || fail "test needs $tool"
+    ln -sfn "$resolved" "$dir/$tool"
+  done
+  if ( PATH=$dir; command -v agent-presence ) >/dev/null 2>&1; then
+    fail "the not-installed case still resolves an agent-presence on '$dir'"
+  fi
+  printf '%s\n' "$dir"
+}
+
 # fm_fake_agent_presence <dir> <log> [exit-code] [witness-path]: a recording
 # stand-in for bridge-axi's hook-callable agent-presence CLI, for tests that
 # drive a generated turn-boundary hook. Writes one line of argv per call to

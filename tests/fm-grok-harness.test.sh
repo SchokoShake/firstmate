@@ -8,6 +8,7 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 TMP_ROOT=$(fm_test_tmproot fm-grok-harness)
+NO_PRESENCE_PATH=$(fm_presence_absent_path "$TMP_ROOT/no-presence" bash cat touch) || exit 1
 
 make_spawn_fakebin() {
   local dir=$1 fakebin
@@ -140,7 +141,7 @@ SH
 
 test_grok_hook_presence_beat() {
   local rec case_dir home proj wt fakebin grok_home id out status hook token target
-  local bin log absent evil
+  local bin log evil
   rec=$(make_spawn_case presence)
   IFS='|' read -r case_dir home proj wt fakebin grok_home id <<EOF
 $rec
@@ -178,10 +179,8 @@ EOF
   fm_assert_presence_beats "$log"
 
   # Not installed: the hook is unchanged for every home without bridge-axi.
-  absent="$case_dir/no-presence"
-  mkdir -p "$absent"
   rm -f "$target"
-  out=$(PATH="$absent:$PATH" GROK_WORKSPACE_ROOT="$wt" bash "$hook" 2>&1)
+  out=$(PATH="$NO_PRESENCE_PATH" GROK_WORKSPACE_ROOT="$wt" bash "$hook" 2>&1)
   expect_code 0 $? "the grok hook must exit zero with no agent-presence installed"
   [ -z "$out" ] || fail "the grok hook printed with no agent-presence installed: $out"
   assert_present "$target" "an uninstalled agent-presence broke the turn-end marker touch"
