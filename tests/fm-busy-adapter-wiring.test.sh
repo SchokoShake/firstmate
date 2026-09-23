@@ -80,7 +80,6 @@ run_spawn() {  # <home> <wt> <fakebin> <spawn-args...>
   local home=$1 wt=$2 fakebin=$3
   shift 3
   set -- "$@" --mode no-mistakes --yolo off
-  # shellcheck disable=SC2031 # An ordinary environment prefix on an external command; nothing is expected to outlive it.
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
@@ -95,7 +94,7 @@ run_spawn() {  # <home> <wt> <fakebin> <spawn-args...>
 with_path() {  # <dir> <command...>
   local dir=$1
   shift
-  # shellcheck disable=SC2030,SC2031 # The subshell scoping is the isolation this helper exists for, not a lost modification.
+  # shellcheck disable=SC2030 # The subshell scoping is the isolation this helper exists for, not a lost modification.
   ( PATH="$dir:$PATH"; "$@" )
 }
 

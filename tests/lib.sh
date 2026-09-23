@@ -338,8 +338,9 @@ assert_present() {
 # empty directory to the INHERITED PATH does not establish that on a machine
 # that has the CLI - the real one still resolves and the case silently re-tests
 # the installed path - so the PATH is built from the tools the driver needs
-# instead. Refuses if an agent-presence still resolves on the result, so such a
-# case can never pass while proving nothing.
+# instead. The result is exactly <dir>, so an agent-presence resolves on it only
+# if one is executable there; the helper refuses in that case, so such a case can
+# never pass while proving nothing.
 #
 # This is deliberately stricter than asserting only properties that hold whether
 # or not the CLI is installed. That weaker rule was a guard against FALSE
@@ -362,7 +363,7 @@ fm_presence_absent_path() {
     resolved=$(command -v "$tool") || fail "test needs $tool"
     ln -sfn "$resolved" "$dir/$tool"
   done
-  if ( PATH=$dir; command -v agent-presence ) >/dev/null 2>&1; then
+  if [ -x "$dir/agent-presence" ]; then
     fail "the not-installed case still resolves an agent-presence on '$dir'"
   fi
   printf '%s\n' "$dir"
