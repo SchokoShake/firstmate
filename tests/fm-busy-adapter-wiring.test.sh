@@ -341,12 +341,17 @@ test_opencode_plugin_presence_beat() {
   fm_assert_presence_beats "$log" 'beat --state working' 'beat --state waiting'
 
   : > "$log"
-  rm -f "$state/$id.turn-ended"
+  rm -f "$state/$id.turn-ended" "$log.witness"
+  fm_fake_agent_presence "$bin" "$log" 0 "$state/$id.turn-ended"
   out=$(with_path "$bin" drive_oc_plugin "$plugin" \
     "$(oc_status ses_main busy)" \
     "$(oc_idle ses_main)") || fail "session.idle drive failed: $out"
   [ -f "$state/$id.turn-ended" ] || fail "session.idle no longer touches the notification marker"
   fm_assert_presence_beats "$log" 'beat --state working' 'beat --state waiting'
+  # The optional board call must never gate firstmate's own watcher notification:
+  # the marker is already on disk by the time the turn-end beat runs.
+  [ "$(tail -n 1 "$log.witness")" = present ] \
+    || fail "the session.idle beat ran before the turn-end marker was touched"
   [ "$(classify opencode "$id" "$state")" = "idle opencode-plugin" ] \
     || fail "the presence beat displaced the session.idle idle event"
 

@@ -206,8 +206,11 @@
 #     no bridge-axi installed is a silent no-op rather than a broken hook. This
 #     is an OPTIONAL dependency firstmate is allowed to lose.
 #   - Its output is discarded and its status is swallowed, exactly like the
-#     busy-state commands beside it, so neither a hung board nor a non-zero exit
-#     can slow or fail the harness's own turn.
+#     busy-state commands beside it, so a refused or failing beat cannot fail
+#     the harness's own turn. That wrapper bounds the beat's OUTPUT and STATUS,
+#     not its DURATION: the duration bound has one owner, bridge-axi, which caps
+#     every beat at its DEFAULT_BEAT_TIMEOUT_MS of 2000 ms and applies that cap
+#     to any rail configured slower.
 #   - Firstmate passes NOTHING about the work. The consumer identity and the
 #     subject (pr/branch/item) are resolved by the CLI from the worker's own
 #     session and worktree, so no presence field is text firstmate typed.
@@ -2612,14 +2615,15 @@ export const FmBusyState = async () => {
         return;
       }
       if (event.type === "session.idle") {
-        if (event.properties.sessionID === activeSession) {
+        const latched = event.properties.sessionID === activeSession;
+        if (latched) {
           activeSession = null;
           await busyEvent("idle", "session-idle");
-          await presence("beat", "--state", "waiting");
         }
         await new Promise((resolve) => {
           execFile("touch", ["$TURNEND"], () => resolve());
         });
+        if (latched) await presence("beat", "--state", "waiting");
       }
     },
   };

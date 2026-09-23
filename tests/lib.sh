@@ -332,21 +332,29 @@ assert_present() {
   [ -e "$1" ] || fail "$2"
 }
 
-# fm_fake_agent_presence <dir> <log> [exit-code]: a recording stand-in for
-# bridge-axi's hook-callable agent-presence CLI, for tests that drive a
-# generated turn-boundary hook. Writes one line of argv per call to <log> and
-# the directory it ran in to <log>.pwd, so a test can assert both the beat and
-# that the hook resolved the worker's own worktree. A non-zero exit-code also
-# makes it noisy on both streams, which is how a test proves a failing beat can
-# neither change a hook's status nor reach hook stdout.
+# fm_fake_agent_presence <dir> <log> [exit-code] [witness-path]: a recording
+# stand-in for bridge-axi's hook-callable agent-presence CLI, for tests that
+# drive a generated turn-boundary hook. Writes one line of argv per call to
+# <log> and the PHYSICAL directory it ran in to <log>.pwd, so a test can assert
+# both the beat and that the hook resolved the worker's own worktree. A
+# non-zero exit-code also makes it noisy on both streams, which is how a test
+# proves a failing beat can neither change a hook's status nor reach hook
+# stdout. A witness-path records present/absent per call to <log>.witness, so a
+# test can prove the hook wrote its own durable artefact before it attempted
+# the optional beat.
 fm_fake_agent_presence() {
-  local dir=$1 log=$2 code=${3:-0}
+  local dir=$1 log=$2 code=${3:-0} witness=${4:-}
   mkdir -p "$dir"
   cat > "$dir/agent-presence" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$log"
-printf '%s\n' "\$PWD" >> "$log.pwd"
+printf '%s\n' "\$(pwd -P)" >> "$log.pwd"
 EOF
+  if [ -n "$witness" ]; then
+    cat >> "$dir/agent-presence" <<EOF
+if [ -e "$witness" ]; then printf 'present\n' >> "$log.witness"; else printf 'absent\n' >> "$log.witness"; fi
+EOF
+  fi
   if [ "$code" -ne 0 ]; then
     cat >> "$dir/agent-presence" <<'EOF'
 printf 'presence stdout noise\n'

@@ -187,7 +187,7 @@ Every adapter that already has per-worker turn-boundary wiring also carries one 
 
 Three properties hold for every adapter and are what make the beat safe to add to a lifecycle hook.
 It runs only when `agent-presence` is on the worker's PATH, so a home without bridge-axi installed is a silent no-op rather than a broken hook.
-Its output is discarded and its status is swallowed, so neither a hung board nor a failing beat can slow or fail a turn.
+Its output is discarded and its status is swallowed, so a refused or failing beat cannot fail a turn; that wrapper bounds the beat's output and status rather than its duration, and the duration bound has one owner, bridge-axi, which caps every beat at its `DEFAULT_BEAT_TIMEOUT_MS` of 2000 ms and applies that cap to any rail configured slower.
 Firstmate passes nothing about the work: the consumer identity and the subject are resolved by the CLI from the worker's own session and worktree, so no presence field is text firstmate typed.
 
 Presence is a weaker, best-effort signal than the semantic busy record beside it.
