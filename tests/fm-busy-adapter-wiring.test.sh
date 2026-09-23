@@ -12,10 +12,15 @@
 # session.
 #
 # The presence tests put a recording `agent-presence` on PATH to observe the
-# beat, and assert the not-installed and failing cases through the properties
-# that must hold either way - status zero, empty stdout, and an unchanged busy
-# record - so a machine that happens to have the real CLI installed cannot turn
-# them into false failures.
+# beat. The not-installed cases do not merely fail to install one: they run on
+# the hermetic PATH fm_presence_absent_path builds, which carries only the tools
+# the driven artifacts need and refuses loudly if an agent-presence is still
+# resolvable on it. That makes the precondition real on a machine that HAS
+# bridge-axi installed, where prepending an empty directory to the inherited
+# PATH would leave the real CLI reachable and the case would pass while proving
+# nothing. The failing-CLI case keeps a real but broken and noisy CLI on PATH
+# and is asserted through status zero, empty stdout, and an unchanged busy
+# record, which hold whatever the board itself does.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -533,12 +538,15 @@ test_claude_hooks_stale_incarnation_harmless() {
   pass "claude hook events from a superseded incarnation are rejected without breaking the hook"
 }
 
-# The presence beat exists in two independent spellings: presence_cmd in
-# bin/fm-spawn.sh renders claude's, grok's and codex's, while the kimi global
-# hook carries its own hand-written copy because a separate guarded installer
-# writes that body. Drive one generated artifact of each through the same
-# recorder and require the argv they actually invoke to be identical, so a
-# change to one spelling cannot leave the other silently stale.
+# The beat is authored independently in four places (bin/fm-spawn.sh's
+# presence_cmd comment enumerates them). This pairs the two that are the same
+# KIND of artifact and could therefore drift silently against each other: the
+# shell command presence_cmd renders for claude, grok and codex, and the kimi
+# global hook's own hand-written copy, which a separate guarded installer
+# writes. Drive one generated artifact of each through the same recorder and
+# require the argv they actually invoke to be identical. The OpenCode plugin's
+# and pi extension's execFile argv arrays are a different shape and stay
+# asserted against their own expectations above.
 test_kimi_hook_beat_matches_the_rendered_beat() {
   local rec id=presence-xk-1 out state settings hook bin log
   local token target payload rendered written
@@ -575,7 +583,7 @@ test_kimi_hook_beat_matches_the_rendered_beat() {
   [ -n "$written" ] || fail "the Kimi turn-end hook recorded no presence beat"
   [ "$rendered" = "$written" ] \
     || fail "the Kimi hook beats '$written' but fm-spawn renders '$rendered'"
-  pass "the Kimi hook's own beat is the same command fm-spawn renders for every other adapter"
+  pass "the Kimi hook's own beat is the same command presence_cmd renders for claude, grok and codex"
 }
 
 test_codex_unverified_until_a_semantic_source_exists() {

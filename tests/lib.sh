@@ -340,6 +340,20 @@ assert_present() {
 # the installed path - so the PATH is built from the tools the driver needs
 # instead. Refuses if an agent-presence still resolves on the result, so such a
 # case can never pass while proving nothing.
+#
+# This is deliberately stricter than asserting only properties that hold whether
+# or not the CLI is installed. That weaker rule was a guard against FALSE
+# FAILURES on a machine where bridge-axi IS installed, and this helper keeps
+# that guard - it refuses loudly and names the problem instead of passing
+# quietly - while being the only thing that exercises the not-installed branch
+# on exactly the machine the feature exists for. It has already earned that: on
+# a genuinely hermetic PATH the claude case failed because
+# bin/fm-busy-event.sh's lock release needs `rmdir`, a dependency the inherited
+# PATH had been supplying invisibly.
+#
+# A caller's tool list must therefore track what the driven artifacts and the
+# real bin/fm-busy-event.sh and bin/fm-busy-lib.sh actually exec. A stale list
+# fails loudly naming the missing tool rather than degrading quietly.
 fm_presence_absent_path() {
   local dir=$1 tool resolved
   shift

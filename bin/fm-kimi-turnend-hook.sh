@@ -87,11 +87,13 @@ TOKEN_NAME = re.compile(r"fm\.[A-Za-z0-9]{12}\Z")
 # Content that does not carry the prefix is still refused by both.
 HOOK_PREFIX = b"#!/usr/bin/env bash\n# Firstmate Kimi turn-end hook."
 
-# The `agent-presence beat` line near the end of this body is the SECOND
-# spelling of a command bin/fm-spawn.sh's presence_cmd renders for claude, grok
-# and codex. It is hand-written here because this hook is installed by this
-# guarded installer rather than written by fm-spawn, which passes nothing about
-# the beat in. The two spellings are byte-identical and must change together;
+# The `agent-presence beat` line near the end of this body is one of four
+# independently authored spellings of the same command. bin/fm-spawn.sh's
+# presence_cmd renders the shell-command form that claude, grok and codex use,
+# and the OpenCode plugin and pi extension fm-spawn writes each carry their own
+# execFile argv array. This copy is hand-written because fm-spawn does not write
+# this hook at all - this guarded installer does, and fm-spawn passes nothing
+# about the beat in. It and presence_cmd's form must change together;
 # tests/fm-busy-adapter-wiring.test.sh drives one generated artifact of each and
 # requires the argv they invoke to match.
 HOOK_BYTES = b'''#!/usr/bin/env bash

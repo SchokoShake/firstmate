@@ -2446,21 +2446,32 @@ exclude_path() {
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
-# Renders the presence beat for every adapter whose turn-boundary wiring
-# fm-spawn writes itself: claude's hooks, grok's global hook body, and codex's
-# notify through the `__PRESENCEWAITING__` substitution. The header owns the
-# contract this shape implements - the PATH probe, the discarded output, and the
-# status that is always 0.
+# Renders the presence beat as a SHELL COMMAND STRING, which is the form three
+# wiring shapes take: claude's four hook commands, grok's global hook body, and
+# codex's notify program through the `__PRESENCEWAITING__` substitution. The
+# header owns the contract this shape implements - the PATH probe, the discarded
+# output, and the status that is always 0.
 #
-# Kimi is NOT rendered here, and that is the one place this command exists
-# twice. Kimi's global hook body is installed by bin/fm-kimi-turnend-hook.sh,
-# the sole owner of the guarded text edit to $HOME/.kimi-code/config.toml, so
-# its beat is an independent hand-written spelling of the same command inside
-# that script's HOOK_BYTES literal rather than a value fm-spawn passes in. The
-# two are byte-identical today and nothing binds them at runtime: a change to
-# the form rendered below has to be made in bin/fm-kimi-turnend-hook.sh in the
-# same commit, and tests/fm-busy-adapter-wiring.test.sh drives one generated
-# artifact of each and requires the argv they invoke to match.
+# The same beat is authored independently in three OTHER places, so an argv
+# change has to reach all four:
+#   - the OpenCode plugin and the pi extension, both written by the heredocs
+#     below. They reach the CLI through `execFile("agent-presence", args, ...)`,
+#     which takes an argv ARRAY and spawns no shell, so this function's output
+#     could not be used there even in principle: `command -v`, the redirections
+#     and the `|| true` are shell syntax with no meaning in an array. Those two
+#     get the same three properties instead from a bare command name (an
+#     uninstalled CLI is ENOENT into the callback), an ignored result, and a
+#     callback that always resolves.
+#   - kimi's global hook body, a hand-written shell literal in
+#     bin/fm-kimi-turnend-hook.sh's HOOK_BYTES. fm-spawn does not write that
+#     body at all: that script is the sole owner of the guarded text edit to
+#     $HOME/.kimi-code/config.toml, and fm-spawn only invokes its `install`,
+#     passing nothing about the beat in.
+# Only the presence_cmd-versus-kimi pair is guarded against drift:
+# tests/fm-busy-adapter-wiring.test.sh drives one generated artifact of each and
+# requires the argv they invoke to match. The OpenCode and pi arrays are
+# asserted against their own expectations in that same suite, never against this
+# function's output.
 #
 # The vocabulary is closed on purpose: these are the only presence states a turn
 # boundary can produce, they are literal tokens rather than data, and refusing
