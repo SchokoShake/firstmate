@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Behavior tests for Grok-harness hook authentication, teardown cleanup, and session-lock holder detection.
+# Behavior tests for Grok-harness hook authentication, the global hook's optional
+# agent-presence beat, teardown cleanup, and session-lock holder detection.
 set -u
 
 # shellcheck source=tests/lib.sh
