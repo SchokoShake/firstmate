@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# Behavior tests for the per-adapter semantic busy-state wiring that
-# bin/fm-spawn.sh installs under the contract owned by bin/fm-busy-lib.sh.
+# Behavior tests for the per-adapter turn-boundary wiring that bin/fm-spawn.sh
+# installs: the semantic busy-state events under the contract owned by
+# bin/fm-busy-lib.sh, and the optional agent-presence beat that rides the same
+# boundaries under the contract owned by bin/fm-spawn.sh's header.
 #
 # These tests run the REAL fm-spawn against a fake tmux pane and an isolated
 # git worktree, then drive the generated adapter artifact (the Pi extension,
-# the OpenCode plugin) in a plain Node host, so the artifact, the real
-# bin/fm-busy-event.sh writer, and the real classifier are exercised together
-# with no live harness session.
+# the OpenCode plugin, the Claude hook commands, the Codex notify program) in a
+# plain Node host or shell, so the artifact, the real bin/fm-busy-event.sh
+# writer, and the real classifier are exercised together with no live harness
+# session.
+#
+# The presence tests put a recording `agent-presence` on PATH to observe the
+# beat, and assert the not-installed and failing cases through the properties
+# that must hold either way - status zero, empty stdout, and an unchanged busy
+# record - so a machine that happens to have the real CLI installed cannot turn
+# them into false failures.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -24,6 +33,7 @@ make_spawn_fakebin() {
   cat > "$fakebin/tmux" <<'SH'
 #!/usr/bin/env bash
 set -u
+printf '%s\n' "$*" >> "${FM_FAKE_TMUX_CALL_LOG:-/dev/null}"
 case "$*" in
   *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
 esac
@@ -67,12 +77,20 @@ run_spawn() {  # <home> <wt> <fakebin> <spawn-args...>
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
+    FM_FAKE_TMUX_CALL_LOG="${FM_FAKE_TMUX_CALL_LOG:-/dev/null}" \
     GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
 
+# Run a driver with <dir> ahead of PATH, in a subshell so the assignment cannot
+# leak into the next case (a bash `VAR=x func` assignment outlives the call).
+with_path() {  # <dir> <command...>
+  local dir=$1
+  shift
+  ( PATH="$dir:$PATH"; "$@" )
+}
+
 read_case_record() {
-  # shellcheck disable=SC2034 # CASE_DIR is part of the shared record shape
   IFS='|' read -r CASE_DIR HOME_DIR PROJ_DIR WT_DIR FAKEBIN_DIR <<EOF
 $1
 EOF
@@ -159,6 +177,46 @@ test_pi_extension_serializes_settle_before_next_start() {
   out=$(classify pi "$id" "$state")
   [ "$out" = "busy pi-ext" ] || fail "a fresh agent_start after agent_settled must win, got '$out'"
   pass "pi extension awaits agent_settled before the next agent_start without a test delay"
+}
+
+test_pi_extension_presence_beat() {
+  local rec id=presence-pi-1 out state ext bin log absent
+  rec=$(make_spawn_case pi-presence pi "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "pi spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  ext="$state/$id.pi-ext.ts"
+  bin="$CASE_DIR/presence-bin"
+  log="$CASE_DIR/presence.log"
+  fm_fake_agent_presence "$bin" "$log"
+
+  out=$(with_path "$bin" drive_pi_ext "$ext" agent-start) || fail "agent_start drive failed: $out"
+  fm_assert_presence_beats "$log" 'beat --state working'
+
+  # An inner turn boundary is not a run boundary: beating there would flip a
+  # settled worker back to working, so turn_end stays a notification only.
+  out=$(with_path "$bin" drive_pi_ext "$ext" turn-end) || fail "turn_end drive failed: $out"
+  [ -f "$state/$id.turn-ended" ] || fail "turn_end no longer touches the notification marker"
+  fm_assert_presence_beats "$log" 'beat --state working'
+
+  # A settle that raced another run keeps the worker busy, so it must not beat.
+  out=$(with_path "$bin" drive_pi_ext "$ext" settle-continuing) \
+    || fail "continuing settle drive failed: $out"
+  fm_assert_presence_beats "$log" 'beat --state working'
+
+  out=$(with_path "$bin" drive_pi_ext "$ext" settle-idle) || fail "agent_settled drive failed: $out"
+  fm_assert_presence_beats "$log" 'beat --state working' 'beat --state waiting'
+  [ "$(classify pi "$id" "$state")" = "idle pi-ext" ] \
+    || fail "the presence beat displaced the agent_settled idle event"
+
+  absent="$CASE_DIR/no-presence"
+  mkdir -p "$absent"
+  out=$(with_path "$absent" drive_pi_ext "$ext" agent-start) \
+    || fail "agent_start must still succeed with no agent-presence installed: $out"
+  [ "$(classify pi "$id" "$state")" = "busy pi-ext" ] \
+    || fail "an uninstalled agent-presence changed the recorded busy state"
+  pass "pi extension beats working on agent_start and waiting on a confirmed settle, never on turn_end"
 }
 
 test_pi_extension_stale_incarnation_rejected() {
@@ -250,11 +308,176 @@ test_opencode_plugin_semantic_lifecycle() {
   pass "opencode plugin classifies from session.status, scoped to the latched worker session"
 }
 
+test_opencode_plugin_presence_beat() {
+  local rec id=presence-oc-1 out state plugin bin log absent
+  rec=$(make_spawn_case oc-presence opencode "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "opencode spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  plugin="$WT_DIR/.opencode/plugins/fm-busy-state.js"
+  bin="$CASE_DIR/presence-bin"
+  log="$CASE_DIR/presence.log"
+  fm_fake_agent_presence "$bin" "$log"
+
+  out=$(with_path "$bin" drive_oc_plugin "$plugin" "$(oc_status ses_main busy)") \
+    || fail "busy drive failed: $out"
+  fm_assert_presence_beats "$log" 'beat --state working'
+
+  # Presence is scoped to the latched worker session exactly as busy state is:
+  # a child session's own edges are not this worker's turn boundaries.
+  : > "$log"
+  out=$(with_path "$bin" drive_oc_plugin "$plugin" \
+    "$(oc_status ses_main busy)" \
+    "$(oc_status ses_child busy)" \
+    "$(oc_status ses_child idle)" \
+    "$(oc_idle ses_other)") || fail "child-session drive failed: $out"
+  fm_assert_presence_beats "$log" 'beat --state working'
+
+  : > "$log"
+  out=$(with_path "$bin" drive_oc_plugin "$plugin" \
+    "$(oc_status ses_main busy)" \
+    "$(oc_status ses_main idle)") || fail "latched idle drive failed: $out"
+  fm_assert_presence_beats "$log" 'beat --state working' 'beat --state waiting'
+
+  : > "$log"
+  rm -f "$state/$id.turn-ended"
+  out=$(with_path "$bin" drive_oc_plugin "$plugin" \
+    "$(oc_status ses_main busy)" \
+    "$(oc_idle ses_main)") || fail "session.idle drive failed: $out"
+  [ -f "$state/$id.turn-ended" ] || fail "session.idle no longer touches the notification marker"
+  fm_assert_presence_beats "$log" 'beat --state working' 'beat --state waiting'
+  [ "$(classify opencode "$id" "$state")" = "idle opencode-plugin" ] \
+    || fail "the presence beat displaced the session.idle idle event"
+
+  absent="$CASE_DIR/no-presence"
+  mkdir -p "$absent"
+  out=$(with_path "$absent" drive_oc_plugin "$plugin" "$(oc_status ses_main busy)") \
+    || fail "the plugin must still succeed with no agent-presence installed: $out"
+  [ "$(classify opencode "$id" "$state")" = "busy opencode-plugin" ] \
+    || fail "an uninstalled agent-presence changed the recorded busy state"
+  pass "opencode plugin beats working and waiting only for the latched worker session"
+}
+
+# The Codex notify program is the one turn-boundary artifact that rides the
+# LAUNCH COMMAND, so it is recovered from what fm-spawn actually sent to the
+# pane and then executed, which is what proves it survived every quoting layer
+# between here and `bash -c`.
+codex_notify_script() {  # <tmux-call-log>
+  local raw
+  raw=$(grep -o -- '-c "notify=\[[^]]*\]"' "$1" | head -1)
+  [ -n "$raw" ] || return 1
+  raw=${raw#-c \"notify=}
+  raw=${raw%\"}
+  printf '%s' "$raw" | sed 's/\\"/"/g' | jq -r '.[2]'
+}
+
+test_codex_notify_presence_beat() {
+  local rec id=presence-cx-1 out state log script bin beats absent
+  rec=$(make_spawn_case codex-presence codex "$id")
+  read_case_record "$rec"
+  log="$CASE_DIR/tmux-calls.log"
+  out=$(FM_FAKE_TMUX_CALL_LOG="$log" run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "codex spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  script=$(codex_notify_script "$log") \
+    || fail "codex launch carried no notify program: $(cat "$log")"
+
+  bin="$CASE_DIR/presence-bin"
+  beats="$CASE_DIR/presence.log"
+  fm_fake_agent_presence "$bin" "$beats"
+  rm -f "$state/$id.turn-ended"
+  out=$(with_path "$bin" bash -c "$script")
+  expect_code 0 $? "the codex notify program must exit zero: $out"
+  [ -f "$state/$id.turn-ended" ] || fail "the codex notify program stopped touching the marker"
+  # Codex exposes no turn-START and no session-end event, so it beats waiting
+  # at every turn end and never working or end.
+  fm_assert_presence_beats "$beats" 'beat --state waiting'
+
+  absent="$CASE_DIR/no-presence"
+  mkdir -p "$absent"
+  rm -f "$state/$id.turn-ended"
+  out=$(with_path "$absent" bash -c "$script")
+  expect_code 0 $? "the codex notify program must exit zero with no agent-presence: $out"
+  [ -f "$state/$id.turn-ended" ] || fail "an uninstalled agent-presence broke the marker touch"
+  pass "codex notify touches the turn-end marker and beats waiting, with or without the CLI"
+}
+
 run_claude_hook() {  # <settings.json> <hook-event>
   local cmd
   cmd=$(jq -r ".hooks[\"$2\"][0].hooks[0].command" "$1")
   [ -n "$cmd" ] && [ "$cmd" != null ] || fail "no $2 hook command in $1"
   sh -c "$cmd"
+}
+
+test_claude_hooks_presence_beat() {
+  local rec id=presence-cl-1 out state settings bin log
+  rec=$(make_spawn_case claude-presence claude "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "claude spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  settings="$WT_DIR/.claude/settings.local.json"
+  bin="$CASE_DIR/presence-bin"
+  log="$CASE_DIR/presence.log"
+  fm_fake_agent_presence "$bin" "$log"
+
+  out=$(with_path "$bin" run_claude_hook "$settings" UserPromptSubmit)
+  expect_code 0 $? "UserPromptSubmit hook must exit zero"
+  [ -z "$out" ] || fail "UserPromptSubmit hook printed on stdout: $out"
+  fm_assert_presence_beats "$log" 'beat --state working'
+  [ "$(classify claude "$id" "$state")" = "busy claude-hook" ] \
+    || fail "the presence beat displaced the UserPromptSubmit busy event"
+
+  out=$(with_path "$bin" run_claude_hook "$settings" Stop)
+  expect_code 0 $? "Stop hook must exit zero"
+  [ -z "$out" ] || fail "Stop hook printed on stdout: $out"
+  [ -f "$state/$id.turn-ended" ] || fail "Stop no longer touches the notification marker"
+  [ "$(classify claude "$id" "$state")" = "idle claude-hook" ] \
+    || fail "the presence beat displaced the Stop idle event"
+
+  with_path "$bin" run_claude_hook "$settings" StopFailure || fail "StopFailure hook must exit zero"
+  with_path "$bin" run_claude_hook "$settings" SessionEnd || fail "SessionEnd hook must exit zero"
+  # Claude is the only adapter that reaches all four states: a turn opens
+  # working, both turn ends beat waiting, and the session end RETIRES the row
+  # rather than beating a state that would have to expire.
+  fm_assert_presence_beats "$log" 'beat --state working' 'beat --state waiting' 'beat --state waiting' 'end'
+  pass "claude hooks beat working at turn start, waiting at both turn ends, and end at session end"
+}
+
+test_claude_presence_is_optional_and_can_never_fail_a_hook() {
+  local rec id=presence-cl-2 out state settings absent broken log ev
+  rec=$(make_spawn_case claude-presence-optional claude "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "claude spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  settings="$WT_DIR/.claude/settings.local.json"
+  absent="$CASE_DIR/no-presence"
+  mkdir -p "$absent"
+
+  # Not installed: the PATH probe makes every hook a plain busy-state hook.
+  for ev in UserPromptSubmit Stop StopFailure SessionEnd; do
+    out=$(with_path "$absent" run_claude_hook "$settings" "$ev")
+    expect_code 0 $? "$ev hook must exit zero with no agent-presence installed"
+    [ -z "$out" ] || fail "$ev hook printed with no agent-presence installed: $out"
+  done
+  [ "$(classify claude "$id" "$state")" = "idle claude-hook" ] \
+    || fail "an uninstalled agent-presence changed the recorded busy state"
+
+  # Installed but failing and noisy: still zero, still nothing on stdout.
+  # Claude reads hook stdout as protocol, so silence is the load-bearing half.
+  broken="$CASE_DIR/broken-presence"
+  log="$CASE_DIR/broken.log"
+  fm_fake_agent_presence "$broken" "$log" 3
+  for ev in UserPromptSubmit Stop StopFailure SessionEnd; do
+    out=$(with_path "$broken" run_claude_hook "$settings" "$ev" 2>/dev/null)
+    expect_code 0 $? "$ev hook must exit zero when the beat fails"
+    [ -z "$out" ] || fail "$ev hook leaked failing-beat output onto stdout: $out"
+  done
+  [ "$(classify claude "$id" "$state")" = "idle claude-hook" ] \
+    || fail "a failing agent-presence changed the recorded busy state"
+  pass "claude presence beats are optional, silent, and cannot fail or pollute a hook"
 }
 
 test_claude_hooks_semantic_lifecycle() {
@@ -346,10 +569,15 @@ test_kimi_and_grok_install_no_unverified_wiring() {
 test_pi_extension_semantic_lifecycle
 test_pi_extension_serializes_settle_before_next_start
 test_pi_extension_stale_incarnation_rejected
+test_pi_extension_presence_beat
 test_kimi_and_grok_install_no_unverified_wiring
 test_opencode_plugin_semantic_lifecycle
+test_opencode_plugin_presence_beat
 test_claude_hooks_semantic_lifecycle
 test_claude_hooks_stale_incarnation_harmless
+test_claude_hooks_presence_beat
+test_claude_presence_is_optional_and_can_never_fail_a_hook
 test_codex_unverified_until_a_semantic_source_exists
+test_codex_notify_presence_beat
 
 echo "all fm-busy-adapter-wiring tests passed"

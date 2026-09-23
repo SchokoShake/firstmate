@@ -331,3 +331,39 @@ assert_absent() {
 assert_present() {
   [ -e "$1" ] || fail "$2"
 }
+
+# fm_fake_agent_presence <dir> <log> [exit-code]: a recording stand-in for
+# bridge-axi's hook-callable agent-presence CLI, for tests that drive a
+# generated turn-boundary hook. Writes one line of argv per call to <log> and
+# the directory it ran in to <log>.pwd, so a test can assert both the beat and
+# that the hook resolved the worker's own worktree. A non-zero exit-code also
+# makes it noisy on both streams, which is how a test proves a failing beat can
+# neither change a hook's status nor reach hook stdout.
+fm_fake_agent_presence() {
+  local dir=$1 log=$2 code=${3:-0}
+  mkdir -p "$dir"
+  cat > "$dir/agent-presence" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$log"
+printf '%s\n' "\$PWD" >> "$log.pwd"
+EOF
+  if [ "$code" -ne 0 ]; then
+    cat >> "$dir/agent-presence" <<'EOF'
+printf 'presence stdout noise\n'
+printf 'presence stderr noise\n' >&2
+EOF
+  fi
+  printf 'exit %s\n' "$code" >> "$dir/agent-presence"
+  chmod +x "$dir/agent-presence"
+}
+
+# fm_assert_presence_beats <log> [expected-line...]: the recorded beats must be
+# exactly these, in order. With no expected lines the log must be empty or absent.
+fm_assert_presence_beats() {
+  local log=$1 expected='' actual
+  shift
+  [ "$#" -eq 0 ] || expected=$(printf '%s\n' "$@")
+  actual=$(cat "$log" 2>/dev/null || true)
+  [ "$actual" = "$expected" ] \
+    || fail "presence beats were '$actual', expected '$expected'"
+}

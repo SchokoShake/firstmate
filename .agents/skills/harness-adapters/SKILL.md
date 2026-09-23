@@ -180,11 +180,34 @@ A send or key action reporting success is not proof that the intended action hap
 OpenCode can accept and queue an Enter while leaving text visible, Grok can consume Enter in its slash popup without submitting, and Kimi can silently drop a message sent before readiness even though the send returns success.
 The shared symptom is a healthy-looking pane with no work in progress, so each adapter must verify the observable postcondition that is specific to its TUI.
 
+## Crew presence beat
+
+Every adapter that already has per-worker turn-boundary wiring also carries one added command that announces a CREWMATE or SCOUT to the captain's board through bridge-axi's hook-callable `agent-presence` CLI.
+`bin/fm-spawn.sh`'s header owns the contract; the per-adapter tables below record only which states each adapter can reach, because they differ and the gaps are the useful part.
+
+Three properties hold for every adapter and are what make the beat safe to add to a lifecycle hook.
+It runs only when `agent-presence` is on the worker's PATH, so a home without bridge-axi installed is a silent no-op rather than a broken hook.
+Its output is discarded and its status is swallowed, so neither a hung board nor a failing beat can slow or fail a turn.
+Firstmate passes nothing about the work: the consumer identity and the subject are resolved by the CLI from the worker's own session and worktree, so no presence field is text firstmate typed.
+
+Presence is a weaker, best-effort signal than the semantic busy record beside it.
+It says a turn boundary happened recently; it never says which run step a worker is on, so it does not replace `bin/fm-crew-state.sh` or the busy-state contract owned by `bin/fm-busy-lib.sh`.
+Secondmates and the firstmate primary never beat: presence covers spawned workers only.
+
+A row that is never retired by an `end` beat expires on the board's own TTL instead, which is the ordinary outcome for every turn-end-only adapter.
+
+Firstmate workers appear on the board by BRANCH, never by pull request, and that is a consequence of the CLI's own contract rather than a gap in the wiring.
+`agent-presence beat` resolves the subject without the network and caches any answer other than `path` for the rest of the session; only `agent-presence subject` may run `gh`, and firstmate calls it nowhere.
+It cannot: a task's branch does not exist at spawn, because the worker creates it as its first action, after the launch brief has already been submitted as the first turn and fired the first beat, so resolving at spawn would cache a pre-branch answer for the whole session.
+What makes the row converge anyway is that a task worktree starts on a detached HEAD, which resolves to `path`, and a cached `path` is re-resolved on every beat - so the first beat after the worker creates its branch upgrades the row and caches it from then on.
+A later pull request does not upgrade it, because the cached branch is kept.
+
 ## claude (VERIFIED; busy-state hooks live-verified 2026-07-28 on Claude Code 2.1.220)
 
 | Fact | Value |
 |---|---|
 | Busy state | Owned lifecycle hooks: `UserPromptSubmit` opens a turn, while `Stop`, `StopFailure`, and `SessionEnd` close it; because Claude fires no hook for a manual interrupt, `bin/fm-control.sh interrupt` reports only delivered keys and the verified endpoint or live agent, publishes no idle event, makes no cancellation claim, and leaves adapter-observed state unchanged, so a mid-turn worker typically remains busy via `claude-hook`. |
+| Presence beat | All four states, the only adapter that reaches them: `working` on `UserPromptSubmit`, `waiting` on both `Stop` and `StopFailure`, and `end` on `SessionEnd`, which retires the row at once instead of waiting out the board's TTL. |
 | Exit command | `/exit` |
 | Interrupt | single Escape |
 | Skill invocation | `/<skill>` (e.g. `/no-mistakes`) |
@@ -215,6 +238,7 @@ Claude Code's primary watcher protocol is Stop-owned: the auto-arm hook fires on
 | Fact | Value |
 |---|---|
 | Busy state | Unknown until a semantic source is live-verified: the app-server turn lifecycle is unreachable for a pane worker, and project lifecycle hooks did not fire for a firstmate-launched worker. |
+| Presence beat | `waiting` only, riding the `-c notify=[...]` turn-end program on the launch command. Codex exposes no turn-start and no session-end event, so it never beats `working` or `end`. |
 | Exit command | `/quit` (slash popup needs about 1 second between text and Enter; the shared submit path used by `fm-control` handles it) |
 | Interrupt | single Escape |
 | Skill invocation | `$<skill>` (e.g. `$no-mistakes`); `/<skill>` is claude-only and codex rejects it as "Unrecognized command" |
@@ -246,6 +270,7 @@ The checkpoint is deliberately foreground and bounded so Codex regains control r
 | Fact | Value |
 |---|---|
 | Busy state | The Firstmate-owned plugin's semantic `session.status`: `busy` and `retry` are active, `idle` is inactive, latched to the worker's own session. |
+| Presence beat | `working` and `waiting`, scoped to the latched worker session exactly as busy state is. OpenCode gives the plugin no shutdown event, so it never beats `end`. |
 | Exit command | `/exit` |
 | Interrupt | double Escape; known flaky while a long shell command runs, so use `bin/fm-control.sh <task-id> relaunch` for a wedged pane |
 
@@ -283,6 +308,7 @@ The follow-up was verified in the interactive TUI; `opencode run` can exit befor
 | Fact | Value |
 |---|---|
 | Busy state | The Firstmate-owned extension's `agent_start` (busy) and `agent_settled` confirmed by `ctx.isIdle()` (idle), which covers retries, compaction, tool loops, and queued continuations. |
+| Presence beat | `working` on `agent_start` and `waiting` on a confirmed `agent_settled`, never on `turn_end`: an inner turn boundary is not a run boundary, and beating there would flip a settled worker back to `working`. Pi gives the extension no shutdown event, so it never beats `end`. |
 | Exit command | `/quit` |
 | Interrupt | single Escape |
 
@@ -322,6 +348,7 @@ For Grok's supported reasoning-effort values and omission behavior, see the [lau
 | Fact | Value |
 |---|---|
 | Busy state | The one remaining rendered-tail fallback, isolated to Grok until its structured lifecycle is live-verified: `Ctrl+c:cancel`, the mid-turn cancel hint shown in grok's keybind bar iff a turn is running. The idle bar shows only `Shift+Tab:mode │ Ctrl+.:shortcuts`. ASCII is matched rather than the braille spinner to avoid locale fragility. |
+| Presence beat | `waiting` only, from the same guarded global Stop hook that touches the turn-end marker, and only for a workspace the Firstmate registry token authorises. The hook is shared by every task, so the beat runs in a subshell `cd`'d to that authorised worktree. |
 | Exit command | `/exit` typed into the composer exits the TUI cleanly and prints `Resume this session with: grok --resume <session-id>`; `Ctrl+Q` double-press within 1000ms remains a fallback; `Ctrl+D` is the quit key in VS Code family terminals; `Ctrl+C` is the interrupt, not the exit. |
 | Interrupt | single `Ctrl+C` (cancels the current turn; the footer shows `Ctrl+c:cancel` mid-turn). `Esc` only moves focus to the scrollback, it does NOT interrupt. |
 | Skill invocation | `/<skill>` (e.g. `/no-mistakes`), same as claude. Opens a slash-autocomplete popup, so a too-fast Enter selects the popup entry instead of sending. For an argument-taking command that first Enter does not submit at all - it expands the selection into an argument-hint placeholder in the composer (e.g. `/compact` -> `/compact compaction instructions`, live-verified), leaving real text still sitting there unsubmitted; a genuine second Enter is required. `fm-send`'s retried Enter lands it on BOTH backends because the shared composer classifier recognizes that placeholder-filled text as still pending; Herdr may also confirm a real turn start through native agent state - see the incident below. |
@@ -381,6 +408,7 @@ Do not confuse `harness=cursor` using a `cursor-grok-4.5-*` model with `harness=
 | Launch | A positional prompt with `--trust`, `--yolo`, `--model <model>` when selected, and `--workspace <absolute-task-worktree>`, behind `env -u` of the foreign primary markers. |
 | Models | Validate against `cursor-agent --list-models` for the current account rather than a fixed list; that list has already drifted once. The live catalog contains only `-high` Grok ids (`cursor-grok-4.5-high`, `cursor-grok-4.5-high-fast`) and several `xhigh` ids, so an assumed low/medium Grok id is invalid. |
 | Busy state | Its own per-conversation transcript, folded on demand by `bin/fm-busy-lib.sh` (source `cursor-transcript`). Each turn is bracketed by a `role:user` open and a typed `turn_ended` close covering `success` and `aborted`, so unlike Claude's `Stop` hook this source covers manual interruption. Nothing is armed and no record is ever seeded. Backend-agnostic, and confirmed identical on tmux and Herdr. |
+| Presence beat | NOT COVERED. Cursor has project hooks (`.cursor/hooks.json`, and crewmates launch with `--trust`, so one would load), but the recorded limit is that `stop` does not fire in headless `cursor-agent -p`, and whether it fires for a firstmate pane crewmate has never been measured. Wire a crewmate hook only after verifying that live; until then a cursor worker is absent from presence. |
 | Exit command | `/exit` |
 | Interrupt | Single Escape. The composer returns to its placeholder rather than the cancelled prompt, so NO clear key is needed (unlike muse). `bin/fm-control-lib.sh` claims no cancellation acknowledgement: the aborted transcript close appeared within seconds in some runs and not within twenty in others. |
 | Skill invocation | `/<skill>`, for example `/no-mistakes`. Cursor discovers firstmate's user-level skills; `/no-mistakes` autocompleted with firstmate's own description and invoked the skill. |
@@ -447,6 +475,7 @@ Kimi Code CLI launches from the absolute path resolved from `PATH`, falling back
 | Launch | Bare interactive TUI with `--auto`, followed by readiness-gated pointer delivery; positional prompts are rejected. |
 | Models | `kimi-code/kimi-for-coding` (default), `kimi-code/kimi-for-coding-highspeed`, `kimi-code/k3`, and `kimi-code/k3-256k`. |
 | Busy state | Standalone Kimi is unknown until a semantic source is live-verified; prefer Wire's `prompt` request lifetime, then documented hooks including `Interrupt`. Kimi behind Pi uses Pi's lifecycle. Its moon-phase spinner is not a state source. |
+| Presence beat | `waiting` only, from the same guarded global Stop hook that touches the turn-end marker, under the identical registry-token and `cd`-to-workspace rules as grok. No turn-start or session-end event exists. |
 | Exit command | `/exit` |
 | Interrupt | Single Escape, which prints `Interrupted by user`. |
 | Skill invocation | `/<skill>`, for example `/no-mistakes`; firstmate skills are discovered. |
@@ -489,6 +518,7 @@ Muse Code is a CREWMATE and SCOUT adapter only.
 | Launch | Positional prompt, the Grok/Pi shape, so the brief rides the launch command. |
 | Models | `--model <model>`; the only provider is `meta`. |
 | Busy state | Its own durable session event log, folded on demand by `bin/fm-busy-lib.sh`. There is no hook or plugin writer, so nothing is armed and no busy record is ever seeded. |
+| Presence beat | NONE, and not fixable here: muse's plugin engine is the only hook surface and it is disabled in the default build, so there is no writer to add a beat to. A muse worker is absent from presence, which a board must render as not reporting rather than as nobody working. |
 | Exit command | `/exit` (the popup shows `/exit  Quit when idle`); one Enter submits it, and the pane prints `To continue this session, run muse resume <session-uuid>`. |
 | Interrupt | Single Escape, which closes the run with `terminal: cancelled` AND restores the interrupted prompt into the composer as real bright text, so `fm-control` follows Escape with `C-u` to clear it; `fm-send`'s legacy key path reads the same composer-clear table. |
 | Skill invocation | `/<skill>`, the claude/grok form. |
