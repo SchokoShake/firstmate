@@ -202,6 +202,10 @@ It cannot: a task's branch does not exist at spawn, because the worker creates i
 What makes the row converge anyway is that a task worktree starts on a detached HEAD, which resolves to `path`, and a cached `path` is re-resolved on every beat - so the first beat after the worker creates its branch upgrades the row and caches it from then on.
 A later pull request does not upgrade it, because the cached branch is kept.
 
+That costs nothing on a board that joins branches, and it was measured rather than assumed: a branch-keyed row does light the per-card chip, because a board reaches the card through the workstream row that shares the card's id and carries the crew's branch.
+Do not "fix" this by resolving the subject at spawn, which would cache a pre-branch answer, or by refreshing it on a turn boundary, which would put a `gh` call on every turn.
+The one case it does not cover is a board whose card carries no such branch row; there the worker appears on the fleet listing of agents that joined no card, which is the correct place for it.
+
 ## claude (VERIFIED; busy-state hooks live-verified 2026-07-28 on Claude Code 2.1.220)
 
 | Fact | Value |
