@@ -2446,10 +2446,21 @@ exclude_path() {
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
-# Renders the presence beat for every adapter whose turn-boundary wiring is a
-# shell command: claude's hooks, codex's notify, and the grok and kimi global
-# hook bodies. The header owns the contract this shape implements - the PATH
-# probe, the discarded output, and the status that is always 0.
+# Renders the presence beat for every adapter whose turn-boundary wiring
+# fm-spawn writes itself: claude's hooks, grok's global hook body, and codex's
+# notify through the `__PRESENCEWAITING__` substitution. The header owns the
+# contract this shape implements - the PATH probe, the discarded output, and the
+# status that is always 0.
+#
+# Kimi is NOT rendered here, and that is the one place this command exists
+# twice. Kimi's global hook body is installed by bin/fm-kimi-turnend-hook.sh,
+# the sole owner of the guarded text edit to $HOME/.kimi-code/config.toml, so
+# its beat is an independent hand-written spelling of the same command inside
+# that script's HOOK_BYTES literal rather than a value fm-spawn passes in. The
+# two are byte-identical today and nothing binds them at runtime: a change to
+# the form rendered below has to be made in bin/fm-kimi-turnend-hook.sh in the
+# same commit, and tests/fm-busy-adapter-wiring.test.sh drives one generated
+# artifact of each and requires the argv they invoke to match.
 #
 # The vocabulary is closed on purpose: these are the only presence states a turn
 # boundary can produce, they are literal tokens rather than data, and refusing

@@ -87,6 +87,13 @@ TOKEN_NAME = re.compile(r"fm\.[A-Za-z0-9]{12}\Z")
 # Content that does not carry the prefix is still refused by both.
 HOOK_PREFIX = b"#!/usr/bin/env bash\n# Firstmate Kimi turn-end hook."
 
+# The `agent-presence beat` line near the end of this body is the SECOND
+# spelling of a command bin/fm-spawn.sh's presence_cmd renders for claude, grok
+# and codex. It is hand-written here because this hook is installed by this
+# guarded installer rather than written by fm-spawn, which passes nothing about
+# the beat in. The two spellings are byte-identical and must change together;
+# tests/fm-busy-adapter-wiring.test.sh drives one generated artifact of each and
+# requires the argv they invoke to match.
 HOOK_BYTES = b'''#!/usr/bin/env bash
 # Firstmate Kimi turn-end hook. Managed by fm-kimi-turnend-hook.sh.
 # This hook is deliberately passive: every path is silent and exits zero.

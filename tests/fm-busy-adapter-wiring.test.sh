@@ -533,6 +533,51 @@ test_claude_hooks_stale_incarnation_harmless() {
   pass "claude hook events from a superseded incarnation are rejected without breaking the hook"
 }
 
+# The presence beat exists in two independent spellings: presence_cmd in
+# bin/fm-spawn.sh renders claude's, grok's and codex's, while the kimi global
+# hook carries its own hand-written copy because a separate guarded installer
+# writes that body. Drive one generated artifact of each through the same
+# recorder and require the argv they actually invoke to be identical, so a
+# change to one spelling cannot leave the other silently stale.
+test_kimi_hook_beat_matches_the_rendered_beat() {
+  local rec id=presence-xk-1 out state settings hook bin log
+  local token target payload rendered written
+  rec=$(make_spawn_case kimi-beat-crosscheck claude "$id")
+  read_case_record "$rec"
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" "$PROJ_DIR")
+  expect_code 0 $? "claude spawn should succeed: $out"
+  state="$HOME_DIR/state"
+  settings="$WT_DIR/.claude/settings.local.json"
+  bin="$CASE_DIR/presence-bin"
+  log="$CASE_DIR/presence.log"
+  fm_fake_agent_presence "$bin" "$log"
+
+  mkdir -p "$HOME_DIR/.kimi-code"
+  printf 'default_model = "test"\n' > "$HOME_DIR/.kimi-code/config.toml"
+  HOME="$HOME_DIR" "$ROOT/bin/fm-kimi-turnend-hook.sh" install \
+    || fail "the Kimi turn-end hook installer refused this fixture home"
+  hook="$HOME_DIR/.kimi-code/fm-turn-end.sh"
+  target="$state/$id.turn-ended"
+  token=fm.crosscheck01
+  printf '%s\n' "$target" > "$HOME_DIR/.kimi-code/fm-turn-end.d/$token"
+  printf 'token=%s\n' "$token" > "$WT_DIR/.fm-kimi-turnend"
+  payload=$(printf '{"hook_event_name":"Stop","session_id":"crew","cwd":"%s","stop_hook_active":false}\n' "$WT_DIR")
+
+  : > "$log"
+  with_path "$bin" run_claude_hook "$settings" Stop \
+    || fail "the claude Stop hook must exit zero"
+  printf '%s' "$payload" | HOME="$HOME_DIR" PATH="$bin:$PATH" bash "$hook" \
+    || fail "the Kimi turn-end hook must exit zero"
+
+  rendered=$(sed -n 1p "$log")
+  written=$(sed -n 2p "$log")
+  [ -n "$rendered" ] || fail "the claude Stop hook recorded no presence beat"
+  [ -n "$written" ] || fail "the Kimi turn-end hook recorded no presence beat"
+  [ "$rendered" = "$written" ] \
+    || fail "the Kimi hook beats '$written' but fm-spawn renders '$rendered'"
+  pass "the Kimi hook's own beat is the same command fm-spawn renders for every other adapter"
+}
+
 test_codex_unverified_until_a_semantic_source_exists() {
   local rec id=busy-cx-1 out state
   rec=$(make_spawn_case codex-unverified codex "$id")
@@ -576,6 +621,7 @@ test_claude_hooks_semantic_lifecycle
 test_claude_hooks_stale_incarnation_harmless
 test_claude_hooks_presence_beat
 test_claude_presence_is_optional_and_can_never_fail_a_hook
+test_kimi_hook_beat_matches_the_rendered_beat
 test_codex_unverified_until_a_semantic_source_exists
 test_codex_notify_presence_beat
 
