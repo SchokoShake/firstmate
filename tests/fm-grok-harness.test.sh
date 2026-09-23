@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Behavior tests for Grok-harness hook authentication, teardown cleanup, and session-lock holder detection.
+# Behavior tests for Grok-harness hook authentication, the global hook's optional
+# agent-presence beat, teardown cleanup, and session-lock holder detection.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -8,6 +9,7 @@ set -u
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 TMP_ROOT=$(fm_test_tmproot fm-grok-harness)
+NO_PRESENCE_PATH=$(fm_presence_absent_path "$TMP_ROOT/no-presence" bash cat touch) || exit 1
 
 make_spawn_fakebin() {
   local dir=$1 fakebin
@@ -138,6 +140,55 @@ SH
   pass "fm-lock recognizes grok harness processes"
 }
 
+test_grok_hook_presence_beat() {
+  local rec case_dir home proj wt fakebin grok_home id out status hook token target
+  local bin log evil
+  rec=$(make_spawn_case presence)
+  IFS='|' read -r case_dir home proj wt fakebin grok_home id <<EOF
+$rec
+EOF
+  out=$(run_grok_spawn "$home" "$proj" "$wt" "$fakebin" "$grok_home" "$id")
+  status=$?
+  expect_code 0 "$status" "grok spawn should succeed: $out"
+  hook="$grok_home/hooks/fm-turn-end.sh"
+  target="$home/state/$id.turn-ended"
+  token=$(sed -n 's/^token=//p' "$wt/.fm-grok-turnend")
+  bin="$case_dir/presence-bin"
+  log="$case_dir/presence.log"
+  fm_fake_agent_presence "$bin" "$log"
+
+  # grok exposes no turn-START and no session-end event, so its one hook beats
+  # "waiting" and never "working" or "end".
+  out=$(PATH="$bin:$PATH" GROK_WORKSPACE_ROOT="$wt" bash "$hook" 2>&1)
+  status=$?
+  expect_code 0 "$status" "the grok hook must exit zero"
+  [ -z "$out" ] || fail "the grok hook printed output: $out"
+  assert_present "$target" "the grok hook stopped touching the turn-end marker"
+  fm_assert_presence_beats "$log" 'beat --state waiting'
+  # The beat must resolve the WORKER's worktree, not whatever cwd grok handed
+  # the hook, because the CLI derives its subject from the worker's own repo.
+  [ "$(cat "$log.pwd")" = "$(cd "$wt" && pwd -P)" ] \
+    || fail "the grok beat ran in '$(cat "$log.pwd")', expected the task worktree"
+
+  # A workspace the registry does not authorise must not beat at all.
+  evil="$case_dir/evil"
+  mkdir -p "$evil"
+  printf 'token=%s\n' "not-a-token" > "$evil/.fm-grok-turnend"
+  : > "$log"
+  out=$(PATH="$bin:$PATH" GROK_WORKSPACE_ROOT="$evil" bash "$hook" 2>&1)
+  expect_code 0 $? "an unauthorised grok workspace must still exit zero"
+  fm_assert_presence_beats "$log"
+
+  # Not installed: the hook is unchanged for every home without bridge-axi.
+  rm -f "$target"
+  out=$(PATH="$NO_PRESENCE_PATH" GROK_WORKSPACE_ROOT="$wt" bash "$hook" 2>&1)
+  expect_code 0 $? "the grok hook must exit zero with no agent-presence installed"
+  [ -z "$out" ] || fail "the grok hook printed with no agent-presence installed: $out"
+  assert_present "$target" "an uninstalled agent-presence broke the turn-end marker touch"
+  pass "grok global hook beats waiting in the authorised worktree only, and stays silent and zero"
+}
+
 test_grok_hook_requires_registered_token
 test_grok_teardown_removes_pointer_and_token
+test_grok_hook_presence_beat
 test_fm_lock_recognizes_grok_holder

@@ -12,6 +12,14 @@
 # touches a task turn-end marker only when the pointer names a Firstmate-created
 # token in $HOME/.kimi-code/fm-turn-end.d/.
 #
+# After that marker, and only for an authorised workspace, it also beats the
+# optional agent presence row for the board (bin/fm-spawn.sh's header owns the
+# contract). Kimi has no turn-START event, so the hook beats "waiting" only. The
+# beat runs in a subshell cd'd to the authorised workspace because the CLI
+# resolves its subject from the worker's own worktree, and it stays inside the
+# hook's silent, always-zero discipline: an uninstalled `agent-presence` is a
+# no-op and a failing one cannot change the hook's status.
+#
 # Usage:
 #   fm-kimi-turnend-hook.sh install
 #   fm-kimi-turnend-hook.sh remove
@@ -20,7 +28,7 @@ set -u
 case "${1:-}" in
   install|remove) ACTION=$1 ;;
   -h|--help)
-    sed -n '2,18{s/^# \{0,1\}//;p;}' "$0"
+    sed -n '2,25{s/^# \{0,1\}//;p;}' "$0"
     exit 0
     ;;
   *)
@@ -71,6 +79,23 @@ IDENTIFIER = b"FIRSTMATE KIMI TURN-END HOOK"
 HOOK_NAME = b"fm-turn-end.sh"
 TOKEN_NAME = re.compile(r"fm\.[A-Za-z0-9]{12}\Z")
 
+# Proof that a hook script already on disk is Firstmate's own, whatever version
+# of the body it holds. Both install and remove key ownership off this prefix
+# rather than off exact bytes, because the body changes between Firstmate
+# versions: install would otherwise refuse to upgrade a hook it wrote itself,
+# and remove would refuse to excise one until a spawn happened to rewrite it.
+# Content that does not carry the prefix is still refused by both.
+HOOK_PREFIX = b"#!/usr/bin/env bash\n# Firstmate Kimi turn-end hook."
+
+# The `agent-presence beat` line near the end of this body is one of four
+# independently authored spellings of the same command. bin/fm-spawn.sh's
+# presence_cmd renders the shell-command form that claude, grok and codex use,
+# and the OpenCode plugin and pi extension fm-spawn writes each carry their own
+# execFile argv array. This copy is hand-written because fm-spawn does not write
+# this hook at all - this guarded installer does, and fm-spawn passes nothing
+# about the beat in. It and presence_cmd's form must change together;
+# tests/fm-busy-adapter-wiring.test.sh drives one generated artifact of each and
+# requires the argv they invoke to match.
 HOOK_BYTES = b'''#!/usr/bin/env bash
 # Firstmate Kimi turn-end hook. Managed by fm-kimi-turnend-hook.sh.
 # This hook is deliberately passive: every path is silent and exits zero.
@@ -92,6 +117,7 @@ auth_dir=${HOME:-}/.kimi-code/fm-turn-end.d
 target=$(cat "$auth_dir/$token" 2>/dev/null) || exit 0
 case "$target" in /*.turn-ended) : ;; *) exit 0 ;; esac
 touch -- "$target" 2>/dev/null || true
+( cd "$workspace" 2>/dev/null || exit 0; if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence beat --state waiting >/dev/null 2>/dev/null || true; fi )
 exit 0
 '''
 
@@ -202,7 +228,7 @@ def validate_firstmate_files_for_remove() -> None:
     if os.path.lexists(HOOK):
         info = regular_not_symlink(HOOK, "Firstmate hook script")
         with open(HOOK, "rb") as stream:
-            if stream.read() != HOOK_BYTES:
+            if not stream.read().startswith(HOOK_PREFIX):
                 refuse(f"Firstmate hook script has unexpected content at {HOOK}.")
         if stat.S_IMODE(info.st_mode) & 0o077:
             refuse(f"Firstmate hook script has unexpectedly broad permissions at {HOOK}.")
@@ -238,9 +264,7 @@ try:
             regular_not_symlink(HOOK, "Firstmate hook script")
             with open(HOOK, "rb") as stream:
                 existing_hook = stream.read()
-            if existing_hook != HOOK_BYTES and not existing_hook.startswith(
-                b"#!/usr/bin/env bash\n# Firstmate Kimi turn-end hook."
-            ):
+            if not existing_hook.startswith(HOOK_PREFIX):
                 refuse(f"Firstmate hook path has unexpected content at {HOOK}.")
         if region is None:
             marker = BEGIN if original.endswith(b"\n") else BEGIN_OWNS_NEWLINE

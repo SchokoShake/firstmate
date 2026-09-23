@@ -193,6 +193,31 @@
 # resolver because `cursor` is not the CLI name. A cursor SECONDMATE instead runs
 # the tracked project-scope .cursor/hooks.json in its own home, whose stop-hook
 # park owns that home's supervision (docs/supervision-protocols/cursor.md).
+#
+# AGENT PRESENCE BEAT (optional, crewmates and scouts only). Every adapter whose
+# turn-boundary wiring above exists also carries one added command that announces
+# the worker to the captain's board through bridge-axi's hook-callable
+# `agent-presence` CLI: `beat --state working` at turn start,
+# `beat --state waiting` at turn end, and `end` at session end, which retires
+# the row at once instead of waiting out the board's TTL. The state is a
+# `--state` OPTION and never a positional, which the CLI rejects as usage. The
+# command is a strict addition and is governed by three rules the
+# .agents/skills/harness-adapters per-adapter table restates as a matrix:
+#   - It runs only when `agent-presence` is on the worker's PATH, so a home with
+#     no bridge-axi installed is a silent no-op rather than a broken hook. This
+#     is an OPTIONAL dependency firstmate is allowed to lose.
+#   - Its output is discarded and its status is swallowed, exactly like the
+#     busy-state commands beside it, so a refused or failing beat cannot fail
+#     the harness's own turn. That wrapper bounds the beat's OUTPUT and STATUS,
+#     not its DURATION: the duration bound has one owner, bridge-axi, which caps
+#     every beat at its DEFAULT_BEAT_TIMEOUT_MS of 2000 ms and applies that cap
+#     to any rail configured slower.
+#   - Firstmate passes NOTHING about the work. The consumer identity and the
+#     subject (pr/branch/item) are resolved by the CLI from the worker's own
+#     session and worktree, so no presence field is text firstmate typed.
+# Secondmates and the firstmate primary are deliberately excluded, muse has no
+# hook surface at all, and cursor stays uncovered until its crewmate `stop` event
+# is live-verified for a pane worker.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
@@ -1249,7 +1274,7 @@ launch_template() {
       if [ "$kind" = secondmate ]; then
         printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
-        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+        printf '%s' 'codex __MODELFLAG____EFFORTFLAG__--dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch __TURNEND__; __PRESENCEWAITING__\"]" "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       fi
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
@@ -2421,6 +2446,67 @@ exclude_path() {
   mkdir -p "$(dirname "$EXCL")"
   grep -qxF "$rel" "$EXCL" 2>/dev/null || echo "$rel" >> "$EXCL"
 }
+# Renders the presence beat as a SHELL COMMAND STRING, which is the form three
+# wiring shapes take: claude's four hook commands, grok's global hook body, and
+# codex's notify program through the `__PRESENCEWAITING__` substitution. The
+# header owns the contract this shape implements - the PATH probe, the discarded
+# output, and the status that is always 0.
+#
+# The same beat is authored independently in three OTHER places, so an argv
+# change has to reach all four:
+#   - the OpenCode plugin and the pi extension, both written by the heredocs
+#     below. They reach the CLI through `execFile("agent-presence", args, ...)`,
+#     which takes an argv ARRAY and spawns no shell, so this function's output
+#     could not be used there even in principle: `command -v`, the redirections
+#     and the `|| true` are shell syntax with no meaning in an array. Those two
+#     get the same three properties instead from a bare command name (an
+#     uninstalled CLI is ENOENT into the callback), an ignored result, and a
+#     callback that always resolves.
+#   - kimi's global hook body, a hand-written shell literal in
+#     bin/fm-kimi-turnend-hook.sh's HOOK_BYTES. fm-spawn does not write that
+#     body at all: that script is the sole owner of the guarded text edit to
+#     $HOME/.kimi-code/config.toml, and fm-spawn only invokes its `install`,
+#     passing nothing about the beat in.
+# Only the presence_cmd-versus-kimi pair is guarded against drift:
+# tests/fm-busy-adapter-wiring.test.sh drives one generated artifact of each and
+# requires the argv they invoke to match. The OpenCode and pi arrays are
+# asserted against their own expectations in that same suite, never against this
+# function's output.
+#
+# The vocabulary is closed on purpose: these are the only presence states a turn
+# boundary can produce, they are literal tokens rather than data, and refusing
+# anything else keeps the unquoted interpolation below from ever seeing a value
+# that needs quoting.
+#
+# The rendered command deliberately contains no `&`: `if/then/fi` rather than
+# `&&`, and `2>/dev/null` rather than `2>&1`. codex's beat reaches its launch
+# command through a `${LAUNCH//__PRESENCEWAITING__/...}` replacement, and bash
+# 5.2's patsub_replacement expands an unescaped `&` in a replacement to the text
+# that was matched - which silently rewrote this command into nonsense - while
+# the escape that fixes it on 5.2 inserts a literal backslash on 5.1 and older.
+# Emitting no `&` is correct on every bash instead of on some of them. It also
+# needs no further escaping inside codex's double-quoted `-c "notify=[...]"`
+# argument or inside a JSON hook command.
+presence_cmd() {  # <working|waiting|end>
+  local argv
+  case "$1" in
+    # `--state`, not a positional: agent-presence parses strictly and treats an
+    # unexpected positional as outcome `usage`, which exits 2 and prints its
+    # usage text. Under the wrapper below that would be swallowed into a silent
+    # no-op, so a wrong argv here is invisible rather than loud.
+    working|waiting) argv="beat --state $1" ;;
+    end) argv=end ;;
+    *)
+      echo "error: unknown agent-presence state '$1'" >&2
+      return 1
+      ;;
+  esac
+  printf 'if command -v agent-presence >/dev/null 2>/dev/null; then agent-presence %s >/dev/null 2>/dev/null || true; fi' \
+    "$argv"
+}
+PRESENCE_WORKING=$(presence_cmd working) || exit 1
+PRESENCE_WAITING=$(presence_cmd waiting) || exit 1
+PRESENCE_END=$(presence_cmd end) || exit 1
 if [ "$RELAUNCH" -eq 1 ]; then
   # Retire the previous incarnation's per-task harness wiring before arming the
   # new one. Without this, a harness switch would leave the old adapter's hook
@@ -2486,10 +2572,14 @@ if [ "$KIND" != secondmate ]; then
       mkdir -p "$WT/.claude"
       busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
       busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
-      j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true")
-      j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
-      j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
-      j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
+      # The presence beat rides the SAME four hooks and is appended last, so
+      # firstmate's own durable busy record and turn-end notification are
+      # already written before an optional, best-effort board call is attempted.
+      # Claude is the only adapter that reaches all four presence states.
+      j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true; $PRESENCE_WORKING")
+      j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true; $PRESENCE_WAITING")
+      j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true; $PRESENCE_WAITING")
+      j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true; $PRESENCE_END")
       cat > "$WT/.claude/settings.local.json" <<EOF
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
@@ -2507,6 +2597,12 @@ EOF
 // sessions' status until the latched session settles, so a child's idle can
 // never clear the worker's busy state. The session.idle touch stays the
 // watcher's wake NOTIFICATION, never current-state truth.
+// The agent-presence beat rides the same edges (fm-spawn.sh's header owns why).
+// A bare command name resolves through PATH, so an uninstalled CLI fails with
+// ENOENT into the callback and is indistinguishable from a refused beat: both
+// resolve, neither throws, and neither can fail OpenCode's own lifecycle.
+// OpenCode gives the plugin no shutdown edge, so this adapter never beats "end"
+// and a finished worker's row retires on the board's TTL instead.
 import { execFile } from "node:child_process";
 const busyEvent = (state, event) =>
   new Promise((resolve) => {
@@ -2514,6 +2610,10 @@ const busyEvent = (state, event) =>
       "apply", "$STATE_REAL", "$ID", state,
       "--gen", "$BUSY_GEN", "--source", "opencode-plugin", "--event", event,
     ], () => resolve());
+  });
+const presence = (...args) =>
+  new Promise((resolve) => {
+    execFile("agent-presence", args, () => resolve());
   });
 export const FmBusyState = async () => {
   let activeSession = null;
@@ -2524,23 +2624,29 @@ export const FmBusyState = async () => {
         const statusType = event.properties.status && event.properties.status.type;
         if (statusType === "busy" || statusType === "retry") {
           if (activeSession === null) activeSession = sessionID;
-          if (sessionID === activeSession) await busyEvent("busy", "session-" + statusType);
+          if (sessionID === activeSession) {
+            await busyEvent("busy", "session-" + statusType);
+            await presence("beat", "--state", "working");
+          }
           return;
         }
         if (statusType === "idle" && sessionID === activeSession) {
           activeSession = null;
           await busyEvent("idle", "session-status-idle");
+          await presence("beat", "--state", "waiting");
         }
         return;
       }
       if (event.type === "session.idle") {
-        if (event.properties.sessionID === activeSession) {
+        const latched = event.properties.sessionID === activeSession;
+        if (latched) {
           activeSession = null;
           await busyEvent("idle", "session-idle");
         }
         await new Promise((resolve) => {
           execFile("touch", ["$TURNEND"], () => resolve());
         });
+        if (latched) await presence("beat", "--state", "waiting");
       }
     },
   };
@@ -2563,6 +2669,13 @@ EOF
 // "turn_end" fires at every inner turn boundary (one LLM response plus its
 // tool calls) and stays a wake NOTIFICATION touch for the watcher, never
 // current-state truth.
+// The agent-presence beat rides the two SEMANTIC edges only, never "turn_end":
+// an inner turn boundary is not a run boundary, and beating there would flip a
+// settled worker back to "working". A bare command name resolves through PATH,
+// so an uninstalled CLI fails with ENOENT into the callback and is
+// indistinguishable from a refused beat. Pi gives the extension no shutdown
+// edge, so this adapter never beats "end" and a finished worker's row retires
+// on the board's TTL instead.
 import { execFile } from "node:child_process";
 const busyEvent = (state: string, event: string) =>
   new Promise<void>((resolve) => {
@@ -2571,11 +2684,19 @@ const busyEvent = (state: string, event: string) =>
       "--gen", "$BUSY_GEN", "--source", "pi-ext", "--event", event,
     ], () => resolve());
   });
+const presence = (...args: string[]) =>
+  new Promise<void>((resolve) => {
+    execFile("agent-presence", args, () => resolve());
+  });
 export default function (pi: any) {
-  pi.on("agent_start", () => busyEvent("busy", "agent-start"));
-  pi.on("agent_settled", (_event: any, ctx: any) => {
+  pi.on("agent_start", async () => {
+    await busyEvent("busy", "agent-start");
+    await presence("beat", "--state", "working");
+  });
+  pi.on("agent_settled", async (_event: any, ctx: any) => {
     if (ctx && typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
-    return busyEvent("idle", "agent-settled");
+    await busyEvent("idle", "agent-settled");
+    await presence("beat", "--state", "waiting");
   });
   pi.on("turn_end", () => execFile("touch", ["$TURNEND"]));
 }
@@ -2589,7 +2710,9 @@ EOF
       # firstmate-launched worker. Codex therefore classifies unknown with
       # an explicit reason rather than falling back to idle, and no busy
       # wiring is installed. The turn-end NOTIFICATION marker still rides
-      # the launch command via -c notify=[...] and __TURNEND__.
+      # the launch command via -c notify=[...] and __TURNEND__, and so does
+      # the presence beat: codex has no turn-START event to observe, so it
+      # beats "waiting" at every turn end and never "working" or "end".
       ;;
     grok*)
       # grok fires a Stop hook at every turn boundary (verified, grok 0.2.73), the
@@ -2606,6 +2729,11 @@ EOF
       # (gitignored, like the other harnesses' worktree hook files).
       # Result: the hook is outside the worktree, needs no trust grant, and never
       # touches grok's managed config - only firstmate-owned files.
+      # The presence beat rides the same hook and, like codex, is turn-end only.
+      # It runs in a subshell cd'd to the workspace the token already authorised,
+      # because the CLI resolves its subject from the worker's own worktree and
+      # this hook's own cwd is grok's, not the task's. A global hook is shared by
+      # every task, so nothing task-specific is passed to it.
       GROK_HOOKS_DIR="${GROK_HOME:-$HOME/.grok}/hooks"
       GROK_AUTH_DIR="$GROK_HOOKS_DIR/fm-turn-end.d"
       mkdir -p "$GROK_AUTH_DIR"
@@ -2632,6 +2760,7 @@ case "\$token" in *[!A-Za-z0-9._-]*) exit 0 ;; esac
 t=\$(cat "\$auth_dir/\$token" 2>/dev/null) || exit 0
 case "\$t" in /*.turn-ended) : ;; *) exit 0 ;; esac
 touch "\$t" 2>/dev/null || true
+( cd "\$workspace" 2>/dev/null || exit 0; $PRESENCE_WAITING )
 exit 0
 EOF
       chmod +x "$GROK_HOOKS_DIR/fm-turn-end.sh"
@@ -2862,6 +2991,12 @@ LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
 LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
 LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
 LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
+# codex is the one adapter whose turn boundary rides the launch command, so its
+# presence beat is substituted here rather than written into a hook file. The
+# rendered command is a closed set of literal tokens with no double quote and no
+# `$`, which is what lets it sit inside the double-quoted `-c "notify=[...]"`
+# argument without further escaping.
+LAUNCH=${LAUNCH//__PRESENCEWAITING__/$PRESENCE_WAITING}
 LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
 LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
 LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}

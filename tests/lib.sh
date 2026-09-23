@@ -331,3 +331,84 @@ assert_absent() {
 assert_present() {
   [ -e "$1" ] || fail "$2"
 }
+
+# fm_presence_absent_path <dir> <tool>...: populate <dir> with a symlink to each
+# named tool and echo it as a COMPLETE PATH, for a case whose precondition is
+# that bridge-axi's OPTIONAL agent-presence CLI is not installed. Prepending an
+# empty directory to the INHERITED PATH does not establish that on a machine
+# that has the CLI - the real one still resolves and the case silently re-tests
+# the installed path - so the PATH is built from the tools the driver needs
+# instead. The result is exactly <dir>, so an agent-presence resolves on it only
+# if one is executable there; the helper refuses in that case, so such a case can
+# never pass while proving nothing.
+#
+# This is deliberately stricter than asserting only properties that hold whether
+# or not the CLI is installed. That weaker rule was a guard against FALSE
+# FAILURES on a machine where bridge-axi IS installed, and this helper keeps
+# that guard - it refuses loudly and names the problem instead of passing
+# quietly - while being the only thing that exercises the not-installed branch
+# on exactly the machine the feature exists for. It has already earned that: on
+# a genuinely hermetic PATH the claude case failed because
+# bin/fm-busy-event.sh's lock release needs `rmdir`, a dependency the inherited
+# PATH had been supplying invisibly.
+#
+# A caller's tool list must therefore track what the driven artifacts and the
+# real bin/fm-busy-event.sh and bin/fm-busy-lib.sh actually exec. A stale list
+# fails loudly naming the missing tool rather than degrading quietly.
+fm_presence_absent_path() {
+  local dir=$1 tool resolved
+  shift
+  mkdir -p "$dir"
+  for tool in "$@"; do
+    resolved=$(command -v "$tool") || fail "test needs $tool"
+    ln -sfn "$resolved" "$dir/$tool"
+  done
+  if [ -x "$dir/agent-presence" ]; then
+    fail "the not-installed case still resolves an agent-presence on '$dir'"
+  fi
+  printf '%s\n' "$dir"
+}
+
+# fm_fake_agent_presence <dir> <log> [exit-code] [witness-path]: a recording
+# stand-in for bridge-axi's hook-callable agent-presence CLI, for tests that
+# drive a generated turn-boundary hook. Writes one line of argv per call to
+# <log> and the PHYSICAL directory it ran in to <log>.pwd, so a test can assert
+# both the beat and that the hook resolved the worker's own worktree. A
+# non-zero exit-code also makes it noisy on both streams, which is how a test
+# proves a failing beat can neither change a hook's status nor reach hook
+# stdout. A witness-path records present/absent per call to <log>.witness, so a
+# test can prove the hook wrote its own durable artefact before it attempted
+# the optional beat.
+fm_fake_agent_presence() {
+  local dir=$1 log=$2 code=${3:-0} witness=${4:-}
+  mkdir -p "$dir"
+  cat > "$dir/agent-presence" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$log"
+printf '%s\n' "\$(pwd -P)" >> "$log.pwd"
+EOF
+  if [ -n "$witness" ]; then
+    cat >> "$dir/agent-presence" <<EOF
+if [ -e "$witness" ]; then printf 'present\n' >> "$log.witness"; else printf 'absent\n' >> "$log.witness"; fi
+EOF
+  fi
+  if [ "$code" -ne 0 ]; then
+    cat >> "$dir/agent-presence" <<'EOF'
+printf 'presence stdout noise\n'
+printf 'presence stderr noise\n' >&2
+EOF
+  fi
+  printf 'exit %s\n' "$code" >> "$dir/agent-presence"
+  chmod +x "$dir/agent-presence"
+}
+
+# fm_assert_presence_beats <log> [expected-line...]: the recorded beats must be
+# exactly these, in order. With no expected lines the log must be empty or absent.
+fm_assert_presence_beats() {
+  local log=$1 expected='' actual
+  shift
+  [ "$#" -eq 0 ] || expected=$(printf '%s\n' "$@")
+  actual=$(cat "$log" 2>/dev/null || true)
+  [ "$actual" = "$expected" ] \
+    || fail "presence beats were '$actual', expected '$expected'"
+}
