@@ -29,6 +29,9 @@
 #   watcher: attached pid=<N> (beacon <age>s)            - a live+fresh successor holds the lock;
 #                                                          this arm attaches and follows it
 #   watcher: FAILED - no live watcher with a fresh beacon  - could not confirm one
+#   watcher: FAILED - watcher startup did not claim the supervision lock within <N>s
+#                                                        - the forked child never reached the
+#                                                          singleton, so its beacon was never due
 #   watcher: FAILED - cycle ended without an actionable reason
 #                                                        - a clean cycle ended with no wake and no
 #                                                          verified healthy successor
@@ -43,6 +46,21 @@
 # failure. Neither is ever a clean empty completion. On FAILED it exits non-zero
 # so the failure is loud. A live cycle already present means re-arm attaches - do
 # not start a second watcher.
+#
+# Verification of a freshly forked child is bounded in TWO phases, because the
+# watcher must finish required pre-lock startup work - the non-executing PR
+# check migration, whose scan cost grows with the number of registered polls -
+# BEFORE it can claim the singleton or write its first beacon. One budget
+# measured from the fork had to cover both, so a home with enough registered
+# polls spent the whole budget on startup and could never confirm. The two
+# phases are split at the one structural boundary this arm can observe: the
+# child's own claim on this home's singleton lock.
+#   startup     fork -> the lock records this child, bounded by
+#               FM_ARM_STARTUP_TIMEOUT; the scan can only ever consume this one.
+#   confirmation lock claim -> fresh beacon, bounded by FM_ARM_CONFIRM_TIMEOUT,
+#               which is what that budget was written for.
+# Neither boundary reports health: the verdict stays healthy_watcher's, so a
+# claimed lock with no fresh beacon is still the typed FAILED line.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
@@ -78,14 +96,21 @@ WATCH_LOCK="$STATE/.watch.lock"
 BEAT="$STATE/.last-watcher-beat"
 # "Fresh" reuses the guard's threshold so there is one definition of liveness.
 GRACE=${FM_GUARD_GRACE:-300}
-# How long to wait for a freshly forked watcher to acquire the lock and beat.
-# Git Bash/MSYS pays a much higher fork cost while the watcher completes its
-# required pre-lock migration, so its bounded default covers that cold start.
+# How long to wait for a watcher that already holds the singleton to publish its
+# first fresh beacon. Git Bash/MSYS keeps its larger bounded default: this change
+# re-measured neither platform's post-lock publication cost.
 case "${OSTYPE:-}" in
   msys*|mingw*|cygwin*) ARM_CONFIRM_DEFAULT=30 ;;
   *) ARM_CONFIRM_DEFAULT=10 ;;
 esac
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
+# How long a freshly forked watcher may spend on required pre-lock startup work
+# before it claims this home's singleton. It is bounded separately from the
+# confirmation budget above because that startup cost scales with the number of
+# registered PR polls while beacon publication does not. The default is generous
+# against any plausible home's poll count on purpose: exceeding it means the
+# child will not reach the singleton at all, not that it is merely slow.
+STARTUP_TIMEOUT=${FM_ARM_STARTUP_TIMEOUT:-120}
 # Poll interval while attached to an existing healthy watcher.
 ATTACH_POLL=${FM_ARM_ATTACH_POLL:-0.5}
 CYCLE_LOG="$STATE/.watch-cycle-exits.log"
@@ -552,9 +577,24 @@ owned_child_finished() {
 # Verify the outcome: poll until this child is the confirmed healthy watcher, or
 # until some other watcher legitimately holds the singleton (a startup race), or
 # until the child gives up. Only then print the honest line.
-# date(1) exposes whole seconds. Keep the configured confirmation budget from
-# collapsing when startup begins just before the next second boundary.
-deadline=$(( $(date +%s) + CONFIRM_TIMEOUT + 1 ))
+# True once this home's singleton lock records OUR child and still resolves to
+# that same live process, which is the observable end of the child's pre-lock
+# startup stage. It carries no health claim: the beacon is still unproven here,
+# and reporting remains healthy_watcher's job alone. The pid file is compared
+# directly because a process identity covers start time and command line, which
+# a peer watcher started in the same tick would share.
+child_claimed_singleton() {
+  [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "$child" ] || return 1
+  fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$child" "$FM_HOME"
+}
+
+# date(1) exposes whole seconds. Keep each configured budget from collapsing
+# when its phase begins just before the next second boundary. The confirmation
+# deadline stays unset until the child claims the singleton, so pre-lock startup
+# is charged to STARTUP_TIMEOUT and can never consume the confirmation budget.
+startup_deadline=$(( $(date +%s) + STARTUP_TIMEOUT + 1 ))
+deadline=
+timeout_phase=
 while :; do
   if healthy_watcher; then
     if [ "$HEALTHY_PID" = "$child" ]; then
@@ -590,7 +630,18 @@ while :; do
     owned_child_finished "$rc"
     exit $?
   fi
-  [ "$(date +%s)" -ge "$deadline" ] && break
+  now=$(date +%s)
+  if [ -z "$deadline" ]; then
+    if child_claimed_singleton; then
+      deadline=$(( now + CONFIRM_TIMEOUT + 1 ))
+    elif [ "$now" -ge "$startup_deadline" ]; then
+      timeout_phase=startup
+      break
+    fi
+  elif [ "$now" -ge "$deadline" ]; then
+    timeout_phase=confirmation
+    break
+  fi
   sleep 0.2
 done
 
@@ -599,6 +650,11 @@ print_watch_output "$child_out"
 cleanup_child
 wait "$child" 2>/dev/null
 rc=$?
+if [ "$timeout_phase" = startup ]; then
+  cycle_log_append "$rc" "$(cycle_signal_name "$rc")" startup-timeout none
+  echo "watcher: FAILED - watcher startup did not claim the supervision lock within ${STARTUP_TIMEOUT}s"
+  exit 1
+fi
 cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
 echo "watcher: FAILED - no live watcher with a fresh beacon"
 exit 1

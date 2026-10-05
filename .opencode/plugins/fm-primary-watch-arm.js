@@ -5,8 +5,11 @@ import { encodeFirstmateOperationalInput } from "./lib/fm-operational-input.js";
 
 const COORDINATOR_KEY = "__firstmateOpenCodeWatchArm";
 // 35s on Windows so the budget stays above arm's MSYS confirm default (30s in
-// bin/fm-watch-arm.sh): a slow but successful Git Bash cold start must not be
-// SIGTERMed mid-confirmation. Conditioned on win32 so other platforms keep 12s.
+// bin/fm-watch-arm.sh): a slow but successful Git Bash beacon publication must
+// not be SIGTERMed mid-confirmation. Conditioned on win32 so other platforms
+// keep 12s. Neither default covers the watcher's pre-lock startup, which the
+// arm bounds separately through FM_ARM_STARTUP_TIMEOUT; the named limit in
+// docs/watcher-continuity.md owns that deliberate adapter-level trade.
 const ARM_READY_TIMEOUT_DEFAULT_MS = process.platform === "win32" ? 35000 : 12000;
 const ARM_READY_TIMEOUT_MS = positiveInteger("FM_OPENCODE_ARM_READY_TIMEOUT_MS", ARM_READY_TIMEOUT_DEFAULT_MS);
 const ARM_RETIRE_TIMEOUT_MS = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);

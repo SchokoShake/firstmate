@@ -89,8 +89,11 @@ const retryBaseMs = positiveInteger("FM_WATCH_REARM_RETRY_BASE_MS", 250);
 const retryMaxMs = positiveInteger("FM_WATCH_REARM_RETRY_MAX_MS", 4000);
 const retryLimit = positiveInteger("FM_WATCH_REARM_RETRY_LIMIT", 5);
 // 35s on Windows so the budget stays above arm's MSYS confirm default (30s in
-// bin/fm-watch-arm.sh): a slow but successful Git Bash cold start must not be
-// SIGTERMed mid-confirmation. Conditioned on win32 so other platforms keep 12s.
+// bin/fm-watch-arm.sh): a slow but successful Git Bash beacon publication must
+// not be SIGTERMed mid-confirmation. Conditioned on win32 so other platforms
+// keep 12s. Neither default covers the watcher's pre-lock startup, which the
+// arm bounds separately through FM_ARM_STARTUP_TIMEOUT; the named limit in
+// docs/watcher-continuity.md owns that deliberate adapter-level trade.
 const armReadyTimeoutMs = positiveInteger(
   "FM_PI_ARM_READY_TIMEOUT_MS",
   process.platform === "win32" ? 35000 : 12000,
