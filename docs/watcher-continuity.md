@@ -58,6 +58,13 @@ An acknowledged episode does not freeze the generation, because the next downtim
 ## Arm-layer cycle contract
 
 `bin/fm-watch-arm.sh` never returns a clean empty success.
+
+Verification of a freshly forked watcher is bounded in two phases, split at the child's own claim on this home's singleton lock.
+The watcher must finish required pre-lock startup work - the non-executing PR check migration, whose scan cost grows with the number of registered polls - before it can claim that lock or write its first beacon, so a single budget measured from the fork had to cover both and a home with enough registered polls spent it all on startup.
+`FM_ARM_STARTUP_TIMEOUT` bounds the stage from fork to lock claim and is the only budget that startup cost can consume; `FM_ARM_CONFIRM_TIMEOUT` then bounds the lock claim to the first fresh beacon, which is what that budget was written for.
+Each phase has its own typed failure line and its own lifecycle-ledger reason (`startup-timeout` and `confirmation-timeout`), so an unclaimed singleton is never reported as an unpublished beacon.
+Neither boundary carries a health claim: the verdict remains the identity-matched live watcher with a fresh beacon, so a claimed lock with no fresh beacon still fails loudly.
+
 An actionable child output returns that reason normally.
 A zero/empty child return rechecks the home lock and beacon, attaches to a verified healthy successor when one exists, or resolves the close against the watcher's bounded terminal-delivery ledger.
 An attached arm follows verified identity-matched successors and resolves the same way when that chain ends without one, because it holds no handle on the watcher's stdout and cannot read the reason line itself.
@@ -79,6 +86,7 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 `tests/fm-watch-arm.test.sh` covers durable queue replay, real remote parent-replies ingestion into the authoritative status log, decision-only OPEN DECISIONS recovery, interrupted handling replay, generation-bound acknowledgement, a persistent live successor after recovery, a watcher close inside the handling window that must leave the printed acknowledgement valid, and the self-healing moved-generation acknowledgement that consumes its handled rows and names its remedy.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, recovery publication before stale-lock removal, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
+The same suite drives the two arm budgets apart with an injected pre-lock stage rather than registered polls, whose real scan duration is the machine's own fork speed: a stage that outlasts the confirmation budget still confirms and records no confirmation timeout, an exhausted startup budget fails loudly as `startup-timeout`, and a claimed singleton that can never publish a fresh beacon still fails as `confirmation-timeout`.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.
@@ -89,6 +97,8 @@ The same suite covers ordinary same-process session replacement for `/new`, `/re
 The goal is continuity without a Pi or OpenCode model-memory re-arm step.
 No zero-latency guarantee is claimed because lock verification, watcher startup, and bounded retry delays remain deliberate safety work.
 OpenCode support targets persistent TUI sessions rather than headless `opencode run`.
+`FM_PI_ARM_READY_TIMEOUT_MS` and `FM_OPENCODE_ARM_READY_TIMEOUT_MS` bound how long those adapters wait for the arm's readiness report, and that report cannot arrive before the watcher's own pre-lock startup finishes.
+On a home whose startup exceeds the adapter bound, the adapter therefore retires a watcher that was about to confirm and falls back to its bounded retry and typed restoration failure; raising that bound to cover startup would hold the wake for the same stretch, so the trade stays an adapter-level choice rather than a default this layer changes.
 Claude depends on the Stop `asyncRewake` rewake, Cursor depends on its awaited stop-hook park, Grok retains native background-completion notifications, and Codex retains bounded foreground checkpoints.
 
 [`verification/supervision.md`](verification/supervision.md#watcher-continuity) records the current five-harness live evidence, the 2026-07-24 Stop-owned Claude auto-arm results, and exact opt-in commands.

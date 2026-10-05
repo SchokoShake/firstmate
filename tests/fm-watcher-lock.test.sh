@@ -1186,6 +1186,137 @@ test_msys_pid_identity_uses_proc() {
   pass "MSYS process identity uses compatible /proc fields"
 }
 
+
+# --- arm startup vs confirmation budgets ------------------------------------
+# The watcher must finish its required pre-lock startup work (the non-executing
+# PR check migration, whose scan cost grows with the number of registered polls)
+# before it can claim the singleton or write its first beacon. These cases drive
+# that stage's duration and the two budgets apart deliberately, so neither phase
+# can be charged the other's cost without a failure here.
+#
+# The pre-lock cost is injected rather than produced by registering real polls:
+# the real scan's duration is this machine's fork speed times the poll count,
+# which is exactly the machine-speed dependency these cases must not have.
+slow_prelock_bin() {  # <dir> <seconds> -> prints the fixture bin dir
+  local dir=$1 secs=$2 entry
+  local bindir="$dir/bin"
+  mkdir -p "$bindir"
+  for entry in "$ROOT"/bin/*; do
+    ln -sfn "$entry" "$bindir/${entry##*/}"
+  done
+  rm -f "$bindir/fm-pr-check-migrate.sh"
+  cat > "$bindir/fm-pr-check-migrate.sh" <<SH
+#!/usr/bin/env bash
+# Stand-in for the real non-executing migration. It reproduces only the pre-lock
+# duration, and records that the watcher really did run it.
+printf 'ran %s\n' "\$*" >> "$dir/migration.log"
+sleep $secs
+exit 0
+SH
+  chmod +x "$bindir/fm-pr-check-migrate.sh"
+  printf '%s\n' "$bindir"
+}
+
+test_arm_startup_budget_absorbs_slow_prelock_work() {
+  local dir state fakebin bindir armout armpid started lock_pid elapsed began i
+  dir=$(make_case arm-slow-prelock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  bindir=$(slow_prelock_bin "$dir" 6)
+  began=$(date +%s)
+  # The confirmation budget is deliberately shorter than the pre-lock stage: the
+  # single fork-anchored budget would have expired mid-startup, which is the
+  # reported confirmation-timeout failure.
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_ARM_CONFIRM_TIMEOUT=2 FM_ARM_STARTUP_TIMEOUT=60 "$bindir/fm-watch-arm.sh" > "$armout" &
+  armpid=$!
+  i=0
+  while [ "$i" -lt 300 ]; do
+    grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
+    grep -qF 'watcher: FAILED' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  elapsed=$(( $(date +%s) - began ))
+  started=$(grep -oE 'watcher: started pid=[0-9]+' "$armout" 2>/dev/null | head -1 || true)
+  [ -s "$dir/migration.log" ] || fail "the watcher did not run its pre-lock startup stage at all"
+  [ -n "$started" ] || fail "arm did not confirm a watcher whose pre-lock stage outlasted the confirmation budget: $(cat "$armout")"
+  # Without this the case could pass vacuously on a fixture that never delayed.
+  [ "$elapsed" -gt 3 ] || fail "pre-lock stage did not outlast the confirmation budget (${elapsed}s)"
+  lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  [ "$started" = "watcher: started pid=$lock_pid" ] || fail "confirmed pid did not match the singleton lock holder"
+  ! grep -q 'reason=confirmation-timeout' "$state/.watch-cycle-exits.log" 2>/dev/null \
+    || fail "a slow pre-lock stage was still charged to the confirmation budget"
+  kill -HUP "$armpid" 2>/dev/null || true
+  wait "$armpid" 2>/dev/null || true
+  pass "pre-lock startup work is charged to the startup budget, not the confirmation budget"
+}
+
+test_arm_startup_budget_fails_loudly_when_exhausted() {
+  local dir state fakebin bindir armout armpid status
+  dir=$(make_case arm-prelock-exhausted)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  bindir=$(slow_prelock_bin "$dir" 30)
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_ARM_CONFIRM_TIMEOUT=60 FM_ARM_STARTUP_TIMEOUT=1 "$bindir/fm-watch-arm.sh" > "$armout" &
+  armpid=$!
+  wait_for_exit "$armpid" 200
+  status=$?
+  [ "$status" -ne 124 ] || fail "arm never returned for a watcher stuck in pre-lock startup"
+  [ "$status" -ne 0 ] || fail "arm exited zero without confirming a watcher"
+  grep -qF 'watcher: FAILED - watcher startup did not claim the supervision lock within 1s' "$armout" \
+    || fail "arm did not name the exhausted startup budget: $(cat "$armout")"
+  ! grep -qE 'watcher: (started|attached)' "$armout" || fail "arm reported a watcher it never confirmed"
+  grep -q 'reason=startup-timeout' "$state/.watch-cycle-exits.log" \
+    || fail "the lifecycle ledger did not classify the startup timeout"
+  ! grep -q 'reason=confirmation-timeout' "$state/.watch-cycle-exits.log" \
+    || fail "an unclaimed singleton was misclassified as a confirmation timeout"
+  pass "an exhausted startup budget fails loudly and is classified apart from a confirmation timeout"
+}
+
+test_arm_confirmation_budget_still_bounds_a_claimed_lock() {
+  local dir state fakebin bindir armout armpid status lock_pid i
+  dir=$(make_case arm-claimed-no-beacon)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  bindir=$(slow_prelock_bin "$dir" 2)
+  # FM_GUARD_GRACE=0 makes no beacon fresh, so the child claims the singleton and
+  # can still never be confirmed: exactly what the confirmation budget bounds.
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=0 FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_ARM_CONFIRM_TIMEOUT=3 FM_ARM_STARTUP_TIMEOUT=60 "$bindir/fm-watch-arm.sh" > "$armout" &
+  armpid=$!
+  # Capture the claim while the arm still runs: its own cleanup releases the
+  # child's lock before the failure is reported.
+  lock_pid=
+  i=0
+  while [ "$i" -lt 300 ] && is_live_non_zombie "$armpid"; do
+    lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    [ -n "$lock_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  wait_for_exit "$armpid" 300
+  status=$?
+  [ "$status" -ne 124 ] || fail "arm never returned for a claimed lock with no fresh beacon"
+  [ "$status" -ne 0 ] || fail "arm exited zero without a fresh beacon"
+  [ -n "$lock_pid" ] || fail "the child never claimed the singleton, so the confirmation phase was not reached"
+  grep -qF 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" \
+    || fail "arm did not report the unconfirmed beacon: $(cat "$armout")"
+  ! grep -qE 'watcher: (started|attached)' "$armout" || fail "arm reported a watcher with no fresh beacon"
+  grep -q 'reason=confirmation-timeout' "$state/.watch-cycle-exits.log" \
+    || fail "the lifecycle ledger did not classify the confirmation timeout"
+  ! grep -q 'reason=startup-timeout' "$state/.watch-cycle-exits.log" \
+    || fail "a claimed singleton was misclassified as a startup timeout"
+  pass "the confirmation budget still bounds a claimed singleton that never publishes a fresh beacon"
+}
+
 test_singleton_start
 test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
@@ -1217,3 +1348,6 @@ test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
+test_arm_startup_budget_absorbs_slow_prelock_work
+test_arm_startup_budget_fails_loudly_when_exhausted
+test_arm_confirmation_budget_still_bounds_a_claimed_lock
