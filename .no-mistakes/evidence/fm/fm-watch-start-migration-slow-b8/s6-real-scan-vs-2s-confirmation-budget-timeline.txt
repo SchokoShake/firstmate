@@ -1,0 +1,51 @@
+Real non-executing PR-check migration (40 registered polls, ~13s cold on this host) with the
+confirmation budget deliberately pinned to FM_ARM_CONFIRM_TIMEOUT=2 - far shorter than the scan.
+FM_ARM_STARTUP_TIMEOUT left at its 120s default. Sampled every 0.5s:
+
+  t+s  watch.lock pid  beacon                    arm stdout so far
+    0  -               (none yet)                (silent)
+    1  952678          (none yet)                (silent)
+    1  952678          (none yet)                (silent)
+    2  952678          (none yet)                (silent)
+    2  952678          (none yet)                (silent)
+    3  952678          (none yet)                (silent)
+    3  952678          (none yet)                (silent)
+    4  952678          (none yet)                (silent)
+    4  952678          (none yet)                (silent)
+    5  952678          (none yet)                (silent)
+    5  952678          (none yet)                (silent)
+    6  952678          (none yet)                (silent)
+    6  952678          (none yet)                (silent)
+    7  952678          (none yet)                (silent)
+    7  952678          (none yet)                (silent)
+    8  952678          (none yet)                (silent)
+    8  952678          (none yet)                (silent)
+    9  952678          (none yet)                (silent)
+   10  952678          (none yet)                (silent)
+   10  952678          (none yet)                (silent)
+   11  952678          (none yet)                (silent)
+   11  952678          (none yet)                (silent)
+   12  952678          (none yet)                (silent)
+   12  952678          (none yet)                (silent)
+   13  952678          (none yet)                (silent)
+   13  952678          (none yet)                (silent)
+   14  952678          (none yet)                (silent)
+   14  952678          (none yet)                (silent)
+   15  952678          (none yet)                (silent)
+   15  952678          (none yet)                (silent)
+   16  952678          (none yet)                (silent)
+   16  952678          (none yet)                (silent)
+   17  952678          (none yet)                (silent)
+   17  952678          (none yet)                (silent)
+   18  952678          (none yet)                (silent)
+   18  952678          (none yet)                (silent)
+   19  952678          (none yet)                (silent)
+   19  952678          (none yet)                (silent)
+   20  952678          (none yet)                (silent)
+   20  952556          age 0s                    watcher: started pid=952556 (beacon fresh)|
+
+confirmed line: watcher: started pid=952556 (beacon fresh)
+watch.lock pid at confirmation: 952556
+lifecycle ledger: (empty - no timeout recorded)
+quarantined before any check could run: sneaky-task.check.yih61M sneaky-task.diagnostic.ambiguous tampered.check.Kz0XUh tampered.diagnostic.ambiguous 
+no unsafe check ever executed

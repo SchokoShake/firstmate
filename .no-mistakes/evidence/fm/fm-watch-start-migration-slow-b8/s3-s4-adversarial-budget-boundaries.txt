@@ -1,0 +1,18 @@
+=== Adversarial: the two budgets must stay separable and both must fail loudly ===
+
+### A) startup budget exhausted (FM_ARM_STARTUP_TIMEOUT=1) while the confirmation budget is generous (60s): the child never claims the singleton
+env: FM_ARM_STARTUP_TIMEOUT=1 FM_ARM_CONFIRM_TIMEOUT=60 ; pre-lock stage=8s ; arm=HEAD
+exit=1 elapsed=2s
+stdout: watcher: FAILED - watcher startup did not claim the supervision lock within 1s
+pre-lock stage really ran: 1791194785 ran --checks-safe
+singleton lock claimed by child pid: never
+ledger: arm_pid=213468	watcher_pid=213522	origin=started	started_at=1791194785	ended_at=1791194787	exit_code=143	signal=TERM	reason=startup-timeout	beacon_age=999999	lock_before=pid:none|identity:none	lock_after=pid:none|identity:none	successor=none
+
+### B) singleton claimed but no beacon can ever be fresh (FM_GUARD_GRACE=0), confirmation budget 3s, startup budget 60s
+env: FM_GUARD_GRACE=0 FM_ARM_CONFIRM_TIMEOUT=3 FM_ARM_STARTUP_TIMEOUT=60 ; pre-lock stage=2s ; arm=HEAD
+exit=1 elapsed=8s
+stdout: watcher: FAILED - no live watcher with a fresh beacon
+pre-lock stage really ran: 1791194787 ran --checks-safe
+singleton lock claimed by child pid: never
+ledger: arm_pid=215769	watcher_pid=215792	origin=started	started_at=1791194787	ended_at=1791194795	exit_code=1	signal=none	reason=confirmation-timeout	beacon_age=5	lock_before=pid:none|identity:none	lock_after=pid:none|identity:none	successor=none
+

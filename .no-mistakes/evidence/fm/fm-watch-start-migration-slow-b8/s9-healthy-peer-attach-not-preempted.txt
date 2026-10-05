@@ -1,0 +1,9 @@
+=== Adversarial: a legitimate attach must not be preempted by the new startup budget ===
+A healthy peer watcher already holds this home's singleton; the arm's own forked child would
+need 10s of pre-lock startup, and FM_ARM_STARTUP_TIMEOUT is pinned to 1s.
+
+peer watcher live pid: 1073799 (beacon present: yes)
+arm first line after 0s: watcher: attached pid=1073799 (beacon 0s)
+arm stderr: 
+ledger: (empty - no startup timeout recorded against a legitimate attach)
+peer still live: yes

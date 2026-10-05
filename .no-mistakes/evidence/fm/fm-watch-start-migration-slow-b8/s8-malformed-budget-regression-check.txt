@@ -1,0 +1,13 @@
+=== Is the malformed-value behavior of the NEW budget a regression, or the pre-existing budget's own behavior? ===
+
+### PRE-FIX arm (base 187ed1d) with FM_ARM_CONFIRM_TIMEOUT=abc -> exit=1
+stdout: 
+stderr: /tmp/fm-arm-live-lab.Y7YhW0/garbage-prefix-confirm/bin/fm-watch-arm.sh: line 557: abc: unbound variable
+
+=== And does a malformed NEW budget still fail LOUDLY at the end-user surface (the Claude Stop auto-arm), never silently? ===
+
+### Stop auto-arm with FM_ARM_STARTUP_TIMEOUT=abc -> exit=2
+hook stdout: 
+hook stderr:
+firstmate watcher auto-arm FAILED - the Stop-owned automatic supervision mechanism is broken after 2 bounded attempts, and no live watcher with a fresh beacon was verified.
+Do not launch a manual background arm from this notice; investigate the automatic Stop hook and watcher startup before ending blind.

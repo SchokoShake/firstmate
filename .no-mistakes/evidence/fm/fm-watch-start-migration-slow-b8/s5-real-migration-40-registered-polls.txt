@@ -1,0 +1,26 @@
+=== The reported real condition, nothing injected: the real non-executing PR-check migration with 40 registered polls (12.9s cold on this host), real fm-watch.sh, default arm budgets ===
+
+### A) PRE-FIX arm (base 187ed1d)
+arm=187ed1db20182345fc93c0baec421973aeabb17f  registered polls=40  budgets=DEFAULT (FM_ARM_CONFIRM_TIMEOUT and FM_ARM_STARTUP_TIMEOUT unset)
+time to first arm line: 11s
+arm stdout: watcher: FAILED - no live watcher with a fresh beacon
+singleton lock claimed by: 325895
+beacon age at stand-down: no beacon
+ledger: arm_pid=325813	watcher_pid=325838	origin=started	started_at=1791194907	ended_at=1791194918	exit_code=143	signal=TERM	reason=confirmation-timeout	beacon_age=999999	lock_before=pid:none|identity:none	lock_after=pid:325895|identity:none	successor=none
+quarantined by the non-executing migration: sneaky-task.check.SPgazF sneaky-task.diagnostic.ambiguous tampered.check.DSrFT4 tampered.diagnostic.ambiguous 
+still armed in state/: poll-1.check.sh poll-10.check.sh poll-11.check.sh poll-12.check.sh poll-13.check.sh poll-14.check.sh poll-15.check.sh poll-16.check.sh poll-17.check.sh poll-18.check.sh poll-19.check.sh poll-2.check.sh poll-20.check.sh poll-21.check.sh poll-22.check.sh poll-23.check.sh poll-24.check.sh poll-25.check.sh poll-26.check.sh poll-27.check.sh poll-28.check.sh poll-29.check.sh poll-3.check.sh poll-30.check.sh poll-31.check.sh poll-32.check.sh poll-33.check.sh poll-34.check.sh poll-35.check.sh poll-36.check.sh poll-37.check.sh poll-38.check.sh poll-39.check.sh poll-4.check.sh poll-40.check.sh poll-5.check.sh poll-6.check.sh poll-7.check.sh poll-8.check.sh poll-9.check.sh 
+markers proving an unsafe check RAN: 
+markers proving an unsafe check RAN: NONE
+
+### B) FIXED arm (HEAD)
+arm=HEAD(fixed)  registered polls=40  budgets=DEFAULT (FM_ARM_CONFIRM_TIMEOUT and FM_ARM_STARTUP_TIMEOUT unset)
+time to first arm line: 21s
+arm stdout: watcher: started pid=353206 (beacon fresh)
+singleton lock claimed by: 353326
+beacon age at stand-down: 7s
+ledger: (empty)
+quarantined by the non-executing migration: sneaky-task.check.RC0x6w sneaky-task.diagnostic.ambiguous tampered.check.QU2u2e tampered.diagnostic.ambiguous 
+still armed in state/: poll-1.check.sh poll-10.check.sh poll-11.check.sh poll-12.check.sh poll-13.check.sh poll-14.check.sh poll-15.check.sh poll-16.check.sh poll-17.check.sh poll-18.check.sh poll-19.check.sh poll-2.check.sh poll-20.check.sh poll-21.check.sh poll-22.check.sh poll-23.check.sh poll-24.check.sh poll-25.check.sh poll-26.check.sh poll-27.check.sh poll-28.check.sh poll-29.check.sh poll-3.check.sh poll-30.check.sh poll-31.check.sh poll-32.check.sh poll-33.check.sh poll-34.check.sh poll-35.check.sh poll-36.check.sh poll-37.check.sh poll-38.check.sh poll-39.check.sh poll-4.check.sh poll-40.check.sh poll-5.check.sh poll-6.check.sh poll-7.check.sh poll-8.check.sh poll-9.check.sh 
+markers proving an unsafe check RAN: 
+markers proving an unsafe check RAN: NONE
+

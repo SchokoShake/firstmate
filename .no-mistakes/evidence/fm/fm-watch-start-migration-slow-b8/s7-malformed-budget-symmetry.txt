@@ -1,0 +1,19 @@
+=== Malformed budget values: the new startup budget must degrade exactly like the pre-existing confirmation budget (the author's stated symmetry), never crash the arm ===
+
+### FM_ARM_CONFIRM_TIMEOUT=abc (pre-existing behavior) -> exit=124
+stdout: watcher: started pid=1001351 (beacon fresh)
+stderr: Terminated                 sleep "$POLL"
+
+### FM_ARM_STARTUP_TIMEOUT=abc (new budget) -> exit=1
+stdout: 
+stderr: /tmp/fm-arm-live-lab.Y7YhW0/garbage-FM-ARM-STARTUP-TIMEOUT-abc--new-budget--/bin/fm-watch-arm.sh: line 595: abc: unbound variable
+
+### FM_ARM_CONFIRM_TIMEOUT=3 4 (pre-existing behavior) -> exit=124
+stdout: watcher: started pid=1026577 (beacon fresh)
+stderr: Terminated                 sleep "$POLL"
+
+### FM_ARM_STARTUP_TIMEOUT=3 4 (new budget) -> exit=1
+stdout: 
+stderr: /tmp/fm-arm-live-lab.Y7YhW0/garbage-FM-ARM-STARTUP-TIMEOUT-3-4--new-budget--/bin/fm-watch-arm.sh: line 595: 3 4: arithmetic syntax error in expression (error token is "4")
+/tmp/fm-arm-live-lab.Y7YhW0/garbage-FM-ARM-STARTUP-TIMEOUT-3-4--new-budget--/bin/fm-watch-arm.sh: line 637: startup_deadline: unbound variable
+

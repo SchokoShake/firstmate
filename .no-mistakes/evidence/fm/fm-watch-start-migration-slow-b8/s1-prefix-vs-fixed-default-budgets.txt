@@ -1,0 +1,14 @@
+=== S1 counterfactual: PRE-FIX arm (base 187ed1d), default FM_ARM_CONFIRM_TIMEOUT (10s), 12s pre-lock migration scan ===
+### case=prefix-default prelock=12s arm=187ed1db20182345fc93c0baec421973aeabb17f elapsed=11s rc=1
+stdout: watcher: FAILED - no live watcher with a fresh beacon
+migration ran: 1791194571 ran --checks-safe
+singleton lock pid seen: none
+ledger: arm_pid=110108	watcher_pid=110175	origin=started	started_at=1791194571	ended_at=1791194582	exit_code=143	signal=TERM	reason=confirmation-timeout	beacon_age=999999	lock_before=pid:none|identity:none	lock_after=pid:none|identity:none	successor=none
+
+=== S1 fixed: HEAD arm, same home shape, same default budgets ===
+### case=fixed-default prelock=12s arm=HEAD elapsed=13s rc=running
+stdout: watcher: started pid=122841 (beacon fresh)
+migration ran: 1791194583 ran --checks-safe
+singleton lock pid seen: 122841
+ledger: (empty)
+
