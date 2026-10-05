@@ -1260,7 +1260,10 @@ test_arm_startup_budget_fails_loudly_when_exhausted() {
   state="$dir/state"
   fakebin="$dir/fakebin"
   armout="$dir/arm.out"
-  bindir=$(slow_prelock_bin "$dir" 30)
+  # The watcher installs no TERM trap until after this stage, so the arm's
+  # cleanup kill ends the child at once and this duration bounds only the
+  # orphaned stand-in, not how long the arm is waited on below.
+  bindir=$(slow_prelock_bin "$dir" 8)
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
     FM_ARM_CONFIRM_TIMEOUT=60 FM_ARM_STARTUP_TIMEOUT=1 "$bindir/fm-watch-arm.sh" > "$armout" &
