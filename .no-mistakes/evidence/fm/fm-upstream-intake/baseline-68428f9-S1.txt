@@ -1,0 +1,114 @@
+
+==================================================================
+== SETUP: private tmux server (/tmp/fm-live-JjmwXw/tmux), throwaway FM_HOME=/tmp/fm-live-JjmwXw/home, FM_PAUSE_RESURFACE_SECS unset
+==================================================================
+code under test: 68428f9 (first commit, before the review-round-1 last-line fix)
+$ tmux list-windows -t fmlive -F #{window_name} pid=#{pane_pid} cmd=#{pane_current_command}
+fm-held pid=1015078 cmd=tmux
+fm-blk pid=1015106 cmd=tmux
+sup pid=1015117 cmd=tmux
+[exit 0]
+$ bin/fm-crew-state.sh held
+state: paused · source: status-log · waiting on the upstream release v2 before bumping the pin
+$ bin/fm-crew-state.sh blk
+state: blocked · source: status-log · need the staging credential to run the migration check
+
+==================================================================
+== SETTLE: let the watcher surface the workers' own first lines once, read + ack each wake
+==================================================================
+[watcher initial-settle0] WOKE after ~3s, wake-queue rows 0 -> 4; printed reason:
+  > signal: /tmp/fm-live-JjmwXw/home/state/blk.status /tmp/fm-live-JjmwXw/home/state/held.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793352945	3	signal	blk.status	signal: /tmp/fm-live-JjmwXw/home/state/blk.status /tmp/fm-live-JjmwXw/home/state/held.status
+  d| 1793352945	4	signal	held.status	signal: /tmp/fm-live-JjmwXw/home/state/blk.status /tmp/fm-live-JjmwXw/home/state/held.status
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: blk.status: blocked [key=cred]: need the staging credential to run the migration check
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: held.status: paused: waiting on the upstream release v2 before bumping the pin
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 4)
+[watcher initial-settle1] WOKE after ~5s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-blk
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793352951	5	stale	fmlive:fm-blk	stale: fmlive:fm-blk
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 5)
+[watcher initial-settle2] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+--- held.status (1 lines) ---
+  | paused: waiting on the upstream release v2 before bumping the pin
+--- blk.status (1 lines) ---
+  | blocked [key=cred]: need the staging credential to run the migration check
+
+==================================================================
+== S1: firstmate memo on a PAUSED worker (captain tokens in prose) does not wake firstmate, does not mask the pause; the worker's next line still wakes
+==================================================================
+$ /tmp/fm-base-NIhuRB/68428f9/bin/fm-status-note.sh held captain merged PR 12 by hand; keep holding until upstream v2 ships
+[exit 0]
+--- held.status (2 lines) ---
+  | paused: waiting on the upstream release v2 before bumping the pin
+  | note: firstmate: captain merged PR 12 by hand; keep holding until upstream v2 ships
+$ bin/fm-crew-state.sh held
+state: unknown · source: none · no current-state source available
+CHECK FAIL: memo did not change crew-state: still paused from the worker's own line
+--- tmux capture-pane fmlive:fm-held ---
+  # grok 1.2  model: grok-code  (ctx 91%)
+  # > idle at the prompt
+  # > idle at the prompt (ctx 90%)
+[watcher s1-memo] WOKE after ~1s, wake-queue rows 0 -> 1; printed reason:
+  > heartbeat
+CHECK FAIL: watcher stayed quiet after the memo, pane redraw and two heartbeat scans
+CHECK FAIL: watcher absorbed the redrawn pane on the declared-pause path (.paused-fmlive_fm-held kept)
+--- triage log tail ---
+  t| [2026-10-30T10:35:48+0100] absorbed stale (paused, awaiting external, age 6s): fmlive:fm-held
+  t| [2026-10-30T10:35:53+0100] absorbed stale (paused, awaiting external, age 11s): fmlive:fm-held
+  t| [2026-10-30T10:35:55+0100] absorbed stale (paused, awaiting external, age 13s): fmlive:fm-held
+  t| [2026-10-30T10:35:57+0100] absorbed stale (paused, awaiting external, age 15s): fmlive:fm-held
+CHECK FAIL: heartbeat scan ran while the memo was the newest line and absorbed it
+-- now the WORKER appends its own line while the watcher runs --
+$ echo 'working: upstream v2 released, bumping the pin' >> state/held.status   (worker)
+[watcher s1-worker] WOKE:
+  > check: rearm-resurface
+CHECK FAIL: worker line woke firstmate (its line ended the pause: stale on the pane or signal on held.status)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793352961	6	heartbeat	heartbeat	heartbeat
+  d| UNREAD STATUS (new since last drain, not re-printed after this presentation):
+  d| held note: firstmate: captain merged PR 12 by hand; keep holding until upstream v2 ships
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 6)
+-- settle every follow-up wake the worker's line causes (its pause ended while the pane stays idle) --
+[watcher s1-after-worker-settle0] WOKE after ~2s, wake-queue rows 0 -> 2; printed reason:
+  > signal: /tmp/fm-live-JjmwXw/home/state/held.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793352967	8	signal	held.status	signal: /tmp/fm-live-JjmwXw/home/state/held.status
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 8)
+[watcher s1-after-worker-settle1] WOKE after ~3s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-held
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793352971	9	stale	fmlive:fm-held	stale: fmlive:fm-held
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 9)
+[watcher s1-after-worker-settle2] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+CHECK PASS: the worker's line surfaced as signal: held.status on the first or a follow-up arm
+
+TOTAL CHECK FAILURES: 5

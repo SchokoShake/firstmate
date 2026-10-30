@@ -1,0 +1,94 @@
+
+==================================================================
+== SETUP: private tmux server (/tmp/fm-live-EWibr4/tmux), throwaway FM_HOME=/tmp/fm-live-EWibr4/home, FM_PAUSE_RESURFACE_SECS unset
+==================================================================
+code under test: 44e68b67a1ca48f0fc7e2ee6b2fcba91e3958dcd
+$ tmux list-windows -t fmlive -F #{window_name} pid=#{pane_pid} cmd=#{pane_current_command}
+fm-held pid=1368789 cmd=tmux
+fm-blk pid=1368795 cmd=tmux
+sup pid=1368797 cmd=tmux
+[exit 0]
+$ bin/fm-crew-state.sh held
+state: paused · source: status-log · waiting on the upstream release v2 before bumping the pin
+$ bin/fm-crew-state.sh blk
+state: blocked · source: status-log · need the staging credential to run the migration check
+
+==================================================================
+== SETTLE: let the watcher surface the workers' own first lines once, read + ack each wake
+==================================================================
+[watcher initial-settle0] WOKE after ~2s, wake-queue rows 0 -> 4; printed reason:
+  > signal: /tmp/fm-live-EWibr4/home/state/blk.status /tmp/fm-live-EWibr4/home/state/held.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353179	3	signal	blk.status	signal: /tmp/fm-live-EWibr4/home/state/blk.status /tmp/fm-live-EWibr4/home/state/held.status
+  d| 1793353179	4	signal	held.status	signal: /tmp/fm-live-EWibr4/home/state/blk.status /tmp/fm-live-EWibr4/home/state/held.status
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: blk.status: blocked [key=cred]: need the staging credential to run the migration check
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: held.status: paused: waiting on the upstream release v2 before bumping the pin
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 4)
+[watcher initial-settle1] WOKE after ~4s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-blk
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353185	5	stale	fmlive:fm-blk	stale: fmlive:fm-blk
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 5)
+[watcher initial-settle2] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+--- held.status (1 lines) ---
+  | paused: waiting on the upstream release v2 before bumping the pin
+--- blk.status (1 lines) ---
+  | blocked [key=cred]: need the staging credential to run the migration check
+
+==================================================================
+== S8: a captain-held crew whose agent has exited (bare shell pane) shares the four-hour default
+==================================================================
+$ tmux display-message -p -t fmlive:fm-hold fm-hold pane_current_command=#{pane_current_command}
+fm-hold pane_current_command=bash
+[exit 0]
+$ bin/fm-crew-state.sh hold
+state: unknown · source: none · no current-state source available
+[watcher s8-settle0] WOKE after ~2s, wake-queue rows 0 -> 2; printed reason:
+  > signal: /tmp/fm-live-EWibr4/home/state/hold.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353196	7	signal	hold.status	signal: /tmp/fm-live-EWibr4/home/state/hold.status
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: hold.status: captain-held [key=route]: tracked in the backlog until the captain picks a route
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 7)
+[watcher s8-settle1] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+[watcher s8-2h] QUIET for 10s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+CHECK PASS: two-hour dead-agent captain-held stays QUIET under the default
+CHECK PASS: dead-agent captain-held is tracked on the pause cadence (.paused-fmlive_fm-hold)
+[watcher s8-4h] WOKE after ~1s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-hold (paused 14521s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+CHECK PASS: dead-agent captain-held past four hours re-surfaces under the default
+CHECK PASS: its re-surface is the awaiting-external recheck
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353217	8	stale	fmlive:fm-hold	stale: fmlive:fm-hold (paused 14521s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 8)
+
+TOTAL CHECK FAILURES: 0

@@ -1,0 +1,98 @@
+
+==================================================================
+== SETUP: private tmux server (/tmp/fm-live-rUWxoO/tmux), throwaway FM_HOME=/tmp/fm-live-rUWxoO/home, FM_PAUSE_RESURFACE_SECS unset
+==================================================================
+code under test: b6cb7d4 (base, old 3600s default)
+$ tmux list-windows -t fmlive -F #{window_name} pid=#{pane_pid} cmd=#{pane_current_command}
+fm-held pid=1277988 cmd=tmux
+fm-blk pid=1277992 cmd=tmux
+sup pid=1277995 cmd=tmux
+[exit 0]
+$ bin/fm-crew-state.sh held
+state: paused · source: status-log · waiting on the upstream release v2 before bumping the pin
+$ bin/fm-crew-state.sh blk
+state: blocked · source: status-log · need the staging credential to run the migration check
+
+==================================================================
+== SETTLE: let the watcher surface the workers' own first lines once, read + ack each wake
+==================================================================
+[watcher initial-settle0] WOKE after ~3s, wake-queue rows 0 -> 4; printed reason:
+  > signal: /tmp/fm-live-rUWxoO/home/state/blk.status /tmp/fm-live-rUWxoO/home/state/held.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353077	3	signal	blk.status	signal: /tmp/fm-live-rUWxoO/home/state/blk.status /tmp/fm-live-rUWxoO/home/state/held.status
+  d| 1793353077	4	signal	held.status	signal: /tmp/fm-live-rUWxoO/home/state/blk.status /tmp/fm-live-rUWxoO/home/state/held.status
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: blk.status: blocked [key=cred]: need the staging credential to run the migration check
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: held.status: paused: waiting on the upstream release v2 before bumping the pin
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 4)
+[watcher initial-settle1] WOKE after ~5s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-blk
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353083	5	stale	fmlive:fm-blk	stale: fmlive:fm-blk
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 5)
+[watcher initial-settle2] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+--- held.status (1 lines) ---
+  | paused: waiting on the upstream release v2 before bumping the pin
+--- blk.status (1 lines) ---
+  | blocked [key=cred]: need the staging credential to run the migration check
+
+==================================================================
+== S5: watcher default pause cadence is four hours (FM_PAUSE_RESURFACE_SECS unset)
+==================================================================
+[watcher s5-settle0] WOKE after ~2s, wake-queue rows 0 -> 2; printed reason:
+  > signal: /tmp/fm-live-rUWxoO/home/state/wait.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353093	7	signal	wait.status	signal: /tmp/fm-live-rUWxoO/home/state/wait.status
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: wait.status: paused: waiting on the upstream tool release
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 7)
+[watcher s5-settle1] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+-- simulate: the worker declared the pause 2h ago (status mtime backdated 7200s) --
+[watcher s5-2h] WOKE after ~1s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-wait (paused 7201s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+CHECK FAIL: two-hour-old declared pause stays QUIET under the default
+CHECK PASS: two-hour pause is tracked as paused (.paused-fmlive_fm-wait)
+CHECK FAIL: no re-surface recorded at two hours
+-- contrast: the explicit old value FM_PAUSE_RESURFACE_SECS=3600 still honored --
+[watcher s5-2h-override3600] WOKE after ~0s, wake-queue rows 1 -> 1; printed reason:
+  > check: rearm-resurface
+CHECK PASS: explicit 3600 override re-surfaces the same two-hour pause
+CHECK FAIL: override re-surface is an awaiting-external recheck
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353103	8	stale	fmlive:fm-wait	stale: fmlive:fm-wait (paused 7201s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 8)
+-- simulate: the pause was declared 4h02m ago (status mtime backdated 14520s), default again --
+[watcher s5-4h] WOKE after ~1s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-wait (paused 14522s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+CHECK PASS: pause idle past four hours re-surfaces under the default
+CHECK PASS: re-surface is an awaiting-external recheck
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353107	9	stale	fmlive:fm-wait	stale: fmlive:fm-wait (paused 14522s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 9)
+
+TOTAL CHECK FAILURES: 3

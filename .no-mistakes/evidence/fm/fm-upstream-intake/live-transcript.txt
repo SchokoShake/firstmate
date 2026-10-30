@@ -1,0 +1,363 @@
+
+==================================================================
+== SETUP: private tmux server (/tmp/fm-live-MPvwVo/tmux), throwaway FM_HOME=/tmp/fm-live-MPvwVo/home, FM_PAUSE_RESURFACE_SECS unset
+==================================================================
+code under test: 44e68b67a1ca48f0fc7e2ee6b2fcba91e3958dcd
+$ tmux list-windows -t fmlive -F #{window_name} pid=#{pane_pid} cmd=#{pane_current_command}
+fm-held pid=1015079 cmd=tmux
+fm-blk pid=1015105 cmd=tmux
+sup pid=1015118 cmd=tmux
+[exit 0]
+$ bin/fm-crew-state.sh held
+state: paused · source: status-log · waiting on the upstream release v2 before bumping the pin
+$ bin/fm-crew-state.sh blk
+state: blocked · source: status-log · need the staging credential to run the migration check
+
+==================================================================
+== SETTLE: let the watcher surface the workers' own first lines once, read + ack each wake
+==================================================================
+[watcher initial-settle0] WOKE after ~3s, wake-queue rows 0 -> 4; printed reason:
+  > signal: /tmp/fm-live-MPvwVo/home/state/blk.status /tmp/fm-live-MPvwVo/home/state/held.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793352945	3	signal	blk.status	signal: /tmp/fm-live-MPvwVo/home/state/blk.status /tmp/fm-live-MPvwVo/home/state/held.status
+  d| 1793352945	4	signal	held.status	signal: /tmp/fm-live-MPvwVo/home/state/blk.status /tmp/fm-live-MPvwVo/home/state/held.status
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: blk.status: blocked [key=cred]: need the staging credential to run the migration check
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: held.status: paused: waiting on the upstream release v2 before bumping the pin
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 4)
+[watcher initial-settle1] WOKE after ~5s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-blk
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793352951	5	stale	fmlive:fm-blk	stale: fmlive:fm-blk
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 5)
+[watcher initial-settle2] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+--- held.status (1 lines) ---
+  | paused: waiting on the upstream release v2 before bumping the pin
+--- blk.status (1 lines) ---
+  | blocked [key=cred]: need the staging credential to run the migration check
+
+==================================================================
+== S1: firstmate memo on a PAUSED worker (captain tokens in prose) does not wake firstmate, does not mask the pause; the worker's next line still wakes
+==================================================================
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh held captain merged PR 12 by hand; keep holding until upstream v2 ships
+[exit 0]
+--- held.status (2 lines) ---
+  | paused: waiting on the upstream release v2 before bumping the pin
+  | note: firstmate: captain merged PR 12 by hand; keep holding until upstream v2 ships
+$ bin/fm-crew-state.sh held
+state: paused · source: status-log · waiting on the upstream release v2 before bumping the pin
+CHECK PASS: memo did not change crew-state: still paused from the worker's own line
+--- tmux capture-pane fmlive:fm-held ---
+  # grok 1.2  model: grok-code  (ctx 91%)
+  # > idle at the prompt
+  # > idle at the prompt (ctx 90%)
+[watcher s1-memo] QUIET for 12s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| UNREAD STATUS (new since last drain, not re-printed after this presentation):
+  d| held note: firstmate: captain merged PR 12 by hand; keep holding until upstream v2 ships
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+CHECK PASS: watcher stayed quiet after the memo, pane redraw and two heartbeat scans
+CHECK PASS: watcher absorbed the redrawn pane on the declared-pause path (.paused-fmlive_fm-held kept)
+--- triage log tail ---
+  t| [2026-10-30T10:36:05+0100] absorbed heartbeat (no captain-relevant change)
+  t| [2026-10-30T10:36:06+0100] absorbed stale (paused, awaiting external, age 6s): fmlive:fm-held
+  t| [2026-10-30T10:36:08+0100] absorbed stale (paused, awaiting external, age 8s): fmlive:fm-held
+  t| [2026-10-30T10:36:10+0100] absorbed stale (paused, awaiting external, age 10s): fmlive:fm-held
+CHECK PASS: heartbeat scan ran while the memo was the newest line and absorbed it
+-- now the WORKER appends its own line while the watcher runs --
+$ echo 'working: upstream v2 released, bumping the pin' >> state/held.status   (worker)
+[watcher s1-worker] WOKE:
+  > signal: /tmp/fm-live-MPvwVo/home/state/held.status
+CHECK PASS: worker line woke firstmate (its line ended the pause: stale on the pane or signal on held.status)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793352979	7	signal	held.status	signal: /tmp/fm-live-MPvwVo/home/state/held.status
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: held.status: working: upstream v2 released, bumping the pin
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 7)
+-- settle every follow-up wake the worker's line causes (its pause ended while the pane stays idle) --
+[watcher s1-after-worker-settle0] WOKE after ~1s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-held
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793352981	8	stale	fmlive:fm-held	stale: fmlive:fm-held
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 8)
+[watcher s1-after-worker-settle1] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+  (acknowledged through 0)
+CHECK PASS: the worker's line surfaced as signal: held.status on the first or a follow-up arm
+
+==================================================================
+== S2: firstmate closes an open blocker by hand with --resolve: no wake, key closed, a repeat close is refused
+==================================================================
+-- OPEN DECISIONS as the drain shows them before the close --
+  d| OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+  d| blk [key=cred] blocked: need the staging credential to run the migration check
+  d| OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh --resolve cred blk captain provided the staging credential out of band
+[exit 0]
+--- blk.status (2 lines) ---
+  | blocked [key=cred]: need the staging credential to run the migration check
+  | resolved [key=cred]: firstmate: captain provided the staging credential out of band
+[watcher s2-resolve] QUIET for 8s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  (acknowledged through 0)
+CHECK PASS: watcher stayed quiet after the by-hand close
+-- drain after the close (no OPEN DECISIONS row for cred expected) --
+CHECK PASS: drain lists no open decision for key cred
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh --resolve cred blk second close
+fm-status-note: no open decision or blocker with key 'cred' in /tmp/fm-live-MPvwVo/home/state/blk.status (already closed, mistyped, or transferred); nothing was written
+[exit 1]
+CHECK PASS: repeat close of an already-closed key is refused with exit 1
+CHECK PASS: refused close wrote nothing
+$ bin/fm-crew-state.sh blk
+state: unknown · source: none · no current-state source available
+
+==================================================================
+== S3 (adversarial): a memo written while a WORKER line is still unannounced must not swallow it
+==================================================================
+$ echo 'done: PR https://example.test/pr/7 opened, checks green' >> state/blk.status   (worker, nobody has seen it yet)
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh blk will review PR 7 after lunch
+fm-status-note: appended; /tmp/fm-live-MPvwVo/home/state/blk.status already had unannounced lines, so monitoring will still surface it
+[exit 0]
+CHECK PASS: memo over a pending worker line still exits 0 (caller never retries)
+--- blk.status (4 lines) ---
+  | blocked [key=cred]: need the staging credential to run the migration check
+  | resolved [key=cred]: firstmate: captain provided the staging credential out of band
+  | done: PR https://example.test/pr/7 opened, checks green
+  | note: firstmate: will review PR 7 after lunch
+[watcher s3-pending] WOKE after ~2s, wake-queue rows 0 -> 2; printed reason:
+  > signal: /tmp/fm-live-MPvwVo/home/state/blk.status
+CHECK PASS: watcher woke for the worker's done: line despite the memo
+CHECK PASS: the wake names blk.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353001	10	signal	blk.status	signal: /tmp/fm-live-MPvwVo/home/state/blk.status
+  d| wake annotation: unread wake-EVENT since last drain, not current state: blk.status: resolved [key=cred]: firstmate: captain provided the staging credential out of band
+  d| wake annotation: unread wake-EVENT since last drain, not current state: blk.status: done: PR https://example.test/pr/7 opened, checks green
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: blk.status: note: firstmate: will review PR 7 after lunch
+  d| UNREAD STATUS (new since last drain, not re-printed after this presentation):
+  d| blk note: firstmate: will review PR 7 after lunch
+  (acknowledged through 10)
+
+==================================================================
+== S4 (adversarial): refusals and one-line folding at the CLI
+==================================================================
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh --help
+fm-status-note.sh - append firstmate's own line to a task's status log without waking firstmate.
+
+Usage:
+  fm-status-note.sh <task-id> <text...>
+  fm-status-note.sh --resolve <key> <task-id> <how it was resolved...>
+
+The first form appends `note: firstmate: <text>`, a memo firstmate leaves in
+a task's log. The second appends `resolved [key=<key>]: firstmate: <text>`,
+closing an open decision or blocker by hand without sending the worker
+anything; it refuses unless <key> is open in that log right now, and refuses a
+reserved key whose owning library is its only closer. To close a decision by
+answering the worker, use `fm-send.sh --resolve-key` instead.
+
+Firstmate writes such a line in the very turn it already has the content, so
+it must not come back as a new wake. The append goes through
+fm_wake_status_append_self_announced (bin/fm-wake-lib.sh), the one owner of
+that guard: it hides only the bytes this command appended, and when any
+earlier byte in the log is still unannounced it leaves the whole log for the
+watcher, so a worker's line is never swallowed. Every line a worker appends
+still wakes firstmate exactly as before. The drain's UNREAD STATUS section
+still lists a `note:` line once, because that presentation is not a wake.
+
+The `firstmate:` text prefix marks the line's provenance for later readers.
+A task's current state skips `note: firstmate:` lines (last_status_line in
+bin/fm-classify-lib.sh), so a memo never masks the worker's last line; a
+`--resolve` line is a real state change and stays current, as with
+fm-send.sh --resolve-key.
+Newlines, tabs, and other control characters in <text> become spaces or are
+dropped, so one call always writes exactly one line.
+
+The task must already have a status log in this home (FM_STATE_OVERRIDE, else
+$FM_HOME/state). Exit 0 when the line was appended, whether hidden or left
+for the watcher (stderr says which); 1 when refused or the append failed.
+[exit 0]
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh nosuch typo task
+fm-status-note: no status log for task 'nosuch' in this home (/tmp/fm-live-MPvwVo/home/state/nosuch.status)
+[exit 1]
+CHECK PASS: no status log -> exit 1
+CHECK PASS: no stray status log created
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh ../escape x
+fm-status-note: task id must be a non-empty slug: ../escape
+[exit 1]
+CHECK PASS: path-like id -> exit 1
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh -held x
+fm-status-note: task id must be a non-empty slug: -held
+[exit 1]
+CHECK PASS: dash id -> exit 1
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh held  	 
+ 
+fm-status-note: the note text is empty
+[exit 1]
+CHECK PASS: blank text -> exit 1
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh --resolve nokey held x
+fm-status-note: no open decision or blocker with key 'nokey' in /tmp/fm-live-MPvwVo/home/state/held.status (already closed, mistyped, or transferred); nothing was written
+[exit 1]
+CHECK PASS: unopened key -> exit 1
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh --resolve bad key held x
+fm-status-note: --resolve key must be a slug of A-Za-z0-9._-: bad key
+[exit 1]
+CHECK PASS: non-slug key -> exit 1
+(fixture: state/rsv.status holds an open library-owned pending-reply-* blocker)
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh --resolve pending-reply-0123456789abcdef rsv by hand
+fm-status-note: key 'pending-reply-0123456789abcdef' is reserved for the library that opened it; only that owner closes it
+[exit 1]
+CHECK PASS: reserved pending-reply key -> exit 1
+CHECK PASS: refused reserved close wrote nothing
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh held line one
+blocked: fake second line	end[31m
+[exit 0]
+CHECK PASS: multi-line/tab/escape text accepted
+CHECK PASS: exactly one line appended
+CHECK PASS: folded to one firstmate note
+--- held.status (4 lines) ---
+  | paused: waiting on the upstream release v2 before bumping the pin
+  | note: firstmate: captain merged PR 12 by hand; keep holding until upstream v2 ships
+  | working: upstream v2 released, bumping the pin
+  | note: firstmate: line one blocked: fake second line end[31m
+[watcher s4-quiet] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| UNREAD STATUS (new since last drain, not re-printed after this presentation):
+  d| held note: firstmate: line one blocked: fake second line end[31m
+  (acknowledged through 0)
+CHECK PASS: the folded memo did not wake firstmate
+
+==================================================================
+== S5: watcher default pause cadence is four hours (FM_PAUSE_RESURFACE_SECS unset)
+==================================================================
+[watcher s5-settle0] WOKE after ~2s, wake-queue rows 0 -> 2; printed reason:
+  > signal: /tmp/fm-live-MPvwVo/home/state/wait.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353012	12	signal	wait.status	signal: /tmp/fm-live-MPvwVo/home/state/wait.status
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: wait.status: paused: waiting on the upstream tool release
+  (acknowledged through 12)
+[watcher s5-settle1] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  (acknowledged through 0)
+-- simulate: the worker declared the pause 2h ago (status mtime backdated 7200s) --
+[watcher s5-2h] QUIET for 10s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  (acknowledged through 0)
+CHECK PASS: two-hour-old declared pause stays QUIET under the default
+CHECK PASS: two-hour pause is tracked as paused (.paused-fmlive_fm-wait)
+CHECK PASS: no re-surface recorded at two hours
+-- contrast: the explicit old value FM_PAUSE_RESURFACE_SECS=3600 still honored --
+[watcher s5-2h-override3600] WOKE after ~2s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-wait (paused 7212s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+CHECK PASS: explicit 3600 override re-surfaces the same two-hour pause
+CHECK PASS: override re-surface is an awaiting-external recheck
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353033	13	stale	fmlive:fm-wait	stale: fmlive:fm-wait (paused 7212s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+  (acknowledged through 13)
+-- simulate: the pause was declared 4h02m ago (status mtime backdated 14520s), default again --
+[watcher s5-4h] WOKE after ~1s, wake-queue rows 0 -> 1; printed reason:
+  > stale: fmlive:fm-wait (paused 14521s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+CHECK PASS: pause idle past four hours re-surfaces under the default
+CHECK PASS: re-surface is an awaiting-external recheck
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353036	14	stale	fmlive:fm-wait	stale: fmlive:fm-wait (paused 14521s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+  (acknowledged through 14)
+
+==================================================================
+== S6: away-mode daemon default pause cadence is four hours; a firstmate memo keeps the pause marker
+==================================================================
+[watcher s6-pre-settle0] WOKE after ~2s, wake-queue rows 0 -> 2; printed reason:
+  > signal: /tmp/fm-live-MPvwVo/home/state/wait.status
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  d| 1793353040	16	signal	wait.status	signal: /tmp/fm-live-MPvwVo/home/state/wait.status
+  d| wake annotation: latest wake-EVENT observed at drain, not current state: wait.status: paused: waiting on the upstream tool release (redeclared)
+  (acknowledged through 16)
+[watcher s6-pre-settle1] QUIET for 6s - no wake printed, wake-queue rows 0 -> 0
+  (harness stopped the quiet watcher; draining + acking its downtime-recovery record so the next arm starts clean)
+$ bin/fm-wake-drain.sh   (firstmate reads the wake)
+  (acknowledged through 0)
+CHECK PASS: daemon seeded the pause marker for the paused worker
+-- simulate: daemon first saw the pause 2h ago --
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh wait captain says keep holding; upstream PR merged is not enough
+[exit 0]
+CHECK PASS: daemon kept the pause marker after the memo (memo did not mask the pause)
+CHECK PASS: the daemon's watcher child took no wake for the memo
+CHECK PASS: no recheck escalation at two hours under the default
+-- simulate: daemon first saw the pause 4h02m ago --
+--- state/.subsuper-escalations ---
+  e| blk.status: done: PR https://example.test/pr/7 opened, checks green (catch-all scan)
+  e| paused 14520s (awaiting external, recheck whether the wait still holds): fmlive:fm-wait
+CHECK PASS: daemon escalated one awaiting-external recheck past four hours
+CHECK PASS: daemon reset the pause window after the recheck
+--- daemon log (tail) ---
+  L| [2026-10-30T10:37:29+0100] daemon starting (pid 1236584); target=fmlive:sup; target_source=FM_SUPERVISOR_TARGET; backend=tmux; backend_source=FM_SUPERVISOR_BACKEND; afk=on; inject_skip='heartbeat'; stale_escalate=240s; batch=3600s
+
+==================================================================
+== S7: /afk return gate names the helper; following it closes the blocker and clears the gate
+==================================================================
+$ bin/fm-afk-return.sh   (captain is back)
+fm-afk-launch: away mode stopped; daemon terminal torn down and .afk cleared
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+fm-afk-return: catch-up must finish before the captain request
+catch-up wake: 1793353070 18 signal held.status signal: /tmp/fm-live-MPvwVo/home/state/held.status
+catch-up wake: OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+catch-up wake: held [key=db] blocked: the staging database refuses connections
+catch-up wake: OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+catch-up escalation: blk.status: done: PR https://example.test/pr/7 opened, checks green (catch-all scan)
+catch-up escalation: paused 14520s (awaiting external, recheck whether the wait still holds): fmlive:fm-wait
+firstmate-actionable blocker: held [key=db] the staging database refuses connections
+fm-afk-return: handle each blocker now, or close it with bin/fm-status-note.sh --resolve <key> <task-id> <durable reason>, then run bin/fm-afk-return.sh check
+[exit 3]
+CHECK PASS: return gate refused with exit 3 while the blocker is open
+CHECK PASS: gate message points at bin/fm-status-note.sh --resolve
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-status-note.sh --resolve db held reclassified: the captain is fixing staging DB access directly; no crew action
+[exit 0]
+$ /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M660DA8N0XY4ZH24GN7VX3FB/bin/fm-afk-return.sh check
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+catch-up wake: 1793353070 18 signal held.status signal: /tmp/fm-live-MPvwVo/home/state/held.status
+catch-up wake: OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+catch-up wake: held [key=db] blocked: the staging database refuses connections
+catch-up wake: OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+catch-up escalation: blk.status: done: PR https://example.test/pr/7 opened, checks green (catch-all scan)
+catch-up escalation: paused 14520s (awaiting external, recheck whether the wait still holds): fmlive:fm-wait
+catch-up wake: wake annotation: latest wake-EVENT observed at drain, not current state: held.status: resolved [key=db]: firstmate: reclassified: the captain is fixing staging DB access directly; no crew action
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 18 --recovery-generation 1273625.1793353070.RXTcLI
+fm-afk-return: catch-up clear; ordinary captain work may proceed
+[exit 0]
+CHECK PASS: afk-return check now clears
+--- held.status (6 lines) ---
+  | paused: waiting on the upstream release v2 before bumping the pin
+  | note: firstmate: captain merged PR 12 by hand; keep holding until upstream v2 ships
+  | working: upstream v2 released, bumping the pin
+  | note: firstmate: line one blocked: fake second line end[31m
+  | blocked [key=db]: the staging database refuses connections
+  | resolved [key=db]: firstmate: reclassified: the captain is fixing staging DB access directly; no crew action
+--- tmux capture-pane fmlive:sup ---
+
+TOTAL CHECK FAILURES: 0
