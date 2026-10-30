@@ -9,6 +9,9 @@
 # Special keys instead of text: fm-send.sh <target> --key Enter
 # Key support is backend-specific: tmux/herdr support Escape, Enter, and C-c;
 # Orca currently supports Enter and C-c only, and rejects Escape.
+# An agent-view pilot worker takes a key or a message only while its viewer
+# shows the worker's own session, and never a key or command that would take
+# the viewer off it (bin/fm-agent-view-lib.sh's fm_agent_view_input_guard).
 #
 # Text submission is verified: the line is typed ONCE, then Enter is sent and
 # retried (Enter only, never retyped) until the target backend confirms a
@@ -410,6 +413,25 @@ fm_send_close_resolved_keys() {  # <answer-text>
 # target_ready path before sending, while zellij verifies pane labels in its
 # send implementation. A failed backend send is still surfaced below as a hard
 # error with the attempted resolution attached.
+
+# An agent-view pilot worker's window is a viewer that can also be showing the
+# agent view, where typed text lands in its new-session box and Enter starts a
+# new session in the worker's local copy. Every key and every message is
+# refused unless the viewer is proven to show the worker's own session
+# (bin/fm-agent-view-lib.sh owns the guard).
+TARGET_AGENT_VIEW_ID=
+[ -z "$TARGET_META" ] || TARGET_AGENT_VIEW_ID=$(fm_meta_get "$TARGET_META" agent_view_id)
+if [ -n "$TARGET_AGENT_VIEW_ID" ]; then
+  fm_agent_view_source || {
+    echo "error: $T is an agent-view pilot worker, but the pilot library could not be loaded; nothing was sent" >&2
+    exit 1
+  }
+  if [ "${1:-}" = "--key" ]; then
+    fm_agent_view_input_guard "$(fm_send_id_from_meta "$TARGET_META")" "$TARGET_AGENT_VIEW_ID" "$T" key "${2:-}" || exit 1
+  else
+    fm_agent_view_input_guard "$(fm_send_id_from_meta "$TARGET_META")" "$TARGET_AGENT_VIEW_ID" "$T" text "$*" || exit 1
+  fi
+fi
 
 if [ "${1:-}" = "--key" ]; then
   case "$*" in

@@ -26,6 +26,8 @@ Because the injected carrier and the recorded carrier are the same string, an ob
 The injection sits at the unconditional pre-launch export site, so it covers ship and scout spawns across `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, `kimi`, `cursor`, and `muse`, plus Secondmate spawns across that same set except the deliberately crewmate-only `muse` adapter.
 This is the same coverage `GOTMPDIR` already has and requires no trace-specific `launch_template()` behavior.
 Ship and scout spawns reach that site on every spawn backend (`tmux`, `herdr`, `zellij`, `orca`, `cmux`); a Secondmate reaches it on every backend that accepts a Secondmate spawn (`tmux`, `herdr`, `zellij`), because `bin/fm-spawn.sh` rejects a Secondmate on `orca` and `cmux`.
+An [agent-view pilot](tmux-backend.md#agent-view-pilot) worker is the one launch that does not take its carrier from the pane shell, because Claude Code's background service rather than that shell starts it.
+The same resolved carrier rides that session's own settings instead, blank when propagation is off, and it stays with the session until cleanup removes it, so a resumed pilot session keeps the carrier it already holds and its record keeps naming that carrier.
 
 ### Remote Secondmate routes
 

@@ -70,6 +70,13 @@
 # Projected closes share the presentation-order lock, refuse to close the
 # captain's active tab, and restore the exact response-derived pre-close tab
 # if Herdr's last-pane cleanup focuses an unrelated neighboring workspace.
+# An agent-view pilot worker (bin/fm-agent-view-lib.sh) is a Claude Code
+# background session that outlives its window, so once the landed-work checks
+# pass (or --force skips them) teardown stops and removes that session by its
+# recorded id before any worktree, process, or endpoint step, and refuses -
+# even under --force - unless the session is provably gone, because a survivor
+# could keep working in, or later resume into, a copy handed to another task.
+# --retire-record likewise removes such a record's stopped session.
 # Secondmates (kind=secondmate in meta) are retired explicitly. Normal
 # teardown refuses while their home has in-flight crewmate meta files; --force
 # is the approved discard path that prevalidates child removal targets, locks each
@@ -89,7 +96,8 @@
 #   (bin/fm-slot-lib.sh owns that verdict). It never touches the working copy,
 #   returns no lease, kills no process, and closes no endpoint; it leaves
 #   data/<id>/ alone and removes the task's /tmp/fm-<id> root only when no
-#   process is using it. It refuses a record that still owns its slot (ordinary
+#   process is using it, and an agent-view pilot's stopped background session
+#   goes with the record. It refuses a record that still owns its slot (ordinary
 #   teardown's job), a record whose re-lease is unproven (every record without a
 #   recorded lease claim among them, since ownership is never inferred), a
 #   secondmate or Orca record, an own endpoint that holds a live agent or cannot
@@ -2610,11 +2618,43 @@ retire_record_tasktmp() {
   fi
 }
 
+# retire_agent_view_session: an agent-view pilot worker is a Claude Code
+# background session that outlives its window, so cleanup stops and removes it
+# by id before anything else is torn down (bin/fm-agent-view-lib.sh owns the
+# pilot). It refuses, even under --force, unless the session is provably gone
+# afterwards: a session that survived would keep working in - or could later
+# be resumed into - a local copy the pool hands to another task.
+retire_agent_view_session() {
+  local id state
+  id=$(fm_meta_get "$META" agent_view_id)
+  [ -n "$id" ] || return 0
+  if ! fm_agent_view_source; then
+    echo "REFUSED: $ID is an agent-view pilot worker, but the pilot library could not be loaded, so its background session cannot be stopped and removed." >&2
+    return 1
+  fi
+  if ! fm_agent_view_id_valid "$id"; then
+    echo "REFUSED: $ID records agent-view session '$id' rather than a session id, so its launch may still be in flight." >&2
+    echo "Find its session with 'claude agents --json --all' (name fm-$ID), stop and remove it with 'claude stop <id>' and 'claude rm <id>', drop the agent_view_id line from $META, then rerun." >&2
+    return 1
+  fi
+  state=$(fm_agent_view_session_state "$id" "$WT")
+  [ "$state" != missing ] || return 0
+  [ "$state" != alive ] || fm_agent_view_stop "$id" || true
+  fm_agent_view_rm "$id" || true
+  state=$(fm_agent_view_session_state "$id" "$WT")
+  [ "$state" != missing ] || return 0
+  echo "REFUSED: $ID's background session $id could not be proven gone (it reads '$state')." >&2
+  echo "A surviving session could keep working in, or later resume into, a local copy the pool hands to another task. Remove it with 'claude stop $id' and 'claude rm $id', check 'claude agents --json --all' for any other session working in $WT, then rerun." >&2
+  return 1
+}
+
 # --retire-record: the script header owns the contract. Every refusal comes
 # before the first removal, and nothing here touches the working copy, the
-# pool, a process, or an endpoint.
+# pool, a process, or an endpoint. The one addition is an agent-view pilot
+# worker's stopped background session, which goes with its record so it can
+# never be resumed into a copy another task now holds.
 retire_record_only() {
-  local agent path existing row=0 verdict rerun="bin/fm-teardown.sh $ID --retire-record"
+  local agent path existing row=0 verdict pilot_id rerun="bin/fm-teardown.sh $ID --retire-record"
   [ "$RETIRE_UNPROVEN_CONFIRMED" = 0 ] || rerun="$rerun --unproven-confirmed"
   if [ "$BACKEND" = orca ]; then
     echo "REFUSED: $ID's working copy is an Orca worktree rather than a treehouse pool slot, so it cannot have been re-leased; use ordinary teardown: bin/fm-teardown.sh $ID" >&2
@@ -2641,7 +2681,18 @@ retire_record_only() {
       verdict="$ID's ownership of its working copy ${FM_SLOT_WORKTREE:-(none recorded)} could not be proven, which --unproven-confirmed acknowledges: $FM_SLOT_EVIDENCE"
       ;;
   esac
-  agent=$(fm_backend_agent_state "$BACKEND" "$T")
+  # A pilot's agent is its background session, judged alone: other sessions in
+  # a re-leased copy belong to whoever holds it now.
+  pilot_id=$(fm_meta_get "$META" agent_view_id)
+  if [ -n "$pilot_id" ]; then
+    if ! fm_agent_view_source || ! fm_agent_view_id_valid "$pilot_id"; then
+      echo "REFUSED: $ID's record names agent-view session '$pilot_id', which cannot be read as a session id; reconcile it with 'claude agents --json --all' (name fm-$ID), then retry." >&2
+      return 1
+    fi
+    agent=$(fm_agent_view_session_state "$pilot_id" "$WT" own)
+  else
+    agent=$(fm_backend_agent_state "$BACKEND" "$T")
+  fi
   case "$agent" in
     dead|missing) ;;
     alive)
@@ -2665,6 +2716,7 @@ retire_record_only() {
     done <<EOF
 $(task_record_files "$STATE" "$ID" "$T")
 EOF
+    [ -z "$pilot_id" ] || [ "$agent" != dead ] || echo "dry run: would remove stopped background session $pilot_id"
     echo "dry run: would leave the working copy, the pool's lease on it, and endpoint $T untouched"
     return 0
   fi
@@ -2690,6 +2742,16 @@ EOF
     if [ -e "$TASK_TMP" ] || [ -L "$TASK_TMP" ]; then
       echo "retire-record: will remove $TASK_TMP only if it is this task's own idle /tmp/fm-$ID root"
     fi
+    [ -z "$pilot_id" ] || [ "$agent" != dead ] || echo "retire-record: will remove stopped background session $pilot_id"
+  fi
+  if [ -n "$pilot_id" ] && [ "$agent" = dead ]; then
+    fm_agent_view_rm "$pilot_id" || true
+    agent=$(fm_agent_view_session_state "$pilot_id" "$WT" own)
+    if [ "$agent" != missing ]; then
+      echo "REFUSED: $ID's stopped background session $pilot_id could not be removed (it reads '$agent'); remove it with 'claude rm $pilot_id', then retry. Nothing else was removed." >&2
+      return 1
+    fi
+    echo "retire-record: removed stopped background session $pilot_id"
   fi
   remove_task_state_records "$STATE" "$ID" "$BACKEND" "$T" "$BUSY_GEN" || {
     echo "error: retiring $ID's records stopped partway; rerun $rerun to finish" >&2
@@ -2706,7 +2768,9 @@ EOF
   if [ -e "$STATE/$ID.herdr-presentation" ] || [ -L "$STATE/$ID.herdr-presentation" ]; then
     echo "retire-record: left the quarantined Herdr presentation journal $STATE/$ID.herdr-presentation for manual inspection"
   fi
-  [ "$agent" = missing ] || echo "retire-record: left endpoint $T in place; it holds no live agent, so close it by hand if it is litter"
+  if [ "$agent" != missing ] || [ -n "$pilot_id" ]; then
+    echo "retire-record: left endpoint $T in place; it holds no live agent, so close it by hand if it is litter"
+  fi
   if [ "$FM_SLOT_VERDICT" = released ]; then
     echo "retired record $ID ($FM_SLOT_EVIDENCE); left working copy $FM_SLOT_WORKTREE, its pool lease, and every process in it untouched"
   else
@@ -2831,6 +2895,7 @@ fi
 # kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
 # dedicated process-event and firstmate-home removal machinery further below,
 # not by task-worktree cleanup.
+retire_agent_view_session || exit 1
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
   # The endpoint's own root shell sits in this worktree by design; the endpoint

@@ -172,6 +172,139 @@ Valid cleanup removed only the exact task-bound target and left the control wind
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
 Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse share that backend cleanup boundary; their harness-specific hook files, tokens, transcript bindings, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
 
+### Agent-view pilot
+
+The [agent-view pilot](../tmux-backend.md#agent-view-pilot) was verified on 2026-10-30 with Claude Code 2.1.314 and tmux 3.6 on Linux (WSL2).
+The live guard drives `bin/fm-spawn.sh`, `bin/fm-send.sh`, `bin/fm-control.sh`, and `bin/fm-teardown.sh` against the installed Claude Code on a private tmux socket, with a scratch firstmate home and a borrowed detached worktree of a trusted repository.
+Run it after every Claude Code update and before refreshing this record:
+
+```sh
+FM_AGENT_VIEW_PILOT_LIVE=1 bin/fm-test-run.sh tests/fm-agent-view-pilot-live-e2e.test.sh
+```
+
+Bounded output from the run that produced this record:
+
+```text
+# harness claude 2.1.314 (Claude Code)
+ok - launch: claude --bg named the session after its task, and its id was read back, recorded, and listed in the worktree
+ok - guard: the viewer's process, its name border, and a clean footer read session, and the gated hooks fire
+ok - steer: fm-send's verified submit reached the session and a turn ran on it
+ok - detach: the left arrow re-executes the viewer as the agent view, and the guard refuses to type there
+ok - re-attach: the window shows the same session again
+ok - detach paths: /exit and a double Ctrl+C also leave the session running in the agent view, and Escape leaves that for the shell
+ok - interrupt: Escape through the viewer leaves the session running and shown
+ok - liveness: the session reads alive with no viewer, and a relaunch re-attaches it
+ok - exit and resume: claude stop, then claude attach resumes the same conversation with its environment intact
+ok - cleanup: the session is stopped and removed
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0
+```
+
+A background session takes its environment from Claude Code's background service and from its own `--settings` env, never from the shell that launches it.
+The running service had been started on demand from a shell carrying `FMPILOT_MARK=p1`.
+A trusted working directory's `.claude/settings.local.json` registered this SessionStart hook command, logging one marker from each source:
+
+```sh
+printf 'service=%s shell=%s settings=%s\n' "${FMPILOT_MARK:-<unset>}" "${FMRECORD_MARK:-<unset>}" "${SETTINGS_MARK:-<unset>}" >> <dir>/env.log
+```
+
+One session was then launched from that directory:
+
+```sh
+FMRECORD_MARK=shell claude --bg --name fm-envprobe --model haiku --settings '{"env":{"SETTINGS_MARK":"settings"}}' "Reply with the single word ok." > launch.out 2>&1 < /dev/null
+```
+
+Observed launch output, exit status 0, and the hook's line:
+
+```text
+backgrounded · <id> · fm-envprobe
+  claude agents             list sessions
+  claude attach <id>    open in this terminal
+  claude logs <id>      show recent output
+  claude stop <id>      stop this session
+service=p1 shell=<unset> settings=settings
+```
+
+`claude daemon status` reported that service's origin as transient, started on demand by the first `claude --bg`, and the service's own process environment held the variables of the shell that ran that launch.
+A session-list read never starts a service; with an empty Claude Code configuration directory:
+
+```sh
+export CLAUDE_CONFIG_DIR="$(mktemp -d)"
+claude daemon status | sed -n 1p
+claude agents --json --all
+claude daemon status | sed -n 1p
+```
+
+```text
+not running
+[]
+not running
+```
+
+Each read is one short Claude Code process; three reads of the live session list, with the machine's load average near 8:
+
+```sh
+for i in 1 2 3; do /usr/bin/time -f '%e s elapsed' claude agents --json --all > /dev/null; done
+```
+
+```text
+0.38 s elapsed
+0.37 s elapsed
+0.37 s elapsed
+```
+
+A launch in a workspace Claude Code does not trust refuses without showing a dialog; from a fresh `git init` repository:
+
+```sh
+claude --bg --name fm-trustprobe "Reply with ok." > out 2> err < /dev/null; echo "rc=$?"
+```
+
+```text
+rc=1
+```
+
+Standard output was empty, and standard error read:
+
+```text
+Workspace not trusted. Run `claude` in <workspace> once and accept the trust prompt, then retry.
+```
+
+Stopping or removing an unknown session id:
+
+```sh
+claude stop 00000000; echo "rc=$?"
+claude rm 00000000; echo "rc=$?"
+```
+
+```text
+No job matching '00000000'. Run 'claude agents' to list running sessions.
+rc=1
+No job matching '00000000'
+rc=1
+```
+
+Stopping one throwaway session twice and then removing it twice, from a trusted scratch directory:
+
+```sh
+claude --bg --name fm-stopprobe --model haiku "Reply with the single word ok." > launch.out 2>&1 < /dev/null
+claude stop <id>; echo "rc=$?"
+claude stop <id>; echo "rc=$?"
+claude rm <id>; echo "rc=$?"
+claude rm <id>; echo "rc=$?"
+```
+
+```text
+stopped <id>
+rc=0
+stopped <id>
+rc=0
+removed <id>
+rc=0
+No job matching '<id>'
+rc=1
+```
+
+The session list then held no row with that id.
+
 ## Composer classification matrix
 
 The shared composer classifier (`bin/fm-composer-lib.sh`, `fm_composer_classify_screen`) owns every composer shape fleet-wide; each backend contributes only a capture and a capability descriptor.

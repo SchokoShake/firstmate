@@ -60,6 +60,18 @@
 #              place and reports the concrete state; it never leaves a
 #              half-transitioned task claiming to be running.
 #
+# An agent-view pilot worker (bin/fm-agent-view-lib.sh owns the pilot) is a
+# Claude Code background session that its window only views, so every verb
+# reads and drives that session by its recorded id. `interrupt` first proves
+# the viewer shows the worker's own session; `exit` is `claude stop <id>`,
+# without an interrupt first, and then ends the window's viewer client; and
+# `relaunch` keeps the worker's conversation: a running session whose window
+# does not show it only gets a fresh viewer (nothing durable changes), a running
+# session that is shown is stopped and resumed, a stopped one is resumed, and
+# only a session that no longer exists starts afresh from the instructions,
+# which is the one pilot case that takes --note. A pilot relaunches only as
+# itself, so --harness, --model, and --effort are refused for it.
+#
 # Teardown and discard are NOT verbs here and never will be. `exit` stops an
 # agent and preserves everything else; removing a worktree, killing an
 # endpoint, or discarding work stays with bin/fm-teardown.sh, which owns the
@@ -310,10 +322,23 @@ fm_control_harness_supported "$HARNESS" \
 
 fm_backend_validate "$BACKEND" || exit 1
 
+# A pilot record names its background session; a malformed or in-flight one
+# is refused here, before any verb can act on it.
+AGENT_VIEW_ID=$(fm_meta_get "$META" agent_view_id)
+if [ -n "$AGENT_VIEW_ID" ]; then
+  fm_agent_view_source || die "task $ID is an agent-view pilot worker, but the pilot library could not be loaded"
+  [ "$KIND" != secondmate ] \
+    || die "secondmate $ID's record names agent-view session '$AGENT_VIEW_ID', but secondmates are never piloted; reconcile its record before any lifecycle action"
+  [ "$HARNESS" = claude ] && [ "$BACKEND" = tmux ] \
+    || die "task $ID's record names agent-view session '$AGENT_VIEW_ID' on harness $HARNESS and backend $BACKEND, but the pilot runs only claude on tmux; reconcile its record before any lifecycle action"
+  fm_agent_view_id_valid "$AGENT_VIEW_ID" \
+    || die "task $ID records agent-view session '$AGENT_VIEW_ID' rather than a session id, so its launch may still be in flight; find its session with 'claude agents --json --all' (name fm-$ID) and reconcile the record before any lifecycle action"
+fi
+
 # --- shared helpers ---------------------------------------------------------
 
 agent_state() {
-  fm_backend_agent_state "$BACKEND" "$T"
+  fm_task_agent_state "$META" "$BACKEND" "$T"
 }
 
 busy_verdict() {
@@ -441,11 +466,40 @@ retire_busy_incarnation() {
   fi
 }
 
+# do_exit_agent_view: a pilot worker is its background session, so exit is
+# `claude stop <id>`; `/exit` in its viewer would leave the worker running and
+# turn the window into the agent view. A busy turn is not interrupted first:
+# stopping the session ends it, and the conversation resumes whole on
+# relaunch. The window's viewer client is then ended, so the window is back at
+# its shell as an ordinary exit leaves it.
+do_exit_agent_view() {
+  local state result=stopped
+  state=$(agent_state)
+  case "$state" in
+    dead|missing) result=already-stopped ;;
+    alive)
+      fm_agent_view_stop "$AGENT_VIEW_ID" \
+        || die "claude stop $AGENT_VIEW_ID failed for task $ID; its background session may still be running"
+      state=$(wait_agent_state "$EXIT_WAIT" dead missing) \
+        || die "exit-delivered $ID stop=delivered agent-state=$state exit=unconfirmed; background session $AGENT_VIEW_ID did not stop within ${EXIT_WAIT}s"
+      retire_busy_incarnation
+      ;;
+    *) die "task $ID's background session $AGENT_VIEW_ID reads '$state' rather than a positively classified state; refusing to act on a session that may not be this worker's alone" ;;
+  esac
+  fm_agent_view_release_window "$T" \
+    || echo "warning: task $ID's background session is stopped, but window $T shows something other than its shell; a relaunch needs the window at its shell" >&2
+  printf '%s' "$result"
+}
+
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
 # `already-stopped` or `stopped`.
 do_exit() {
   local state cmd verdict cancel interrupt_result=not-needed
   require_state_verified_backend exit
+  if [ -n "$AGENT_VIEW_ID" ]; then
+    do_exit_agent_view
+    return
+  fi
   state=$(agent_state)
   case "$state" in
     dead)
@@ -815,20 +869,74 @@ record_note() {
   esac
 }
 
+# agent_view_relaunch_plan: what relaunch does for a pilot worker, from its
+# background session and window (see the header): reattach, restart, resume,
+# or fresh. A session that still holds its conversation takes no progress
+# note, because a resumed conversation never re-reads its instructions.
+AGENT_VIEW_PLAN=
+agent_view_relaunch_plan() {
+  local state viewer
+  [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] \
+    || die "task $ID is an agent-view pilot worker, which relaunches only as itself; --harness, --model, and --effort do not apply to it"
+  state=$(agent_state)
+  case "$state" in
+    alive)
+      viewer=$(fm_agent_view_viewer_state "$T" "$ID" "$AGENT_VIEW_ID")
+      case "$viewer" in
+        session) AGENT_VIEW_PLAN=restart ;;
+        detached) AGENT_VIEW_PLAN=reattach ;;
+        *) die "task $ID's window $T reads '$viewer', so no viewer can be attached there; its background session $AGENT_VIEW_ID is still running" ;;
+      esac
+      ;;
+    dead) AGENT_VIEW_PLAN=resume ;;
+    missing) AGENT_VIEW_PLAN=fresh ;;
+    *) die "cannot prove the state of task $ID's background session $AGENT_VIEW_ID (it reads '$state'); refusing to relaunch alongside an agent that may still own $WT" ;;
+  esac
+  if [ "$AGENT_VIEW_PLAN" != fresh ] && [ "$NOTE_SET" = 1 ]; then
+    die "task $ID's background session $AGENT_VIEW_ID still holds its conversation, so relaunch resumes it rather than starting a fresh worker from its instructions, and a progress note would never be read; relaunch without --note, then steer it with bin/fm-send.sh"
+  fi
+}
+
+# agent_view_reattach: give a running pilot session a fresh viewer in its
+# window. The session, its turn, and every durable record stay as they are, so
+# no transaction is journaled.
+agent_view_reattach() {
+  local rc=0
+  fm_agent_view_release_window "$T" \
+    || die "task $ID's window $T shows something other than a Claude Code viewer or its shell, so no viewer can be attached there; its background session $AGENT_VIEW_ID is still running"
+  fm_agent_view_attach_window "$T" "$ID" "$AGENT_VIEW_ID" "$LAUNCH_WAIT" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) die "task $ID's window $T is not at its shell, so no viewer was attached; its background session $AGENT_VIEW_ID is still running" ;;
+    *) die "a viewer of task $ID's background session $AGENT_VIEW_ID was started in window $T but could not be confirmed showing it within ${LAUNCH_WAIT}s, so firstmate still refuses to type there; the session is still running" ;;
+  esac
+  echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT agent_view=$AGENT_VIEW_ID via=reattach"
+}
+
 do_relaunch() {
-  local exit_result state note_line
+  local exit_result state note_line agent_view_report=
   local -a spawn_args
 
   require_state_verified_backend relaunch
+  [ -z "$AGENT_VIEW_ID" ] || agent_view_relaunch_plan
   resolve_relaunch_profile
+  if [ "$AGENT_VIEW_PLAN" = reattach ]; then
+    agent_view_reattach
+    return
+  fi
 
   case "$KIND" in
     ship|scout)
       RELAUNCH_BRIEF="$DATA/$ID/brief.md"
       [ -f "$RELAUNCH_BRIEF" ] \
         || die "task $ID has no instructions at $RELAUNCH_BRIEF; refusing to relaunch a worker with nothing to work from"
-      [ "$NOTE_SET" = 1 ] && [ -n "$NOTE" ] \
-        || die "relaunch of a $KIND task requires --note (or --note-file): the replacement worker inherits the local copy but none of the conversation, so it must be told what happened"
+      case "$AGENT_VIEW_PLAN" in
+        restart|resume) ;;
+        *)
+          [ "$NOTE_SET" = 1 ] && [ -n "$NOTE" ] \
+            || die "relaunch of a $KIND task requires --note (or --note-file): the replacement worker inherits the local copy but none of the conversation, so it must be told what happened"
+          ;;
+      esac
       ;;
     secondmate)
       # The charter in the secondmate's own home is its instruction source and
@@ -882,7 +990,9 @@ do_relaunch() {
 
   journal_write complete "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
   RELAUNCH_ACTIVE=0
-  echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
+  [ -z "$AGENT_VIEW_PLAN" ] \
+    || agent_view_report=" agent_view=$(fm_meta_get "$META" agent_view_id) via=$AGENT_VIEW_PLAN"
+  echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT$agent_view_report"
 }
 
 # --- verbs ------------------------------------------------------------------
@@ -901,6 +1011,9 @@ case "$VERB" in
       dead|missing) die "no agent is running at task $ID's recorded endpoint (state: $state); there is nothing to interrupt" ;;
       *) die "task $ID's endpoint reads '$state' rather than a positively classified state; refusing to send a lifecycle key into an unattributed endpoint" ;;
     esac
+    if [ -n "$AGENT_VIEW_ID" ]; then
+      fm_agent_view_input_guard "$ID" "$AGENT_VIEW_ID" "$T" key "$(fm_control_interrupt_key "$HARNESS")" || exit 1
+    fi
     proof=$(do_interrupt)
     echo "interrupt-delivered $ID harness=$HARNESS backend=$BACKEND verified=$proof"
     ;;

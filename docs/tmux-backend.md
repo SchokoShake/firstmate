@@ -95,6 +95,42 @@ A second, baseline-gated conversion covers harnesses whose mid-turn screen the c
 Without that baseline, an `unknown` verdict is preserved untouched, so a busy-looking pane can never convert an unread composer into a confirmation.
 `tests/fm-tmux-submit-busy.test.sh` covers busy and idle panes with proven, ambiguous, and cleared composers.
 
+## Agent-view pilot
+
+A home that opts in through `config/agent-view-workers` ([configuration.md](configuration.md#agent-view-pilot-configagent-view-workers) owns the switch) runs each new Claude Code crewmate or scout as a Claude Code background session named `fm-<id>`.
+Claude Code's own background service hosts that session, so it appears as a row in Claude Code's agent view (`claude agents`) next to the captain's other sessions.
+The worker's window runs `claude attach <id>`, a viewer of the session, and Firstmate supervises and steers the worker through that viewer as it does any other window.
+The task record keeps the session id as `agent_view_id=`.
+
+A pilot worker differs from an ordinary Claude Code worker in five ways:
+
+- Its environment - the Go build temp directory, the trace carrier, prompt suggestions off, and a pilot marker naming the task - rides the session's own settings, because the background service rather than the window's shell starts the session, and the settings survive a stop and resume.
+  Its Claude Code hooks act only when that marker names the task, because the agent view and every viewer fire session hooks of their own.
+- Exit stops the session with `claude stop <id>`, which keeps the conversation resumable and returns the window to its shell.
+- Liveness, and the proof that no agent still owns the task's local copy, come from `claude agents --json --all` by session id, so a running session reads alive with no viewer attached and a stopped one reads dead whatever its window shows.
+- Every path that types into the window first proves the viewer is showing this worker's own session, and refuses otherwise, because Enter in the agent view starts a new session in the worker's local copy.
+  The proof needs two independent signals: the window's foreground job is `claude attach <id>`, and its screen shows the composer border titled `fm-<id>` without the agent view's footer.
+  Keys other than Escape, Enter, Up, Down, Tab, and a single digit are refused, and so are the `/exit`, `/quit`, and `/bg` commands, because each can take the viewer off the session.
+- Cleanup stops and removes the session with `claude stop` and `claude rm` after its landed-work checks pass, so the agent view lists only live work, and it refuses, even with `--force`, while it cannot prove the session gone.
+  [agent-control.md](agent-control.md) owns how interrupt, exit, and relaunch behave for a pilot worker, including relaunch resuming the real conversation.
+
+In a viewer, the left arrow on an empty prompt, `/exit`, and a double Ctrl+C each turn the viewer into the agent view in place while the session keeps running.
+From the agent view, Escape returns to the shell, and Ctrl+Z suspends a viewer.
+`claude stop` from anywhere ends an attached viewer, which then prints how to resume the session.
+Firstmate never sends those inputs, its typing guard refuses whenever the window does not show the session, and `bin/fm-control.sh <id> relaunch` re-attaches a detached window without touching the session.
+A question the worker raises in the agent view is answered through the viewer like any other worker message.
+A reply the captain types into the agent view reaches the session directly and is reconciled like any other direct intervention.
+
+Requirements and limits:
+
+- Pilot launches need `claude` and `jq` on Firstmate's PATH and a Claude Code release with background sessions.
+- `CLAUDE_CODE_DISABLE_AGENT_VIEW=1` in the tmux server's environment disables background sessions and viewers, so pilot launches fail while it is set.
+- A background session refuses a workspace Claude Code does not trust, and shows no trust dialog; a linked worktree of a trusted repository is trusted.
+- Every session-list read starts a short Claude Code process, about 0.4 seconds each.
+- Each pilot worker turn adds one small summary request to the captain's usage, made by the agent view.
+- The agent view is a research preview, so rerun the live guard below after every Claude Code update.
+- Secondmates are never piloted.
+
 ## Limits and regression entry points
 
 - tmux is the reference path and supports secondmate homes.
@@ -110,6 +146,9 @@ tests/fm-cursor-harness.test.sh
 tests/fm-muse-harness.test.sh
 tests/fm-tmux-submit-busy.test.sh
 tests/fm-bootstrap.test.sh
+tests/fm-agent-view-pilot.test.sh
+FM_AGENT_VIEW_PILOT_LIVE=1 tests/fm-agent-view-pilot-live-e2e.test.sh
 ```
 
 [`verification/runtime-backends.md`](verification/runtime-backends.md#tmux) records the active foreground-process and submit evidence.
+Its [agent-view pilot record](verification/runtime-backends.md#agent-view-pilot) holds the dated Claude Code evidence for the pilot.
