@@ -1,0 +1,37 @@
+# Shared composer classifier on REAL named-claude captures (Claude Code 2.1.314, --name fm-avlive-z2)
+# tmux(cursor) row is also checked live with fm_tmux_composer_state on the pane; herdr/zellij/cmux/orca are not installed here,
+# so their profiles are a replay of the real tmux capture through fm_composer_classify_screen with each backend's caps.
+
+## idle named claude - live fm_tmux_composer_state: empty
+## idle named claude - CHANGE (2bfaf20):
+locale=ambient  tmux(cursor)=empty    herdr=empty    zellij=empty    cmux/orca=empty
+locale=C        tmux(cursor)=empty    herdr=empty    zellij=empty    cmux/orca=empty
+## idle named claude - BASE (b6cb7d4) - reproduces the review finding:
+locale=ambient  tmux(cursor)=empty    herdr=unknown  zellij=unknown  cmux/orca=unknown
+locale=C        tmux(cursor)=empty    herdr=unknown  zellij=unknown  cmux/orca=unknown
+
+## relaunched named claude - CHANGE:
+locale=ambient  tmux(cursor)=empty    herdr=empty    zellij=empty    cmux/orca=empty
+locale=C        tmux(cursor)=empty    herdr=empty    zellij=empty    cmux/orca=empty
+## relaunched named claude - BASE:
+locale=ambient  tmux(cursor)=empty    herdr=unknown  zellij=unknown  cmux/orca=unknown
+locale=C        tmux(cursor)=empty    herdr=unknown  zellij=unknown  cmux/orca=unknown
+
+## unsent draft 'fix the login bug' typed (not submitted) - live fm_tmux_composer_state: pending; cleared -> empty
+## draft replay - CHANGE (never empty):
+locale=ambient  tmux(cursor)=pending  herdr=pending  zellij=pending  cmux/orca=unknown
+locale=C        tmux(cursor)=pending  herdr=pending  zellij=pending  cmux/orca=unknown
+
+## adversarial: plain shell parked on a blank row under '──────────────── fm-avlive-z9 ─' - live fm_tmux_composer_state: unknown
+locale=ambient  tmux(cursor)=unknown  herdr=unknown  zellij=unknown  cmux/orca=unknown
+locale=C        tmux(cursor)=unknown  herdr=unknown  zellij=unknown  cmux/orca=unknown
+
+## adversarial: real capture with the titled top rule swapped for malformed variants (cursorless profiles)
+accept: 8-dash run + title         herdr=empty    zellij=empty    cmux/orca=empty
+accept: real 2.1.314 rule          herdr=empty    zellij=empty    cmux/orca=empty
+reject: 4-dash run + title         herdr=unknown  zellij=unknown  cmux/orca=unknown
+reject: title contains ─         herdr=unknown  zellij=unknown  cmux/orca=unknown
+reject: two trailing dashes        herdr=unknown  zellij=unknown  cmux/orca=unknown
+reject: empty title                herdr=unknown  zellij=unknown  cmux/orca=unknown
+reject: no trailing dash           herdr=unknown  zellij=unknown  cmux/orca=unknown
+reject: text rule                  herdr=unknown  zellij=unknown  cmux/orca=unknown

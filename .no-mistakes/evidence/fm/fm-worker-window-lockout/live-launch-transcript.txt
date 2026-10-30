@@ -1,0 +1,102 @@
+# Live launch transcript - scratch tmux socket fm-live-av-5csbdb, scratch FM_HOME /tmp/fm-live-av.5csbdb/home (never the live fleet)
+# Claude Code: 2.1.314 (Claude Code)   change: 2bfaf20   base: b6cb7d4
+# A pass-through 'claude' shim on the pane PATH records env+argv, then execs the REAL claude minus the trailing brief (no model turn, no tokens).
+
+## 1. bin/fm-spawn.sh avlive-z2 <project> --mode no-mistakes --yolo off   (harness=claude via config/crew-harness)
+spawned avlive-z2 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-avlive-z2 worktree=/tmp/fm-live-av.5csbdb/pool/1/wt
+
+## 2. bin/fm-control.sh avlive-z2 relaunch --note 'live relaunch check: continue'
+relaunched avlive-z2 harness=claude from=claude model=default effort=default backend=tmux endpoint=firstmate:fm-avlive-z2 worktree=/tmp/fm-live-av.5csbdb/pool/1/wt
+
+## 3. bin/fm-spawn.sh avlive-z3 <project> --harness codex ... (codex recording shim)
+spawned avlive-z3 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-avlive-z3 worktree=/tmp/fm-live-av.5csbdb/pool/2/wt
+
+## Env + argv each launched process actually received (shim log; spawn z1 [trust declined], spawn z2, relaunch z2)
+pid=1336575
+CLAUDE_CODE_DISABLE_AGENT_VIEW=1
+CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+argv[1]=--dangerously-skip-permissions
+argv[2]=--name
+argv[3]=fm-avlive-z1
+argv[4]=⁣FIRSTMATE_OP: v1 launch-brief: brief for avlive-z1: say hello
+---
+pid=1432274
+CLAUDE_CODE_DISABLE_AGENT_VIEW=1
+CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+argv[1]=--dangerously-skip-permissions
+argv[2]=--name
+argv[3]=fm-avlive-z2
+argv[4]=⁣FIRSTMATE_OP: v1 launch-brief: brief for avlive-z2: say hello
+---
+pid=1552754
+CLAUDE_CODE_DISABLE_AGENT_VIEW=1
+CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+argv[1]=--dangerously-skip-permissions
+argv[2]=--name
+argv[3]=fm-avlive-z2
+argv[4]=⁣FIRSTMATE_OP: v1 launch-brief: brief for avlive-z2: say hello  ## Progress note (2026-1
+---
+codex pid=1611102 CLAUDE_CODE_DISABLE_AGENT_VIEW=<unset>
+argv[1]=--dangerously-bypass-approvals-and-sandbox
+argv[2]=-c
+argv[3]=notify=["bash","-c","touch '/tmp/fm-live-av.5csbdb/home/state/avlive-z3.turn-ended'; if co
+argv[4]=⁣FIRSTMATE_OP: v1 launch-brief: brief for avlive-z3
+---
+
+## Launch line fm-spawn typed into the codex pane (no --name, no CLAUDE_CODE_DISABLE_AGENT_VIEW):
+bash-5.3$ env -u CURSOR_AGENT -u CURSOR_INVOKED_AS codex --dangerously-bypass-approvals-and-sandbox -c "notify=[\"bash\",\"-c\",\"touch '/tmp/fm-live-av.5csbdb/home/state/avlive-z3.turn-ended'; if command -v agent-presence >/dev/null 2>/dev/null; then agent-pr
+
+## claude agents --json, filtered to the scratch sessions - after spawn:
+[{"pid":1432274,"cwd":"/tmp/fm-live-av.5csbdb/pool/1/wt","kind":"interactive","startedAt":1793353256413,"sessionId":"2d75abbd-8a34-452a-8f2e-26c0ad7a4f26","name":"fm-avlive-z2","status":"idle"}]
+## ... after relaunch (pid matches the relaunch shim pid above):
+[{"pid":1552754,"cwd":"/tmp/fm-live-av.5csbdb/pool/1/wt","kind":"interactive","startedAt":1793353376131,"sessionId":"bb69e41b-25af-446d-a715-cdfa1ee4e68d","name":"fm-avlive-z2","status":"idle"}]
+
+## Left arrow x3 on the worker's empty prompt: before/after capture
+byte-identical (spawned session)
+byte-identical (relaunched session)
+
+## pane: z2-idle
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fm-avlive-z2 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                                                                                                                                      ◉ xhigh · /effort
+
+## pane: z2-slash-bg
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fm-avlive-z2 ─
+❯ /bg
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  No commands match "/bg"
+
+## pane: control-idle
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fm-avlive-control ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents                                                                                                                       ◉ xhigh · /effort
+
+## pane: control-slash-bg
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fm-avlive-control ─
+❯ /bg
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ❯ /background (bg)                                     Send this session to the background and free the terminal
+
+## pane: relaunch-slash-bg
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fm-avlive-z2 ─
+❯ /bg
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  No commands match "/bg"
+

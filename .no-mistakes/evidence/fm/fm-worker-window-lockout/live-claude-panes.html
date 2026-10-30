@@ -1,0 +1,53 @@
+<!doctype html><meta charset=utf-8><style>body{background:#111;color:#ddd;font-family:monospace;margin:12px}section{margin-bottom:14px}h2{font-size:14px;color:#8cf;margin:4px 0}pre{font-size:12px;line-height:1.25;background:#000;padding:8px;border:1px solid #333;overflow:hidden;white-space:pre}mark{background:#664;color:#ffd}</style><h1 style="font-size:16px">Live Claude Code 2.1.314 panes on a scratch tmux socket (fm-spawn / fm-control relaunch)</h1><section><h2>1. Worker launched by fm-spawn (CLAUDE_CODE_DISABLE_AGENT_VIEW=1, --name fm-avlive-z2): idle - name on composer top rule, no &#x27;← for agents&#x27; hint</h2><pre>oo/.no-mistakes/worktrees/5f97ed91bec6/01M661EGCJV94GHS0CXVQ841KW/bin/fm-operational-input.sh&#x27; encode launch-brief &lt; &#x27;/tmp/fm-live-av.5csbdb/home/data/avlive-z2/brief.md&#x27;)&quot;
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── <mark>fm-avlive-z2 ─</mark>
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)                                                                                                                                      ◉ xhigh · /effort</pre></section><section><h2>2. Same worker after pressing ← three times on the empty prompt: screen byte-identical, still the same interactive session</h2><pre>oo/.no-mistakes/worktrees/5f97ed91bec6/01M661EGCJV94GHS0CXVQ841KW/bin/fm-operational-input.sh&#x27; encode launch-brief &lt; &#x27;/tmp/fm-live-av.5csbdb/home/data/avlive-z2/brief.md&#x27;)&quot;
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── <mark>fm-avlive-z2 ─</mark>
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)</pre></section><section><h2>3. Same worker with &#x27;/bg&#x27; typed (not submitted): no command matches</h2><pre>oo/.no-mistakes/worktrees/5f97ed91bec6/01M661EGCJV94GHS0CXVQ841KW/bin/fm-operational-input.sh&#x27; encode launch-brief &lt; &#x27;/tmp/fm-live-av.5csbdb/home/data/avlive-z2/brief.md&#x27;)&quot;
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── <mark>fm-avlive-z2 ─</mark>
+❯ /bg
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  <mark>No commands match &quot;/bg&quot;</mark></pre></section><section><h2>4. CONTROL: same flags WITHOUT CLAUDE_CODE_DISABLE_AGENT_VIEW: footer shows &#x27;← for agents&#x27;</h2><pre> ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── <mark>fm-avlive-control ─</mark>
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · <mark>← for agents</mark>                                                                                                                       ◉ xhigh · /effort</pre></section><section><h2>5. CONTROL with &#x27;/bg&#x27; typed (not submitted): /background (bg) is offered</h2><pre> ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── <mark>fm-avlive-control ─</mark>
+❯ /bg
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ❯ <mark>/background (bg)</mark>                                     Send this session to the background and free the terminal</pre></section><section><h2>6. Worker after bin/fm-control.sh relaunch: same name, agent view still off, &#x27;/bg&#x27; typed: no command matches</h2><pre>e-z2&#x27; &quot;$(&#x27;/home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M661EGCJV94GHS0CXVQ841KW/bin/fm-operational-input.sh&#x27; encode launch-brief &lt; &#x27;/tmp/fm-live-av.5csbdb/home/data/avlive-z2/brief.md&#x27;)&quot;
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── <mark>fm-avlive-z2 ─</mark>
+❯ /bg
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  <mark>No commands match &quot;/bg&quot;</mark></pre></section>

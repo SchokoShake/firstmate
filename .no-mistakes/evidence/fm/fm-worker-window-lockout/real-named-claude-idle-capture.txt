@@ -1,0 +1,50 @@
+bash-5.3$ cd -- '/tmp/fm-live-av.5csbdb/pool/1/wt'
+bash-5.3$ export GOTMPDIR=/tmp/fm-avlive-z2/gotmp
+bash-5.3$ env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_AGENT_VIEW=1 claude --dangerously-skip-permissions --name 'fm-avlive-z2' "$('/home/met
+oo/.no-mistakes/worktrees/5f97ed91bec6/01M661EGCJV94GHS0CXVQ841KW/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-live-av.5csbdb/home/data/avlive-z2/brief.md')"
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   /tmp/fm-live-av.5csbdb/pool/1/wt
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fm-avlive-z2 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
