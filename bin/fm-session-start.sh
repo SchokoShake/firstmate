@@ -174,11 +174,11 @@
 #   - Every in-flight row: id, kind, repo, hold kind, and title.
 #   - Every live captain hold, in flight or queued, under decisions_waiting:
 #     id, repo, a shorter title, and the first sentence of its hold reason.
-#   - A captain hold whose deadline has passed is listed by id under lapsed,
-#     never dropped, and withheld from the dispatchable-now listing through the
-#     ready path bin/fm-ready.sh owns.
-#   - Every other held row not in flight - parked, external, time-gated - is a
-#     count by hold kind and by repo, because none of them is actionable at
+#   - A captain hold whose deadline has passed, in flight or queued, is listed
+#     by id under lapsed, never dropped, and withheld from the dispatchable-now
+#     listing through the ready path bin/fm-ready.sh owns.
+#   - Every other held row not in flight - parked, external, time-gated, or
+#     unkinded with no deadline - is a count by hold kind and by repo, because none of them is actionable at
 #     startup and their reasons were the largest part of the old digest.
 #   - Every blocked queued row: id, repo, blocked_by, and title.
 #   - The plain dispatchable-now listing is bounded by
@@ -189,13 +189,14 @@
 # When compatible tasks-axi is selected and available, the shared tasks-axi
 # backend probe remains the compatibility owner and this script asks
 # `tasks-axi list` for the compact identity fields plus blocked_by, hold_kind,
-# and hold_reason, never body. The groups are the tool's own filters
+# hold_reason, hold_until, and held, never body. The groups are the tool's own filters
 # (`--state in_flight`, `--state held`, `--state queued --blocked`, and the ready
 # set underneath fm_captain_hold_ready), so this script never reimplements task
 # state; it only projects the rows those filters return, reading each row by
 # the field names in its TOON header.
 # The lapsed group is the tool's own verdict too, read through
-# bin/fm-captain-hold-lib.sh.
+# bin/fm-captain-hold-lib.sh for queued rows and from the in-flight listing's
+# own held field for in-flight ones.
 # When manual mode is selected, or tasks-axi is unavailable or incompatible,
 # this script prints only backlog section headings and item title lines, so
 # title-line hold and blocked-by metadata remain visible while indented bodies
@@ -413,7 +414,7 @@ STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-1}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=1 ;; esac
 QUEUED_LIMIT=${FM_SESSION_START_QUEUED_LIMIT:-20}
 case "$QUEUED_LIMIT" in ''|*[!0-9]*|0) QUEUED_LIMIT=20 ;; esac
-BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason
+BACKLOG_FIELDS=blocked_by,hold_kind,hold_reason,hold_until,held
 # Where THIS digest shows a withheld row: tasks-axi has already dropped it from
 # `--state held`, so the pointer names the digest's own lapsed listing.
 LAPSED_POINTER='listed by id under lapsed above'
@@ -644,12 +645,13 @@ rows && /^  / {
   hold = val("hold_kind")
   if (group == "in_flight") {
     in_flight[++in_flight_n] = q(id) "," q(kind) "," q(repo) "," q(empty(hold) ? "-" : hold) "," q(title_of(val("title"), title_cap))
+    if (hold == "captain" && val("held") == "no" && !empty(val("hold_until"))) flight_lapsed_ids = flight_lapsed_ids (flight_lapsed_n++ ? "," : "") id
   } else if (group == "held") {
     if (hold == "captain") {
       decisions[++decisions_n] = q(id) "," q(repo) "," q(title_of(val("title"), decision_title_cap)) "," q(first_sentence(val("hold_reason")))
     } else if (state != "in_flight") {
       other_n++
-      if (empty(hold)) hold = "time-gated"
+      if (empty(hold)) hold = empty(val("hold_until")) ? "unkinded" : "time-gated"
       if (!(hold in other_kind)) kind_order[++kinds_n] = hold
       other_kind[hold]++
       if (!(repo in other_repo)) repo_order[++repos_n] = repo
@@ -679,10 +681,12 @@ END {
     for (i = 1; i <= decisions_n; i++) print "  " decisions[i]
     print "fetch full hold reasons: " fetch_held
   } else print "decisions_waiting: []"
-  if (lapsed_n) {
+  if (flight_lapsed_n + lapsed_n) {
+    lapsed_fields = " --fields hold_kind,hold_reason,hold_until,held"
     print "(captain holds past their deadline: still unanswered, never dispatchable)"
-    printf "lapsed[%d]: %s\n", lapsed_n, lapsed_ids
-    print "fetch their titles and reasons: tasks-axi list --file " path " --state queued --fields hold_kind,hold_reason,hold_until,held"
+    printf "lapsed[%d]: %s\n", flight_lapsed_n + lapsed_n, flight_lapsed_ids ((flight_lapsed_n && lapsed_n) ? "," : "") lapsed_ids
+    if (lapsed_n) print "fetch their titles and reasons: tasks-axi list --file " path " --state queued" lapsed_fields
+    if (flight_lapsed_n) print "fetch the in-flight ones: tasks-axi list --file " path " --state in_flight" lapsed_fields
   }
   if (other_n) {
     line = ""

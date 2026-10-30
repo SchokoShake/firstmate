@@ -175,7 +175,7 @@ Memory prints whole, so the 25k-token bound holds only while `data/captain.md` a
 # busy-fixture digest: 59706 bytes, 22225 of them memory files, 37481 everything else
 ```
 
-The first-turn replay ran on 2026-10-30 with Claude Code 2.1.314, model `opus` (Claude Opus 5.5), and tasks-axi 0.2.5, one run per scenario:
+The first-turn replay ran on 2026-10-30 with Claude Code 2.1.314, model `claude-opus-5-5` (Claude Opus 5.5), and tasks-axi 0.2.5, one run per scenario:
 
 ```sh
 FM_SESSION_START_REPLAY_LIVE_E2E=1 tests/fm-session-start-replay-live-e2e.test.sh

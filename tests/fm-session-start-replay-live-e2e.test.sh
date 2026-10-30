@@ -48,12 +48,8 @@
 #
 #   FM_SESSION_START_REPLAY_LIVE_E2E=1 tests/fm-session-start-replay-live-e2e.test.sh
 #
-# FM_SESSION_START_REPLAY_SCENARIOS picks a subset (default "1 2 3 10 12"),
-# FM_SESSION_START_REPLAY_MODEL the model (default opus),
-# FM_SESSION_START_REPLAY_BUDGET_USD the per-scenario cap (default 4),
-# FM_SESSION_START_REPLAY_VARIANT another checkout to take the lab's code from,
-# so a scenario can be compared across two versions of the digest, and
-# FM_SESSION_START_REPLAY_KEEP=1 keeps the lab and transcripts for inspection.
+# FM_SESSION_START_REPLAY_VARIANT names another checkout to take the lab's code
+# from, so the scenarios can be compared across two versions of the digest.
 # It costs real model turns.
 set -u
 
@@ -66,21 +62,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=tests/session-start-fixture.sh
 . "$ROOT/tests/session-start-fixture.sh"
 
-SCENARIOS=${FM_SESSION_START_REPLAY_SCENARIOS:-1 2 3 10 12}
-MODEL=${FM_SESSION_START_REPLAY_MODEL:-opus}
-BUDGET=${FM_SESSION_START_REPLAY_BUDGET_USD:-4}
-KEEP=${FM_SESSION_START_REPLAY_KEEP:-0}
-VARIANT=${FM_SESSION_START_REPLAY_VARIANT:-$ROOT}
-[ -f "$VARIANT/bin/fm-session-start.sh" ] || fail "FM_SESSION_START_REPLAY_VARIANT=$VARIANT is not a firstmate checkout"
-VARIANT=$(cd "$VARIANT" && pwd -P)
-RUN_TIMEOUT=1200
-TOKEN_LIMIT=25000
-
 fail() {
   printf 'not ok - %s\n' "$1" >&2
   exit 1
 }
 note() { printf '# %s\n' "$1"; }
+
+SCENARIOS='1 2 3 10 12'
+MODEL=claude-opus-5-5
+BUDGET_USD=4
+VARIANT=${FM_SESSION_START_REPLAY_VARIANT:-$ROOT}
+[ -f "$VARIANT/bin/fm-session-start.sh" ] || fail "FM_SESSION_START_REPLAY_VARIANT=$VARIANT is not a firstmate checkout"
+VARIANT=$(cd "$VARIANT" && pwd -P)
+RUN_TIMEOUT=1200
+TOKEN_LIMIT=25000
 
 for tool in claude tmux jq node tasks-axi git timeout; do
   command -v "$tool" >/dev/null 2>&1 || fail "$tool not found; the replay needs it installed"
@@ -101,12 +96,7 @@ cleanup() {
   # The deferred startup network worker outlives the hook by design; it is
   # scoped to this lab's unique path, so this never reaches another home.
   pkill -f "$LAB/" >/dev/null 2>&1 || true
-  rm -rf "$TMUX_LIVE" "$TMUX_DEAD"
-  if [ "$KEEP" = 1 ]; then
-    note "lab kept at $LAB"
-  else
-    rm -rf "$LAB"
-  fi
+  rm -rf "$TMUX_LIVE" "$TMUX_DEAD" "$LAB"
 }
 trap cleanup EXIT INT TERM
 
@@ -327,7 +317,7 @@ run_claude() {  # <lab> <tmux-dir> <prompt>: transcript at <lab>/.replay-transcr
       TMUX_TMPDIR="$tmuxdir" FM_REPLAY_CALLS="$lab/.replay-calls" PATH="$LAB/shims:$PATH" \
       claude -p --model "$MODEL" --output-format stream-json --verbose \
       --permission-mode bypassPermissions --setting-sources project --strict-mcp-config \
-      --no-session-persistence --max-budget-usd "$BUDGET" \
+      --no-session-persistence --max-budget-usd "$BUDGET_USD" \
       --disallowed-tools WebFetch WebSearch \
       > "$lab/.replay-transcript.jsonl" 2> "$lab/.replay-stderr.txt"
   )
@@ -447,7 +437,7 @@ scenario_1() {
   check_addresses_captain "$lab"
   final_text "$lab" | grep -qi 'decision' || problem "the status answer did not mention the decisions waiting on the captain"
   check_no_destructive_calls "$lab"
-  [ -n "$DIGEST_FOR_PROBE" ] || DIGEST_FOR_PROBE="$lab/.replay-digest.txt"
+  DIGEST_FOR_PROBE="$lab/.replay-digest.txt"
   finish_scenario 1 "$lab" "a status answer comes from the bounded digest without re-reading its sources"
 }
 
@@ -483,7 +473,6 @@ scenario_2() {
     tasks-axi show "$id" --file "$lab/data/backlog.md" >/dev/null 2>&1 \
       || problem "the backlog has no item for the spawned task $id"
   fi
-  [ -n "$DIGEST_FOR_PROBE" ] || DIGEST_FOR_PROBE="$lab/.replay-digest.txt"
   finish_scenario 2 "$lab" "a ship dispatch states mode and yolo explicitly, spawns through fm-spawn, and records the task"
 }
 
@@ -515,7 +504,6 @@ scenario_3() {
       problem "a database command ran: $cmd"
     fi
   done < <(bash_commands "$lab")
-  [ -n "$DIGEST_FOR_PROBE" ] || DIGEST_FOR_PROBE="$lab/.replay-digest.txt"
   finish_scenario 3 "$lab" "a worker's decision is relayed to the captain, not answered, with no database write"
 }
 
@@ -583,36 +571,29 @@ scenario_12() {
 
 # --- run ----------------------------------------------------------------------------
 
-[ -n "$(printf '%s' "$SCENARIOS" | tr -d ' ')" ] || fail "FM_SESSION_START_REPLAY_SCENARIOS is empty, so the replay would check nothing"
 build_base
 SCENARIO_FAILED=
-DIGEST_FOR_PROBE=
 for n in $SCENARIOS; do
-  case "$n" in
-    1|2|3|10|12) "scenario_$n" ;;
-    *) fail "unknown scenario '$n'; choose from 1 2 3 10 12" ;;
-  esac
+  "scenario_$n"
 done
 
-if [ -n "$DIGEST_FOR_PROBE" ]; then
-  mkdir -p "$LAB/probe"
-  cp "$DIGEST_FOR_PROBE" "$LAB/probe/CLAUDE.md"
-  probe=$(cd "$LAB/probe" && env "${UNSET_ARGS[@]}" timeout 300 claude -p "/context" \
-    --setting-sources project --strict-mcp-config --no-session-persistence 2>/dev/null)
-  tokens=$(printf '%s\n' "$probe" | awk -F'|' '$2 ~ /Project/ && $3 ~ /CLAUDE\.md/ {
-    gsub(/ /, "", $4); v = $4; m = 1
-    if (v ~ /k$/) { m = 1000; sub(/k$/, "", v) }
-    printf "%d\n", v * m; exit }')
-  bytes=$(LC_ALL=C wc -c < "$DIGEST_FOR_PROBE" | tr -d ' ')
-  if [ -z "$tokens" ]; then
-    printf 'not ok - the /context probe reported no token count for the digest\n'
-    SCENARIO_FAILED="$SCENARIO_FAILED probe"
-  elif [ "$tokens" -ge "$TOKEN_LIMIT" ]; then
-    printf 'not ok - the busy-home digest measured %s tokens (%s bytes), at or past %s\n' "$tokens" "$bytes" "$TOKEN_LIMIT"
-    SCENARIO_FAILED="$SCENARIO_FAILED probe"
-  else
-    printf 'ok - the busy-home digest measured %s tokens (%s bytes), under %s\n' "$tokens" "$bytes" "$TOKEN_LIMIT"
-  fi
+mkdir -p "$LAB/probe"
+cp "$DIGEST_FOR_PROBE" "$LAB/probe/CLAUDE.md"
+probe=$(cd "$LAB/probe" && env "${UNSET_ARGS[@]}" timeout 300 claude -p "/context" \
+  --setting-sources project --strict-mcp-config --no-session-persistence 2>/dev/null)
+tokens=$(printf '%s\n' "$probe" | awk -F'|' '$2 ~ /Project/ && $3 ~ /CLAUDE\.md/ {
+  gsub(/ /, "", $4); v = $4; m = 1
+  if (v ~ /k$/) { m = 1000; sub(/k$/, "", v) }
+  printf "%d\n", v * m; exit }')
+bytes=$(LC_ALL=C wc -c < "$DIGEST_FOR_PROBE" | tr -d ' ')
+if [ -z "$tokens" ]; then
+  printf 'not ok - the /context probe reported no token count for the digest\n'
+  SCENARIO_FAILED="$SCENARIO_FAILED probe"
+elif [ "$tokens" -ge "$TOKEN_LIMIT" ]; then
+  printf 'not ok - the busy-home digest measured %s tokens (%s bytes), at or past %s\n' "$tokens" "$bytes" "$TOKEN_LIMIT"
+  SCENARIO_FAILED="$SCENARIO_FAILED probe"
+else
+  printf 'ok - the busy-home digest measured %s tokens (%s bytes), under %s\n' "$tokens" "$bytes" "$TOKEN_LIMIT"
 fi
 
 [ -z "$SCENARIO_FAILED" ] || fail "replay failed:$SCENARIO_FAILED"

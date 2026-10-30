@@ -126,11 +126,13 @@ SH
 # past its limit. FM_FAKE_TASKS_AXI_LAPSED names captain holds whose deadline has
 # passed, and reproduces what tasks-axi 0.2.5 really does with one: it leaves the
 # held group, keeps hold_kind and hold_until beside `held: no`, and turns up in
-# the dispatchable ready set. FM_FAKE_TASKS_AXI_TIME_GATES names kindless time
+# the dispatchable ready set. FM_FAKE_TASKS_AXI_FLIGHT_LAPSED names in-flight
+# captain holds whose deadline has passed, which leave the held group the same
+# way. FM_FAKE_TASKS_AXI_TIME_GATES names kindless time
 # gates whose date has passed, which tasks-axi reports the same way minus the
 # hold kind. FM_FAKE_TASKS_AXI_HELD_EXTRA=1 adds the held rows the projection
-# must collapse or shorten: parked, external, time-gated, and in-flight parked
-# rows with reasons that must never print, a captain hold whose title tasks-axi
+# must collapse or shorten: parked, external, time-gated, open-ended kindless,
+# and in-flight parked rows with reasons that must never print, a captain hold whose title tasks-axi
 # already truncated, one whose reason runs past the ask cap, and a multibyte
 # title past the title cap. FM_FAKE_TASKS_AXI_FOLLOWUPS sets the ready set's
 # delivery-ready public follow-up count.
@@ -143,6 +145,7 @@ log=${FM_FAKE_TASKS_AXI_LOG:-}
 [ -n "$log" ] && printf '%s\n' "$*" >> "$log"
 ready_count=${FM_FAKE_TASKS_AXI_READY:-2}
 lapsed_ids=${FM_FAKE_TASKS_AXI_LAPSED:-}
+flight_lapsed_ids=${FM_FAKE_TASKS_AXI_FLIGHT_LAPSED:-}
 time_gate_ids=${FM_FAKE_TASKS_AXI_TIME_GATES:-}
 held_extra=${FM_FAKE_TASKS_AXI_HELD_EXTRA:-0}
 followups=${FM_FAKE_TASKS_AXI_FOLLOWUPS:-0}
@@ -153,7 +156,7 @@ require_file() {
 }
 task_header() {
   printf 'count: %s\n' "$1"
-  printf 'tasks[%s]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason}:\n' "$1"
+  printf 'tasks[%s]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason,hold_until,held}:\n' "$1"
 }
 list_help() {
   printf 'help[1]:\n'
@@ -212,30 +215,37 @@ case "${1:-}" in
         exit 9
         ;;
       *'--state in_flight'*)
-        task_header 1
-        printf '%s\n' '  compact-startup,in_flight,ship,firstmate,Compact startup digest,none,captain,captain choice pending'
+        flight_count=1
+        for lapsed in $flight_lapsed_ids; do flight_count=$((flight_count + 1)); done
+        task_header "$flight_count"
+        printf '%s\n' '  compact-startup,in_flight,ship,firstmate,Compact startup digest,none,captain,captain choice pending,"-",yes'
+        for lapsed in $flight_lapsed_ids; do
+          printf '  %s,in_flight,ship,firstmate,Flight question %s,none,captain,captain choice pending,2020-01-01,no\n' \
+            "$lapsed" "$lapsed"
+        done
         ;;
       *'--state held'*)
         if [ "$held_extra" = 1 ]; then
-          task_header 9
+          task_header 10
         else
           task_header 1
         fi
-        printf '%s\n' '  held-queued,queued,ship,firstmate,Held queued work,none,captain,captain choice pending'
+        printf '%s\n' '  held-queued,queued,ship,firstmate,Held queued work,none,captain,captain choice pending,"-",yes'
         if [ "$held_extra" = 1 ]; then
-          printf '%s\n' '  parked-a,queued,ship,alpha,Parked alpha,none,parked,PARKED-REASON-LINE one'
-          printf '%s\n' '  parked-b,queued,scout,beta,"Parked, with a comma",none,parked,"PARKED-REASON-LINE, quoted"'
-          printf '%s\n' '  gate-c,queued,ship,alpha,Gate c,none,"-",GATE-REASON-LINE waiting on release'
-          printf '%s\n' '  external-d,queued,ship,alpha,External d,none,external,EXTERNAL-REASON-LINE'
-          printf '%s\n' '  flight-held,in_flight,ship,alpha,Flight held,none,parked,FLIGHT-PARKED-REASON-LINE'
-          printf '%s\n' '  long-ask,queued,captain,alpha,"Which way for the rollout\n... (truncated, 300 chars total - use show long-ask --full to see complete text)",none,captain,"First sentence asks, with a comma. SECOND-SENTENCE-LINE never prints."'
-          printf '  long-reason,queued,ship,alpha,Long reason,none,captain,%s.\n' "$(printf 'x%.0s' $(seq 1 300))"
-          printf '  wide-title,queued,ship,alpha,%s,none,captain,Pick one.\n' "$(printf '\303\251%.0s' $(seq 1 100))"
+          printf '%s\n' '  parked-a,queued,ship,alpha,Parked alpha,none,parked,PARKED-REASON-LINE one,"-",yes'
+          printf '%s\n' '  parked-b,queued,scout,beta,"Parked, with a comma",none,parked,"PARKED-REASON-LINE, quoted","-",yes'
+          printf '%s\n' '  gate-c,queued,ship,alpha,Gate c,none,"-",GATE-REASON-LINE waiting on release,2099-06-01,yes'
+          printf '%s\n' '  external-d,queued,ship,alpha,External d,none,external,EXTERNAL-REASON-LINE,"-",yes'
+          printf '%s\n' '  open-e,queued,ship,beta,Open e,none,"-",OPEN-REASON-LINE,"-",yes'
+          printf '%s\n' '  flight-held,in_flight,ship,alpha,Flight held,none,parked,FLIGHT-PARKED-REASON-LINE,"-",yes'
+          printf '%s\n' '  long-ask,queued,captain,alpha,"Which way for the rollout\n... (truncated, 300 chars total - use show long-ask --full to see complete text)",none,captain,"First sentence asks, with a comma. SECOND-SENTENCE-LINE never prints.","-",yes'
+          printf '  long-reason,queued,ship,alpha,Long reason,none,captain,%s.,"-",yes\n' "$(printf 'x%.0s' $(seq 1 300))"
+          printf '  wide-title,queued,ship,alpha,%s,none,captain,Pick one.,"-",yes\n' "$(printf '\303\251%.0s' $(seq 1 100))"
         fi
         ;;
       *'--state queued'*'--blocked'*)
         task_header 1
-        printf '%s\n' '  blocked-followup,queued,scout,firstmate,Follow compact startup,compact-startup,"-","-"'
+        printf '%s\n' '  blocked-followup,queued,scout,firstmate,Follow compact startup,compact-startup,"-","-","-",no'
         ;;
       *'--state queued'*'hold_until,held'*)
         lapsed_count=0
@@ -2014,7 +2024,9 @@ EOF
   pass "compatible tasks-axi backlog projection drops done rows and bodies and keeps every in-flight, decision, and blocked row"
 }
 
-# Parked, external, and time-gated rows collapse to counts with a fetch command;
+# Parked, external, time-gated, and open-ended kindless rows collapse to counts
+# by kind with a fetch command, and a kindless hold is a time gate only when it
+# has a deadline;
 # captain decisions keep a short title and the first sentence of their reason;
 # every cap is a byte cap that never splits a UTF-8 character.
 test_backlog_projection_collapses_held_rows_and_caps_fields() {
@@ -2030,13 +2042,14 @@ EOF
 
   out=$(FM_FAKE_TASKS_AXI_HELD_EXTRA=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "held_other[4] (parked 2, time-gated 1, external 1; not in flight, not captain decisions) by repo: alpha 3, beta 1" \
-    "parked, external, and time-gated rows were not collapsed to counts by kind and repo"
+  assert_contains "$out" "held_other[5] (parked 2, time-gated 1, external 1, unkinded 1; not in flight, not captain decisions) by repo: alpha 3, beta 2" \
+    "parked, external, time-gated, and unkinded rows were not collapsed to counts by kind and repo"
   assert_contains "$out" "fetch those rows: tasks-axi list --file $home/data/backlog.md --state held --fields hold_kind,hold_reason" \
     "the collapsed held rows did not print the command that fetches them"
   assert_not_contains "$out" "PARKED-REASON-LINE" "a parked row's hold reason leaked into the digest"
   assert_not_contains "$out" "GATE-REASON-LINE" "a time gate's hold reason leaked into the digest"
   assert_not_contains "$out" "EXTERNAL-REASON-LINE" "an external hold's reason leaked into the digest"
+  assert_not_contains "$out" "OPEN-REASON-LINE" "an open-ended kindless hold's reason leaked into the digest"
   assert_not_contains "$out" "FLIGHT-PARKED-REASON-LINE" "an in-flight parked row's reason leaked into the digest"
 
   decisions=$(printf '%s\n' "$out" | awk '/^decisions_waiting\[/ { on = 1; next } on && !/^  / { exit } on')
@@ -2060,7 +2073,8 @@ EOF
 }
 
 # The digest must hold a lapsed captain hold back from the dispatchable group
-# and keep it out of reach of the queued bound.
+# and keep it out of reach of the queued bound, and must list an in-flight one,
+# which tasks-axi drops from the held group, as lapsed too.
 test_backlog_lapsed_captain_hold_stays_held_and_never_dispatchable() {
   local rec root home fakebin out ready_group
   rec=$(new_world backlog-lapsed-hold)
@@ -2074,17 +2088,20 @@ EOF
 
   out=$(FM_FAKE_TASKS_AXI_READY=2 \
     FM_FAKE_TASKS_AXI_LAPSED="stale-captain-question older-captain-question" \
+    FM_FAKE_TASKS_AXI_FLIGHT_LAPSED="flight-captain-question" \
     FM_SESSION_START_QUEUED_LIMIT=1 \
     run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   # The bound is one row wide here, so a lapsed hold that survives it is not
   # merely listed - it is exempt from the cut, exactly as a held row is.
-  assert_contains "$out" "lapsed[2]: stale-captain-question,older-captain-question" \
-    "the digest did not list every lapsed captain hold by id"
+  assert_contains "$out" "lapsed[3]: flight-captain-question,stale-captain-question,older-captain-question" \
+    "the digest did not list every lapsed captain hold, in flight or queued, by id"
   assert_contains "$out" "(captain holds past their deadline: still unanswered, never dispatchable)" \
     "the digest did not present lapsed captain holds as still unanswered"
   assert_contains "$out" "fetch their titles and reasons: tasks-axi list --file $home/data/backlog.md --state queued --fields hold_kind,hold_reason,hold_until,held" \
     "the lapsed listing did not print the command that fetches its rows"
+  assert_contains "$out" "fetch the in-flight ones: tasks-axi list --file $home/data/backlog.md --state in_flight --fields hold_kind,hold_reason,hold_until,held" \
+    "the lapsed listing did not print the command that fetches its in-flight rows"
 
   ready_group=$(printf '%s\n' "$out" | awk '
     /^ready\[/ { on = 1; next }
