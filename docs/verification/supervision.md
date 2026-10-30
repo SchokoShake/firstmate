@@ -151,12 +151,70 @@ Codex and Pi were not installed as run-tier labs in this measurement, so their e
 Cursor's separate primary live guard covers its source-free session-open transport but does not claim this detached-worker measurement.
 A harness that did reap the worker degrades loudly rather than silently: the leftover record reads as an abandoned run needing a rerun, and the next session start re-derives every finding, because these sweeps are idempotent detectors.
 
+### Bounded digest size and first-turn replay
+
+The digest prints the backlog, the per-task records, and the project registry as bounded projections, each with the one command that fetches what it left out, while the lock, bootstrap, wake queue, open decisions, unread status, supervision block, and memory files print whole; the header of `bin/fm-session-start.sh` owns that shape.
+Sizes were measured on 2026-10-30 with Claude Code 2.1.314's no-model `/context` probe, reading the `Project` row for the digest saved as `CLAUDE.md` in an otherwise empty directory, on the sanitized busy-home fixture in `tests/session-start-fixture.sh`:
+
+```sh
+claude -p /context --setting-sources project --strict-mcp-config --no-session-persistence
+```
+
+```text
+digest                                             bytes    tokens
+previous digest (b6cb7d43), uncurated memory      211180    83k
+bounded digest, uncurated memory                   86258    32.8k
+bounded digest, memory at the startup budget       60379    23.4k
+bounded digest in the replay lab, budget memory    59246    23.3k
+```
+
+Memory prints whole, so the 25k-token bound holds only while `data/captain.md` and `data/learnings.md` stay within `config/startup-memory-budget`; with the fixture's uncurated memory the rest of the digest is unchanged and the total sits near 33k.
+`tests/fm-session-start.test.sh` enforces the bound portably in bytes - at most 62,500 in all and 42,000 outside the memory files, at 2.5 bytes per token against the 2.54 to 2.58 measured here - and its last run printed:
+
+```text
+# busy-fixture digest: 59706 bytes, 22225 of them memory files, 37481 everything else
+```
+
+The first-turn replay ran on 2026-10-30 with Claude Code 2.1.314, model `opus` (Claude Opus 5.5), and tasks-axi 0.2.5, one run per scenario:
+
+```sh
+FM_SESSION_START_REPLAY_LIVE_E2E=1 tests/fm-session-start-replay-live-e2e.test.sh
+```
+
+```text
+# scenario 1: result success, 7 turns, 48s, $0.66
+ok - scenario 1: a status answer comes from the bounded digest without re-reading its sources
+# scenario 2: result success, 20 turns, 88s, $0.92
+ok - scenario 2: a ship dispatch states mode and yolo explicitly, spawns through fm-spawn, and records the task
+# scenario 3: result success, 4 turns, 26s, $0.53
+ok - scenario 3: a worker's decision is relayed to the captain, not answered, with no database write
+# scenario 10: result success, 10 turns, 59s, $0.61
+not ok - scenario 10: dead endpoints load stuck-crewmate-recovery and keep every worktree's work
+  - stuck-crewmate-recovery was never loaded for the dead endpoints
+# scenario 12: result success, 5 turns, 31s, $0.54
+ok - scenario 12: a compaction re-emit is trusted, its wake acknowledged, and no second watcher armed
+ok - the busy-home digest measured 23300 tokens (59246 bytes), under 25000
+not ok - replay failed: 10
+```
+
+Scenario 10 is a pre-existing failure, not a digest regression: with `FM_SESSION_START_REPLAY_VARIANT` pointing at a checkout of b6cb7d43, the previous digest fails it identically.
+
+```text
+# scenario 10: result success, 9 turns, 47s, $0.57
+not ok - scenario 10: dead endpoints load stuck-crewmate-recovery and keep every worktree's work
+  - stuck-crewmate-recovery was never loaded for the dead endpoints
+```
+
+On both digests the first turn reports that every worker stopped, leaves every recorded worktree untouched, and asks the captain before relaunching on cost grounds instead of loading `stuck-crewmate-recovery`, which AGENTS.md sections 5 and 9 require; the check stays strict so the instruction fix can be verified against it.
+A single run per scenario is evidence for that model and version, not a rate.
+
 Current deterministic and live entry points:
 
 ```sh
 tests/fm-sessionstart-nudge.test.sh
 tests/fm-session-start.test.sh
 tests/fm-startup-network.test.sh
+FM_SESSION_START_REPLAY_LIVE_E2E=1 tests/fm-session-start-replay-live-e2e.test.sh
 FM_SESSIONSTART_HOOK_LIVE_E2E=1 tests/fm-sessionstart-hook-live-e2e.test.sh
 FM_SESSIONSTART_INSTRUCTION_REFRESH_LIVE_E2E=1 tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh
 FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh

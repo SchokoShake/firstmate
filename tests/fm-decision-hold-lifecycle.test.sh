@@ -1083,7 +1083,7 @@ test_lapsed_hold_is_never_offered_as_dispatchable_work() {
   # The disclosure must name surfaces that really show the withheld rows, and its
   # query must carry the SAME backlog this run filtered so it resolves from any
   # directory rather than whichever backlog the cwd happens to select.
-  assert_contains "$ready" "(1 lapsed captain hold(s) withheld from this group; each is still an unanswered captain hold, shown in session start's held group and by tasks-axi list --file $home/data/backlog.md --state queued --fields hold_kind,hold_until,held)" \
+  assert_contains "$ready" "(1 lapsed captain hold(s) withheld from this group; each is still an unanswered captain hold, listed by id in session start's backlog projection and by tasks-axi list --file $home/data/backlog.md --state queued --fields hold_kind,hold_until,held)" \
     "the dispatchable set withheld a lapsed hold without a pointer that resolves"
   # Run the disclosed query verbatim from an unrelated directory: it has to show
   # the withheld row from there, with no cd and no reliance on FM_HOME.
