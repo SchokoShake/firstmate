@@ -62,6 +62,6 @@ done
 fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
 
 READY=$(fm_captain_hold_ready "$BACKLOG" \
-  "each is still an unanswered captain hold, shown in session start's held group and by tasks-axi list --file $BACKLOG --state queued --fields hold_kind,hold_until,held") \
+  "each is still an unanswered captain hold, listed by id in session start's backlog projection and by tasks-axi list --file $BACKLOG --state queued --fields hold_kind,hold_until,held") \
   || fail "could not read the dispatchable set from $BACKLOG: $READY"
 printf '%s\n' "$READY"
