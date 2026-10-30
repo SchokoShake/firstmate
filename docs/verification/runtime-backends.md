@@ -205,6 +205,21 @@ Cursor is deliberately outside this cursor-anchored empty-composer matrix becaus
 
 `zellij action dump-screen --pane-id <id> --ansi` was verified at zellij 0.44.0 to preserve ANSI styling (real Claude Code rendered inside a zellij pane dumped `ESC[m` `❯` U+00A0 for its idle composer row), which is the capability the zellij composer classifier reads.
 
+A `--name` Claude session draws its title on the composer's top rule only, and the classifier accepts that titled rule as the composer's upper separator.
+The shape was captured on 2026-10-30 with Claude Code 2.1.314 and tmux 3.6 on Linux (WSL2), from a claude crewmate started by `bin/fm-spawn.sh avlive-z2 <project> --mode no-mistakes --yolo off` on a scratch tmux socket with a scratch `FM_HOME`, with the launch brief withheld so the composer stayed idle.
+Its plain `tmux capture-pane` text has a 200-column top rule ending ` fm-avlive-z2 ─` in its last columns, a `❯` plus U+00A0 row, a solid bottom rule, and the mode footer:
+
+```text
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fm-avlive-z2 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+```
+
+Live `fm_tmux_composer_state` read that pane `empty`.
+Herdr, Zellij, cmux, and Orca were not installed on that machine, so the same screen text was replayed through `fm_composer_classify_screen` with each one's capability profile: all read `empty`, where the classifier before the titled-rule acceptance read `unknown` on every cursorless profile.
+The portable regression is `test_matrix_claude_named_top_rule` in `tests/fm-composer-lib.test.sh`.
+
 ## Herdr
 
 The compatibility floor is protocol 14.

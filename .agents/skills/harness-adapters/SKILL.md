@@ -229,6 +229,11 @@ Its broader dark-TRUECOLOR placeholder handling and dark-theme tradeoff are docu
 That styled capture is internal to the boolean detector only.
 `fm-peek` and every other human or LLM-facing capture path stays plain `tmux capture-pane` with no escape codes.
 
+Every claude agent `bin/fm-spawn.sh` launches, including a `bin/fm-control.sh relaunch`, is named `fm-<task-id>` with `--name` and starts with `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, both scoped to that agent through the launch command (verified 2026-10-30, Claude Code 2.1.314).
+The name traces the agent to its task in `claude agents --json`, `/resume`, and the composer border; it does not add an interactive session to the agent view, which lists only background sessions.
+The switch removes the agent view from worker windows: otherwise `←` on an empty prompt or `/bg` moves the worker into a background session behind firstmate's back, and firstmate's next message would land in the agent view and start a new session in the worker's local copy.
+`disableAgentView` in a settings file is the documented alternative; `leftArrowOpensAgents` is global-config only, and firstmate never changes the captain's global config.
+
 **Primary-session guard fact (verified 2026-07-04, Claude Code 2.1.201; preserved 2026-07-08, Claude Code 2.1.204; Stop-owned auto-arm revalidated 2026-07-24, Claude Code 2.1.219).**
 This is separate from the per-task crewmate lifecycle hooks above, which live in a task's own `.claude/settings.local.json` and carry that task's busy-state events, its turn-end marker touch, and its presence beat.
 The firstmate PRIMARY's own `.claude/settings.json` registers two Stop hooks: `bin/fm-turnend-guard.sh --claude` and the Stop-owned auto-arm `bin/fm-claude-stop-autoarm.sh` (`asyncRewake: true`, `timeout: 28800`), and exiting the guard with status 2 plus stderr reliably forces the model to continue.

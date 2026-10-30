@@ -188,6 +188,26 @@ test_matrix_claude_bare_nbsp_row() {
   pass "matrix: claude's ❯+NBSP row reads empty on every profile in both locales (#1988)"
 }
 
+test_matrix_claude_named_top_rule() {
+  # Claude 2.1.314 right-aligns a `--name` session's title on the composer's
+  # TOP rule only (` <title> ` then one trailing `─`); the bottom rule stays
+  # solid. Named and unnamed composers must read alike on every profile.
+  local rule=────────────────────────
+  local top screen typed
+  for top in "$rule" "──────────────── fm-t1 ─" "────────── fast mode  fm-task-z1 ─"; do
+    screen=$'transcript line\n'"$top"$'\n❯'"$NBSP"$'\n'"$rule"$'\n  bypass permissions'
+    assert_screen "claude idle under '$top' on tmux" empty "$CAPS_TMUX" "$screen" 2 probe-absent
+    assert_screen "claude idle under '$top' on herdr" empty "$CAPS_STYLED" "$screen" '' probe-absent
+    assert_screen "claude idle under '$top' on zellij" empty "$CAPS_STYLED_NOID" "$screen"
+    assert_screen "claude idle under '$top' on cmux/orca" empty "$CAPS_PLAIN" "$screen"
+    typed="$top"$'\n❯ fix the login bug\n'"$rule"
+    assert_screen "claude typed under '$top' on tmux" pending "$CAPS_TMUX" "$typed" 1 probe-absent
+    assert_screen "claude typed under '$top' on herdr" pending "$CAPS_STYLED" "$typed" '' probe-absent
+    assert_screen "claude typed under '$top' on cmux/orca" unknown "$CAPS_PLAIN" "$typed"
+  done
+  pass "matrix: a named claude's titled top rule still bounds its composer on every profile"
+}
+
 test_matrix_codex_dim_hint_row() {
   # Real idle codex: bold `›`, reset, then an SGR-2 dim hint. Styled captures
   # strip the ghost and prove empty; plain captures must defer as unknown -
@@ -608,6 +628,7 @@ test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
 test_matrix_claude_bare_nbsp_row
+test_matrix_claude_named_top_rule
 test_matrix_codex_dim_hint_row
 test_matrix_muse_truecolor_glyph_survives_signal_loss
 test_matrix_cursor_reverse_video_placeholder_remnant
