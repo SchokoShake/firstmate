@@ -225,6 +225,22 @@ service=p1 shell=<unset> settings=settings
 ```
 
 `claude daemon status` reported that service's origin as transient, started on demand by the first `claude --bg`, and the service's own process environment held the variables of the shell that ran that launch.
+
+The service and its pty hosts never take the working directory of the launch that starts them, so teardown's working-directory reaper (`bin/fm-teardown.sh`, one `lsof -a -d cwd` scan) cannot reach the processes that host other sessions.
+The reading below comes from a transient service that `claude --bg` had cold-started from a lab worktree.
+The service's argv was `<home>/.local/bin/claude daemon run --origin transient --spawned-by {"label":"claude --bg","cwd":"<lab worktree>",...}`, and its pty host's argv was `claude bg-pty-host --bg-pty-host /tmp/cc-daemon-<uid>/<hash>/spare/<sock>.pty.sock ...`:
+
+```sh
+readlink /proc/<service pid>/cwd
+readlink /proc/<pty host pid>/cwd
+```
+
+```text
+<home>
+/tmp/cc-daemon-<uid>/<hash>/spare
+```
+
+Only the worker's own session process had the worktree as its working directory, and teardown stops and removes that session before its reap.
 A session-list read never starts a service; with an empty Claude Code configuration directory:
 
 ```sh

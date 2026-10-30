@@ -37,7 +37,13 @@
 #      SessionStart and SessionEnd hooks from processes that are not the worker,
 #      without that marker, so an ungated hook would mark the task idle and
 #      retire its presence row behind firstmate's back. The settings survive a
-#      stop and a resume.
+#      stop and a resume. Every client the pilot types into a worker's window
+#      (fm_agent_view_client_line) drops the window's tmux identity and Cursor
+#      markers, because that client may be the one that starts the service.
+#      The service itself runs in the home directory and its pty hosts under
+#      /tmp/cc-daemon-<uid>/, never in the worktree it was started from, so
+#      teardown's working-directory reaper (bin/fm-teardown.sh) never reaches
+#      the processes that host other sessions.
 #   2. Exit is `claude stop <id>` (fm_agent_view_stop). `/exit` in a viewer
 #      leaves the worker running and turns the window into the agent view.
 #   3. Liveness reads `claude agents --json --all` by id
@@ -81,6 +87,7 @@
 #   fm_agent_view_viewer_state <target> <task> <id>
 #                                                 -> session|detached|missing|unreadable
 #   fm_agent_view_release_window <target>         -> 0 once the window is at its shell
+#   fm_agent_view_client_line <claude-args>       -> the shell line for one window client
 #   fm_agent_view_attach_window <target> <task> <id> <wait>
 #                                                 -> 0 once a viewer shows the session
 #   fm_agent_view_input_guard <task> <id> <target> key|text <input>
@@ -247,23 +254,16 @@ fm_agent_view_foreground() {  # <target>
 }
 
 # fm_agent_view_client_kind: classify one process's argv. `viewer:<id>` is
-# `claude attach <id>`, `agents` is the agent view, `other` is anything else.
-# The program token is any word naming claude, so an install that runs the CLI
-# through an interpreter still classifies by the arguments that follow it.
+# exactly `claude attach <id>` and `agents` exactly `claude agents`, where the
+# program is argv[0] named claude; `other` is anything else.
 fm_agent_view_client_kind() {  # <args>
-  local word seen=0 words=() rest=()
+  local words=()
   read -r -a words <<< "$1"
-  for word in "${words[@]}"; do
-    if [ "$seen" = 0 ]; then
-      case "${word##*/}" in *claude*) seen=1 ;; esac
-      continue
-    fi
-    rest+=("$word")
-  done
-  if [ "$seen" = 1 ] && [ "${#rest[@]}" -eq 2 ] && [ "${rest[0]}" = attach ] \
-     && fm_agent_view_id_valid "${rest[1]}"; then
-    printf 'viewer:%s' "${rest[1]}"
-  elif [ "$seen" = 1 ] && [ "${#rest[@]}" -eq 1 ] && [ "${rest[0]}" = agents ]; then
+  if [ "${words[0]:-}" = "" ] || [ "${words[0]##*/}" != claude ]; then
+    printf 'other'
+  elif [ "${#words[@]}" -eq 3 ] && [ "${words[1]}" = attach ] && fm_agent_view_id_valid "${words[2]}"; then
+    printf 'viewer:%s' "${words[2]}"
+  elif [ "${#words[@]}" -eq 2 ] && [ "${words[1]}" = agents ]; then
     printf 'agents'
   else
     printf 'other'
@@ -373,6 +373,17 @@ fm_agent_view_shell_quote() {  # <text>
   printf "'%s'" "${1//$quote/$escaped}"
 }
 
+# fm_agent_view_client_line: the shell line that runs one Claude Code client in
+# a worker's window, with this process's own CLAUDE_CONFIG_DIR. The client may
+# be the one that starts Claude Code's shared background service, which hands
+# its environment to every session it hosts, other workers' and the captain's
+# alike, so the line drops the window's tmux identity and Cursor markers.
+fm_agent_view_client_line() {  # <claude-arguments, already shell-quoted>
+  local prefix=
+  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || prefix="CLAUDE_CONFIG_DIR=$(fm_agent_view_shell_quote "$CLAUDE_CONFIG_DIR") "
+  printf '%senv -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u TMUX -u TMUX_PANE claude %s' "$prefix" "$1"
+}
+
 # fm_agent_view_attach_window: start a viewer of session <id> in the window's
 # own shell, which must be at its prompt, then wait up to <wait> seconds for it
 # to show the session. Returns 0 once it does, 1 when the window is not at its
@@ -383,8 +394,7 @@ fm_agent_view_attach_window() {  # <target> <task> <id> <wait-seconds>
   local target=$1 task=$2 id=$3 wait=$4 line elapsed=0
   fm_agent_view_id_valid "$id" || return 1
   [ "$(fm_backend_tmux_agent_state "$target")" = dead ] || return 1
-  line="claude attach $id"
-  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || line="CLAUDE_CONFIG_DIR=$(fm_agent_view_shell_quote "$CLAUDE_CONFIG_DIR") $line"
+  line=$(fm_agent_view_client_line "attach $id")
   fm_backend_tmux_send_key "$target" C-u || return 1
   fm_backend_tmux_send_literal "$target" "$line" || return 1
   sleep 0.3

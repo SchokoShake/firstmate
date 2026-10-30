@@ -20,15 +20,17 @@
 #      while it shows the session, and a refusal types nothing.
 #   3. Liveness and the "no agent owns this task" proof come from the session
 #      list by id, never from the window.
-#   4. The scripts: fm-spawn launches, records, gates hooks, and attaches;
-#      fm-send refuses a detached viewer; fm-control re-attaches, interrupts,
-#      stops, and resumes; fm-teardown stops and removes the session; and with
-#      the switch absent or off the launch is byte-identical to an ordinary one.
+#   4. The scripts: fm-spawn launches, records, gates hooks, and attaches, and a
+#      launch Claude Code refuses leaves no session id; fm-send refuses a
+#      detached viewer; fm-control re-attaches, interrupts, stops, and relaunches
+#      by every plan (resume, restart, fresh); fm-teardown stops and removes the
+#      session; and with the switch absent or off the launch is byte-identical
+#      to an ordinary one.
 #
-# The stand-in's process is a /bin/bash script named claude, so on Linux the
-# kernel names it claude (`ps -o comm=`) while tmux's #{pane_current_command}
-# reads bash: the tmux classifier's two sources diverge here, and the cases
-# below assert only verdicts, never which source carried them.
+# The stand-in's viewer is a /bin/bash whose argv is `claude attach <id>`, so its
+# argv names claude while `ps -o comm=` names bash: the tmux classifier's
+# sources diverge here, and the cases below assert only verdicts, never which
+# source carried them.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -73,6 +75,7 @@ cat > "$LAB/bin/no-mistakes" <<'SH'
 exit 1
 SH
 chmod +x "$LAB/bin/no-mistakes"
+cp -p "$LAB/bin/no-mistakes" "$LAB/bin/agent-presence"
 export FAKE_CLAUDE_DIR="$LAB/claude"
 printf '[]\n' > "$FAKE_CLAUDE_DIR/sessions.json"
 
@@ -83,12 +86,13 @@ printf '[]\n' > "$FAKE_CLAUDE_DIR/sessions.json"
 #   agents --json   prints the list; agents alone paints the agent view.
 #   attach <id>     resumes a stopped session, then paints it until it stops.
 #   stop / rm       stop or remove one session by id.
+# A viewer and the agent view repaint from a bash re-executed with exactly the
+# argv the real CLI's process carries, `claude attach <id>` or `claude agents`.
 cat > "$LAB/bin/claude" <<'SH'
 #!/bin/bash
 set -u
 D=$FAKE_CLAUDE_DIR
 LIST="$D/sessions.json"
-printf '%s\n' "$*" >> "$D/calls.log"
 put() { jq -c "$@" "$LIST" > "$LIST.tmp" && mv -f "$LIST.tmp" "$LIST"; }
 row() { jq -c --arg id "$1" '.[] | select(.id == $id)' "$LIST"; }
 running() { [ "$(jq -r --arg id "$1" '.[] | select(.id == $id) | .pid | type' "$LIST")" = number ]; }
@@ -108,6 +112,11 @@ paint_loop() {  # <screen-file-or-default> <id-or-empty>
     sleep 0.2
   done
 }
+paint_as() {  # <argv> <screen-file> <id-or-empty>
+  FAKE_CLAUDE_SCREEN=$2 FAKE_CLAUDE_ID=$3 exec -a "$1" /bin/bash < "$0"
+}
+[ -z "${FAKE_CLAUDE_SCREEN:-}" ] || paint_loop "$FAKE_CLAUDE_SCREEN" "$FAKE_CLAUDE_ID"
+printf '%s\n' "$*" >> "$D/calls.log"
 case "${1:-}" in
   --bg)
     shift
@@ -139,7 +148,7 @@ case "${1:-}" in
       cat "$LIST"
       exit 0
     fi
-    paint_loop "$D/agents-screen" ''
+    paint_as "claude agents" "$D/agents-screen" ''
     ;;
   attach)
     id=${2:-}
@@ -151,7 +160,7 @@ case "${1:-}" in
       name=$(row "$id" | jq -r .name)
       printf ' * Claude Code (stand-in)\n\n> working on the brief\n\n───────────────────────────── %s ─\n> \n────────────────────────────────────────\n  bypass permissions on · ← for agents\n' "$name" > "$screen"
     fi
-    paint_loop "$screen" "$id"
+    paint_as "claude attach $id" "$screen" "$id"
     ;;
   stop)
     [ -n "$(row "${2:-}")" ] || { echo "No job matching '${2:-}'."; exit 1; }
@@ -259,7 +268,7 @@ session_running() {  # <id>
 # --- 1. the typing guard: three signals, each one alone refuses ------------------
 
 test_viewer_guard_signals() {
-  local t=lab:guard id=0a1b2c3d other=9f8e7d6c
+  local t=lab:guard id=0a1b2c3d other=9f8e7d6c leader
   reset_sessions
   add_session "$id" fm-g1 "$LAB"
   add_session "$other" fm-g2 "$LAB"
@@ -268,8 +277,9 @@ test_viewer_guard_signals() {
   wait_for 15 screen_has "$t" " fm-g1 ─" || fail "the stand-in viewer did not paint its session"
   [ "$(fm_agent_view_viewer_state "$t" g1 "$id")" = session ] \
     || fail "a viewer showing the worker's own session must read session"
-  [ "$(tmux display-message -p -t "$t" '#{pane_current_command}')" != claude ] \
-    || echo "note: tmux names the stand-in claude here, so the source divergence is not exercised on this platform"
+  leader=$(fm_agent_view_foreground "$t")
+  [ "$(ps -o comm= -p "${leader%% *}" | tr -d ' ')" != claude ] \
+    || echo "note: the kernel names the stand-in claude here, so the source divergence is not exercised on this platform"
 
   # Signal 1 lost: the screen turns into the agent view while the process is
   # still `claude attach <id>`.
@@ -467,7 +477,17 @@ test_small_contracts() {
   [ -z "$out" ] || fail "a gated hook must do nothing in another worker's session"
   out=$(FM_AGENT_VIEW_TASK=p1 sh -c "$(fm_agent_view_hook_gate p1)echo ran")
   [ "$out" = ran ] || fail "a gated hook must run in the worker's own session"
-  pass "switch, launch-line parsing, settings environment, and hook gate"
+
+  [ "$(fm_agent_view_client_kind "claude attach 0123abcd")" = viewer:0123abcd ] || fail "claude attach <id> is a viewer"
+  [ "$(fm_agent_view_client_kind "/opt/bin/claude attach 0123abcd")" = viewer:0123abcd ] \
+    || fail "an installed path whose basename is claude is still the CLI"
+  [ "$(fm_agent_view_client_kind "claude agents")" = agents ] || fail "claude agents is the agent view"
+  for args in "less claude attach 0123abcd" "/bin/bash /lab/bin/claude attach 0123abcd" \
+      "node /lib/claude-code/cli.js attach 0123abcd" "claude-code attach 0123abcd" \
+      "claude attach 0123abcd --verbose" "claude attach pending" "claude agents --json" "claude" ""; do
+    [ "$(fm_agent_view_client_kind "$args")" = other ] || fail "'$args' must not classify as a Claude Code viewer"
+  done
+  pass "switch, launch-line parsing, settings environment, hook gate, and client kinds"
 }
 
 # --- 6. the scripts, end to end ---------------------------------------------------
@@ -505,33 +525,64 @@ setup_home() {
   TASK_TMPS+=("/tmp/fm-$ID")
 }
 
+# The pilot's session id; the fresh relaunch case replaces it.
+SID=5e6f7a8b
+
+# hooks_answer_only_the_worker: run every claude hook in the worktree's settings
+# as Claude Code runs it. Without the marker, as the agent view's own processes
+# fire them, none may touch the task's busy record or end its turn; with the
+# worker's marker, each one writes the busy record.
+hooks_answer_only_the_worker() {
+  local busy="$HOME_DIR/state/$ID.busy-state" turnend="$HOME_DIR/state/$ID.turn-ended" cmd before
+  local cmds=()
+  while IFS= read -r cmd; do cmds+=("$cmd"); done \
+    < <(jq -r '.hooks[][].hooks[].command' "$WT_DIR/.claude/settings.local.json")
+  [ "${#cmds[@]}" = 4 ] || fail "expected the four claude hooks, found ${#cmds[@]}"
+  [ -s "$busy" ] || fail "the spawn must arm the task's busy record"
+  before=$(cat "$busy")
+  for cmd in "${cmds[@]}"; do
+    env -u FM_AGENT_VIEW_TASK sh -c "$cmd" </dev/null
+  done
+  [ "$(cat "$busy")" = "$before" ] || fail "a hook wrote the busy record without the worker's marker"
+  [ ! -e "$turnend" ] || fail "a hook ended the turn without the worker's marker"
+  for cmd in "${cmds[@]}"; do
+    before=$(cat "$busy")
+    FM_AGENT_VIEW_TASK=$ID sh -c "$cmd" </dev/null
+    [ "$(cat "$busy")" != "$before" ] || fail "a hook did not write the busy record with the worker's marker: $cmd"
+  done
+  [ -e "$turnend" ] || fail "the Stop hook must end the turn with the worker's marker"
+  rm -f "$turnend"
+}
+
 test_spawn_launches_a_pilot() {
-  local out rc meta settings t
+  local out rc meta settings t f
   setup_home
   printf 'on\n' > "$HOME_DIR/config/agent-view-workers"
-  printf '5e6f7a8b' > "$FAKE_CLAUDE_DIR/next-id"
+  printf '%s' "$SID" > "$FAKE_CLAUDE_DIR/next-id"
   reset_sessions
   out=$(fm_env "$ROOT/bin/fm-spawn.sh" "$ID" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1)
   rc=$?
   expect_code 0 "$rc" "pilot spawn"$'\n'"$out"
-  assert_contains "$out" "agent_view=5e6f7a8b" "the success line should name the session"
+  assert_contains "$out" "agent_view=$SID" "the success line should name the session"
   meta="$HOME_DIR/state/$ID.meta"
-  assert_grep "agent_view_id=5e6f7a8b" "$meta" "the record must carry the session id"
+  assert_grep "agent_view_id=$SID" "$meta" "the record must carry the session id"
   t=$(sed -n 's/^window=//p' "$meta")
-  settings=$(cat "$FAKE_CLAUDE_DIR/5e6f7a8b.settings")
+  settings=$(cat "$FAKE_CLAUDE_DIR/$SID.settings")
   [ "$(printf '%s' "$settings" | jq -r .env.GOTMPDIR)" = "/tmp/fm-$ID/gotmp" ] || fail "GOTMPDIR must ride the settings"
   [ "$(printf '%s' "$settings" | jq -r .env.FM_AGENT_VIEW_TASK)" = "$ID" ] || fail "the hook marker must ride the settings"
-  assert_no_grep "GOTMPDIR=/tmp/fm-$ID" "$FAKE_CLAUDE_DIR/5e6f7a8b.launch-env" "nothing may be exported into the window's shell for a pilot launch"
-  # The window's shell carries its tmux identity (the viewer sees it), but the
-  # launch, which may start the shared background service, must not pass it on.
-  grep -q '^TMUX_PANE=%' "$FAKE_CLAUDE_DIR/5e6f7a8b.attach-env" || fail "divergence lost: the window's shell must carry its tmux pane"
-  ! grep -q '^TMUX=' "$FAKE_CLAUDE_DIR/5e6f7a8b.launch-env" || fail "the launch must not hand the background service the window's tmux server"
-  ! grep -q '^TMUX_PANE=' "$FAKE_CLAUDE_DIR/5e6f7a8b.launch-env" || fail "the launch must not hand the background service the window's pane"
+  assert_no_grep "GOTMPDIR=/tmp/fm-$ID" "$FAKE_CLAUDE_DIR/$SID.launch-env" "nothing may be exported into the window's shell for a pilot launch"
+  # The window's shell carries its tmux identity (test_watch_liveness_reads_the_session
+  # shows it), but neither the launch nor the viewer may pass it on: either may
+  # be the client that starts the shared background service.
+  for f in launch attach; do
+    ! grep -q '^TMUX=' "$FAKE_CLAUDE_DIR/$SID.$f-env" || fail "the $f must not hand the background service the window's tmux server"
+    ! grep -q '^TMUX_PANE=' "$FAKE_CLAUDE_DIR/$SID.$f-env" || fail "the $f must not hand the background service the window's pane"
+  done
   assert_grep "--name fm-$ID" "$FAKE_CLAUDE_DIR/calls.log" "the launch must name the session after the task"
   assert_grep "--dangerously-skip-permissions" "$FAKE_CLAUDE_DIR/calls.log" "the launch must keep the permission posture"
-  assert_contains "$(cat "$FAKE_CLAUDE_DIR/5e6f7a8b.prompt")" "brief for $ID" "the session must start from the brief"
-  assert_grep "FM_AGENT_VIEW_TASK" "$WT_DIR/.claude/settings.local.json" "every claude hook must be gated on the marker"
-  [ "$(fm_agent_view_viewer_state "$t" "$ID" 5e6f7a8b)" = session ] || fail "the window must be left showing the session"
+  assert_contains "$(cat "$FAKE_CLAUDE_DIR/$SID.prompt")" "brief for $ID" "the session must start from the brief"
+  hooks_answer_only_the_worker
+  [ "$(fm_agent_view_viewer_state "$t" "$ID" "$SID")" = session ] || fail "the window must be left showing the session"
   write_pool_lease "$(sed -n 's/^lease_holder=//p' "$meta")"
   pass "fm-spawn: a pilot launches as a named background session, records its id, gates its hooks, and attaches its window"
 }
@@ -542,7 +593,7 @@ test_send_refuses_a_detached_viewer() {
   out=$(fm_env "$ROOT/bin/fm-send.sh" "$ID" --key Left 2>&1)
   rc=$?
   expect_code 1 "$rc" "a Left key to a pilot"
-  [ "$(fm_agent_view_viewer_state "$t" "$ID" 5e6f7a8b)" = session ] || fail "a refused key must leave the viewer on its session"
+  [ "$(fm_agent_view_viewer_state "$t" "$ID" "$SID")" = session ] || fail "a refused key must leave the viewer on its session"
   end_foreground "$t" "the viewer"
   type_line "$t" "claude agents"
   wait_for 15 screen_has "$t" "enter to return" || fail "the agent view did not paint"
@@ -568,7 +619,7 @@ test_control_reattach_interrupt_exit() {
   rc=$?
   expect_code 0 "$rc" "re-attach"$'\n'"$out"
   assert_contains "$out" "via=reattach" "a running session with a detached window should only be re-attached"
-  [ "$(fm_agent_view_viewer_state "$t" "$ID" 5e6f7a8b)" = session ] || fail "re-attach must leave the window showing the session"
+  [ "$(fm_agent_view_viewer_state "$t" "$ID" "$SID")" = session ] || fail "re-attach must leave the window showing the session"
   [ "$(cat "$HOME_DIR/state/$ID.meta")" = "$before" ] || fail "re-attach must leave the record untouched"
   out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" interrupt 2>&1)
   expect_code 0 "$?" "interrupt"$'\n'"$out"
@@ -576,8 +627,8 @@ test_control_reattach_interrupt_exit() {
   out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" exit 2>&1)
   expect_code 0 "$?" "exit"$'\n'"$out"
   assert_contains "$out" "stopped $ID" "exit should report the session stopped"
-  assert_grep "stop 5e6f7a8b" "$FAKE_CLAUDE_DIR/calls.log" "exit must be claude stop"
-  session_running 5e6f7a8b && fail "exit must stop the session"
+  assert_grep "stop $SID" "$FAKE_CLAUDE_DIR/calls.log" "exit must be claude stop"
+  session_running "$SID" && fail "exit must stop the session"
   wait_for 15 window_at_shell "$t" || fail "exit must leave the window at its shell"
   out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" exit 2>&1)
   assert_contains "$out" "already-stopped" "a second exit is idempotent"
@@ -590,12 +641,29 @@ test_control_resumes() {
   out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" relaunch 2>&1)
   rc=$?
   expect_code 0 "$rc" "resume"$'\n'"$out"
-  assert_contains "$out" "agent_view=5e6f7a8b via=resume" "a stopped session must be resumed, not replaced"
-  session_running 5e6f7a8b || fail "resume must bring the same session back"
-  assert_grep "agent_view_id=5e6f7a8b" "$HOME_DIR/state/$ID.meta" "the record must keep the same session"
-  [ "$(fm_agent_view_viewer_state "$t" "$ID" 5e6f7a8b)" = session ] || fail "resume must leave the window showing the session"
+  assert_contains "$out" "agent_view=$SID via=resume" "a stopped session must be resumed, not replaced"
+  session_running "$SID" || fail "resume must bring the same session back"
+  assert_grep "agent_view_id=$SID" "$HOME_DIR/state/$ID.meta" "the record must keep the same session"
+  [ "$(fm_agent_view_viewer_state "$t" "$ID" "$SID")" = session ] || fail "resume must leave the window showing the session"
   [ "$(jq length "$FAKE_CLAUDE_DIR/sessions.json")" = 1 ] || fail "resume must not start a second session"
   pass "fm-control: relaunch of a stopped pilot resumes its own conversation"
+}
+
+test_control_restarts() {
+  local t out rc stops
+  t=$(sed -n 's/^window=//p' "$HOME_DIR/state/$ID.meta")
+  [ "$(fm_agent_view_viewer_state "$t" "$ID" "$SID")" = session ] || fail "divergence lost: the window must show the running session"
+  stops=$(grep -cx "stop $SID" "$FAKE_CLAUDE_DIR/calls.log")
+  out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" relaunch 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "restart"$'\n'"$out"
+  assert_contains "$out" "agent_view=$SID via=restart" "a running session its window shows must be restarted, not replaced"
+  [ "$(grep -cx "stop $SID" "$FAKE_CLAUDE_DIR/calls.log")" = $((stops + 1)) ] || fail "restart must stop the session once"
+  session_running "$SID" || fail "restart must bring the same session back"
+  assert_grep "agent_view_id=$SID" "$HOME_DIR/state/$ID.meta" "the record must keep the same session"
+  [ "$(jq length "$FAKE_CLAUDE_DIR/sessions.json")" = 1 ] || fail "restart must not start a second session"
+  [ "$(fm_agent_view_viewer_state "$t" "$ID" "$SID")" = session ] || fail "restart must leave the window showing the session"
+  pass "fm-control: relaunch of a running, shown pilot stops and resumes its own conversation"
 }
 
 test_watch_liveness_reads_the_session() {
@@ -605,8 +673,36 @@ test_watch_liveness_reads_the_session() {
   [ "$(fm_backend_agent_alive tmux "$t")" = dead ] || fail "divergence: the window alone must read dead"
   [ "$(fm_task_agent_alive "$HOME_DIR/state/$ID.meta" tmux "$t")" = alive ] \
     || fail "a running pilot with no viewer must read alive"
-  fm_agent_view_attach_window "$t" "$ID" 5e6f7a8b 10 || fail "re-attach for the next case"
+  type_line "$t" "env > $LAB/window-shell.env"
+  wait_for 15 grep -qs '^TMUX_PANE=%' "$LAB/window-shell.env" \
+    || fail "divergence lost: the window's shell must carry its tmux pane"
+  wait_for 15 window_at_shell "$t" || fail "the window did not return to its shell"
+  fm_agent_view_attach_window "$t" "$ID" "$SID" 10 || fail "re-attach for the next case"
   pass "liveness: a pilot's liveness follows its session, not its window"
+}
+
+test_control_starts_fresh() {
+  local t out rc fresh=6f7a8b9c
+  t=$(sed -n 's/^window=//p' "$HOME_DIR/state/$ID.meta")
+  jq -c --arg id "$SID" 'map(select(.id != $id))' "$FAKE_CLAUDE_DIR/sessions.json" > "$FAKE_CLAUDE_DIR/s.tmp"
+  mv -f "$FAKE_CLAUDE_DIR/s.tmp" "$FAKE_CLAUDE_DIR/sessions.json"
+  wait_for 15 window_at_shell "$t" || fail "the viewer of a removed session must exit"
+  out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" relaunch 2>&1)
+  expect_code 1 "$?" "a fresh relaunch without a note"
+  assert_contains "$out" "requires --note" "a fresh worker must be told what happened"
+  printf '%s' "$fresh" > "$FAKE_CLAUDE_DIR/next-id"
+  out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" relaunch --note "the previous session is gone" 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "fresh relaunch"$'\n'"$out"
+  assert_contains "$out" "agent_view=$fresh via=fresh" "a removed session must be replaced by a fresh one"
+  assert_grep "agent_view_id=$fresh" "$HOME_DIR/state/$ID.meta" "the record must name the fresh session"
+  assert_contains "$(cat "$FAKE_CLAUDE_DIR/$fresh.prompt")" "the previous session is gone" \
+    "the fresh session must start from the instructions and the note"
+  [ "$(jq -r .env.FM_AGENT_VIEW_TASK "$FAKE_CLAUDE_DIR/$fresh.settings")" = "$ID" ] \
+    || fail "the fresh session must carry the hook marker"
+  [ "$(fm_agent_view_viewer_state "$t" "$ID" "$fresh")" = session ] || fail "the window must show the fresh session"
+  SID=$fresh
+  pass "fm-control: relaunch of a removed pilot starts a fresh session from the instructions and the note"
 }
 
 test_control_exit_without_window() {
@@ -614,12 +710,12 @@ test_control_exit_without_window() {
   t=$(sed -n 's/^window=//p' "$HOME_DIR/state/$ID.meta")
   tmux kill-window -t "$t"
   [ "$(fm_backend_tmux_agent_state "$t")" = missing ] || fail "divergence lost: the window must be gone"
-  session_running 5e6f7a8b || fail "the session must outlive its window"
+  session_running "$SID" || fail "the session must outlive its window"
   out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" exit 2>&1)
   rc=$?
   expect_code 0 "$rc" "exit with the window gone"$'\n'"$out"
   printf '%s\n' "$out" | grep -q "^stopped $ID " || fail "exit must report the session stopped: $out"
-  ! session_running 5e6f7a8b || fail "exit must stop the session by its id with no window left"
+  ! session_running "$SID" || fail "exit must stop the session by its id with no window left"
   pass "fm-control: exit stops a pilot's session by id even after its window is gone"
 }
 test_teardown_removes_the_session() {
@@ -627,9 +723,27 @@ test_teardown_removes_the_session() {
   out=$(fm_env "$ROOT/bin/fm-teardown.sh" "$ID" --force 2>&1)
   rc=$?
   expect_code 0 "$rc" "teardown"$'\n'"$out"
-  assert_grep "rm 5e6f7a8b" "$FAKE_CLAUDE_DIR/calls.log" "cleanup must remove the session"
+  assert_grep "rm $SID" "$FAKE_CLAUDE_DIR/calls.log" "cleanup must remove the session"
   [ "$(jq length "$FAKE_CLAUDE_DIR/sessions.json")" = 0 ] || fail "cleanup must leave no session behind"
   pass "fm-teardown: cleanup stops and removes the pilot's session"
+}
+
+test_spawn_refused_launch() {
+  local id="avr$PID_TAG" wt="$LAB/pool/2/wt" out rc
+  mkdir -p "$HOME_DIR/data/$id" "$LAB/pool/2"
+  printf '# brief for %s\n' "$id" > "$HOME_DIR/data/$id/brief.md"
+  git -C "$PROJ_DIR" worktree add --quiet -b "task-$id" "$wt"
+  TASK_TMPS+=("/tmp/fm-$id")
+  : > "$FAKE_CLAUDE_DIR/refuse-launch"
+  out=$(fm_env env FM_FAKE_PANE_PATH="$wt" "$ROOT/bin/fm-spawn.sh" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1)
+  rc=$?
+  rm -f "$FAKE_CLAUDE_DIR/refuse-launch"
+  expect_code 1 "$rc" "a pilot launch Claude Code refuses"
+  assert_contains "$out" "refused the agent-view launch" "the refusal should say Claude Code refused the launch"
+  assert_contains "$out" "Workspace not trusted" "the refusal should carry Claude Code's own reason"
+  assert_no_grep "agent_view_id" "$HOME_DIR/state/$id.meta" "a launch that created no session must leave no session id, not even pending"
+  [ "$(jq length "$FAKE_CLAUDE_DIR/sessions.json")" = 0 ] || fail "a refused launch must leave no session"
+  pass "fm-spawn: a launch Claude Code refuses leaves a record that names no session"
 }
 
 # --- 7. switch off is today's launch, byte for byte --------------------------------
@@ -747,7 +861,10 @@ test_spawn_launches_a_pilot
 test_send_refuses_a_detached_viewer
 test_control_reattach_interrupt_exit
 test_control_resumes
+test_control_restarts
 test_watch_liveness_reads_the_session
+test_control_starts_fresh
 test_control_exit_without_window
 test_teardown_removes_the_session
+test_spawn_refused_launch
 test_switch_off_is_byte_identical

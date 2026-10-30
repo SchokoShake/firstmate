@@ -17,7 +17,9 @@
 # refusal, the /exit and double Ctrl+C detaches, re-attach, interrupt, liveness
 # with and without a viewer, exit, resume by attach with the session's own
 # environment intact, and cleanup.
-# Every session it starts is stopped and removed on any exit.
+# Every session it starts is stopped and removed on any exit, and every claude
+# client it starts runs from a minimal environment, so a run that starts Claude
+# Code's shared background service never leaves lab variables in it.
 #
 # The worker needs a workspace Claude Code already trusts, because a background
 # session refuses an untrusted one without showing a dialog, so the guard
@@ -112,6 +114,19 @@ cat > "$LAB/bin/no-mistakes" <<'SH'
 exit 1
 SH
 chmod +x "$LAB/bin/no-mistakes"
+# Claude Code's background service keeps the environment of whichever client
+# starts it and hands it to every session it hosts, the captain's included. So
+# every claude client this lab starts, in its windows and from its scripts,
+# runs from a minimal environment: the real HOME, the caller's PATH without the
+# lab's shims, and none of the runner's scratch variables. It keeps the argv[0]
+# an installed `claude` has, because the guard reads the viewer's arguments.
+cat > "$LAB/shim/claude" <<SH
+#!/usr/bin/env bash
+keep=(HOME=$(printf %q "$HOME") PATH=$(printf %q "$PATH"))
+for v in TERM LANG USER LOGNAME SHELL CLAUDE_CONFIG_DIR; do [ -z "\${!v:-}" ] || keep+=("\$v=\${!v}"); done
+exec env -i "\${keep[@]}" /bin/bash -c 'exec -a claude "\$0" "\$@"' $(printf %q "$(command -v claude)") "\$@"
+SH
+chmod +x "$LAB/shim/claude"
 export PATH="$LAB/shim:$LAB/bin:$PATH"
 
 git -C "$TRUSTED" worktree add --quiet --detach "$WT" HEAD || die "could not borrow a worktree from $TRUSTED"

@@ -3205,10 +3205,6 @@ spawn_record_agent_view_id() {  # <session-id-or-empty>
   return "$status"
 }
 
-agent_view_claude_prefix() {
-  [ -z "${CLAUDE_CONFIG_DIR:-}" ] || printf 'CLAUDE_CONFIG_DIR=%s ' "$(shell_quote "$CLAUDE_CONFIG_DIR")"
-}
-
 agent_view_fail() {  # <detail>
   printf 'failed: %s\n' "$1" >> "$STATE/$ID.status"
   echo "error: $1; inspect window $T" >&2
@@ -3243,10 +3239,9 @@ agent_view_listed() {  # <id>
 # own shell, so it starts in the verified worktree, then tie the launch to
 # exactly one session: the id it printed, confirmed by the session list as a
 # background session named fm-<id> in this worktree. Anything less leaves the
-# record pending, which no lifecycle path acts on. The launch drops the window's
-# own tmux identity, because a launch that has to start Claude Code's background
-# service hands that service its environment, and the service passes its
-# environment to every session it hosts, other workers' and the captain's alike.
+# record pending, which no lifecycle path acts on. The launch line is the
+# library's window-client line (fm_agent_view_client_line), because this launch
+# may be the client that starts Claude Code's shared background service.
 agent_view_start_session() {
   local out="$TASK_TMP/agent-view-launch.out" rc_file="$TASK_TMP/agent-view-launch.rc"
   local carrier=$SPAWN_TRACEPARENT settings line rc parsed named named_count
@@ -3260,7 +3255,7 @@ agent_view_start_session() {
     agent_view_fail "the agent-view launch settings for $ID could not be built"
     return 1
   }
-  line="$(agent_view_claude_prefix)env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u TMUX -u TMUX_PANE claude --bg --name $(shell_quote "$W") --settings $(shell_quote "$settings") --dangerously-skip-permissions $MODELFLAG$EFFORTFLAG\"\$($sq_opinput encode launch-brief < $sq_brief)\" > $(shell_quote "$out") 2>&1 < /dev/null; echo \$? > $(shell_quote "$rc_file")"
+  line="$(fm_agent_view_client_line "--bg --name $(shell_quote "$W") --settings $(shell_quote "$settings") --dangerously-skip-permissions $MODELFLAG$EFFORTFLAG\"\$($sq_opinput encode launch-brief < $sq_brief)\"") > $(shell_quote "$out") 2>&1 < /dev/null; echo \$? > $(shell_quote "$rc_file")"
   spawn_send_literal "$T" "$line"
   sleep 0.3
   spawn_send_key "$T" Enter
