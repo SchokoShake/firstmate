@@ -21,9 +21,10 @@
 #     watcher ownership
 #   - status-tail bounding, default and FM_SESSION_START_STATUS_TAIL override
 #   - the per-line status-tail cap and its truncation marker
-#   - startup backlog composition: done rows dropped, every in-flight/held/
-#     blocked row kept whole, the dispatchable queued listing bounded with an
-#     exact disclosed remainder
+#   - startup backlog projection: done rows dropped, in-flight, blocked, and
+#     live captain-hold rows listed with capped fields, lapsed holds listed by
+#     id, other held rows counted, the dispatchable queued listing bounded with
+#     an exact disclosed remainder, and the busy-fixture digest's byte bound
 #   - orphan status logs whose task meta has already disappeared
 #   - per-task endpoint-liveness lines for a live and a dead recorded target,
 #     tmux and herdr both

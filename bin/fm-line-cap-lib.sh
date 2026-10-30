@@ -19,9 +19,9 @@
 # practice - is bounded to the same number of bytes, and a multibyte character
 # is never cut in half into an invalid sequence.
 # Truncation stays recoverable because the session-start digest prints the
-# command that reads each task's full status log, while every OPEN DECISIONS
-# entry begins with the task id that identifies its durable state/<id>.status
-# source.
+# command that reads each task's status lines uncapped, while every OPEN
+# DECISIONS entry begins with the task id that identifies its durable
+# state/<id>.status source.
 
 FM_LINE_CAP_DEFAULT=220
 FM_LINE_CAP_SUFFIX=' [truncated]'
