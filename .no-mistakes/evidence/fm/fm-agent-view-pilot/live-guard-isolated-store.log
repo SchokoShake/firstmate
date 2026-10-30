@@ -1,0 +1,36 @@
+# harness claude 2.1.314 (Claude Code)
+ok - launch: claude --bg named the session after its task, and its id was read back, recorded, and listed in the worktree
+# cwd of the service (claude daemon): <home>
+# cwd of a service child (claude bg-pty-host): /tmp/cc-daemon-<uid>/<hash>/spare
+# cwd of a service child (claude bg-pty-host): <worktree>
+ok - service: Claude Code's background service runs outside the worktree, so teardown's reaper cannot reach it
+ok - guard: the viewer's process, its name border, and a clean footer read session, and the gated hooks fire
+ok - steer: fm-send's verified submit reached the session and a turn ran on it
+# skipped - question: needs a model reply, and this run's Claude Code store is deliberately not logged in
+ok - detach: the left arrow re-executes the viewer as the agent view, and the guard refuses to type there
+ok - re-attach: the window shows the same session again
+# fm-send '/background' -> WARNING: watcher still down (same stale episode; last beat: 12s ago, grace 300s) - full banner already printed this episode.
+error: '/background' would detach agent-view pilot worker avlive733532's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh avlive733532 exit; nothing was sent
+# fm-send '/background now' -> WARNING: watcher still down (same stale episode; last beat: 12s ago, grace 300s) - full banner already printed this episode.
+error: '/background' would detach agent-view pilot worker avlive733532's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh avlive733532 exit; nothing was sent
+# fm-send '/bg' -> WARNING: watcher still down (same stale episode; last beat: 13s ago, grace 300s) - full banner already printed this episode.
+error: '/bg' would detach agent-view pilot worker avlive733532's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh avlive733532 exit; nothing was sent
+# fm-send '/exit' -> WARNING: watcher still down (same stale episode; last beat: 13s ago, grace 300s) - full banner already printed this episode.
+error: '/exit' would detach agent-view pilot worker avlive733532's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh avlive733532 exit; nothing was sent
+# fm-send '/quit' -> WARNING: watcher still down (same stale episode; last beat: 14s ago, grace 300s) - full banner already printed this episode.
+error: '/quit' would detach agent-view pilot worker avlive733532's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh avlive733532 exit; nothing was sent
+# fm-send --key Left -> refused
+# fm-send --key C-c -> refused
+# fm-send --key C-z -> refused
+ok - refusal: /background, /bg, /exit, /quit and the Left, C-c, C-z keys are refused while the viewer shows the session, and it still shows it
+ok - detach paths: /exit and a double Ctrl+C also leave the session running in the agent view, and Escape leaves that for the shell
+# note: the session never read busy before the interrupt; interrupting it idle
+ok - interrupt: Escape through the viewer leaves the session running and shown
+ok - liveness: the session reads alive with no viewer, and a relaunch re-attaches it
+ok - exit and resume: claude stop, then claude attach resumes the same conversation with its environment intact
+ok - cleanup: the session is stopped and removed
+
+real	1m6.106s
+user	0m16.861s
+sys	0m12.954s
+rc=0

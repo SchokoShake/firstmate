@@ -1,0 +1,14 @@
+window=firstmate:fm-avoff1
+endpoint_task_id=avoff1
+worktree=/tmp/fm-avlive.ewx9/offlab/pool/1/wt
+project=/tmp/fm-avlive.ewx9/untrusted
+harness=claude
+kind=ship
+mode=local-only
+yolo=off
+tasktmp=/tmp/fm-avoff1
+model=haiku
+effort=default
+busy_gen=g1793365671.871018.7676
+spawn_gen=s1793365671.869766.29003
+lease_holder=fm-task:avoff1:l1793365669.870143.1962

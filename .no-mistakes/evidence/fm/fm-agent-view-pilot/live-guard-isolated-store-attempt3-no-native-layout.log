@@ -1,0 +1,15 @@
+# harness claude 2.1.314 (Claude Code)
+ok - launch: claude --bg named the session after its task, and its id was read back, recorded, and listed in the worktree
+# cwd of the service (2.1.314 daemon): <home>
+# cwd of a service child (claude bg-pty-host): /tmp/cc-daemon-<uid>/<hash>/spare
+# cwd of a service child (claude bg-pty-host): <worktree>
+ok - service: Claude Code's background service runs outside the worktree, so teardown's reaper cannot reach it
+ok - guard: the viewer's process, its name border, and a clean footer read session, and the gated hooks fire
+ok - steer: fm-send's verified submit reached the session and a turn ran on it
+# skipped - question: needs a model reply, and this run's Claude Code store is deliberately not logged in
+not ok - claude 2.1.314 (Claude Code): the left arrow did not turn the viewer into the agent view (leader: other)
+
+real	0m29.900s
+user	0m2.718s
+sys	0m2.832s
+rc=1

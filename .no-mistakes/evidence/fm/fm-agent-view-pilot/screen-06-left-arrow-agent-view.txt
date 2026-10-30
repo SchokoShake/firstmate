@@ -1,0 +1,24 @@
+
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  New sessions: Opus 5.5 · medium effort
+ ▝▝   ▝▝   /tmp/fm-agent-view-live.E69OgF/pool/1/wt
+           1 awaiting input · 0 working · 0 completed
+
+Needs input
+ Sessions that have a question or need your decision land here
+✻ fm-avlive733532  login required — run /login                                7s
+
+Working
+ Sessions Claude is actively working on — they keep running even if you close
+ the terminal
+
+Completed
+
+ A different way to work with Claude: hand off a bigger task than you would chat
+ through, and Claude organizes it in the sections above so you know when it
+ needs you.
+
+────────────────────────────────────────────────────────────────────────────────
+❯ describe a task for a new session
+────────────────────────────────────────────────────────────────────────────────
+  enter to return · space to reply · ctrl+x to delete · ? for shortcuts

@@ -1,0 +1,24 @@
+  This is an automated check of how firstmate supervises you.
+  Do not read, run, or change anything, and use no tool unless a later message
+  asks for one.
+  Reply with the single word ready.
+  ⎿  Not logged in · Please run /login
+
+✻ Baked for 0s · done 2:04 PM
+
+❯ Reply with the single word steered (live-guard steer one).
+  ⎿  Not logged in · Please run /login
+
+✻ Worked for 0s · done 2:04 PM
+
+❯ /exit
+
+❯ Count from 1 to 400, one number per line, then stop.
+  ⎿  Not logged in · Please run /login
+
+✻ Cooked for 0s · done 2:04 PM
+                                                            ◐ medium · /effort
+────────────────────────────────────────────────────────────── fm-avlive733532 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

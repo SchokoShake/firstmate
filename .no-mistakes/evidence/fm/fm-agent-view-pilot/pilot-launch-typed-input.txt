@@ -1,0 +1,4 @@
+cd -- '/tmp/fm-avlive.ewx9/offlab/pool/1/wt'
+Enter
+CLAUDE_CONFIG_DIR='/tmp/fm-avlive.ewx9/cfg-off' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u TMUX -u TMUX_PANE claude --bg --name 'fm-avoff1' --settings '{"env":{"CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION":"false","GOTMPDIR":"/tmp/fm-avoff1/gotmp","TRACEPARENT":"","FM_AGENT_VIEW_TASK":"avoff1"}}' --dangerously-skip-permissions --model 'haiku' "$('/tmp/fm-avlive.ewx9/src/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-avlive.ewx9/offlab/fmhome/data/avoff1/brief.md')" > '/tmp/fm-avoff1/agent-view-launch.out' 2>&1 < /dev/null; echo $? > '/tmp/fm-avoff1/agent-view-launch.rc'
+Enter

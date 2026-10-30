@@ -1,0 +1,1 @@
+failed: Claude Code refused the agent-view launch of avoff1 (exit 1): Workspace not trusted. Run `claude` in /tmp/fm-avlive.ewx9/offlab/pool/1/wt once and accept the trust prompt, then retry. 

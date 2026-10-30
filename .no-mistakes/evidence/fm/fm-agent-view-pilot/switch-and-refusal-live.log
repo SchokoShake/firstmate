@@ -1,0 +1,68 @@
+# base switch=absent: fm-spawn rc=0; window foreground: claude; spawned avoff1 harness=claude kind=ship mode=local-only yolo=off window=firstmate:fm-avoff1 worktree=/tmp/fm-avlive.ewx9/offlab/pool/1/wt
+# target switch=absent: fm-spawn rc=0; window foreground: claude; spawned avoff1 harness=claude kind=ship mode=local-only yolo=off window=firstmate:fm-avoff1 worktree=/tmp/fm-avlive.ewx9/offlab/pool/1/wt
+# target switch=off: fm-spawn rc=0; window foreground: claude; spawned avoff1 harness=claude kind=ship mode=local-only yolo=off window=firstmate:fm-avoff1 worktree=/tmp/fm-avlive.ewx9/offlab/pool/1/wt
+ok - switch off: target-absent typed.log is byte-identical to main's
+ok - switch off: target-absent meta is byte-identical to main's
+ok - switch off: target-absent hooks.json is byte-identical to main's
+ok - switch off: target-absent spawn.out is byte-identical to main's
+ok - switch off: target-absent spawn.rc is byte-identical to main's
+ok - switch off: target-off typed.log is byte-identical to main's
+ok - switch off: target-off meta is byte-identical to main's
+ok - switch off: target-off hooks.json is byte-identical to main's
+ok - switch off: target-off spawn.out is byte-identical to main's
+ok - switch off: target-off spawn.rc is byte-identical to main's
+ok - switch off: main's typed launch exports GOTMPDIR and starts no background session
+ok - switch off: the record names no agent-view session
+# switch=empty: fm-spawn rc=1: error: config/agent-view-workers must say on or off; refusing to guess whether avoff1 should be an agent-view pilot worker
+ok - invalid switch (empty): the spawn refuses
+ok - invalid switch (empty): no record, no window, nothing typed
+# switch=yes: fm-spawn rc=1: error: config/agent-view-workers must say on or off; refusing to guess whether avoff1 should be an agent-view pilot worker
+ok - invalid switch (yes): the spawn refuses
+ok - invalid switch (yes): no record, no window, nothing typed
+# untrusted workspace: fm-spawn rc=1
+#   warning: /tmp/fm-avlive.ewx9/offlab/fmhome/data/avoff1/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode local-only - confirm its definition of done matches
+#   notice: avoff1 ships mode=local-only while the standing posture for untrusted is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+#   error: Claude Code refused the agent-view launch of avoff1 (exit 1): Workspace not trusted. Run `claude` in /tmp/fm-avlive.ewx9/offlab/pool/1/wt once and accept the trust prompt, then retry. ; inspect window firstmate:fm-avoff1
+ok - refused launch: fm-spawn fails and quotes Claude Code's own reason
+ok - refused launch: the record names no session (no agent_view_id line, not pending)
+ok - refused launch: the task status records the failure
+ok - refused launch: the store lists no session
+ok - pilot launch line: claude --bg named fm-avoff1, environment via --settings, tmux identity dropped
+ok - pilot launch: nothing is exported into the window's shell
+ok - pilot hooks: every claude hook is gated on the worker's marker
+#   fm-send.sh avoff1 please continue -> rc=1: ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ error: task avoff1 records agent-view session 'pending' rather than a session id, so its launch may still be in flight; nothing was sent
+ok - pending record: fm-send refuses, launch may be in flight
+#   fm-control.sh avoff1 exit -> rc=1: error: task avoff1 records agent-view session 'pending' rather than a session id, so its launch may still be in flight; find its session with 'claude agents --json --all' (name fm-avoff1) and reconcile the record before any lifecycle action
+ok - pending record: fm-control exit refuses
+#   fm-teardown.sh avoff1 --force -> rc=1: REFUSED: avoff1 records agent-view session 'pending' rather than a session id, so its launch may still be in flight. Find its session with 'claude agents --json --all' (name fm-avoff1), stop and remove it with 'claude stop <id>' and 'claude rm <id>', drop the agent_view_id line from /tmp/fm-avlive.ewx9/offlab/fmhome/state/avoff1.meta, then rerun.
+ok - pending record: fm-teardown --force refuses and keeps the record
+ok - pending record: nothing was typed into the window
+#   fm-control.sh avoff1 exit -> rc=1: error: secondmate avoff1's record names agent-view session '0123abcd', but secondmates are never piloted; reconcile its record before any lifecycle action
+ok - secondmate record naming a pilot session: fm-control exit refuses
+#   fm-control.sh avoff1 interrupt -> rc=1: error: secondmate avoff1's record names agent-view session '0123abcd', but secondmates are never piloted; reconcile its record before any lifecycle action
+ok - secondmate record naming a pilot session: fm-control interrupt refuses
+#   fm-control.sh avoff1 relaunch -> rc=1: error: secondmate avoff1's record names agent-view session '0123abcd', but secondmates are never piloted; reconcile its record before any lifecycle action
+ok - secondmate record naming a pilot session: fm-control relaunch refuses
+#   fm-control.sh avoff1 relaunch --model sonnet -> rc=1: error: task avoff1 is an agent-view pilot worker, which relaunches only as itself; --harness, --model, and --effort do not apply to it
+ok - pilot record: relaunch --model refuses
+#   fm-send.sh avoff1 /background -> rc=1: WARNING: watcher still down (same stale episode; last beat: 6s ago, grace 300s) - full banner already printed this episode. error: '/background' would detach agent-view pilot worker avoff1's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh avoff1 exit; nothing was sent
+ok - pilot record: fm-send '/background' refuses as a viewer detach
+#   fm-send.sh avoff1 /bg -> rc=1: WARNING: watcher still down (same stale episode; last beat: 6s ago, grace 300s) - full banner already printed this episode. error: '/bg' would detach agent-view pilot worker avoff1's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh avoff1 exit; nothing was sent
+ok - pilot record: fm-send '/bg' refuses as a viewer detach
+#   fm-send.sh avoff1 /exit -> rc=1: WARNING: watcher still down (same stale episode; last beat: 7s ago, grace 300s) - full banner already printed this episode. error: '/exit' would detach agent-view pilot worker avoff1's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh avoff1 exit; nothing was sent
+ok - pilot record: fm-send '/exit' refuses as a viewer detach
+#   fm-send.sh avoff1 /quit -> rc=1: WARNING: watcher still down (same stale episode; last beat: 7s ago, grace 300s) - full banner already printed this episode. error: '/quit' would detach agent-view pilot worker avoff1's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh avoff1 exit; nothing was sent
+ok - pilot record: fm-send '/quit' refuses as a viewer detach
+#   fm-send.sh avoff1 /no-mistakes -> rc=1: WARNING: watcher still down (same stale episode; last beat: 7s ago, grace 300s) - full banner already printed this episode. error: window firstmate:fm-avoff1 is not showing agent-view pilot worker avoff1's own session (viewer state: detached), so input could land in the agent view, where Enter starts a new session in the worker's local copy; nothing was sent. Re-attach the viewer with bin/fm-control.sh avoff1 relaunch
+ok - pilot record: a skill command is not a detach, but a window not showing the session still refuses it
+ok - pilot record: nothing was typed by any refusal
+#   fm-control.sh avoff1 exit -> rc=0: already-stopped avoff1 harness=claude backend=tmux endpoint=firstmate:fm-avoff1 worktree=/tmp/fm-avlive.ewx9/offlab/pool/1/wt
+ok - pilot record whose session no longer exists: exit reads the session list and reports already-stopped
+# raw launch command with the switch on: fm-spawn rc=0
+#   agent-view pilot: avoff1 uses a raw launch command, which is never piloted; launching it as an ordinary worker
+#   spawned avoff1 harness=claude kind=ship mode=local-only yolo=off window=firstmate:fm-avoff1 worktree=/tmp/fm-avlive.ewx9/offlab/pool/1/wt
+ok - raw launch command: launched as an ordinary worker with a plain notice
+ok - raw launch command: no background session, no agent_view_id
+# store service after the run: not running
+# failures: 0
+rc=0

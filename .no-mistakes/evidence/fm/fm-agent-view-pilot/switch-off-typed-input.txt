@@ -1,0 +1,6 @@
+cd -- '/tmp/fm-avlive.ewx9/offlab/pool/1/wt'
+Enter
+export GOTMPDIR=/tmp/fm-avoff1/gotmp
+Enter
+CLAUDE_CONFIG_DIR='/tmp/fm-avlive.ewx9/cfg-off' env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_AGENT_VIEW=1 claude --dangerously-skip-permissions --model 'haiku' --name 'fm-avoff1' "$('<FM_ROOT>/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-avlive.ewx9/offlab/fmhome/data/avoff1/brief.md')"
+Enter

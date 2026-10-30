@@ -1,0 +1,36 @@
+# harness claude 2.1.314 (Claude Code)
+ok - launch: claude --bg named the session after its task, and its id was read back, recorded, and listed in the worktree
+# cwd of the service (2.1.314 daemon): <home>
+# cwd of a service child (claude bg-pty-host): /tmp/cc-daemon-<uid>/<hash>/spare
+# cwd of a service child (claude bg-pty-host): <worktree>
+ok - service: Claude Code's background service runs outside the worktree, so teardown's reaper cannot reach it
+not ok - claude 2.1.314 (Claude Code): the first turn never ended through the gated Stop hook; screen:
+
+ ▐▛███▛█   Claude Code v2.1.314
+▝▜██████▀  Haiku 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/fm-agent-view-live.4lA4OM/pool/1/wt
+
+
+❯ FIRSTMATE_OP: v1 launch-brief: # Live guard worker
+
+  This is an automated check of how firstmate supervises you.
+  Do not read, run, or change anything, and use no tool unless a later message
+  asks for one.
+  Reply with the single word ready.
+  ⎿  Not logged in · Please run /login
+
+✻ Crunched for 0s · done 1:57 PM
+
+
+
+
+                                                    Not logged in · Run /login
+────────────────────────────────────────────────────────────── fm-avlive492856 ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+
+real	3m7.398s
+user	0m2.268s
+sys	0m1.990s
+rc=1

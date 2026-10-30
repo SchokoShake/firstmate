@@ -1,0 +1,9 @@
+# harness claude 2.1.314 (Claude Code)
+not ok - claude 2.1.314 (Claude Code): the pilot launch failed: warning: /tmp/fm-agent-view-live.8E2RqW/fmhome/data/avlive362156/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode local-only - confirm its definition of done matches
+notice: avlive362156 ships mode=local-only while the standing posture for repo is no-mistakes - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state
+error: Claude Code refused the agent-view launch of avlive362156 (exit 1): --bg with bypassPermissions requires accepting the disclaimer first. Run `claude --dangerously-skip-permissions` once interactively. ; inspect window firstmate:fm-avlive362156
+
+real	0m2.824s
+user	0m0.595s
+sys	0m0.503s
+rc=1
