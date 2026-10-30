@@ -526,6 +526,38 @@ test_self_announced_close_does_not_rewake_but_next_note_does() {
   pass "a self-announced close never wakes its own home, and the next real note still does"
 }
 
+# Firstmate's own memo and by-hand decision close, written through
+# bin/fm-status-note.sh, never wake the watcher of the home that wrote them,
+# while a worker's line appended afterwards to the same log still does.
+test_status_note_does_not_rewake_but_worker_line_does() {
+  local dir state fakebin out status_file pid
+  dir=$(make_case status-note-quiet); state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"
+  status_file="$state/task.status"
+  printf 'blocked [key=k1]: need the staging credential\n' > "$status_file"
+  prime_status_seen "$state" "$status_file" || fail "could not prime the announced baseline"
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-status-note.sh" task 'captain asked to hold until Monday' \
+    || fail "the firstmate memo was not written"
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-status-note.sh" --resolve k1 task 'credential provided out of band' \
+    || fail "the firstmate decision close was not written"
+  grep -Fxq 'note: firstmate: captain asked to hold until Monday' "$status_file" \
+    || fail "the memo line was not appended as a firstmate note"
+  grep -Fxq 'resolved [key=k1]: firstmate: credential provided out of band' "$status_file" \
+    || fail "the close line was not appended as a firstmate resolution"
+  export FM_FAKE_CREW_STATE='state: unknown · source: none · idle worker'
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "firstmate's own status notes woke its own watcher: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "firstmate's own status notes printed a wake reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "firstmate's own status notes enqueued a durable wake"; }
+  printf 'working: resumed with the credential\n' >> "$status_file"
+  wait_for_exit "$pid" 40 || fail "a worker line after firstmate's own notes was swallowed"
+  grep -F "signal: $status_file" "$out" >/dev/null \
+    || fail "the worker line did not surface as a signal"
+  pass "firstmate's own notes never wake its home, and the next worker line still does"
+}
+
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
 
 test_actionable_signal_surfaced() {
@@ -791,6 +823,54 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
   pass "a declared pause is absorbed on first sight, then re-surfaced as a recheck past the threshold, never wedge-escalated"
 }
 
+# The production default re-surface cadence for a declared pause is four hours:
+# a pause idle for two hours, which the old hourly default re-surfaced, stays
+# absorbed, and one idle past four hours re-surfaces as a recheck.
+# FM_PAUSE_RESURFACE_SECS is unset so the default is what runs.
+test_declared_pause_default_resurface_is_four_hours() {
+  local dir state fakebin out capture_file window key pane_hash sig pid statusf
+  dir=$(make_case paused-default-cadence); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-held-default"
+  statusf="$state/held-default.status"
+  printf 'idle, holding for upstream' > "$capture_file"
+  printf 'window=%s\nkind=ship\n' "$window" > "$state/held-default.meta"
+  printf 'paused: holding for the upstream tool release\n' > "$statusf"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "idle, holding for upstream")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  export FM_FAKE_CREW_STATE='state: paused · source: status-log · holding for the upstream tool release'
+
+  set_mtime $(( $(date +%s) - 7200 )) "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held-default_status"
+  env -u FM_PAUSE_RESURFACE_SECS PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$capture_file" FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_live "$pid" 30; then
+    reap "$pid"; fail "a two-hour declared pause re-surfaced under the default cadence (default is not four hours): $(cat "$out")"
+  fi
+  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "the two-hour pause never reached the paused absorb"; }
+  [ ! -e "$state/.paused-resurfaced-$key" ] || { reap "$pid"; fail "a two-hour pause recorded a re-surface"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional two-hour absorb stop"
+
+  set_mtime $(( $(date +%s) - 14520 )) "$statusf"
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-held-default_status"
+  : > "$out"
+  printf 'idle, holding for upstream (token 2)' > "$capture_file"
+  env -u FM_PAUSE_RESURFACE_SECS PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" \
+    FM_FAKE_TMUX_CAPTURE="$capture_file" FM_FAKE_TMUX_CURRENT_COMMAND=zsh \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 40 || fail "a declared pause idle past four hours did not re-surface under the default cadence"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the four-hour re-surface did not print a stale wake"
+  grep -F "awaiting external" "$out" >/dev/null || fail "the four-hour re-surface was not labeled an awaiting-external recheck"
+  pass "the production default pause re-surface cadence is four hours (two hours stays absorbed, past four re-surfaces)"
+}
+
 # A captain-held crew can leave a stable backend endpoint after its agent exits.
 # fm-crew-state then authoritatively reports unknown rather than paused, but the
 # confirmed-dead agent plus the declared wait or captain-held transfer must retain
@@ -954,6 +1034,50 @@ test_live_parked_pr_never_floods_stale_wakes() {
   [ -e "$state/.paused-$key" ] || fail "a live parked PR lost its pause cadence marker"
   [ ! -e "$state/.stale-since-$key" ] || fail "a live parked PR started a wedge timer"
   pass "a live crew parked on a declared wait never floods stale wakes as its idle pane redraws"
+}
+
+# A memo firstmate leaves on a parked crew, through bin/fm-status-note.sh, must not
+# mask the crew's standing declared wait: the next redrawn pane still absorbs on
+# the pause cadence instead of surfacing a stale wake, even when the memo's prose
+# carries a captain-relevant token such as "merged".
+test_status_note_keeps_declared_wait_absorbed() {
+  local dir state fakebin out capture_file statusf window key pid round wakes pane_text
+  local done_state='state: done · source: run-step · checks green: PR ready for review'
+  dir=$(make_case status-note-declared-wait); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/memo.status"
+  window="test:fm-memo"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/memo.meta"
+  printf 'paused: awaiting the captain merge on PR 9\n' > "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-memo_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+
+  round=1
+  while [ "$round" -le 2 ]; do
+    if [ "$round" -eq 2 ]; then
+      FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-status-note.sh" memo 'captain will have merged PR 9 by Monday' \
+        || fail "the firstmate memo on a parked crew was not written"
+    fi
+    pane_text="idle at the prompt, awaiting captain merge (ctx $((99 - round))%)"
+    printf '%s\n' "$pane_text" > "$capture_file"
+    rm -f "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$done_state" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+      FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" 2>&1 &
+    pid=$!
+    wait_live "$pid" 45 || fail "round $round of a parked crew given a firstmate memo exited instead of absorbing its declared wait: $(cat "$out")"
+    reap "$pid"
+    wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+    [ "$wakes" -eq 0 ] || fail "round $round of a parked crew given a firstmate memo queued $wakes stale wakes: $(cat "$out")"
+    [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$(hash_text "$pane_text")" ] \
+      || fail "round $round of a parked crew given a firstmate memo did not reach the declared-wait absorb path: $(cat "$out")"
+    ack_stopped_cycle "$state" >/dev/null 2>&1 || true
+    round=$((round + 1))
+  done
+  [ -e "$state/.paused-$key" ] || fail "a firstmate memo dropped the parked crew's pause cadence marker"
+  pass "a firstmate memo never masks a parked crew's declared wait"
 }
 
 # The same parked PR, read through its own no-mistakes run instead of its log.
@@ -2371,6 +2495,7 @@ test_turn_ended_not_working_surfaced
 test_working_note_not_working_surfaced
 test_secondmate_status_note_surfaced_despite_busy_agent
 test_self_announced_close_does_not_rewake_but_next_note_does
+test_status_note_does_not_rewake_but_worker_line_does
 test_actionable_signal_surfaced
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
@@ -2385,9 +2510,11 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection
 test_busy_pane_default_turn_age_bound_is_3600s
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
+test_declared_pause_default_resurface_is_four_hours
 test_declared_pause_is_bounded_whether_agent_exited_or_live
 test_live_parked_pr_never_floods_stale_wakes
 test_run_attributed_done_under_declared_wait
+test_status_note_keeps_declared_wait_absorbed
 test_declared_wait_absorb_still_surfaces_real_failures
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed

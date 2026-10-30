@@ -64,11 +64,12 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # Bounded re-surface cadence for a declared pause or a dead-agent captain hold.
 # Far longer than the wedge threshold (FM_STALE_ESCALATE_SECS, default 240s), it
 # avoids nagging a deliberate wait while ensuring a forgotten hold cannot rot
-# invisibly - it re-surfaces once for a recheck every window. One hour by default;
-# both consumers read FM_PAUSE_RESURFACE_SECS with this default so the cadence has
-# one owner.
+# invisibly - it re-surfaces once for a recheck every window. Four hours by
+# default: a declared wait is expected to clear on its own, so the recheck is a
+# backstop, and an hourly one only produced nagging. Both consumers read
+# FM_PAUSE_RESURFACE_SECS with this default so the cadence has one owner.
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
-FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
+FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
 
 # The resolution verb and durable-backlog-transfer verb that CLOSE a keyed
 # status decision opened by needs-decision or blocked. See status_open_decisions
@@ -77,11 +78,13 @@ FM_PAUSE_RESURFACE_SECS_DEFAULT=3600
 FM_CLASSIFY_RESOLVE_VERB_DEFAULT='resolved'
 FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
 
-# Return the last non-blank line of a status file (empty if missing/blank).
+# Return the last non-blank line of a status file (empty if missing/blank),
+# skipping firstmate's own `note: firstmate:` memos (bin/fm-status-note.sh): a
+# memo never stands in for the worker's current state.
 last_status_line() {
   local f=$1
   [ -e "$f" ] || return 0
-  grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -1
+  grep -v -e '^[[:space:]]*$' -e '^note: firstmate:' "$f" 2>/dev/null | tail -1
 }
 
 # 0 if the given (last) status line's leading verb is a real terminal captain verb
