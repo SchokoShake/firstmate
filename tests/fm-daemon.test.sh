@@ -349,6 +349,37 @@ test_housekeeping_paused_resurfaces_and_resets() {
   pass "housekeeping re-surfaces a stale declared pause on the long cadence and resets its window"
 }
 
+# The production default cadence is four hours: a pause marker two hours old,
+# which the old hourly default re-surfaced, is left alone, and one past four
+# hours re-surfaces. FM_PAUSE_RESURFACE_SECS is unset so the default is what runs.
+test_housekeeping_paused_default_cadence_is_four_hours() {
+  local dir state fakebin win pane key
+  dir=$(make_supercase paused-default-cadence)
+  state="$dir/state"; fakebin="$dir/fakebin"
+  win="sess:fm-held-w16"; pane="$dir/pane.txt"
+  printf 'paused: holding for the upstream tool release\n' > "$state/held-w16.status"
+  printf 'idle prompt $\n' > "$pane"
+  key=$(printf '%s' "held-w16" | tr ':/.' '___')
+  echo $(( $(date +%s) - 7200 )) > "$state/.subsuper-paused-$key"
+  (
+    unset FM_PAUSE_RESURFACE_SECS
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+      FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  )
+  [ -e "$state/.subsuper-paused-$key" ] || fail "a two-hour pause lost its marker under the default cadence"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "a two-hour pause re-surfaced under the default cadence (default is not four hours)"
+  echo $(( $(date +%s) - 14520 )) > "$state/.subsuper-paused-$key"
+  (
+    unset FM_PAUSE_RESURFACE_SECS
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$win" FM_FAKE_TMUX_CAPTURE="$pane" \
+      FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  )
+  grep -F "awaiting external" "$state/.subsuper-escalations" >/dev/null 2>&1 \
+    || fail "a pause past four hours did not re-surface under the default cadence"
+  pass "housekeeping's default pause re-surface cadence is four hours (two hours stays quiet, past four re-surfaces)"
+}
+
 # A pause whose pane became busy again (the crew resumed) drops its marker without
 # escalating, exactly like a resumed wedge.
 test_housekeeping_paused_resumed_cleared() {
@@ -1852,6 +1883,7 @@ test_housekeeping_seeds_pause_marker_from_status
 test_housekeeping_persistent_stale_escalates
 test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
+test_housekeeping_paused_default_cadence_is_four_hours
 test_housekeeping_paused_resumed_cleared
 test_housekeeping_paused_unpaused_cleared
 test_housekeeping_stale_marker_transitions_to_pause
