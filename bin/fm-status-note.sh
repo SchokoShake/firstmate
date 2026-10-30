@@ -22,6 +22,10 @@
 # still lists a `note:` line once, because that presentation is not a wake.
 #
 # The `firstmate:` text prefix marks the line's provenance for later readers.
+# A task's current state skips `note: firstmate:` lines (last_status_line in
+# bin/fm-classify-lib.sh), so a memo never masks the worker's last line; a
+# `--resolve` line is a real state change and stays current, as with
+# fm-send.sh --resolve-key.
 # Newlines, tabs, and other control characters in <text> become spaces or are
 # dropped, so one call always writes exactly one line.
 #

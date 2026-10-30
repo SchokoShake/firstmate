@@ -1036,6 +1036,50 @@ test_live_parked_pr_never_floods_stale_wakes() {
   pass "a live crew parked on a declared wait never floods stale wakes as its idle pane redraws"
 }
 
+# A memo firstmate leaves on a parked crew, through bin/fm-status-note.sh, must not
+# mask the crew's standing declared wait: the next redrawn pane still absorbs on
+# the pause cadence instead of surfacing a stale wake, even when the memo's prose
+# carries a captain-relevant token such as "merged".
+test_status_note_keeps_declared_wait_absorbed() {
+  local dir state fakebin out capture_file statusf window key pid round wakes pane_text
+  local done_state='state: done · source: run-step · checks green: PR ready for review'
+  dir=$(make_case status-note-declared-wait); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/memo.status"
+  window="test:fm-memo"
+  printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/memo.meta"
+  printf 'paused: awaiting the captain merge on PR 9\n' > "$statusf"
+  printf '%s' "$(seen_sig "$statusf")" > "$state/.seen-memo_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+
+  round=1
+  while [ "$round" -le 2 ]; do
+    if [ "$round" -eq 2 ]; then
+      FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-status-note.sh" memo 'captain will have merged PR 9 by Monday' \
+        || fail "the firstmate memo on a parked crew was not written"
+    fi
+    pane_text="idle at the prompt, awaiting captain merge (ctx $((99 - round))%)"
+    printf '%s\n' "$pane_text" > "$capture_file"
+    rm -f "$state/.hash-$key"
+    printf '1\n' > "$state/.count-$key"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE="$done_state" \
+      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+      FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" 2>&1 &
+    pid=$!
+    wait_live "$pid" 45 || fail "round $round of a parked crew given a firstmate memo exited instead of absorbing its declared wait: $(cat "$out")"
+    reap "$pid"
+    wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue" 2>/dev/null || echo 0)
+    [ "$wakes" -eq 0 ] || fail "round $round of a parked crew given a firstmate memo queued $wakes stale wakes: $(cat "$out")"
+    [ "$(cat "$state/.stale-$key" 2>/dev/null || true)" = "$(hash_text "$pane_text")" ] \
+      || fail "round $round of a parked crew given a firstmate memo did not reach the declared-wait absorb path: $(cat "$out")"
+    ack_stopped_cycle "$state" >/dev/null 2>&1 || true
+    round=$((round + 1))
+  done
+  [ -e "$state/.paused-$key" ] || fail "a firstmate memo dropped the parked crew's pause cadence marker"
+  pass "a firstmate memo never masks a parked crew's declared wait"
+}
+
 # The same parked PR, read through its own no-mistakes run instead of its log.
 # fm-crew-state.sh gives an attributed run precedence, so a crew whose PR is up and
 # green reports `done · run-step` while its log's last line is still the standing
@@ -2470,6 +2514,7 @@ test_declared_pause_default_resurface_is_four_hours
 test_declared_pause_is_bounded_whether_agent_exited_or_live
 test_live_parked_pr_never_floods_stale_wakes
 test_run_attributed_done_under_declared_wait
+test_status_note_keeps_declared_wait_absorbed
 test_declared_wait_absorb_still_surfaces_real_failures
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed

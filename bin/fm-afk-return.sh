@@ -8,11 +8,12 @@
 #   fm-afk-return.sh guard    Read-only refusal while away or catch-up is pending.
 #
 # `blocked:` is the crewmate protocol's firstmate-actionable verb. A live task's
-# open blocked event must be remediated and closed with `resolved [key=...]`, or
-# explicitly reclassified in the status stream with a durable reason, before an
-# ordinary captain request may proceed. `needs-decision:` belongs to the
-# configured approval authority and is deliberately not part of this blocker
-# gate; normal reporting routes it through the AGENTS.md section 7 contract.
+# open blocked event must be remediated and closed, or explicitly reclassified
+# with a durable reason, through `bin/fm-status-note.sh --resolve <key>
+# <task-id> <reason>` before an ordinary captain request may proceed.
+# `needs-decision:` belongs to the configured approval authority and is
+# deliberately not part of this blocker gate; normal reporting routes it through
+# the AGENTS.md section 7 contract.
 #
 # The durable state/.afk-return-catchup file is written BEFORE daemon shutdown,
 # so a crash between stopping, wake presentation, and blocker handling fails closed.
@@ -184,7 +185,7 @@ return_reconcile() {
     printf 'fm-afk-return: catch-up must finish before the captain request\n' >&2
     print_evidence "$GATE" >&2
     print_blockers "$GATE" >&2
-    printf 'fm-afk-return: handle each blocker now, or close it with resolved [key=...] and append a durable reclassification reason, then run bin/fm-afk-return.sh check\n' >&2
+    printf 'fm-afk-return: handle each blocker now, or close it with bin/fm-status-note.sh --resolve <key> <task-id> <durable reason>, then run bin/fm-afk-return.sh check\n' >&2
     rm -f "$evidence" "$blockers" "$drain_err"
     return 3
   fi

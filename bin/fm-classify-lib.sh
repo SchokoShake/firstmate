@@ -78,11 +78,13 @@ FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
 FM_CLASSIFY_RESOLVE_VERB_DEFAULT='resolved'
 FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT='captain-held'
 
-# Return the last non-blank line of a status file (empty if missing/blank).
+# Return the last non-blank line of a status file (empty if missing/blank),
+# skipping firstmate's own `note: firstmate:` memos (bin/fm-status-note.sh): a
+# memo never stands in for the worker's current state.
 last_status_line() {
   local f=$1
   [ -e "$f" ] || return 0
-  grep -v '^[[:space:]]*$' "$f" 2>/dev/null | tail -1
+  grep -v -e '^[[:space:]]*$' -e '^note: firstmate:' "$f" 2>/dev/null | tail -1
 }
 
 # 0 if the given (last) status line's leading verb is a real terminal captain verb
