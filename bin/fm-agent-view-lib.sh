@@ -40,10 +40,13 @@
 #      stop and a resume. Every client the pilot types into a worker's window
 #      (fm_agent_view_client_line) drops the window's tmux identity and Cursor
 #      markers, because that client may be the one that starts the service.
-#      The service itself runs in the home directory and its pty hosts under
-#      /tmp/cc-daemon-<uid>/, never in the worktree it was started from, so
-#      teardown's working-directory reaper (bin/fm-teardown.sh) never reaches
-#      the processes that host other sessions.
+#      The service itself runs in the home directory and its idle pty hosts
+#      under /tmp/cc-daemon-<uid>/; only the pty host running a session takes
+#      that session's working directory. In a worker's worktree, teardown's
+#      working-directory reaper (bin/fm-teardown.sh) can therefore reach only
+#      the worker's own session and the pty host running it, which teardown
+#      stops and removes before its reap, and never the service or the
+#      processes that host other sessions.
 #   2. Exit is `claude stop <id>` (fm_agent_view_stop). `/exit` in a viewer
 #      leaves the worker running and turns the window into the agent view.
 #   3. Liveness reads `claude agents --json --all` by id
@@ -412,7 +415,8 @@ fm_agent_view_attach_window() {  # <target> <task> <id> <wait-seconds>
 # that would themselves take the viewer off that session: any key but Escape,
 # Enter, Up, Down, Tab, and a single digit (the left arrow opens the agent
 # view, a double Ctrl+C detaches to it, Ctrl+Z suspends the viewer), and the
-# /exit, /quit, and /bg commands, which leave the worker running unwatched.
+# /exit, /quit, /bg, and /background commands, which leave the worker running
+# unwatched.
 fm_agent_view_input_guard() {  # <task> <id> <target> key|text <input>
   local task=$1 id=$2 target=$3 kind=$4 input=$5 state first
   if ! fm_agent_view_id_valid "$id"; then
@@ -432,7 +436,7 @@ fm_agent_view_input_guard() {  # <task> <id> <target> key|text <input>
     text)
       first=${input%%[[:space:]]*}
       case "$first" in
-        /exit|/quit|/bg)
+        /exit|/quit|/bg|/background)
           echo "error: '$first' would detach agent-view pilot worker $task's viewer and leave the worker running unwatched; stop it with bin/fm-control.sh $task exit; nothing was sent" >&2
           return 1
           ;;

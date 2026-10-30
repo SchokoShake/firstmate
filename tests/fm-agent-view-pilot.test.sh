@@ -342,7 +342,7 @@ test_input_guard() {
     out=$(fm_agent_view_input_guard i1 "$id" "$t" key "$key" 2>&1) && fail "key $key must be refused"
     assert_contains "$out" "nothing was sent" "the $key refusal should say nothing was sent"
   done
-  for cmd in /exit /quit "/bg now"; do
+  for cmd in /exit /quit "/bg now" /background; do
     out=$(fm_agent_view_input_guard i1 "$id" "$t" text "$cmd" 2>&1) && fail "'$cmd' must be refused"
     assert_contains "$out" "bin/fm-control.sh i1 exit" "the '$cmd' refusal should name the control plane"
   done

@@ -187,8 +187,14 @@ Bounded output from the run that produced this record:
 ```text
 # harness claude 2.1.314 (Claude Code)
 ok - launch: claude --bg named the session after its task, and its id was read back, recorded, and listed in the worktree
+# cwd of the service (claude daemon): <home>
+# cwd of a service child (claude bg-pty-host): /tmp/cc-daemon-<uid>/<hash>/spare
+# cwd of a service child (claude bg-pty-host): <worktree>
+ok - service: Claude Code's background service runs outside the worktree, so teardown's reaper cannot reach it
 ok - guard: the viewer's process, its name border, and a clean footer read session, and the gated hooks fire
 ok - steer: fm-send's verified submit reached the session and a turn ran on it
+# session-list status while the question is pending: waiting
+ok - question: a pending question keeps the viewer reading session, and a digit sent through fm-send answers it
 ok - detach: the left arrow re-executes the viewer as the agent view, and the guard refuses to type there
 ok - re-attach: the window shows the same session again
 ok - detach paths: /exit and a double Ctrl+C also leave the session running in the agent view, and Escape leaves that for the shell
@@ -196,7 +202,7 @@ ok - interrupt: Escape through the viewer leaves the session running and shown
 ok - liveness: the session reads alive with no viewer, and a relaunch re-attaches it
 ok - exit and resume: claude stop, then claude attach resumes the same conversation with its environment intact
 ok - cleanup: the session is stopped and removed
-FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=58663
 ```
 
 A background session takes its environment from Claude Code's background service and from its own `--settings` env, never from the shell that launches it.
@@ -226,21 +232,54 @@ service=p1 shell=<unset> settings=settings
 
 `claude daemon status` reported that service's origin as transient, started on demand by the first `claude --bg`, and the service's own process environment held the variables of the shell that ran that launch.
 
-The service and its pty hosts never take the working directory of the launch that starts them, so teardown's working-directory reaper (`bin/fm-teardown.sh`, one `lsof -a -d cwd` scan) cannot reach the processes that host other sessions.
-The reading below comes from a transient service that `claude --bg` had cold-started from a lab worktree.
-The service's argv was `<home>/.local/bin/claude daemon run --origin transient --spawned-by {"label":"claude --bg","cwd":"<lab worktree>",...}`, and its pty host's argv was `claude bg-pty-host --bg-pty-host /tmp/cc-daemon-<uid>/<hash>/spare/<sock>.pty.sock ...`:
-
-```sh
-readlink /proc/<service pid>/cwd
-readlink /proc/<pty host pid>/cwd
-```
+The service and its idle pty hosts never take the working directory of the launch that starts them, while the pty host running a session takes that session's own working directory.
+In a worker's worktree, teardown's working-directory reaper (`bin/fm-teardown.sh`, one `lsof -a -d cwd` scan) can therefore reach only the worker's own session and the pty host running it, which teardown stops and removes before its reap, and never the service or the processes that host other sessions.
+These readings were taken on 2026-10-30 while one session ran in a trusted scratch directory, under a transient service its `claude --bg` had started:
 
 ```text
-<home>
-/tmp/cc-daemon-<uid>/<hash>/spare
+service argv: <home>/.local/bin/claude daemon run --origin transient --spawned-by {"label":"claude --bg","cwd":"<scratch dir>",...}
+readlink /proc/<service pid>/cwd -> <home>
+idle pty host argv: claude bg-pty-host --bg-pty-host /tmp/cc-daemon-<uid>/<hash>/spare/<sock> ...
+readlink /proc/<idle pty host pid>/cwd -> /tmp/cc-daemon-<uid>/<hash>/spare
+session's pty host argv: claude bg-pty-host --bg-pty-host /tmp/cc-daemon-<uid>/<hash>/pty/<sock> ...
+readlink /proc/<session's pty host pid>/cwd -> <scratch dir>
 ```
 
-Only the worker's own session process had the worktree as its working directory, and teardown stops and removes that session before its reap.
+The live guard re-confirms the service's working directory on every run and prints the working directories it read, as its output above shows.
+
+A pending question keeps the session's name border on screen, so the typing guard still reads session and a single digit answers the question.
+This was probed on 2026-10-30 from a minimal environment (`env -i` with the real HOME, PATH, USER, LOGNAME, SHELL, LANG, and `TERM=xterm-256color`), in a trusted scratch directory, on a scratch tmux socket, in a 200-column by 50-row window:
+
+```sh
+claude --bg --name fm-askprobe --model haiku --dangerously-skip-permissions "Use the AskUserQuestion tool exactly once to ask me which colour I prefer, offering exactly two options: red and blue. Do nothing else, and then wait for my answer." > launch.out 2>&1 < /dev/null
+env -u TMUX -u TMUX_PANE claude attach <id>
+```
+
+While the question was pending, the window's foreground job read `claude attach <id>`, and `fm_agent_view_screen_shows_session askprobe` accepted the screen.
+The dialog block and the screen's last non-blank line follow, with border lines shortened from 200 columns and the blank lines between the footer and the last line omitted:
+
+```text
+────────────────────
+☐ Colour
+
+Which colour do you prefer?
+
+❯ 1. Red
+Choose red.
+2. Blue
+Choose blue.
+3. Type something.
+────────────────────
+4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+──────────────────── fm-askprobe ─
+```
+
+The key `1`, sent as `tmux send-keys 1`, which is what `bin/fm-send.sh <task> --key 1` sends through the guard, answered the question.
+The composer then came back below the same named border, and the screen check still passed.
+The probe's only session was stopped and removed and its tmux server killed, after which Claude Code's transient service exited on its own.
+
 A session-list read never starts a service; with an empty Claude Code configuration directory:
 
 ```sh

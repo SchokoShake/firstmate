@@ -13,10 +13,13 @@
 #
 # It drives firstmate's own scripts end to end on a private tmux socket and a
 # scratch firstmate home: launch, both halves of the typing guard on the real
-# screens, a steer with delivery confirmation, the left-arrow detach and its
-# refusal, the /exit and double Ctrl+C detaches, re-attach, interrupt, liveness
-# with and without a viewer, exit, resume by attach with the session's own
-# environment intact, and cleanup.
+# screens, a steer with delivery confirmation, a pending question answered with
+# a digit through fm-send, the left-arrow detach and its refusal, the /exit and
+# double Ctrl+C detaches, re-attach, interrupt, liveness with and without a
+# viewer, exit, resume by attach with the session's own environment intact, and
+# cleanup. While the session runs it also re-confirms that Claude Code's
+# background service does not run in the worktree, where teardown's
+# working-directory reaper would kill it.
 # Every session it starts is stopped and removed on any exit, and every claude
 # client it starts runs from a minimal environment, so a run that starts Claude
 # Code's shared background service never leaves lab variables in it.
@@ -28,7 +31,7 @@
 # refreshes that worktree from the repository's origin, as it does for every
 # pooled worktree, so the run fetches that origin.
 #
-# Cost: four short turns on a small model (FM_AGENT_VIEW_PILOT_LIVE_MODEL,
+# Cost: five short turns on a small model (FM_AGENT_VIEW_PILOT_LIVE_MODEL,
 # default haiku), plus the one small summary request the agent view itself
 # makes per turn.
 #
@@ -139,7 +142,7 @@ cat > "$HOME_DIR/data/$ID/brief.md" <<'EOF'
 # Live guard worker
 
 This is an automated check of how firstmate supervises you.
-Do not read, run, or change anything, and do not use any tools.
+Do not read, run, or change anything, and use no tool unless a later message asks for one.
 Reply with the single word ready.
 EOF
 tmux new-session -d -s lab -n w0 "bash --norc --noprofile" || die "could not start the private tmux server"
@@ -178,6 +181,21 @@ session_busy() {
     | jq -e --arg id "$SESSION_ID" '.[] | objects | select(.id == $id) | (.status // "") != "idle"' >/dev/null 2>&1
 }
 screen() { tmux capture-pane -p -t "$T"; }
+question_shown() { local s; s=$(screen); printf '%s\n' "$s" | grep -Eiq '[12]\. alpha' && printf '%s\n' "$s" | grep -Eiq '[12]\. beta'; }
+session_status() {
+  claude agents --json --all 2>/dev/null \
+    | jq -r --arg id "$SESSION_ID" '.[] | objects | select(.id == $id) | .status // .state // "none"' 2>/dev/null
+}
+cwd_of() { lsof -a -d cwd -p "$1" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; }
+program_of() { ps -o args= -p "$1" 2>/dev/null | awk '{ n = split($1, a, "/"); print a[n], $2 }'; }
+placeheld() {  # <path>: the worktree, the home directory, and Claude Code's runtime directory as placeholders
+  local p=$1
+  case "$p" in
+    "$WT"|"$WT"/*) p="<worktree>${p#"$WT"}" ;;
+    "$HOME"|"$HOME"/*) p="<home>${p#"$HOME"}" ;;
+  esac
+  printf '%s' "$p" | sed -E 's#/cc-daemon-[0-9]+/[^/]+#/cc-daemon-<uid>/<hash>#'
+}
 history_has() { tmux capture-pane -p -S -2000 -t "$T" | grep -F "$1" >/dev/null; }
 conversation() {
   claude agents --json --all 2>/dev/null \
@@ -206,7 +224,24 @@ printf '{"worktrees":[{"name":"1","path":"%s","leased":true,"lease_holder":"%s"}
   "$WT" "$(fm_meta_get "$META" lease_holder)" > "$LAB/pool/treehouse-state.json"
 echo "ok - launch: claude --bg named the session after its task, and its id was read back, recorded, and listed in the worktree"
 
-# 2. The typing guard reads the real viewer as this worker's session, and the
+# 2. Claude Code's background service never runs in the worktree, where
+#    teardown's working-directory reaper would kill it and every session it
+#    hosts. Only the worker's own session and the pty host running it may, and
+#    teardown stops and removes those before its reap.
+service_pid=$(claude daemon status 2>/dev/null | sed -n 's/^[[:space:]]*pid:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)
+[ -n "$service_pid" ] || die "claude daemon status names no service pid while session $SESSION_ID runs"
+service_cwd=$(cwd_of "$service_pid")
+[ -n "$service_cwd" ] || die "the working directory of background service $service_pid could not be read"
+case "$service_cwd" in
+  "$WT"|"$WT"/*) die "the background service runs in the worktree ($service_cwd), so teardown's working-directory reaper would kill it" ;;
+esac
+echo "# cwd of the service ($(program_of "$service_pid")): $(placeheld "$service_cwd")"
+for child in $(pgrep -P "$service_pid"); do
+  echo "# cwd of a service child ($(program_of "$child")): $(placeheld "$(cwd_of "$child")")"
+done
+echo "ok - service: Claude Code's background service runs outside the worktree, so teardown's reaper cannot reach it"
+
+# 3. The typing guard reads the real viewer as this worker's session, and the
 #    session's hooks fire with the pilot's marker.
 wait_for 60 viewer_reads session || die "the attached viewer never read session; screen:"$'\n'"$(screen)"
 leader_is "viewer:$SESSION_ID" || die "the viewer's process does not read as 'claude attach $SESSION_ID'"
@@ -215,7 +250,7 @@ screen | fm_agent_view_screen_shows_session "$ID" || die "the viewer's screen do
 wait_for 180 turn_ended || die "the first turn never ended through the gated Stop hook; screen:"$'\n'"$(screen)"
 echo "ok - guard: the viewer's process, its name border, and a clean footer read session, and the gated hooks fire"
 
-# 3. A steer: fm-send confirms the submit, the session shows it as a user turn,
+# 4. A steer: fm-send confirms the submit, the session shows it as a user turn,
 #    and the session's gated Stop hook proves a turn ran on it. What the model
 #    answers is never checked, because that is the model's, not the pilot's.
 steer "Reply with the single word steered (live-guard steer one)."
@@ -223,7 +258,24 @@ wait_for 180 turn_ended || die "the steered turn never ended; screen:"$'\n'"$(sc
 history_has "(live-guard steer one)" || die "the steer is not in the session's conversation; screen:"$'\n'"$(screen)"
 echo "ok - steer: fm-send's verified submit reached the session and a turn ran on it"
 
-# 4. The left arrow turns the viewer into the agent view; both guard halves
+# 5. A pending question: the worker's own dialog keeps the viewer reading
+#    session, and a single digit through fm-send answers it. The options are
+#    matched as the dialog's numbered rows, because the steer names them too.
+steer "Use the AskUserQuestion tool exactly once to ask me which label I pick, offering exactly two options, alpha and beta, then wait for my answer (live-guard question)."
+wait_for 120 question_shown \
+  || die "no question dialog offering alpha and beta appeared, so the model may not have asked; screen:"$'\n'"$(screen)"
+! turn_ended || die "the turn ended while its question was pending"
+viewer_reads session || die "a pending question must keep the viewer reading session; screen:"$'\n'"$(screen)"
+leader_is "viewer:$SESSION_ID" || die "the viewer's process does not read as 'claude attach $SESSION_ID' while a question is pending"
+screen | fm_agent_view_screen_shows_session "$ID" \
+  || die "the screen with a pending question does not show the fm-$ID composer border; screen:"$'\n'"$(screen)"
+echo "# session-list status while the question is pending: $(session_status)"
+out=$(fm_env "$ROOT/bin/fm-send.sh" "$ID" --key 1 2>&1) || die "the answer to the pending question was refused: $out"
+wait_for 180 turn_ended || die "the answered question's turn never ended; screen:"$'\n'"$(screen)"
+wait_for 30 viewer_reads session || die "the viewer left its session after the answer; screen:"$'\n'"$(screen)"
+echo "ok - question: a pending question keeps the viewer reading session, and a digit sent through fm-send answers it"
+
+# 6. The left arrow turns the viewer into the agent view; both guard halves
 #    must refuse it, and nothing may be typed there.
 tmux send-keys -t "$T" Left
 wait_for 20 leader_is agents || die "the left arrow did not turn the viewer into the agent view (leader: $(leader_kind))"
@@ -238,13 +290,13 @@ case "$out" in *"nothing was sent"*) ;; *) die "the refusal does not say nothing
 [ "$(lab_sessions | wc -l | tr -d ' ')" = 1 ] || die "the agent view must not have started another session"
 echo "ok - detach: the left arrow re-executes the viewer as the agent view, and the guard refuses to type there"
 
-# 5. Re-attach: the running session is shown again, and nothing durable changes.
+# 7. Re-attach: the running session is shown again, and nothing durable changes.
 out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" relaunch 2>&1) || die "re-attach failed: $out"
 case "$out" in *"agent_view=$SESSION_ID via=reattach"*) ;; *) die "a running session was not simply re-attached: $out" ;; esac
 viewer_reads session || die "re-attach did not leave the window showing the session"
 echo "ok - re-attach: the window shows the same session again"
 
-# 6. /exit and a double Ctrl+C detach the viewer the same way while the session
+# 8. /exit and a double Ctrl+C detach the viewer the same way while the session
 #    keeps running, and Escape then leaves the agent view for the shell.
 tmux send-keys -t "$T" -l /exit
 sleep 0.5
@@ -263,7 +315,7 @@ out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" relaunch 2>&1) || die "re-attach fr
 case "$out" in *"via=reattach"*) ;; *) die "a detached running session was not re-attached: $out" ;; esac
 echo "ok - detach paths: /exit and a double Ctrl+C also leave the session running in the agent view, and Escape leaves that for the shell"
 
-# 7. Interrupt a busy turn through the viewer.
+# 9. Interrupt a busy turn through the viewer.
 steer "Count from 1 to 400, one number per line, then stop."
 wait_for 20 session_busy || echo "# note: the session never read busy before the interrupt; interrupting it idle"
 out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" interrupt 2>&1) || die "interrupt failed: $out"
@@ -271,7 +323,7 @@ case "$out" in *verified=agent-alive*) ;; *) die "interrupt did not prove the se
 wait_for 20 viewer_reads session || die "the viewer left its session after an interrupt; screen:"$'\n'"$(screen)"
 echo "ok - interrupt: Escape through the viewer leaves the session running and shown"
 
-# 8. Liveness without a viewer comes from the session list, not the window.
+# 10. Liveness without a viewer comes from the session list, not the window.
 fm_agent_view_release_window "$T" || die "the viewer could not be released"
 [ "$(fm_backend_agent_alive tmux "$T")" = dead ] || die "divergence lost: the bare window must read dead"
 [ "$(fm_task_agent_alive "$META" tmux "$T")" = alive ] || die "a running session with no viewer must read alive"
@@ -279,7 +331,7 @@ out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" relaunch 2>&1) || die "re-attach fr
 case "$out" in *"via=reattach"*) ;; *) die "a viewer-less running session was not re-attached: $out" ;; esac
 echo "ok - liveness: the session reads alive with no viewer, and a relaunch re-attaches it"
 
-# 9. Exit stops the session by id and leaves it resumable; relaunch resumes the
+# 11. Exit stops the session by id and leaves it resumable; relaunch resumes the
 #    same conversation, and its settings environment still gates its hooks.
 before=$(conversation)
 [ -n "$before" ] || die "the session list does not name session $SESSION_ID's conversation"
@@ -297,7 +349,7 @@ wait_for 180 turn_ended || die "the resumed session's gated hooks did not fire, 
 history_has "(live-guard steer two)" || die "the steer after resume is not in the session's conversation; screen:"$'\n'"$(screen)"
 echo "ok - exit and resume: claude stop, then claude attach resumes the same conversation with its environment intact"
 
-# 10. Cleanup stops and removes the session, so the agent view lists only live work.
+# 12. Cleanup stops and removes the session, so the agent view lists only live work.
 out=$(fm_env "$ROOT/bin/fm-teardown.sh" "$ID" --force 2>&1) || die "cleanup failed: $out"
 session_reads missing || die "cleanup must remove the session from the session list"
 [ -z "$(lab_sessions)" ] || die "cleanup left a session named fm-$ID behind"
