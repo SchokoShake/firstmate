@@ -62,7 +62,9 @@
 #                closing border, holding the idle hint, blank rows, and a
 #                mode/model footer line.
 #   separated  - pi: content rows between two solid horizontal `─` rules, no
-#                glyph and no side border. Provable only with a live agent
+#                glyph and no side border. A rule may end in one title label
+#                (a named claude session draws `──────── <name> ─` above its
+#                `❯`); it still separates. Provable only with a live agent
 #                identity reporting an idle/done/blocked pi (herdr `agent
 #                get`; the tmux foreground-process probe), because a blank
 #                region between two transcript rules is otherwise exactly the
@@ -571,11 +573,20 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
 # exact positive proof they require (`empty`), so unrecognized future verdicts
 # fail safe by default.
 
-# _fm_composer_pi_separator_row: a solid pi separator - nothing but `─`, at
-# least 8 columns wide. The width floor is a literal substring test so it is
-# byte-exact in every locale.
+# _fm_composer_pi_separator_row: a pi separator - a solid `─` rule at least 8
+# columns wide, optionally ending in one ` <title> ─` label (claude 2.1.314
+# right-aligns a named session's title on its composer's top rule). The width
+# floor is a literal substring test so it is byte-exact in every locale.
 _fm_composer_pi_separator_row() {  # <trimmed-row>
-  local row=$1
+  local row=$1 title
+  case "$row" in
+    *' ─')
+      title=${row#* }
+      title=${title% ─}
+      case "$title" in ''|*─*) return 1 ;; esac
+      row=${row%% *}
+      ;;
+  esac
   [ -n "$row" ] || return 1
   [ -z "${row//─/}" ] || return 1
   case "$row" in
@@ -630,7 +641,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap]
       '┗'*'┛') kind=bottom; family=heavy ;;
       '+'*'+') kind=ascii; family=ascii ;;
     esac
-    # Pi separator rows: a solid `─` rule at least 8 columns wide. A separator
+    # Pi separator rows: a `─` rule at least 8 columns wide. A separator
     # closes the preceding candidate and immediately opens the next, so an
     # earlier transcript rule can never outrank the live bottom composer pair.
     if _fm_composer_pi_separator_row "$trimmed"; then
