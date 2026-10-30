@@ -31,7 +31,8 @@
 #
 # The task must already have a status log in this home (FM_STATE_OVERRIDE, else
 # $FM_HOME/state). Exit 0 when the line was appended, whether hidden or left
-# for the watcher (stderr says which); 1 when refused or the append failed.
+# for the watcher (stderr says which); 1 when refused or the append failed; 2
+# on a usage error (no task id).
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
