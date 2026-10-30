@@ -1,0 +1,10 @@
+NETWORK CHECKS
+================================================================================
+completed off the startup path in Ns: GitHub authentication, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh with its drift reporting.
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+These ran AFTER the sections above were composed, so re-read any record a line here names.
+
+================================================================================

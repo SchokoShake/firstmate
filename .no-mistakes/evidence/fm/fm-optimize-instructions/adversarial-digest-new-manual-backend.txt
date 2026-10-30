@@ -1,0 +1,172 @@
+
+================================================================================
+SESSION START - /tmp/fmss-adv.7Oqwoq/new
+================================================================================
+
+LOCK
+--------------------------------------------------------------------------------
+lock acquired: harness pid 3072055
+
+BOOTSTRAP
+--------------------------------------------------------------------------------
+MISSING: treehouse (install: curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh)
+MISSING: no-mistakes (install: no-mistakes update  # refuses while a validation run is active; retry when the fleet is quiet)
+MISSING: gh (install: brew install gh  # or the platform's package manager)
+MISSING: gh-axi (install: npm install -g gh-axi && gh-axi setup hooks)
+MISSING: lavish-axi (install: npm install -g lavish-axi && lavish-axi setup hooks)
+MISSING: quota-axi (install: npm install -g quota-axi)
+
+WAKE QUEUE
+--------------------------------------------------------------------------------
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+================================================================================
+SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+================================================================================
+Current state:
+- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.
+- Away mode: inactive.
+- X mode: inactive; use the default watcher cadence.
+- Ordinary wake: the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.
+
+Mode: Claude Stop-hook-owned supervision.
+
+When this session owns supervision and away mode is not active:
+1. Drain first with `bin/fm-wake-drain.sh`.
+   After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
+2. Routine watcher arm and re-arm are owned by the Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`), never by you.
+   Every turn end while supervision is needed launches or attaches one home-scoped watcher cycle with no model command and no model tokens.
+   An actionable close wakes you through the hook's exit-2 rewake, delivered as a `Stop hook feedback` message.
+3. On a `Stop hook feedback` wake (`signal:`, `stale:`, `check:`, or `heartbeat`), run `bin/fm-wake-drain.sh` first and handle the wake.
+   Do not run `bin/fm-watch-arm.sh` after an ordinary wake; the next turn end re-arms automatically when supervision is still needed.
+   Do not invent a wake from an attach-status line alone; drain and act only on real wake records, the drain's `OPEN DECISIONS` and `UNREAD STATUS` entries, or a real watcher reason line.
+4. On the one `Stop hook feedback` automatic-mechanism failure notice (`firstmate watcher auto-arm FAILED ...`), drain, inspect the automatic mechanism failure, and do not turn the notice into a repeating manual-arm loop.
+5. If the Stop hook does not claim the home or reports an exhausted failure, inspect its registration and watcher startup path before ending blind.
+   Keep the Stop-owned automatic mechanism as the only Claude arm owner.
+6. Treat `watcher: started ...` and `watcher: attached ...` inside automatic arm output as proof that one live cycle exists.
+   On attach, the arm follows verified identity-matched successors instead of exiting when the first cycle ends.
+7. The durable wake queue preserves actionable events between a rewake and the next Stop-launched arm, while the bounded turn-end guard prevents a blind Stop when recovery did not start.
+   No PreToolUse hook denies fleet commands based on watcher status.
+   [`watcher-continuity.md`](../watcher-continuity.md) owns the exact session-lock recovery boundary.
+8. The turn-end guard (`bin/fm-turnend-guard.sh --claude`) remains the final backstop.
+   It requires the PID-strict live-watcher and fresh-beacon predicate at the Stop boundary, while the mid-turn pull guard accepts a fresh beacon without a live process under Claude's between-turns auto-arm model.
+   It allows the stop when a watcher is healthy or the role-verified auto-arm owns recovery, while fresh failure epochs advance the bounded one-time attended fail-open progression described in [`turnend-guard.md`](../turnend-guard.md).
+9. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
+
+The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook foregrounds.
+Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.
+See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer successor and clean-close failure contract and the Claude ownership model.
+
+
+================================================================================
+READ-ONCE CONTRACT
+================================================================================
+Everything below is printed for this session start, in full or as a bounded
+projection: the recovery fields of every state/*.meta, the last line of every
+state/*.status, a bounded data/backlog.md projection, one line per
+data/projects.md project, and data/secondmates.md, data/captain.md,
+data/captain-shared.md, and data/learnings.md in full.
+Trust it. Do NOT re-read any of them after reading this digest, and do NOT
+bulk-read data/backlog.md or state/*.status: re-reading everything defeats the
+entire point of this command.
+Every bounded section prints the one command that fetches what it left out;
+run that command on demand, only when this turn needs that detail.
+
+Go to a source directly only when:
+  - this digest flagged it ABSENT (then rebuild or create it per AGENTS.md),
+  - its contents looked unparseable or corrupt,
+  - this turn needs detail a bounded section left out (run its printed fetch
+    command: full task bodies and hold reasons, parked rows, lapsed holds,
+    queued rows past the bound, older or capped status lines, other meta
+    fields, or the full project registry prose),
+  - the NETWORK CHECKS section reported its checks still IN PROGRESS and this
+    turn needs their verdict (bin/fm-startup-network.sh report),
+  - or a STARTUP TRUNCATED banner named the stage that would have printed it, in
+    which case that stage's sources were never emitted and must be reconciled.
+
+================================================================================
+FLEET STATE
+================================================================================
+
+data/backlog.md
+--------------------------------------------------------------------------------
+compact backlog listing (manual backend; done rows omitted; every in-flight, held, and blocked title line kept; other queued bounded to 20; indented task bodies omitted)
+## In flight
+- [ ] f-lapsed - Flight whose captain hold lapsed (repo: harbor) (kind: ship) (since 2026-10-01) (hold: Pick A or B. Details that should stay out) (hold-kind: captain) (hold-until: 2020-01-01)
+- [ ] f-utf8 - Ünïcödé title with "quotes", commas, and a tail past the cap: éééééééééééééééééééééééééééééééééééééééé (repo: lantern) (kind: ship) (since 2026-10-01)
+- [ ] f-live - Live captain hold in flight (repo: keel) (kind: scout) (since 2026-10-01) (hold: Which way, left or right? More detail follows.) (hold-kind: captain) (hold-until: 2099-01-01)
+## Queued
+- [ ] q-kindless - Kindless open-ended hold (repo: harbor) (kind: ship) (since 2026-10-01) (hold: Wait on it)
+- [ ] q-gate - Real time gate (repo: harbor) (kind: ship) (since 2026-10-01) (hold: Wait till June) (hold-until: 2099-06-01)
+- [ ] q-parked - Parked wish (repo: keel) (kind: ship) (since 2026-10-01) (hold: Someday maybe) (hold-kind: parked)
+- [ ] q-lapsed - Lapsed queued decision (repo: keel) (kind: ship) (since 2026-10-01) (hold: Choose now. Extra) (hold-kind: captain) (hold-until: 2020-01-02)
+- [ ] q-dec - Decision title, with "quote" and comma (repo: keel) (kind: ship) (since 2026-10-01) (hold: Should we ship v2, or wait?! Then more text here.) (hold-kind: captain) (hold-until: 2099-01-01)
+- [ ] q-ready - A ready row (repo: quill) (kind: ship) (since 2026-10-01)
+- [ ] q-blocked - Blocked row blocked-by: f-live (repo: keel) (kind: ship) (since 2026-10-01)
+(shown 3 in-flight, 6 held or blocked queued, 1 of 1 other queued title line(s); 1 done row(s) omitted)
+Full task bodies remain available on demand: tasks-axi show <id> --full when compatible tasks-axi is available, or data/backlog.md.
+
+Work under way (state/*.meta: kind, mode, yolo, pr, worktree, endpoint presence, last status)
+--------------------------------------------------------------------------------
+per task: the last 1 status line(s), each capped at 220 characters - wake-EVENT history, not current state
+fetch: older lines with tail -n 20 /tmp/fmss-adv.7Oqwoq/new/state/<id>.status; every meta field with cat /tmp/fmss-adv.7Oqwoq/new/state/<id>.meta; current state with bin/fm-crew-state.sh <id>
+
+--- f-live ---
+kind=scout mode=direct-PR yolo=off pr=https://example.invalid/pull/1
+worktree=/fixture/pool/keel/f-live
+endpoint: dead (backend=tmux window=firstmate:fm-f-live)
+status: note: captain answered: keep the v1 reader
+
+Orphan status logs (state/*.status without matching .meta)
+--------------------------------------------------------------------------------
+(none)
+
+AFK
+--------------------------------------------------------------------------------
+absent
+
+================================================================================
+NETWORK CHECKS
+================================================================================
+completed off the startup path in 1s: GitHub authentication, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh with its drift reporting.
+NEEDS_GH_AUTH
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+These ran AFTER the sections above were composed, so re-read any record a line here names.
+
+================================================================================
+CONTEXT
+================================================================================
+
+data/projects.md
+--------------------------------------------------------------------------------
+(one line per project: name, posture, first clause of the description; full registry prose: cat /tmp/fmss-adv.7Oqwoq/new/data/projects.md)
+- harbor [direct-PR +yolo] - Harbor app
+  sub harbor-board | board | feat/board
+(1 other line(s) omitted)
+
+data/secondmates.md
+--------------------------------------------------------------------------------
+ABSENT
+
+data/captain.md
+--------------------------------------------------------------------------------
+ABSENT
+
+data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)
+--------------------------------------------------------------------------------
+ABSENT
+
+data/learnings.md
+--------------------------------------------------------------------------------
+ABSENT
+
+================================================================================
+NEXT STEP
+================================================================================
+Follow the supervision operating instructions block above for harness 'claude'.
+This script never starts supervision itself.
+
+The digest above is complete for this session start. The READ-ONCE CONTRACT
+section near the top of it governs what may still be read from disk.

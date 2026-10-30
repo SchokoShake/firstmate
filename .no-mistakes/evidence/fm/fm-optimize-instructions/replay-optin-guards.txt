@@ -1,0 +1,11 @@
+$ tests/fm-session-start-replay-live-e2e.test.sh   # no opt-in
+skip: set FM_SESSION_START_REPLAY_LIVE_E2E=1 to replay the session-start digest scenarios against a live claude
+exit=0
+
+$ FM_SESSION_START_REPLAY_LIVE_E2E=1 FM_SESSION_START_REPLAY_VARIANT=/nonexistent/checkout tests/fm-session-start-replay-live-e2e.test.sh
+not ok - FM_SESSION_START_REPLAY_VARIANT=/nonexistent/checkout is not a firstmate checkout
+exit=1
+
+$ FM_SESSION_START_REPLAY_LIVE_E2E=1 FM_SESSION_START_REPLAY_VARIANT=/tmp tests/fm-session-start-replay-live-e2e.test.sh   # a directory that is not a checkout
+not ok - FM_SESSION_START_REPLAY_VARIANT=/tmp is not a firstmate checkout
+exit=1

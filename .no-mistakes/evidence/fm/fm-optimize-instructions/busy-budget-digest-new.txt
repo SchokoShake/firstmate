@@ -1,0 +1,514 @@
+
+================================================================================
+SESSION START - /tmp/fmss-val.LBaoH5/new
+================================================================================
+
+LOCK
+--------------------------------------------------------------------------------
+lock acquired: harness pid 3072055
+
+BOOTSTRAP
+--------------------------------------------------------------------------------
+MISSING: treehouse (install: curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh)
+
+WAKE QUEUE
+--------------------------------------------------------------------------------
+1793355444	1	signal	harbor-flight-f1	needs-decision: [key=harbor-flight-f1-gate] the worker asks which way the rollout goes
+1793355444	2	heartbeat	fleet	heartbeat: hourly fleet review
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 2 --recovery-generation 3150357.1793355444.SNaDFo
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+compass-flight-f3 [key=compass-flight-f3-gate] needs-decision: V1.62.0 deploy gate lands 13:13 clone fixture remote. Only summary UTC, private ships, after UTC PR cache private, worker opens, marker audio ha [truncated]
+harbor-flight-f1 [key=harbor-flight-f1-gate] needs-decision: The, build photo public config, column remote, preview panel gate stop keeps, only tasks-axi. Summary, label opens rollout cache render only relea [truncated]
+lantern-flight-f2 [key=lantern-flight-f2-gate] needs-decision: With window sync step-9 option captain deploy marker branch before writes, UTC with, migration render on opens.
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+================================================================================
+SUPERVISION OPERATING INSTRUCTIONS - primary harness: claude
+================================================================================
+Current state:
+- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.
+- Away mode: inactive.
+- X mode: inactive; use the default watcher cadence.
+- Ordinary wake: the Stop-owned auto-arm (bin/fm-claude-stop-autoarm.sh) already owns watcher continuity; drain and handle the wake, and do not arm another cycle yourself.
+
+Mode: Claude Stop-hook-owned supervision.
+
+When this session owns supervision and away mode is not active:
+1. Drain first with `bin/fm-wake-drain.sh`.
+   After handling all emitted wakes and reconciling open decisions and unread status lines, run the exact `--ack-through` command printed as `WAKE_ACK_REQUIRED`; until then the work remains durable for idempotent re-handling after interruption.
+2. Routine watcher arm and re-arm are owned by the Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`), never by you.
+   Every turn end while supervision is needed launches or attaches one home-scoped watcher cycle with no model command and no model tokens.
+   An actionable close wakes you through the hook's exit-2 rewake, delivered as a `Stop hook feedback` message.
+3. On a `Stop hook feedback` wake (`signal:`, `stale:`, `check:`, or `heartbeat`), run `bin/fm-wake-drain.sh` first and handle the wake.
+   Do not run `bin/fm-watch-arm.sh` after an ordinary wake; the next turn end re-arms automatically when supervision is still needed.
+   Do not invent a wake from an attach-status line alone; drain and act only on real wake records, the drain's `OPEN DECISIONS` and `UNREAD STATUS` entries, or a real watcher reason line.
+4. On the one `Stop hook feedback` automatic-mechanism failure notice (`firstmate watcher auto-arm FAILED ...`), drain, inspect the automatic mechanism failure, and do not turn the notice into a repeating manual-arm loop.
+5. If the Stop hook does not claim the home or reports an exhausted failure, inspect its registration and watcher startup path before ending blind.
+   Keep the Stop-owned automatic mechanism as the only Claude arm owner.
+6. Treat `watcher: started ...` and `watcher: attached ...` inside automatic arm output as proof that one live cycle exists.
+   On attach, the arm follows verified identity-matched successors instead of exiting when the first cycle ends.
+7. The durable wake queue preserves actionable events between a rewake and the next Stop-launched arm, while the bounded turn-end guard prevents a blind Stop when recovery did not start.
+   No PreToolUse hook denies fleet commands based on watcher status.
+   [`watcher-continuity.md`](../watcher-continuity.md) owns the exact session-lock recovery boundary.
+8. The turn-end guard (`bin/fm-turnend-guard.sh --claude`) remains the final backstop.
+   It requires the PID-strict live-watcher and fresh-beacon predicate at the Stop boundary, while the mid-turn pull guard accepts a fresh beacon without a live process under Claude's between-turns auto-arm model.
+   It allows the stop when a watcher is healthy or the role-verified auto-arm owns recovery, while fresh failure epochs advance the bounded one-time attended fail-open progression described in [`turnend-guard.md`](../turnend-guard.md).
+9. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
+
+The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook foregrounds.
+Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.
+See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer successor and clean-close failure contract and the Claude ownership model.
+
+
+================================================================================
+READ-ONCE CONTRACT
+================================================================================
+Everything below is printed for this session start, in full or as a bounded
+projection: the recovery fields of every state/*.meta, the last line of every
+state/*.status, a bounded data/backlog.md projection, one line per
+data/projects.md project, and data/secondmates.md, data/captain.md,
+data/captain-shared.md, and data/learnings.md in full.
+Trust it. Do NOT re-read any of them after reading this digest, and do NOT
+bulk-read data/backlog.md or state/*.status: re-reading everything defeats the
+entire point of this command.
+Every bounded section prints the one command that fetches what it left out;
+run that command on demand, only when this turn needs that detail.
+
+Go to a source directly only when:
+  - this digest flagged it ABSENT (then rebuild or create it per AGENTS.md),
+  - its contents looked unparseable or corrupt,
+  - this turn needs detail a bounded section left out (run its printed fetch
+    command: full task bodies and hold reasons, parked rows, lapsed holds,
+    queued rows past the bound, older or capped status lines, other meta
+    fields, or the full project registry prose),
+  - the NETWORK CHECKS section reported its checks still IN PROGRESS and this
+    turn needs their verdict (bin/fm-startup-network.sh report),
+  - or a STARTUP TRUNCATED banner named the stage that would have printed it, in
+    which case that stage's sources were never emitted and must be reconciled.
+
+================================================================================
+FLEET STATE
+================================================================================
+
+data/backlog.md
+--------------------------------------------------------------------------------
+bounded backlog projection (tasks-axi; done rows and task bodies omitted; titles capped at 80 bytes)
+in_flight[20]{id,kind,repo,hold,title}:
+  harbor-flight-f1,ship,harbor,captain,"Lands remote --file timeout a gate, lands default, closes the window option c…"
+  lantern-flight-f2,ship,lantern,captain,"Next tour 13:13 staging.example.invalid sync https://example.invalid/fleet/pu…"
+  compass-flight-f3,ship,compass,captain,"Export option render signal https://example.invalid/fleet/pull/412 summary ch…"
+  rigging-flight-f4,scout,rigging,parked,"And shared S3 filter from #4471 to, stop with with. Waits moves branch clears…"
+  keel-flight-f5,ship,keel,parked,"Label, in view, step import version, --file step window layout filter. Export…"
+  mast-flight-f6,ship,mast,parked,"Shared captain fixture map config map audio retry. Field, local now import fi…"
+  beacon-flight-f7,ship,beacon,parked,"Refresh, layout, option, shared local build for, of row anchor tile token pre…"
+  tiller-flight-f8,scout,tiller,parked,"Only refresh default /fixture/pool/slot-7/repo, with sync harbor, window, bra…"
+  ledger-flight-f9,ship,ledger,"-","Report, signal retry window config runs audio S3 version tasks-axi sync migra…"
+  quarry-flight-f10,ship,quarry,"-","Branch waits stops worker timeout rollout layout next local, queue config 13:…"
+  orchard-flight-f11,ship,orchard,"-",Summary next holds row deploy digest review import tile version stop config b…
+  meadow-flight-f12,scout,meadow,"-","Writes route in text, from, private ci-2 release, stops after summary, board …"
+  foundry-flight-f13,ship,foundry,"-","To preview clone https://example.invalid/fleet/pull/412 next ledger with hold…"
+  kiln-flight-f14,ship,kiln,"-",Migration map UTC pipeline with label column label config board default. Sync…
+  loom-flight-f15,ship,loom,"-","Key=alpha-gate local writes still stop single signal, of deploy step of no-mi…"
+  spindle-flight-f16,scout,spindle,"-","Option, still #4471 row migration ships rollout view label toggle #4471 2026-…"
+  anvil-flight-f17,ship,anvil,"-","Option next, tasks-axi, to filter stop check with filter tour tasks-axi pipel…"
+  prism-flight-f18,ship,prism,"-","Text 0a94b21f keeps third clone photo closes every. Now, runs section pipelin…"
+  vellum-flight-f19,ship,vellum,"-","Only report of holds now tour review, runs retry public column next moves tex…"
+  quill-flight-f20,scout,quill,"-",Ships only third when token release single label keeps 0a94b21f single in gat…
+(live captain holds, in flight or queued; ask is the first sentence of the hold reason)
+decisions_waiting[18]{id,repo,title,ask}:
+  harbor-flight-f1,harbor,"Lands remote --file timeout a gate, lands default, closes…","Gate PR board only when, public from captain photo."
+  lantern-flight-f2,lantern,"Next tour 13:13 staging.example.invalid sync https://exam…","Step-9 staging.example.invalid migration, runs default a photo every every public timeout timeout writes, decision public remote."
+  compass-flight-f3,compass,"Export option render signal https://example.invalid/fleet…","Reads, toggle migration of waits, tour of marker fixture key=alpha-gate row while https://example.invalid/fleet/pull/412, single, worker report."
+  ledger-decision-d1,ledger,One or two export opens?,"Step-9 public 13:13 config to branch harbor, refresh."
+  loom-decision-d2,spindle,Keep or drop the column config?,"Before badge from shared version keeps waits while, on filter step-9 anchor next --file marker."
+  rigging-decision-d3,rigging,Keep or drop the public in?,Layout of captain public step-9 import column now fixture import.
+  ledger-decision-d4,quarry,Ship now or wait on the local report?,Captain deploy keeps when config runs route audio key=alpha-gate reads clone default.
+  prism-decision-d5,prism,Ship now or wait on the default worker?,"Opens ledger step audio audio audio badge, ci-2 single local."
+  rigging-decision-d6,rigging,Where should the to fixture?,"From in worker release cache closes board, filter deploy, last ledger lands field writes import."
+  orchard-decision-d7,orchard,Merge or split the check runs?,"Text of public still board build photo writes, check view step check stops now digest."
+  vellum-decision-d8,anvil,Keep or drop the tour to?,"Queue token no-mistakes 2026-10-28 remote with harbor build queue toggle local and third, on token window --file."
+  mast-decision-d9,rigging,One or two layer keeps?,Map no-mistakes for last sync reads staging queue now 0a94b21f default while still public harbor check review.
+  orchard-decision-d10,meadow,Merge or split the runs cache?,"Migration first, filter digest opens default --file now ships map 13:13 a, moves last ships column with clone version."
+  prism-decision-d11,vellum,One or two toggle summary?,"Ships, worker tour branch before next window, harbor only report marker after."
+  keel-decision-d12,keel,Ship now or wait on the schema for?,"Stops after config worker next worker key=alpha-gate tile, shared from in with."
+  kiln-decision-d13,foundry,Ship now or wait on the clears queue?,"When refresh ships /fixture/pool/slot-7/repo --file, 0a94b21f, the, before section PR report stops."
+  harbor-decision-d14,vellum,Which way for the version first?,"Preview section stop release label route, queue, to single summary window layer photo private worker."
+  tiller-decision-d15,tiller,Ship now or wait on the worker keeps?,"Toggle from badge, section #4471 and staging key=alpha-gate, public rollout audio release in build /fixture/pool/slot-7/repo tile, version digest sync now."
+fetch full hold reasons: tasks-axi list --file /tmp/fmss-val.LBaoH5/new/data/backlog.md --state held --fields hold_kind,hold_reason
+(captain holds past their deadline: still unanswered, never dispatchable)
+lapsed[20]: ledger-lapsed-l1,anvil-lapsed-l2,rigging-lapsed-l3,quarry-lapsed-l4,anvil-lapsed-l5,keel-lapsed-l6,meadow-lapsed-l7,vellum-lapsed-l8,beacon-lapsed-l9,kiln-lapsed-l10,quill-lapsed-l11,mast-lapsed-l12,loom-lapsed-l13,harbor-lapsed-l14,ledger-lapsed-l15,loom-lapsed-l16,lantern-lapsed-l17,tiller-lapsed-l18,anvil-lapsed-l19,lantern-lapsed-l20
+fetch their titles and reasons: tasks-axi list --file /tmp/fmss-val.LBaoH5/new/data/backlog.md --state queued --fields hold_kind,hold_reason,hold_until,held
+held_other[74] (parked 69, external 1, time-gated 4; not in flight, not captain decisions) by repo: harbor 42, tiller 3, anvil 3, lantern 3, ledger 1, compass 2, orchard 1, prism 2, mast 2, meadow 2, beacon 2, foundry 2, spindle 3, loom 1, rigging 1, quarry 3, keel 1
+fetch those rows: tasks-axi list --file /tmp/fmss-val.LBaoH5/new/data/backlog.md --state held --fields hold_kind,hold_reason
+blocked[8]{id,repo,blocked_by,title}:
+  ledger-blocked-b1,quarry,ledger-flight-f9,"Import label closes, third every 2026-10-28 captain ships, step gate fixture …"
+  anvil-blocked-b2,anvil,quarry-flight-f10,"Config, audio, single, tile board first field version row decision, schema /f…"
+  rigging-blocked-b3,rigging,orchard-flight-f11,Badge step toggle second opens second view shared pipeline ledger local. Ever…
+  quarry-blocked-b4,quarry,meadow-flight-f12,"Queue window, ledger from, no-mistakes third, window stop only config runs cl…"
+  spindle-blocked-b5,prism,foundry-flight-f13,"PR shared second from waits #4471 row default with. Render, writes token the …"
+  keel-blocked-b6,keel,kiln-flight-f14,"Queue queue, remote section private before staging tour render tile build wor…"
+  quarry-blocked-b7,orchard,loom-flight-f15,"Layout --file fixture tour field decision single with marker view, private wi…"
+  anvil-blocked-b8,anvil,spindle-flight-f16,"Last clears on anchor no-mistakes label worker opens S3. Third row window, pu…"
+(dispatchable now)
+ready[20]{id,repo,title}:
+  keel-ready-r1,compass,"While version --file private every timeout tile report retry, while anchor pa…"
+  quarry-ready-r2,quarry,"Schema, step, migration, schema v1.62.0 audio badge second and, --file toggle…"
+  anvil-ready-r3,vellum,"Opens, in token, build audio, the and shared photo preview before, row row pr…"
+  mast-ready-r4,keel,"/fixture/pool/slot-7/repo, import moves harbor audio view signal row and conf…"
+  foundry-ready-r5,foundry,"Every, 13:13 captain remote build clears, review stops while, schema check, s…"
+  prism-ready-r6,prism,"To worker signal branch signal, toggle holds, layout deploy to UTC before sto…"
+  keel-ready-r7,keel,Of waits only window label next clone reads badge decision keeps marker while…
+  kiln-ready-r8,foundry,"Https://example.invalid/fleet/pull/412 --file now, gate board only board step…"
+  quill-ready-r9,harbor,"Step migration, --file for, branch opens step-9 tile, clone clears label. Las…"
+  mast-ready-r10,beacon,"Toggle migration now, export summary gate field last closes writes staging, 2…"
+  kiln-ready-r11,kiln,"Every on version, key=alpha-gate review photo only third default now step sum…"
+  harbor-ready-r12,harbor,"Runs marker text filter layer stop preview UTC, private 13:13 and cache, rele…"
+  ledger-ready-r13,tiller,Version tasks-axi anchor private map review the import keeps remote writes op…
+  kiln-ready-r14,loom,"Now branch of, stops, token map 0a94b21f public preview default rollout. Impo…"
+  lantern-ready-r15,lantern,"Private UTC holds layer preview no-mistakes closes with. Https://example.inva…"
+  ledger-ready-r16,ledger,"--file preview captain tour timeout shared version and the row worker queue, …"
+  anvil-ready-r17,loom,Shared refresh runs step stop next worker clears 2026-10-28. Private single r…
+  rigging-ready-r18,rigging,"Holds moves runs summary with while for last summary cache lands, reads. Bran…"
+  ledger-ready-r19,orchard,To /fixture/pool/slot-7/repo keeps clears on schema photo lands still after o…
+  prism-ready-r20,spindle,Captain UTC marker last public second check rollout staging.example.invalid s…
+(1 more queued - bin/fm-ready.sh --file /tmp/fmss-val.LBaoH5/new/data/backlog.md)
+(20 lapsed captain hold(s) withheld from this group; listed by id under lapsed above)
+fetch any full row: tasks-axi show <id> --full --file /tmp/fmss-val.LBaoH5/new/data/backlog.md
+
+Work under way (state/*.meta: kind, mode, yolo, pr, worktree, endpoint presence, last status)
+--------------------------------------------------------------------------------
+per task: the last 1 status line(s), each capped at 220 characters - wake-EVENT history, not current state
+fetch: older lines with tail -n 20 /tmp/fmss-val.LBaoH5/new/state/<id>.status; every meta field with cat /tmp/fmss-val.LBaoH5/new/state/<id>.meta; current state with bin/fm-crew-state.sh <id>
+
+--- anvil-done-z5 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/spindle/pull/425
+worktree=/fixture/pool/spindle-b38575/25/spindle
+endpoint: dead (backend=tmux window=firstmate:fm-anvil-done-z5)
+status: done: PR https://example.invalid/fleet/pull/425 checks green Signal lands window of deploy token captain layer token no-mistakes map check refresh.
+
+--- anvil-done-z8 ---
+kind=scout mode=no-mistakes yolo=on pr=https://example.invalid/fleet/anvil/pull/428
+worktree=/fixture/pool/anvil-b38575/28/anvil
+endpoint: dead (backend=tmux window=firstmate:fm-anvil-done-z8)
+status: done: PR https://example.invalid/fleet/pull/428 checks green Timeout with opens, fixture step reads window, timeout single label captain config. Panel migration after layout field first harbor preview, clears [truncated]
+
+--- anvil-flight-f17 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/anvil/pull/417
+worktree=/fixture/pool/anvil-b38575/17/anvil
+endpoint: dead (backend=tmux window=firstmate:fm-anvil-flight-f17)
+status: working: Staging still S3 check digest queue row cache report layout holds third next map import. Import lands public default, timeout field field #4471 section.
+
+--- beacon-done-z12 ---
+kind=scout mode=no-mistakes yolo=on pr=https://example.invalid/fleet/mast/pull/432
+worktree=/fixture/pool/mast-b38575/32/mast
+endpoint: dead (backend=tmux window=firstmate:fm-beacon-done-z12)
+status: working: Toggle layout tour row branch pipeline for config tour. Board closes, filter S3 --file section for remote while, preview remote with moves ci-2 S3 moves. Fixture, marker,.
+
+--- beacon-flight-f7 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/beacon/pull/407
+worktree=/fixture/pool/beacon-b38575/7/beacon
+endpoint: dead (backend=tmux window=firstmate:fm-beacon-flight-f7)
+status: done: PR https://example.invalid/fleet/pull/407 checks green Branch, /fixture/pool/slot-7/repo tasks-axi shared holds, tile staging.example.invalid text before every runs remote release default.
+
+--- compass-done-z6 ---
+kind=ship mode=no-mistakes yolo=on pr=https://example.invalid/fleet/rigging/pull/426
+worktree=/fixture/pool/rigging-b38575/26/rigging
+endpoint: dead (backend=tmux window=firstmate:fm-compass-done-z6)
+status: done: PR https://example.invalid/fleet/pull/426 checks green Stop render when runs from v1.62.0 digest next label key=alpha-gate from closes ships, staging signal layout captain writes. Preview 13:13 clone, t [truncated]
+
+--- compass-flight-f3 ---
+kind=ship mode=direct-PR yolo=off pr=https://example.invalid/fleet/compass/pull/403
+worktree=/fixture/pool/compass-b38575/3/compass
+endpoint: dead (backend=tmux window=firstmate:fm-compass-flight-f3)
+status: needs-decision: [key=compass-flight-f3-gate] V1.62.0 deploy gate lands 13:13 clone fixture remote. Only summary UTC, private ships, after UTC PR cache private, worker opens, marker audio harbor migration wait [truncated]
+
+--- foundry-done-z10 ---
+kind=ship mode=direct-PR yolo=on pr=https://example.invalid/fleet/orchard/pull/430
+worktree=/fixture/pool/orchard-b38575/30/orchard
+endpoint: dead (backend=tmux window=firstmate:fm-foundry-done-z10)
+status: working: Https://example.invalid/fleet/pull/412 still ci-2, label rollout, for now a layout. PR export runs still step-9 the, worker staging.example.invalid 13:13 the opens panel from badge ci-2 column view.  [truncated]
+
+--- foundry-flight-f13 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/foundry/pull/413
+worktree=/fixture/pool/foundry-b38575/13/foundry
+endpoint: dead (backend=tmux window=firstmate:fm-foundry-flight-f13)
+status: working: Import the report badge harbor of cache a. Step-9 v1.62.0 ci-2 step review every timeout stops section second cache. For build shared anchor,.
+
+--- harbor-flight-f1 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/harbor/pull/401
+worktree=/fixture/pool/harbor-b38575/1/harbor
+endpoint: dead (backend=tmux window=firstmate:fm-harbor-flight-f1)
+status: needs-decision: [key=harbor-flight-f1-gate] The, build photo public config, column remote, preview panel gate stop keeps, only tasks-axi. Summary, label opens rollout cache render only release sync private re [truncated]
+
+--- keel-done-z9 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/keel/pull/429
+worktree=/fixture/pool/keel-b38575/29/keel
+endpoint: dead (backend=tmux window=firstmate:fm-keel-done-z9)
+status: working: Every marker label, clears, private ships, captain stop, label ci-2 sync signal when ledger key=alpha-gate. Of, only view, #4471 runs ships label step map. Holds, window, in layout export, gate stagi [truncated]
+
+--- keel-flight-f5 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/keel/pull/405
+worktree=/fixture/pool/keel-b38575/5/keel
+endpoint: dead (backend=tmux window=firstmate:fm-keel-flight-f5)
+status: resolved [key=keel-flight-f5-gate]: answered: A, summary deploy reads S3 ledger, review second, migration stop marker, timeout clone preview. Staging.example.invalid timeout photo marker, column, summary queu [truncated]
+
+--- kiln-flight-f14 ---
+kind=ship mode=no-mistakes yolo=on pr=https://example.invalid/fleet/kiln/pull/414
+worktree=/fixture/pool/kiln-b38575/14/kiln
+endpoint: dead (backend=tmux window=firstmate:fm-kiln-flight-f14)
+status: done: PR https://example.invalid/fleet/pull/414 checks green Local and while photo version https://example.invalid/fleet/pull/412 column toggle step-9. Signal, audio layout badge decision export from board wi [truncated]
+
+--- lantern-done-z3 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/compass/pull/423
+worktree=/fixture/pool/compass-b38575/23/compass
+endpoint: dead (backend=tmux window=firstmate:fm-lantern-done-z3)
+status: done: PR https://example.invalid/fleet/pull/423 checks green #4471 config before stops digest retry release ci-2 tile last with window third single config every. For clone step on version for step single work [truncated]
+
+--- lantern-flight-f2 ---
+kind=ship mode=no-mistakes yolo=on pr=https://example.invalid/fleet/lantern/pull/402
+worktree=/fixture/pool/lantern-b38575/2/lantern
+endpoint: dead (backend=tmux window=firstmate:fm-lantern-flight-f2)
+status: needs-decision: [key=lantern-flight-f2-gate] With window sync step-9 option captain deploy marker branch before writes, UTC with, migration render on opens.
+
+--- ledger-flight-f9 ---
+kind=ship mode=direct-PR yolo=off
+worktree=/fixture/pool/ledger-b38575/9/ledger
+endpoint: dead (backend=tmux window=firstmate:fm-ledger-flight-f9)
+status: done: PR https://example.invalid/fleet/pull/409 checks green Staging.example.invalid reads, runs moves build, toggle preview section from photo. Runs version /fixture/pool/slot-7/repo, with view, before impor [truncated]
+
+--- loom-flight-f15 ---
+kind=ship mode=direct-PR yolo=off pr=https://example.invalid/fleet/loom/pull/415
+worktree=/fixture/pool/loom-b38575/15/loom
+endpoint: dead (backend=tmux window=firstmate:fm-loom-flight-f15)
+status: working: When local a key=alpha-gate, schema public harbor, decision reads layout after board. Config keeps, remote section, last build anchor tasks-axi row,.
+
+--- mast-flight-f6 ---
+kind=ship mode=direct-PR yolo=on pr=https://example.invalid/fleet/mast/pull/406
+worktree=/fixture/pool/mast-b38575/6/mast
+endpoint: dead (backend=tmux window=firstmate:fm-mast-flight-f6)
+status: resolved [key=mast-flight-f6-gate]: answered: Staging.example.invalid queue writes clone refresh of, map, now private every every, release from cache. Of window, filter map, of,.
+
+--- meadow-flight-f12 ---
+kind=scout mode=direct-PR yolo=on pr=https://example.invalid/fleet/meadow/pull/412
+worktree=/fixture/pool/meadow-b38575/12/meadow
+endpoint: dead (backend=tmux window=firstmate:fm-meadow-flight-f12)
+status: working: #4471, map last, step-9 worker now when to route. Key=alpha-gate row timeout, /fixture/pool/slot-7/repo, row while 13:13, stops every ships the ci-2. Stops 2026-10-28 badge, first, field badge rollou [truncated]
+
+--- orchard-done-z4 ---
+kind=scout mode=direct-PR yolo=on pr=https://example.invalid/fleet/ledger/pull/424
+worktree=/fixture/pool/ledger-b38575/24/ledger
+endpoint: dead (backend=tmux window=firstmate:fm-orchard-done-z4)
+status: paused: Stop v1.62.0 config ships panel queue view only still audio step S3 render,.
+
+--- orchard-done-z7 ---
+kind=ship mode=direct-PR yolo=off
+worktree=/fixture/pool/meadow-b38575/27/meadow
+endpoint: dead (backend=tmux window=firstmate:fm-orchard-done-z7)
+status: done: PR https://example.invalid/fleet/pull/427 checks green Render, timeout, key=alpha-gate fixture and public, staging summary when label, private https://example.invalid/fleet/pull/412.
+
+--- orchard-flight-f11 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/orchard/pull/411
+worktree=/fixture/pool/orchard-b38575/11/orchard
+endpoint: dead (backend=tmux window=firstmate:fm-orchard-flight-f11)
+status: done: PR https://example.invalid/fleet/pull/411 checks green Tasks-axi branch reads harbor a now keeps staging.example.invalid third a sync decision preview branch. Still when #4471 audio refresh 2026-10-28 a [truncated]
+
+--- prism-done-z11 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/quill/pull/431
+worktree=/fixture/pool/quill-b38575/31/quill
+endpoint: dead (backend=tmux window=firstmate:fm-prism-done-z11)
+status: done: PR https://example.invalid/fleet/pull/431 checks green PR tasks-axi text now captain token, closes photo filter last, cache the local stop decision view, from to rollout UTC. Of board config, from windo [truncated]
+
+--- prism-flight-f18 ---
+kind=ship mode=direct-PR yolo=on
+worktree=/fixture/pool/prism-b38575/18/prism
+endpoint: dead (backend=tmux window=firstmate:fm-prism-flight-f18)
+status: done: PR https://example.invalid/fleet/pull/418 checks green Label release, token photo section text board, toggle. Branch harbor version board config runs remote of second local. Waits, third before schema e [truncated]
+
+--- quarry-done-z1 ---
+kind=ship mode=direct-PR yolo=off pr=https://example.invalid/fleet/tiller/pull/421
+worktree=/fixture/pool/tiller-b38575/21/tiller
+endpoint: dead (backend=tmux window=firstmate:fm-quarry-done-z1)
+status: paused: Release 0a94b21f the tour queue second, preview review --file step stops version panel.
+
+--- quarry-flight-f10 ---
+kind=ship mode=no-mistakes yolo=on pr=https://example.invalid/fleet/quarry/pull/410
+worktree=/fixture/pool/quarry-b38575/10/quarry
+endpoint: dead (backend=tmux window=firstmate:fm-quarry-flight-f10)
+status: working: With waits field while clears, check public single field v1.62.0 #4471 summary map, lands marker. Default board token before UTC and staging.example.invalid export fixture while third badge rollout a [truncated]
+
+--- quill-flight-f20 ---
+kind=scout mode=no-mistakes yolo=on pr=https://example.invalid/fleet/quill/pull/420
+worktree=/fixture/pool/quill-b38575/20/quill
+endpoint: dead (backend=tmux window=firstmate:fm-quill-flight-f20)
+status: paused: 0a94b21f retry reads captain moves third 13:13 https://example.invalid/fleet/pull/412. Row, on map single decision third queue map --file tile render runs https://example.invalid/fleet/pull/412 stops  [truncated]
+
+--- rigging-flight-f4 ---
+kind=scout mode=no-mistakes yolo=on pr=https://example.invalid/fleet/rigging/pull/404
+worktree=/fixture/pool/rigging-b38575/4/rigging
+endpoint: dead (backend=tmux window=firstmate:fm-rigging-flight-f4)
+status: resolved [key=rigging-flight-f4-gate]: answered: Public, gate summary row label after, captain text first, S3 digest, badge route preview import. A keeps S3, when ledger gate holds rollout refresh clears ship [truncated]
+
+--- spindle-done-z2 ---
+kind=ship mode=no-mistakes yolo=on pr=https://example.invalid/fleet/anvil/pull/422
+worktree=/fixture/pool/anvil-b38575/22/anvil
+endpoint: dead (backend=tmux window=firstmate:fm-spindle-done-z2)
+status: done: PR https://example.invalid/fleet/pull/422 checks green In of review field while tour worker, single #4471 closes local of shared config, filter board, marker stops signal. Section clone toggle when, rel [truncated]
+
+--- spindle-flight-f16 ---
+kind=scout mode=no-mistakes yolo=on pr=https://example.invalid/fleet/spindle/pull/416
+worktree=/fixture/pool/spindle-b38575/16/spindle
+endpoint: dead (backend=tmux window=firstmate:fm-spindle-flight-f16)
+status: working: Export board ledger moves worker summary release runs tasks-axi migration, toggle schema, route runs map. 13:13 toggle badge tile fixture, panel, badge report step runs first render queue. Refresh export stops.
+
+--- tiller-flight-f8 ---
+kind=scout mode=no-mistakes yolo=on pr=https://example.invalid/fleet/tiller/pull/408
+worktree=/fixture/pool/tiller-b38575/8/tiller
+endpoint: dead (backend=tmux window=firstmate:fm-tiller-flight-f8)
+status: working: Check 13:13 13:13 release signal preview runs the second when worker photo retry a waits no-mistakes. Keeps from retry https://example.invalid/fleet/pull/412.
+
+--- vellum-flight-f19 ---
+kind=ship mode=no-mistakes yolo=off pr=https://example.invalid/fleet/vellum/pull/419
+worktree=/fixture/pool/vellum-b38575/19/vellum
+endpoint: dead (backend=tmux window=firstmate:fm-vellum-flight-f19)
+status: done: PR https://example.invalid/fleet/pull/419 checks green Fixture last, lands decision while layer, while holds 13:13. Captain local a cache worker step-9 option config field runs, stops preview shared def [truncated]
+
+Orphan status logs (state/*.status without matching .meta)
+--------------------------------------------------------------------------------
+(none)
+
+AFK
+--------------------------------------------------------------------------------
+absent
+
+================================================================================
+NETWORK CHECKS
+================================================================================
+completed off the startup path in 2s: GitHub authentication, dead-secondmate relaunch, secondmate convergence, pending handoff delivery, and project clone refresh with its drift reporting.
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+fatal: not a git repository (or any parent up to mount point /)
+Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).
+These ran AFTER the sections above were composed, so re-read any record a line here names.
+
+================================================================================
+CONTEXT
+================================================================================
+
+data/projects.md
+--------------------------------------------------------------------------------
+(one line per project: name, posture, first clause of the description; full registry prose: cat /tmp/fmss-val.LBaoH5/new/data/projects.md)
+- harbor [direct-PR +yolo] - Public last, badge #4471 gate in gate export, 2026-10-28 staging, gate, anchor section export review
+  sub harbor-board | branch | feat/board
+- lantern [no-mistakes +yolo] - Local panel #4471, row after writes review, cache #4471, UTC moves, closes holds section
+- compass [no-mistakes-prod-only] - Worker build window map version audio filter the remote window badge clears retry, filter worker …
+- rigging [direct-PR +captain-merge] - Check in fixture window and #4471 closes column, /fixture/pool/slot-7/repo
+- keel [no-mistakes +captain-merge] - Lands, step view deploy with /fixture/pool/slot-7/repo and lands worker decision clone shared tim…
+- mast [direct-PR +yolo] - Cache preview schema second default, only, 0a94b21f of UTC a the writes
+- beacon [no-mistakes +yolo] - Rollout before holds on closes timeout toggle, staging.example.invalid a a now release default ph…
+  sub beacon-rollout | cache | feat/rollout
+- tiller [no-mistakes-prod-only] - For branch layout, release staging with preview from token of tile public, #4471, private v1.62.0…
+- ledger [direct-PR +captain-merge] - Gate label, schema PR, holds, when, version queue field schema first from text
+- quarry [no-mistakes +captain-merge] - A stops UTC local route every before https://example.invalid/fleet/pull/412, UTC reads UTC harbor…
+- orchard [direct-PR +yolo] - Harbor tasks-axi private field window public local single tile before badge tile
+- meadow [no-mistakes +yolo] - Keeps, tasks-axi a stop preview label, photo cache audio key=alpha-gate holds step closes and led…
+- foundry [no-mistakes-prod-only] - Filter harbor, ci-2 badge, public writes, config, schema window, migration version photo key=alph…
+  sub foundry-queue | toggle | feat/queue
+- kiln [direct-PR +captain-merge] - Only worker opens board clears, route label queue preview render section tile clone branch
+- loom [no-mistakes +captain-merge] - For a keeps review /fixture/pool/slot-7/repo build clone moves v1.62.0, map, release toggle share…
+- spindle [direct-PR +yolo] - Digest, digest before, last reads step https://example.invalid/fleet/pull/412 waits stop, PR 13:1…
+- anvil [no-mistakes +yolo] - Ledger public release private config column private filter
+- prism [no-mistakes-prod-only] - Moves, lands, photo, review, digest next, gate, of
+- vellum [direct-PR +captain-merge] - Tile refresh, PR board option version private before anchor render on preview
+  sub vellum-sync | timeout | feat/sync
+- quill [no-mistakes +captain-merge] - #4471 of section filter still photo map, and check, layer queue
+(1 other line(s) omitted)
+
+data/secondmates.md
+--------------------------------------------------------------------------------
+ABSENT
+
+data/captain.md
+--------------------------------------------------------------------------------
+# Captain
+<!-- memory tiers: see the stow skill -->
+
+- Deploy config a waits gate a, waits, tour row from config lands field, text board. When still moves opens only with /fixture/pool/slot-7/repo, step-9. While from deploy panel and, worker waits config layout third the release https://example.invalid/fleet/pull/412 retry. Private captain for stops board export of v1.62.0 version, export badge, next. Worker section, section sync check, cache step tour, no-mistakes.
+- Board waits render in staging.example.invalid stops view next, summary check layer, marker render release. Reads on default, every summary build label toggle captain after now ledger audio with staging single now. Step --file writes cache panel, for on, layout, from view before last, for. Opens.
+- Refresh layer still UTC ci-2 2026-10-28 public audio branch reads photo column decision report board, https://example.invalid/fleet/pull/412. Section retry default config view, private worker import v1.62.0 retry 13:13 check first check decision version before, on. Holds config with closes check for ci-2 field marker, version opens refresh migration default summary first. Schema, when worker field second before step #4471 in 0a94b21f,.
+- Holds pipeline third S3 staging.example.invalid render report report layer tile for export, branch, key=alpha-gate a report fixture check now. Version only opens audio staging.example.invalid summary migration fixture remote v1.62.0 captain, decision, render. Last step window decision layer, version still photo clone board.
+- Worker step export opens step only check clears first, private layer --file panel to marker. Retry, harbor second keeps keeps, token local, S3 report, keeps import single, audio in. On, view captain tour UTC S3 now version. Check stop moves after first opens clone badge build from config, on cache decision from marker. Decision PR the report only schema to next, view route export route #4471 export. Cache timeout panel no-mistakes after, v1.62.0.
+- Audio toggle ledger last check, on panel, toggle, retry. Remote version no-mistakes anchor for staging report, last option third writes to still marker shared column cache filter, reads staging.example.invalid. Import pipeline, anchor PR digest, release ships check S3 in ships a filter harbor now and audio default. Retry route stop retry, version, config from runs label import deploy toggle render ledger report key=alpha-gate schema. Local, pipeline.
+- Report captain tour default layout worker harbor 13:13 the before PR audio ships closes map migration holds tour, the field. In pipeline map retry third pipeline, public timeout. Audio first report, check tour version shared of, 13:13.
+- On, runs captain, photo, writes badge first pipeline private. Section third reads closes to v1.62.0 photo, next, with ci-2 clears signal, 0a94b21f staging key=alpha-gate runs toggle layer. Decision anchor harbor layout config step badge step-9 schema option PR second when, last 2026-10-28 badge, build, lands UTC. After text opens S3 private, option in with, export single closes. Filter deploy waits decision moves staging.example.invalid.
+- Private single pipeline lands keeps, ci-2 stops v1.62.0 token, --file release a. Local retry config when, https://example.invalid/fleet/pull/412 row the check version writes after. Photo, staging, holds after, tasks-axi, remote from section key=alpha-gate closes worker ci-2 ledger layout --file. First lands step audio check tasks-axi with preview --file now step private.
+- Refresh render option, config build label, panel digest toggle row. Preview board harbor and layer, layer staging token schema in sync first decision, still worker render. Lands map filter harbor holds last, build release filter. Refresh lands a toggle section anchor, last field, panel single, now digest toggle timeout, import step-9 with. Schema worker migration single public board review and tile opens audio photo photo. Review keeps.
+- Report config stop opens, harbor 2026-10-28 retry token schema staging.example.invalid 0a94b21f config deploy token. Marker render to first the step-9, migration label v1.62.0 ledger rollout decision pipeline column the. Fixture schema import next /fixture/pool/slot-7/repo, branch third 2026-10-28 column gate first S3 writes ledger ships while digest 0a94b21f check migration. Migration timeout single captain tasks-axi, lands, decision shared.
+- Ships tasks-axi gate shared report check key=alpha-gate ships token, rollout. Still field, audio branch private worker tour public single closes label before pipeline deploy while import. Refresh private --file stops captain audio lands label build next. When local, and token tour from step column step sync every while, stop still, on only panel, layer. Token pipeline for report clone, only, route, gate import keeps.
+- Every view, in --file branch a queue when shared the. Waits worker anchor, for toggle https://example.invalid/fleet/pull/412 refresh, waits option anchor waits toggle. Refresh moves local version staging.example.invalid, closes with --file decision section opens. Digest label decision public https://example.invalid/fleet/pull/412 0a94b21f tile review 0a94b21f waits photo schema runs release. Second #4471, deploy, third, lands decision, reads keeps pipeline,.
+- Stop digest release of a while stop 13:13 first, schema, photo badge section. Digest, branch check worker with default harbor token. Last for UTC review cache text fixture last captain after option digest 2026-10-28. Text decision single UTC, after shared, import writes every stops row. Field schema preview photo filter writes, migration sync of photo tasks-axi.
+- Cache marker import review option schema now opens harbor report refresh step config window photo. Row panel still staging review, step, for captain shared clone no-mistakes signal local sync when. Decision layout, from staging.example.invalid.
+- Migration, while option, tasks-axi deploy preview first option tile. Migration keeps still column layout sync gate review on queue waits. Check when text tour preview, refresh after field audio, fixture 0a94b21f of last of sync text. Token from tasks-axi holds PR ledger summary default text, check while, single closes. Gate tile column opens, private panel sync when, S3 export while PR route. Layer summary waits now board, writes refresh after.
+- Schema toggle board sync render when, render, stop reads. Toggle, 0a94b21f label filter only section every every third moves clone layer, token rollout. Key=alpha-gate harbor key=alpha-gate section harbor, default 13:13 S3 build fixture. 2026-10-28 view UTC config captain shared, staging.example.invalid --file. Reads.
+- First pipeline, now /fixture/pool/slot-7/repo check review every, after route 2026-10-28 gate worker digest step photo worker deploy in. Private public captain stops schema ships to row import moves harbor step-9 of the. Step-9 row public report, anchor version, public, with marker waits public layout step. Build cache migration refresh tasks-axi local import schema, marker.
+- Queue gate second 13:13 tour, waits, harbor no-mistakes of. Token badge, option report decision photo branch, shared writes after writes S3. Layout, first field PR schema clears the review anchor first, staging.example.invalid writes cache photo on harbor, /fixture/pool/slot-7/repo no-mistakes. Now text render runs pipeline board next when config, in. And anchor text timeout deploy, from of #4471 fixture text no-mistakes no-mistakes map route harbor.
+- Runs, timeout deploy option, refresh staging.example.invalid, deploy and of on no-mistakes, summary cache. When before summary, private the schema anchor decision retry after ledger. Report audio branch deploy token now holds, local marker preview from. View config, reads, now the audio audio, now keeps. 2026-10-28 decision preview 2026-10-28 /fixture/pool/slot-7/repo.
+- View ledger release deploy migration closes closes label timeout single timeout moves timeout gate label rollout lands. Harbor column, anchor, captain lands stops step rollout, step of marker. View 2026-10-28 build import photo, decision import refresh. Deploy sync audio every private layout export window view https://example.invalid/fleet/pull/412 writes default.
+
+data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)
+--------------------------------------------------------------------------------
+ABSENT
+
+data/learnings.md
+--------------------------------------------------------------------------------
+# Learnings
+<!-- memory tiers: see the stow skill -->
+
+- Worker ledger field v1.62.0 the the stop holds render v1.62.0 schema staging filter remote anchor version before release, section key=alpha-gate. Preview section, PR marker export signal still column panel captain, after label row tour. <!--a:2026-09-13-->
+- Photo pipeline section build queue decision writes deploy route migration, photo runs. Route layout to text refresh gate digest column for after. --file single section keeps 0a94b21f summary in /fixture/pool/slot-7/repo, review, private build label. Audio stops, option audio while stop no-mistakes label sync. Before render fixture default worker branch version default public clone migration, second for board rollout ci-2 shared audio, moves. Runs public import,. <!--a:2026-09-01-->
+- Step-9 a opens second, keeps and, column filter refresh tasks-axi. Option pipeline single holds waits for writes no-mistakes in runs worker tile timeout after worker first third. View tasks-axi field retry export signal retry first badge preview single marker every release reads while. Worker, second in 2026-10-28 key=alpha-gate runs import first digest pipeline waits rollout v1.62.0 clears in option marker still moves. Decision, schema gate second. <!--a:2026-09-22-->
+- Public now harbor, after queue writes layout writes staging.example.invalid panel from next from remote, before. Queue decision tile only to staging.example.invalid tour and migration, /fixture/pool/slot-7/repo S3 review tile, 0a94b21f text route. Section cache stops timeout every rollout layout map before before staging only sync. Badge migration ledger summary to PR filter. <!--a:2026-09-24-->
+- Route refresh every migration ci-2 rollout config panel tour https://example.invalid/fleet/pull/412, on every clone. Digest ships sync single next, option layer pipeline summary, worker. Staging.example.invalid decision lands ledger export, panel no-mistakes worker label field stop single board field. Badge signal, PR private. <!--a:2026-09-27-->
+- Queue the summary config sync third config default audio with opens last signal 13:13 of first after first --file. Only 0a94b21f closes shared remote in of closes, with 13:13, window retry export, harbor text. Audio reads staging /fixture/pool/slot-7/repo anchor,. <!--a:2026-09-04-->
+- While, private still only ledger last field opens a timeout queue UTC tour reads import panel runs, ledger check pipeline. Second second version first toggle, for fixture first clears, the marker view waits clears photo #4471 writes public, moves. Refresh, public clears import clears third closes only staging 13:13 decision anchor. Text after worker map, gate with remote. <!--a:2026-09-08-->
+- Key=alpha-gate reads, third step report window closes UTC every PR column config, timeout a now holds after. Map second UTC map board UTC refresh writes, signal ships default --file, key=alpha-gate second when option. Window, moves check no-mistakes remote holds #4471 step PR, single #4471 schema label single a, column, ledger step-9 after tasks-axi. Lands, reads sync cache deploy tour last worker opens private every. Panel stop anchor, queue route view. <!--a:2026-09-15-->
+- Toggle layer refresh waits schema, release report queue panel last holds moves fixture tour, for every option. Next for no-mistakes to, view second label waits. Stop private runs label stop before opens, from, a. Remote a, column route report render staging branch render, review cache single stop marker digest, runs and after. Local step-9 to and public. <!--a:2026-09-12-->
+- Audio in check, migration every clears closes review UTC runs. Second token after, no-mistakes next in for pipeline, queue third every, layout, clone photo summary view ci-2 gate key=alpha-gate ledger. Panel export, default branch next, refresh rollout shared closes stop to. Second. <!--a:2026-09-15-->
+- Ci-2 panel captain badge holds view import waits digest, check toggle decision route staging.example.invalid key=alpha-gate retry decision column preview. After, sync ships, local worker decision import field. Photo worker field single column window tasks-axi. <!--a:2026-09-27-->
+- Tour staging queue captain import audio ledger anchor, stop. Stops, tasks-axi option photo, toggle stops reads staging every S3 digest anchor text on rollout. Still for config, moves, option row, view single. Release public harbor ships, board layer text render review, worker local moves, default tour, waits, to cache, retry closes clone. Migration. <!--a:2026-09-04-->
+- Writes row stop shared signal stops harbor stops for with refresh, section import. Digest stops timeout, config digest third v1.62.0 only 2026-10-28. 2026-10-28 branch to filter reads gate schema, to private keeps retry fixture digest single marker next text column. Step, map with, marker. <!--a:2026-09-15-->
+- Stop gate fixture, only render local, marker staging report board signal tasks-axi, captain map build private ledger writes. Remote 0a94b21f filter branch, text of view, anchor to next only. Refresh to reads UTC for digest on, every moves schema runs cache sync last staging.example.invalid, report, worker closes after runs. Text schema, from branch fixture tile,. <!--a:2026-09-06-->
+- Of rollout label sync summary the migration step-9 filter https://example.invalid/fleet/pull/412 text preview gate. Row on https://example.invalid/fleet/pull/412, after release panel captain first 2026-10-28 while private a map. First sync, every last writes closes layer signal audio export. Second token check import. <!--a:2026-09-12-->
+- Column lands last filter, check --file, keeps staging version ships only schema summary PR ci-2 harbor render second. Schema public section layout holds stop rollout timeout report build ledger with, 13:13 #4471 single step-9. Only clone staging build keeps staging remote first. Render ships step-9 audio,. <!--a:2026-09-20-->
+- Stops step pipeline, preview clears tasks-axi cache no-mistakes window token label report, waits, https://example.invalid/fleet/pull/412 signal window captain tile fixture with. Now toggle release layout https://example.invalid/fleet/pull/412 deploy export --file still only, now of version v1.62.0 in reads, local. Private the runs board check opens. <!--a:2026-09-24-->
+- Stops marker harbor --file tour, only tour worker next map shared 0a94b21f sync audio, clone release second. Row with last shared decision filter anchor, worker. In harbor, panel report, https://example.invalid/fleet/pull/412 pipeline, report 2026-10-28. <!--a:2026-09-05-->
+- Label, when, toggle, UTC route only section route PR staging.example.invalid clears. Single waits a panel migration 2026-10-28 report on filter check staging migration deploy route summary field. Release, build worker, holds keeps key=alpha-gate, 2026-10-28 branch key=alpha-gate captain. Tile and token, while first label token, gate worker reads. Import label waits, v1.62.0 tasks-axi ci-2 captain layout, key=alpha-gate. Sync label. <!--a:2026-09-25-->
+- Staging.example.invalid opens, signal /fixture/pool/slot-7/repo, text last cache last when. Default holds deploy import, cache, keeps schema stop, ships pipeline private anchor option, in stop. On, still before field to map build first, render. Deploy worker when of stops layout board writes rollout deploy preview to schema tile, and in. Render private closes every deploy deploy third, second decision, and. Third on opens ledger step closes step on. <!--a:2026-09-13-->
+- Decision window first layout token staging.example.invalid badge map tasks-axi to UTC waits holds clone retry, deploy, clears. Report, first only worker signal build, check, last map, captain anchor while review step-9 writes worker. And, to tile S3 digest with config review preview now. Fixture ships audio,. <!--a:2026-09-19-->
+- On queue default closes audio photo worker, while stops #4471 queue ships first report deploy check digest panel. Local in summary review stop next, deploy keeps keeps default, --file S3 text before tile. Board anchor single, version clears, layout signal. <!--a:2026-09-24-->
+- Before key=alpha-gate build filter harbor, worker option schema lands tour, next worker still. View next signal opens shared, first map tile key=alpha-gate. Ci-2 local 13:13, gate waits board marker ledger review holds import. Refresh refresh audio summary third ci-2 of queue 13:13 while 0a94b21f on rollout worker. Review local summary while reads, text. <!--a:2026-09-11-->
+- Queue queue clone single, import field photo writes, to import window sync section, decision staging.example.invalid toggle. Layer S3 third, text stops on photo timeout pipeline import clone the map S3 audio keeps pipeline. Config https://example.invalid/fleet/pull/412, panel, import column audio reads signal build decision captain now filter gate gate and filter before. Gate step, layout export badge render, writes, badge report. <!--a:2026-09-14-->
+- Audio digest ships waits photo config filter, keeps, with fixture still second pipeline text, render review. Version private the option captain audio clone single on from S3 text, UTC --file layer row, remote. Token waits for digest report --file review harbor moves UTC. Cache badge schema, of opens row UTC while route single next. Rollout waits, now, second option view stops. <!--a:2026-09-02-->
+- Option branch first waits layer worker fixture timeout summary fixture, window board. Rollout cache remote window board deploy layout fixture field layer digest, PR review local marker. To public window tour gate last in only ledger while next /fixture/pool/slot-7/repo S3 harbor stop only. Timeout check cache route. <!--a:2026-09-01-->
+- Check decision label sync closes check toggle, third review of UTC private, row export retry of before branch, stops, audio. Closes every queue stop before next, worker rollout import ledger, worker when still review harbor. Moves. <!--a:2026-09-23-->
+- Captain reads text rollout check and of check from, migration, retry branch review. Lands single, column /fixture/pool/slot-7/repo, stops, a version UTC field sync photo, first cache, before migration import only retry. Field label local opens check schema worker toggle render toggle. Board import digest when next toggle, audio. <!--a:2026-09-15-->
+- Migration when version report, rollout text, and waits before, ledger, worker default toggle layout, on only field. Audio branch, step when v1.62.0 step, ledger after map on, import closes. Next #4471, stop second board, ships while release. <!--a:2026-09-20-->
+- Digest render single refresh, tile board ledger decision refresh queue local now shared timeout export worker. Still, lands review option default filter view after when second pipeline gate, pipeline to, render remote, layout local. Third filter. <!--a:2026-09-12-->
+- To, release pipeline cache tour local, signal still, text, to /fixture/pool/slot-7/repo summary 13:13 check of worker summary. Closes panel route fixture, ledger on for label. Map pipeline cache deploy decision stop closes layout timeout a and clone badge shared and branch. Before https://example.invalid/fleet/pull/412 clone. <!--a:2026-09-05-->
+- Export 0a94b21f, map key=alpha-gate, waits, stops moves export, filter, map fixture default branch cache. Default section clone 2026-10-28 map anchor /fixture/pool/slot-7/repo, digest view board worker token now step closes. Single first label of no-mistakes digest, https://example.invalid/fleet/pull/412 sync version step. Keeps worker. <!--a:2026-09-04-->
+- Opens while stops 13:13 of stops step, step-9 field tour anchor route public refresh a and. Option the shared, harbor writes board render harbor remote, key=alpha-gate worker ledger schema. Preview, layer layout last field, v1.62.0 third token route marker remote 2026-10-28 only every clears review private. <!--a:2026-09-02-->
+- Marker when, export lands, panel staging migration anchor harbor. Waits refresh staging.example.invalid UTC marker keeps option remote migration. Sync queue tour route schema single, digest rollout column. Before worker single first key=alpha-gate holds sync, version, step field remote #4471 --file layer. <!--a:2026-09-13-->
+- Pipeline layout for single anchor closes gate staging to of worker token, token on, summary, for v1.62.0 default row. Https://example.invalid/fleet/pull/412 refresh field shared preview clears branch, toggle worker digest UTC #4471, waits first before, ledger photo runs staging. Branch queue staging window before captain writes first shared 13:13 remote panel captain stops. <!--a:2026-09-21-->
+- Window timeout shared third UTC stop second waits pipeline, step migration signal decision marker a filter key=alpha-gate. Token second, schema --file filter staging.example.invalid board token keeps still. Clone single map captain preview layout. <!--a:2026-09-25-->
+- V1.62.0 badge last for UTC review private route layer last check gate #4471 of no-mistakes deploy last last pipeline. Sync reads fixture, and and config private row sync export with keeps private, review every staging.example.invalid. <!--a:2026-09-27-->
+- Release to migration import pipeline pipeline option ships #4471 tasks-axi https://example.invalid/fleet/pull/412 toggle render marker. Cache a clone worker last, rollout last waits writes for gate. Local every audio export digest S3 from summary. Sync, holds third photo option, public signal of local S3 clears writes runs still tour, tour. Waits reads on local config writes on digest,. <!--a:2026-09-25-->
+- Window check, key=alpha-gate, pipeline PR, still field toggle. To route report clone, first stops with #4471 v1.62.0 single waits, rollout route lands. Row ci-2 keeps, label key=alpha-gate, holds text still ci-2 panel gate cache. View section keeps default, render writes https://example.invalid/fleet/pull/412 before option PR opens, harbor. A, config column, third window every shared branch toggle worker map. <!--a:2026-09-06-->
+
+================================================================================
+NEXT STEP
+================================================================================
+Follow the supervision operating instructions block above for harness 'claude'.
+This script never starts supervision itself.
+
+The digest above is complete for this session start. The READ-ONCE CONTRACT
+section near the top of it governs what may still be read from disk.

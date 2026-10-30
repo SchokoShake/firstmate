@@ -1,0 +1,12 @@
+Digest size on the synthetic busy fixture (real bin/fm-session-start.sh, isolated /tmp lab)
+budget     memory  new  total= 59056 memory= 22225 rest= 36831
+budget     memory  old  total=178090 memory= 22225 rest=155865
+uncurated  memory  new  total= 84959 memory= 48130 rest= 36829
+uncurated  memory  old  total=204067 memory= 48130 rest=155937
+limits (budget memory): total<=62500, rest<=42000
+
+first-turn sections vs base (paths/pids/timestamps normalized):
+  pre: identical
+  net: identical
+  next: identical
+adversarial lab: lock/bootstrap/wake queue/UNREAD STATUS/supervision identical to base
