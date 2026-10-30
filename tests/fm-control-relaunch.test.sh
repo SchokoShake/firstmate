@@ -486,6 +486,23 @@ test_relaunch_requires_a_note_for_a_ship_task() {
   pass "fm-control relaunch: a ship task refuses without the progress note its replacement needs"
 }
 
+# The relaunched claude agent comes back under the same task name and with the
+# agent view still switched off, because the relaunch goes through the same
+# launch owner as the first spawn.
+test_claude_relaunch_keeps_task_name_and_agent_view_off() {
+  local dir out rc launch
+  dir=$(new_case named rl40)
+  add_ship_task "$dir" rl40 claude
+  out=$(run_control "$dir" rl40 relaunch --note "continue"); rc=$?
+  expect_code 0 "$rc" "a claude relaunch should succeed"$'\n'"$out"
+  launch=$(grep 'encode launch-brief' "$dir/fake/literal")
+  assert_contains "$launch" "CLAUDE_CODE_DISABLE_AGENT_VIEW=1 claude " \
+    "the relaunched claude agent must keep the agent view switched off"
+  assert_contains "$launch" " --name 'fm-rl40' " \
+    "the relaunched claude agent must keep its task name"
+  pass "fm-control relaunch: a relaunched claude agent keeps its task name and the agent view off"
+}
+
 # --- 2. harness switch -------------------------------------------------------
 
 test_harness_switch_moves_the_record_and_clears_prior_wiring() {
@@ -1639,6 +1656,7 @@ test_failed_pr_poll_rearm_refuses_before_the_agent_is_stopped() {
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_claude_relaunch_keeps_task_name_and_agent_view_off
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
