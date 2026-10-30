@@ -50,6 +50,25 @@ Removing a worktree, closing an endpoint, or discarding work stays with [`bin/fm
 **`resume` is not a verb.**
 It is not deterministic across the verified adapters: codex and grok resume only from a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, and kimi have no verified pane-resume contract.
 `relaunch` covers the same need on every adapter, because the brief on disk - not a harness-private session - is the durable instruction.
+An agent-view pilot worker is the one case where `relaunch` resumes the real conversation, because Claude Code keeps that worker's session by id; [Agent-view pilot workers](#agent-view-pilot-workers) owns how.
+
+## Agent-view pilot workers
+
+An agent-view pilot worker ([tmux backend](tmux-backend.md#agent-view-pilot)) is a Claude Code background session that its window only views.
+Every verb therefore acts on the session by its recorded id and reads the session's state from Claude Code's session list rather than from the window.
+
+- `interrupt` first proves the window's viewer is showing the worker's own session, then delivers the same Escape as for any Claude Code worker, and it refuses without sending anything when the window shows something else.
+- `exit` stops the session with `claude stop <id>` and does not interrupt first, because stopping a background session ends its turn; it then ends any viewer client left in the window, so the window is back at its shell.
+  Its postcondition is the session list reporting the session stopped, and an already-stopped session is idempotent success.
+- `relaunch` keeps the conversation rather than replacing it, choosing its plan from the session's state and the window's:
+  - a running session whose window no longer shows it is re-attached by running `claude attach <id>` in the window again, which changes no durable record and so skips the transaction below;
+  - a running session that its window still shows is stopped and resumed, a restart of the same conversation;
+  - a stopped session is resumed by `claude attach <id>`, which restarts it with its own conversation and settings;
+  - only a session that no longer exists is replaced by a fresh background session from the instructions on disk.
+- Only that last plan takes `--note`, and the others refuse one, because they keep the whole conversation; steer a resumed worker with `bin/fm-send.sh` instead.
+- `--harness`, `--model`, and `--effort` are refused, because a pilot record relaunches only as itself, on the profile its session was started with.
+
+Every plan but re-attach runs the transaction below unchanged, including its lease proof and merge-poll re-arm.
 
 ## Transactional relaunch
 
@@ -69,6 +88,7 @@ It is not deterministic across the verified adapters: codex and grok resume only
    A secondmate's own crewmates run in their own endpoints and outlive its relaunch; the relaunched secondmate reconciles them from its home's durable records at startup.
 3. **Record the note.**
    A ship or scout relaunch requires `--note`, because the replacement inherits the local copy but none of the conversation; the note is appended to the instructions it reads.
+   An agent-view pilot worker that keeps its conversation is the exception, and its plans own when a note applies.
    A secondmate relaunch does not require one and never rewrites its standing charter.
 4. **Re-arm the merge poll.**
    A task that records `pr=` has its merge poll rebuilt through its owner, `bin/fm-pr-check.sh`, while the old agent is still running.
@@ -107,6 +127,9 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
+- An agent-view pilot record acts only as a claude worker on tmux with a recorded session id.
+  A record whose launch is still in flight and a session the list cannot read both refuse.
+  A stopped or missing session also refuses while any other running session works in its worktree, so no verb treats that copy as agent-free while an agent may still be working in it.
 - `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
   On a treehouse-backed backend it also relaunches a ship or scout only when the pool's durable lease proves the record still owns its worktree (`bin/fm-slot-lib.sh` owns that verdict), so a replacement can never start inside another task's working copy.
   A re-leased slot names `bin/fm-teardown.sh <id> --retire-record` instead, and an unproven one, including every record that carries no recorded lease claim, names what a person can confirm by hand, because ownership is never inferred, and then the supported paths: ordinary teardown once the work has landed, a fresh spawn from the branch, or `bin/fm-teardown.sh <id> --retire-record --unproven-confirmed`, the flag for a record whose ownership could not be proven.
@@ -132,3 +155,5 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 - `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
 - `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, rollback after a failed launch, and a recorded PR's merge poll staying armed at every record publication, including the refusal when it cannot be re-armed.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.
+- `tests/fm-agent-view-pilot.test.sh` - the agent-view pilot verbs on real tmux against a stand-in Claude Code: re-attach, interrupt behind the viewer proof, exit by session id, every relaunch plan, and the refusals.
+- `tests/fm-agent-view-pilot-live-e2e.test.sh` - the same lifecycle against the installed Claude Code, opted in with `FM_AGENT_VIEW_PILOT_LIVE=1`.

@@ -374,6 +374,18 @@ The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
 
+## Agent-view pilot (config/agent-view-workers)
+
+The optional local, gitignored `config/agent-view-workers` file opts a home in to launching its new Claude Code crewmates and scouts as Claude Code background sessions, so each one appears as a row in Claude Code's agent view.
+It holds `on` or `off`, and surrounding whitespace is ignored.
+An absent file or `off` leaves every launch exactly as it was.
+Any other content, including an empty file, makes `fm-spawn.sh` refuse a claude crewmate or scout launch rather than guess.
+The switch covers only fresh crewmate and scout spawns on the claude harness and the tmux backend.
+A secondmate, a raw launch command, or another backend is never piloted, and the spawn says so before launching it as an ordinary session.
+The switch never touches a running worker, and a relaunch follows the worker's own record rather than the switch, so turning it off later leaves existing pilot workers on the pilot until they are cleaned up.
+It is local to each home and is not part of secondmate inherited configuration.
+[`tmux-backend.md`](tmux-backend.md#agent-view-pilot) owns the pilot's behavior, recovery, and limits, and `bin/fm-agent-view-lib.sh`'s header owns its mechanics.
+
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
 `config/crew-dispatch.json` is an optional local, gitignored file containing natural-language rules that firstmate reads before dispatching a crewmate or scout.

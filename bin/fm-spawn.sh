@@ -219,7 +219,7 @@
 # Secondmates and the firstmate primary are deliberately excluded, muse has no
 # hook surface at all, and cursor stays uncovered until its crewmate `stop` event
 # is live-verified for a pane worker.
-# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
+# On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path> [agent_view=<session-id>]
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
@@ -248,6 +248,25 @@
 #   identity is owned by the parent home that holds its task metadata, while the
 #   pane export happens on the remote host (bin/fm-remote-secondmate-control.sh).
 #   Local spawns never pass it and resolve their own carrier exactly as before.
+#
+# AGENT-VIEW PILOT (opt-in; bin/fm-agent-view-lib.sh owns the mechanics and
+# docs/configuration.md the switch). While config/agent-view-workers says `on`,
+# a fresh crewmate or scout on the claude adapter and the tmux backend launches
+# as a Claude Code background session named fm-<id> instead of an interactive
+# session: its environment rides `--settings` env rather than pane exports, its
+# claude hooks are gated on that environment's marker, its session id is read
+# back from the launch output or the session list and recorded as
+# agent_view_id= (`pending` until then), and its window then runs
+# `claude attach <id>`. The success line gains agent_view=<id>, and a viewer
+# that cannot be confirmed is a warning rather than a failure, because the
+# worker is already running. A switch file saying anything but on or off
+# refuses an eligible spawn. A secondmate, a raw launch command, or another
+# backend is never piloted and says so on stderr when the switch is on. A
+# relaunch follows the record, never the switch: a pilot record resumes its
+# stopped session with `claude attach <id>` and keeps the trace carrier that
+# session already holds, launches a fresh background session only when its
+# session no longer exists, and refuses while its session still runs; an
+# ordinary record relaunches as before.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1619,6 +1638,67 @@ case "$LAUNCH" in
     ;;
 esac
 
+# Agent-view pilot shape (see the header). Decided here, before any endpoint
+# exists, so every refusal leaves nothing behind. A home with no switch file
+# never loads the pilot at all, which keeps the ordinary path untouched.
+AGENT_VIEW=0
+AGENT_VIEW_RESUME_ID=
+if [ "$RELAUNCH" -eq 1 ]; then
+  RELAUNCH_AGENT_VIEW_ID=$(fm_meta_get "$RELAUNCH_META" agent_view_id)
+  if [ -n "$RELAUNCH_AGENT_VIEW_ID" ]; then
+    fm_agent_view_source || { echo "error: the agent-view pilot library could not be loaded; refusing to relaunch pilot worker $ID" >&2; exit 1; }
+    if [ "$HARNESS" != claude ] || [ "$BACKEND" != tmux ] || [ "$KIND" = secondmate ]; then
+      echo "error: task $ID is an agent-view pilot worker, which relaunches only as itself (claude on tmux); it cannot move to harness '$HARNESS' on backend '$BACKEND'" >&2
+      exit 1
+    fi
+    fm_agent_view_id_valid "$RELAUNCH_AGENT_VIEW_ID" || {
+      echo "error: task $ID records agent-view session '$RELAUNCH_AGENT_VIEW_ID' rather than a session id, so a launch may still be in flight; find its session with 'claude agents --json --all' (name fm-$ID) and reconcile the record before relaunching" >&2
+      exit 1
+    }
+    AGENT_VIEW=1
+    RELAUNCH_AGENT_VIEW_STATE=$(fm_agent_view_session_state "$RELAUNCH_AGENT_VIEW_ID" "$RELAUNCH_WT")
+    case "$RELAUNCH_AGENT_VIEW_STATE" in
+      dead) AGENT_VIEW_RESUME_ID=$RELAUNCH_AGENT_VIEW_ID ;;
+      missing) ;;
+      alive)
+        echo "error: task $ID's background session $RELAUNCH_AGENT_VIEW_ID is still running; stop it first with bin/fm-control.sh $ID exit" >&2
+        exit 1
+        ;;
+      *)
+        echo "error: cannot prove task $ID's background session $RELAUNCH_AGENT_VIEW_ID is stopped (it reads '$RELAUNCH_AGENT_VIEW_STATE'); refusing to relaunch alongside an agent that may still own $RELAUNCH_WT" >&2
+        exit 1
+        ;;
+    esac
+  fi
+elif [ -e "$CONFIG/agent-view-workers" ] || [ -L "$CONFIG/agent-view-workers" ]; then
+  fm_agent_view_source || { echo "error: config/agent-view-workers is present but the agent-view pilot library could not be loaded" >&2; exit 1; }
+  AGENT_VIEW_SWITCH=$(fm_agent_view_switch "$CONFIG")
+  if [ "$AGENT_VIEW_SWITCH" != off ] && [ "$HARNESS" = claude ]; then
+    if [ "$KIND" = secondmate ]; then
+      echo "agent-view pilot: secondmates are never piloted; launching secondmate $ID as an ordinary session" >&2
+    else
+      case "$ARG3" in
+        *' '*)
+          echo "agent-view pilot: $ID uses a raw launch command, which is never piloted; launching it as an ordinary worker" >&2
+          ;;
+        *)
+          if [ "$AGENT_VIEW_SWITCH" = invalid ]; then
+            echo "error: config/agent-view-workers must say on or off; refusing to guess whether $ID should be an agent-view pilot worker" >&2
+            exit 1
+          elif [ "$BACKEND" != tmux ]; then
+            echo "agent-view pilot: the pilot runs only on the tmux backend; launching $ID on $BACKEND as an ordinary worker" >&2
+          elif ! command -v claude >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+            echo "error: the agent-view pilot needs both claude and jq on firstmate's PATH; refusing to launch $ID as a pilot worker it could not supervise" >&2
+            exit 1
+          else
+            AGENT_VIEW=1
+          fi
+          ;;
+      esac
+    fi
+  fi
+fi
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -2576,14 +2656,19 @@ if [ "$KIND" != secondmate ]; then
       mkdir -p "$WT/.claude"
       busy_cmd_prefix="$(shell_quote "$FM_ROOT/bin/fm-busy-event.sh") apply $(shell_quote "$STATE_REAL") $(shell_quote "$ID")"
       busy_suffix="--gen $(shell_quote "$BUSY_GEN") --source claude-hook"
+      # An agent-view pilot's hooks answer only to the worker's own session:
+      # the agent view fires this worktree's hooks from processes that are not
+      # the worker (bin/fm-agent-view-lib.sh, behaviour change 1).
+      hook_gate=
+      [ "$AGENT_VIEW" -ne 1 ] || hook_gate=$(fm_agent_view_hook_gate "$ID")
       # The presence beat rides the SAME four hooks and is appended last, so
       # firstmate's own durable busy record and turn-end notification are
       # already written before an optional, best-effort board call is attempted.
       # Claude is the only adapter that reaches all four presence states.
-      j_submit=$(json_escape "$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true; $PRESENCE_WORKING")
-      j_stop=$(json_escape "touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true; $PRESENCE_WAITING")
-      j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true; $PRESENCE_WAITING")
-      j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true; $PRESENCE_END")
+      j_submit=$(json_escape "$hook_gate$busy_cmd_prefix busy $busy_suffix --event user-prompt-submit 2>/dev/null || true; $PRESENCE_WORKING")
+      j_stop=$(json_escape "${hook_gate}touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true; $PRESENCE_WAITING")
+      j_stopfail=$(json_escape "$hook_gate$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true; $PRESENCE_WAITING")
+      j_sessionend=$(json_escape "$hook_gate$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true; $PRESENCE_END")
       cat > "$WT/.claude/settings.local.json" <<EOF
 {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
@@ -2885,6 +2970,12 @@ else
     SPAWN_TRACEPARENT=
   fi
 fi
+# A resumed agent-view session keeps the environment it was launched with,
+# carrier included, so its record names exactly the carrier it already holds,
+# whatever this home's decision is now.
+if [ -n "$AGENT_VIEW_RESUME_ID" ]; then
+  SPAWN_TRACEPARENT=$(fm_meta_get "$RELAUNCH_META" traceparent)
+fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
@@ -2900,7 +2991,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent agent_view_id backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2924,6 +3015,10 @@ preserve_relaunch_meta() {
   # A fresh treehouse lease names its holder; a relaunch carries the recorded
   # one forward through preserve_relaunch_meta.
   [ -z "$LEASE_HOLDER" ] || echo "lease_holder=$LEASE_HOLDER"
+  # An agent-view pilot names its background session; `pending` until the
+  # launch below reads the new session's id back, so nothing acts on a launch
+  # still in flight. An ordinary record writes no such line.
+  [ "$AGENT_VIEW" -ne 1 ] || echo "agent_view_id=${AGENT_VIEW_RESUME_ID:-pending}"
   # Default-off writes no traceparent= line.
   # backend= is written only for a non-default (non-tmux) backend, so the
   # default path's meta stays byte-identical (absent backend= means tmux;
@@ -3074,35 +3169,193 @@ spawn_record_traceparent() {
   return "$status"
 }
 
-# Export GOTMPDIR into the crewmate's pane shell so the agent and every child
-# process (go build, go test, ...) inherit it. Sent before the launch command so
-# the env is set when the agent starts; the brief sleep lets the export land.
-spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
-# Send through the exact channel that already ships GOTMPDIR, so every backend
-# and harness - ship, scout, and secondmate - gets it before launch. Skipped
-# entirely when trace context is off.
-if [ -n "$SPAWN_TRACEPARENT" ]; then
-  if spawn_send_text_line "$T" "export TRACEPARENT=$SPAWN_TRACEPARENT"; then
-    if ! spawn_record_traceparent; then
-      LAUNCH="unset TRACEPARENT; $LAUNCH"
+# --- agent-view pilot launch (bin/fm-agent-view-lib.sh owns the contract) ---
+# The background session receives its whole environment through --settings, so
+# nothing is exported into the window's shell: a client typed into this window
+# may be the one that starts Claude Code's shared background service, and
+# anything exported here would then reach every session that service hosts.
+AGENT_VIEW_LAUNCH_WAIT=${FM_AGENT_VIEW_LAUNCH_WAIT:-90}
+AGENT_VIEW_VIEWER_WAIT=${FM_AGENT_VIEW_VIEWER_WAIT:-30}
+AGENT_VIEW_ID=
+AGENT_VIEW_NAMED=
+AGENT_VIEW_REPORT=
+
+# spawn_record_agent_view_id: publish the pilot's session id in place of its
+# `pending` marker under the meta lock, keeping the line where it is so it stays
+# ahead of any recorded PR's lines. An empty value drops the line: a launch that
+# provably created no session leaves an ordinary record with no agent.
+spawn_record_agent_view_id() {  # <session-id-or-empty>
+  local meta="$STATE/$ID.meta" status=0
+  SPAWN_META_LOCK=$(fm_meta_lock_path "$meta") || return 1
+  fm_lock_acquire_wait "$SPAWN_META_LOCK"
+  SPAWN_META_LOCK_HELD=1
+  SPAWN_META_TMP="$STATE/.$ID.meta.agent-view.${BASHPID:-$$}"
+  if [ ! -f "$meta" ] || [ ! -w "$meta" ] \
+     || ! awk -F= -v value="$1" '
+          $1 == "agent_view_id" { if (value != "") print "agent_view_id=" value; next }
+          { print }
+        ' "$meta" > "$SPAWN_META_TMP" \
+     || ! mv -f "$SPAWN_META_TMP" "$meta"; then
+    status=1
+    rm -f "$SPAWN_META_TMP" 2>/dev/null || true
+  fi
+  SPAWN_META_TMP=
+  fm_lock_release "$SPAWN_META_LOCK" || status=1
+  SPAWN_META_LOCK_HELD=0
+  return "$status"
+}
+
+agent_view_fail() {  # <detail>
+  printf 'failed: %s\n' "$1" >> "$STATE/$ID.status"
+  echo "error: $1; inspect window $T" >&2
+}
+
+agent_view_wait() {  # <seconds> <command...>: retry every half second until it succeeds
+  local limit=$1 elapsed=0
+  shift
+  until "$@"; do
+    awk -v e="$elapsed" -v t="$limit" 'BEGIN{exit !(e < t)}' || return 1
+    sleep 0.5
+    elapsed=$(awk -v e="$elapsed" 'BEGIN{printf "%.1f", e + 0.5}')
+  done
+}
+
+agent_view_launch_finished() {
+  [ -s "$TASK_TMP/agent-view-launch.rc" ]
+}
+
+agent_view_session_running() {
+  [ "$(fm_agent_view_session_state "$AGENT_VIEW_ID" "$WT")" = alive ]
+}
+
+# agent_view_listed: is <id> one of the background sessions named after this
+# task in its worktree? Refreshes AGENT_VIEW_NAMED, the ids so named.
+agent_view_listed() {  # <id>
+  AGENT_VIEW_NAMED=$(fm_agent_view_named_ids "$W" "$WT") || return 1
+  printf '%s\n' "$AGENT_VIEW_NAMED" | grep -qx "$1"
+}
+
+# agent_view_start_session: launch the background session from the window's
+# own shell, so it starts in the verified worktree, then tie the launch to
+# exactly one session: the id it printed, confirmed by the session list as a
+# background session named fm-<id> in this worktree. Anything less leaves the
+# record pending, which no lifecycle path acts on. The launch line is the
+# library's window-client line (fm_agent_view_client_line), because this launch
+# may be the client that starts Claude Code's shared background service.
+agent_view_start_session() {
+  local out="$TASK_TMP/agent-view-launch.out" rc_file="$TASK_TMP/agent-view-launch.rc"
+  local carrier=$SPAWN_TRACEPARENT settings line rc parsed named named_count
+  rm -f "$out" "$rc_file"
+  # The carrier is recorded before launch, as on the ordinary path, so the
+  # record never lacks a carrier the session was given.
+  if [ -n "$carrier" ] && ! spawn_record_traceparent; then
+    carrier=
+  fi
+  settings=$(fm_agent_view_settings_json "$ID" "$TASK_TMP/gotmp" "$carrier") || {
+    agent_view_fail "the agent-view launch settings for $ID could not be built"
+    return 1
+  }
+  line="$(fm_agent_view_client_line "--bg --name $(shell_quote "$W") --settings $(shell_quote "$settings") --dangerously-skip-permissions $MODELFLAG$EFFORTFLAG\"\$($sq_opinput encode launch-brief < $sq_brief)\"") > $(shell_quote "$out") 2>&1 < /dev/null; echo \$? > $(shell_quote "$rc_file")"
+  spawn_send_literal "$T" "$line"
+  sleep 0.3
+  spawn_send_key "$T" Enter
+  agent_view_wait "$AGENT_VIEW_LAUNCH_WAIT" agent_view_launch_finished || {
+    agent_view_fail "the agent-view launch of $ID did not finish within ${AGENT_VIEW_LAUNCH_WAIT}s, so its record stays pending; find its session with 'claude agents --json --all' (name $W) before acting on it"
+    return 1
+  }
+  rc=$(tr -dc '0-9' < "$rc_file")
+  parsed=$(fm_agent_view_parse_launch "$out" "$ID") || parsed=
+  # The service lists a session as soon as it is claimed; the short wait only
+  # absorbs a list read that lands before that.
+  [ -z "$parsed" ] || agent_view_wait 10 agent_view_listed "$parsed" || true
+  named=$(fm_agent_view_named_ids "$W" "$WT") || {
+    agent_view_fail "the agent-view launch of $ID finished (exit ${rc:-unknown}) but the session list could not be read, so its record stays pending; find its session with 'claude agents --json --all' (name $W) before acting on it"
+    return 1
+  }
+  named_count=$(printf '%s' "$named" | grep -c . || true)
+  if [ "$rc" != 0 ] && [ -z "$parsed" ] && [ "$named_count" -eq 0 ]; then
+    spawn_record_agent_view_id '' || true
+    agent_view_fail "Claude Code refused the agent-view launch of $ID (exit ${rc:-unknown}): $(head -c 400 "$out" | tr '\n' ' ')"
+    return 1
+  fi
+  if [ -n "$parsed" ]; then
+    AGENT_VIEW_ID=$parsed
+  elif [ "$named_count" -eq 1 ]; then
+    AGENT_VIEW_ID=$named
+  fi
+  if [ "$rc" != 0 ] || [ -z "$AGENT_VIEW_ID" ] || ! printf '%s\n' "$named" | grep -qx "$AGENT_VIEW_ID"; then
+    agent_view_fail "the agent-view launch of $ID (exit ${rc:-unknown}) could not be tied to exactly one background session named $W in $WT, so its record stays pending; reconcile it with 'claude agents --json --all' before acting on it"
+    return 1
+  fi
+  spawn_record_agent_view_id "$AGENT_VIEW_ID" || {
+    agent_view_fail "background session $AGENT_VIEW_ID is running for $ID, but its id could not be recorded, so the record stays pending; record agent_view_id=$AGENT_VIEW_ID by hand before acting on it"
+    return 1
+  }
+}
+
+# agent_view_launch: start or resume the worker's background session, then
+# attach the window's viewer. A resume must bring the session back; a viewer
+# that cannot be confirmed is only a warning, because the worker is running and
+# every typing path re-proves the viewer before it types.
+agent_view_launch() {
+  local attach_rc
+  if [ -n "$AGENT_VIEW_RESUME_ID" ]; then
+    AGENT_VIEW_ID=$AGENT_VIEW_RESUME_ID
+    if [ -n "$SPAWN_TRACEPARENT" ] && ! spawn_record_traceparent; then
+      echo "warning: could not re-record the trace carrier $ID's resumed session still holds" >&2
     fi
   else
-    TRACE_SEND_STATUS=$?
-    if [ "$TRACE_SEND_STATUS" -eq 2 ]; then
-      echo "error: trace-context input could not be cleared for $W; refusing to append the launch command" >&2
-      exit 1
-    fi
-    LAUNCH="unset TRACEPARENT; $LAUNCH"
+    agent_view_start_session || return 1
   fi
+  attach_rc=0
+  fm_agent_view_attach_window "$T" "$ID" "$AGENT_VIEW_ID" "$AGENT_VIEW_VIEWER_WAIT" || attach_rc=$?
+  if [ "$attach_rc" -eq 1 ]; then
+    agent_view_fail "window $T is not at its shell, so no viewer of $ID's background session $AGENT_VIEW_ID could be attached there"
+    return 1
+  fi
+  if [ -n "$AGENT_VIEW_RESUME_ID" ] && ! agent_view_wait "$AGENT_VIEW_LAUNCH_WAIT" agent_view_session_running; then
+    agent_view_fail "attaching $ID's stopped background session $AGENT_VIEW_ID did not resume it within ${AGENT_VIEW_LAUNCH_WAIT}s"
+    return 1
+  fi
+  if [ "$attach_rc" -ne 0 ]; then
+    echo "warning: $ID's background session $AGENT_VIEW_ID is running, but window $T could not be confirmed showing it; firstmate refuses to type there until bin/fm-control.sh $ID relaunch re-attaches it" >&2
+  fi
+  AGENT_VIEW_REPORT=" agent_view=$AGENT_VIEW_ID"
+}
+
+if [ "$AGENT_VIEW" -eq 1 ]; then
+  agent_view_launch || exit 1
+else
+  # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
+  # process (go build, go test, ...) inherit it. Sent before the launch command so
+  # the env is set when the agent starts; the brief sleep lets the export land.
+  spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
+  # Send through the exact channel that already ships GOTMPDIR, so every backend
+  # and harness - ship, scout, and secondmate - gets it before launch. Skipped
+  # entirely when trace context is off.
+  if [ -n "$SPAWN_TRACEPARENT" ]; then
+    if spawn_send_text_line "$T" "export TRACEPARENT=$SPAWN_TRACEPARENT"; then
+      if ! spawn_record_traceparent; then
+        LAUNCH="unset TRACEPARENT; $LAUNCH"
+      fi
+    else
+      TRACE_SEND_STATUS=$?
+      if [ "$TRACE_SEND_STATUS" -eq 2 ]; then
+        echo "error: trace-context input could not be cleared for $W; refusing to append the launch command" >&2
+        exit 1
+      fi
+      LAUNCH="unset TRACEPARENT; $LAUNCH"
+    fi
+  fi
+  sleep 0.3
+  spawn_send_literal "$T" "$LAUNCH"
+  sleep 0.3
+  if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
+    HERDR_PROJECTION_ABORT_CLEANUP=0
+    spawn_herdr_presentation_order_lock_release
+  fi
+  spawn_send_key "$T" Enter
 fi
-sleep 0.3
-spawn_send_literal "$T" "$LAUNCH"
-sleep 0.3
-if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then
-  HERDR_PROJECTION_ABORT_CLEANUP=0
-  spawn_herdr_presentation_order_lock_release
-fi
-spawn_send_key "$T" Enter
 if [ "$HARNESS" = kimi ]; then
   if ! kimi_wait_for_ready; then
     kimi_spawn_fail "kimi did not show a verified ready signal before brief delivery"
@@ -3139,4 +3392,4 @@ fi
 
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$AGENT_VIEW_REPORT"

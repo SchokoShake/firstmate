@@ -906,6 +906,44 @@ fm_backend_agent_alive() {  # <backend> <target>
   esac
 }
 
+# fm_agent_view_source: load the agent-view pilot's owner
+# (bin/fm-agent-view-lib.sh) together with the tmux adapter and the bounded
+# runner it calls, once per shell.
+fm_agent_view_source() {
+  [ -z "${_FM_AGENT_VIEW_SOURCED:-}" ] || return 0
+  fm_backend_source tmux || return 1
+  # shellcheck source=bin/fm-timeout-lib.sh
+  . "$FM_BACKEND_LIB_DIR/fm-timeout-lib.sh" || return 1
+  # shellcheck source=bin/fm-agent-view-lib.sh
+  . "$FM_BACKEND_LIB_DIR/fm-agent-view-lib.sh" || return 1
+  _FM_AGENT_VIEW_SOURCED=1
+}
+
+# fm_task_agent_state: fm_backend_agent_state for one task record. An
+# agent-view pilot record (agent_view_id= in its meta) runs its agent as a
+# background session whose window holds only a viewer, so its state comes from
+# the session itself (bin/fm-agent-view-lib.sh owns that read); every other
+# record reads its recorded endpoint exactly as fm_backend_agent_state does.
+fm_task_agent_state() {  # <meta-file> <backend> <target>
+  if [ -n "$(fm_meta_get "$1" agent_view_id)" ]; then
+    fm_agent_view_source || { printf 'unreadable'; return 0; }
+    fm_agent_view_meta_state "$1"
+    return 0
+  fi
+  fm_backend_agent_state "$2" "$3"
+}
+
+# fm_task_agent_alive: fm_backend_agent_alive for one task record, with the
+# same pilot rule as fm_task_agent_state.
+fm_task_agent_alive() {  # <meta-file> <backend> <target>
+  [ -n "$(fm_meta_get "$1" agent_view_id)" ] || { fm_backend_agent_alive "$2" "$3"; return 0; }
+  case "$(fm_task_agent_state "$1" "$2" "$3")" in
+    alive) printf 'alive' ;;
+    dead|missing) printf 'dead' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
 # fm_backend_endpoint_shell_pid: the pid of the endpoint's own root process,
 # the pane shell fm-spawn.sh moved into the task's worktree with a top-level
 # cd, or failure when the backend cannot name one. fm-teardown.sh's

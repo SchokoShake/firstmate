@@ -229,10 +229,17 @@ Its broader dark-TRUECOLOR placeholder handling and dark-theme tradeoff are docu
 That styled capture is internal to the boolean detector only.
 `fm-peek` and every other human or LLM-facing capture path stays plain `tmux capture-pane` with no escape codes.
 
-Every claude agent `bin/fm-spawn.sh` launches, including a `bin/fm-control.sh relaunch`, is named `fm-<task-id>` with `--name` and starts with `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, both scoped to that agent through the launch command (verified 2026-10-30, Claude Code 2.1.314).
+Every claude agent `bin/fm-spawn.sh` launches, including a `bin/fm-control.sh relaunch`, is named `fm-<task-id>` with `--name` and starts with `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`, both scoped to that agent through the launch command (verified 2026-10-30, Claude Code 2.1.314); an agent-view pilot worker, below, takes the same name but never the switch, which would disable it.
 The name traces the agent to its task in `claude agents --json`, `/resume`, and the composer border; it does not add an interactive session to the agent view, which lists only background sessions.
 The switch removes the agent view from worker windows: otherwise `←` on an empty prompt or `/bg` moves the worker into a background session behind firstmate's back, and firstmate's next message would land in the agent view and start a new session in the worker's local copy.
 `disableAgentView` in a settings file is the documented alternative; `leftArrowOpensAgents` is global-config only, and firstmate never changes the captain's global config.
+
+**Agent-view pilot workers (verified 2026-10-30, Claude Code 2.1.314).**
+A home whose `config/agent-view-workers` says `on` launches new claude crewmates and scouts on tmux as Claude Code background sessions; [`docs/tmux-backend.md`](../../../docs/tmux-backend.md#agent-view-pilot) owns their behavior, [`docs/agent-control.md`](../../../docs/agent-control.md#agent-view-pilot-workers) their verbs, and `stuck-crewmate-recovery` their recovery, including a record whose `agent_view_id=` still says `pending`.
+There is no trust dialog to accept: an untrusted workspace makes the spawn refuse, quoting Claude Code's reason.
+Drive a pilot worker only through `bin/fm-send.sh` and `bin/fm-control.sh`, never raw tmux keys, because several viewer inputs, `/exit` among them, take the window off the session while the worker keeps running.
+`fm-send` refuses those inputs but passes `/no-mistakes` and other skill invocations as usual, and exit is `bin/fm-control.sh <id> exit`, which runs `claude stop <id>`.
+A pilot session never inherits its window's environment, because Claude Code's background service starts it: everything firstmate passes it rides the session's settings, and any other variable it sees came from the service, whose starting process `claude daemon status` names.
 
 **Primary-session guard fact (verified 2026-07-04, Claude Code 2.1.201; preserved 2026-07-08, Claude Code 2.1.204; Stop-owned auto-arm revalidated 2026-07-24, Claude Code 2.1.219).**
 This is separate from the per-task crewmate lifecycle hooks above, which live in a task's own `.claude/settings.local.json` and carry that task's busy-state events, its turn-end marker touch, and its presence beat.
