@@ -89,7 +89,8 @@ printf '[]\n' > "$FAKE_CLAUDE_DIR/sessions.json"
 #   agents --json   prints the list; agents alone paints the agent view.
 #   attach <id>     resumes a stopped session, then paints it until it stops,
 #                   with the cursor in its composer; each line typed into it is
-#                   appended to <id>.typed and clears the composer again.
+#                   appended to <id>.typed and clears the composer again. While
+#                   attach-fails exists it refuses without resuming anything.
 #   stop / rm       stop or remove one session by id.
 # A viewer and the agent view repaint from a bash re-executed with exactly the
 # argv the real CLI's process carries, `claude attach <id>` or `claude agents`.
@@ -165,6 +166,7 @@ case "${1:-}" in
   attach)
     id=${2:-}
     [ -n "$(row "$id")" ] || { echo "No job matching '$id'."; exit 1; }
+    [ ! -e "$D/attach-fails" ] || { echo "stand-in: attach refused"; exit 1; }
     env > "$D/$id.attach-env"
     running "$id" || put --arg id "$id" 'map(if .id == $id then .pid = 4343 else . end)'
     screen="$D/screen-$id"
@@ -547,7 +549,7 @@ run_session_start() {
 }
 
 typed_notes() {  # <id>
-  grep -c '^Restart note from firstmate' "$FAKE_CLAUDE_DIR/$1.typed" 2>/dev/null
+  cat "$FAKE_CLAUDE_DIR/$1.typed" 2>/dev/null | grep -c '^Restart note from firstmate'
 }
 
 write_pool_lease() {  # <label>
@@ -756,6 +758,33 @@ test_revive_after_a_restart() {
   pass "fm-control revive: a pilot stopped by a restart resumes its background session and gets its restart note once"
 }
 
+# A pilot whose resume cannot be launched is reported with what is left to do,
+# and the retry it names brings the same session back with its note.
+test_a_failed_pilot_revive_names_its_retry() {
+  local t out rc
+  t=$(sed -n 's/^window=//p' "$HOME_DIR/state/$ID.meta")
+  claude stop "$SID" >/dev/null
+  wait_for 15 window_at_shell "$t" || fail "the viewer of a stopped session must exit"
+  touch "$FAKE_CLAUDE_DIR/attach-fails"
+  out=$(fm_env env FM_AGENT_VIEW_VIEWER_WAIT=2 FM_AGENT_VIEW_LAUNCH_WAIT=2 "$ROOT/bin/fm-control.sh" revive "$ID" 2>&1)
+  rc=$?
+  rm -f "$FAKE_CLAUDE_DIR/attach-fails"
+  expect_code 1 "$rc" "a pilot revive whose resume does not launch"
+  assert_contains "$out" "restart note at $HOME_DIR/state/$ID.control-relaunch.note" \
+    "the failure should name where the restart note is kept"
+  assert_not_contains "$out" "--fresh" "a pilot must not be offered --fresh, which revive refuses for it"
+  session_running "$SID" && fail "divergence lost: the failed attempt must leave the session stopped"
+  [ "$(typed_notes "$SID")" = 1 ] || fail "a failed attempt must type no note"
+  out=$(fm_env "$ROOT/bin/fm-control.sh" revive "$ID" 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "the retry the failure named"$'\n'"$out"
+  assert_contains "$out" "revived $ID via=resume" "the retry must resume the session"
+  session_running "$SID" || fail "the retry must bring the same session back"
+  [ "$(jq length "$FAKE_CLAUDE_DIR/sessions.json")" = 1 ] || fail "the retry must not start a second session"
+  [ "$(typed_notes "$SID")" = 2 ] || fail "the retry must type its own restart note once"
+  pass "fm-control revive: a pilot whose resume did not launch names its note file and a retry it accepts"
+}
+
 test_watch_liveness_reads_the_session() {
   local t
   t=$(sed -n 's/^window=//p' "$HOME_DIR/state/$ID.meta")
@@ -953,6 +982,7 @@ test_control_reattach_interrupt_exit
 test_control_resumes
 test_control_restarts
 test_revive_after_a_restart
+test_a_failed_pilot_revive_names_its_retry
 test_watch_liveness_reads_the_session
 test_control_starts_fresh
 test_control_exit_without_window

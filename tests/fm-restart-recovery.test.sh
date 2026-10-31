@@ -19,7 +19,8 @@
 #      the stopped worker with its conversation, its validation state, and the
 #      exact revive commands; a later start retires the list once nothing in it
 #      is still stopped. A worker deliberately stopped before the restart is
-#      listed apart, and revive --stopped-by-restart leaves it stopped.
+#      listed apart, and revive --stopped-by-restart leaves it stopped, also
+#      when its agent had already exited before the stop.
 #   3. relaunch refuses a gone endpoint before writing anything, and revive
 #      refuses a working copy whose lease it cannot prove before creating
 #      anything.
@@ -250,6 +251,10 @@ window_target() {
 
 agent_running() {
   [ "$(fm_backend_tmux_agent_state "$(window_target)")" = alive ]
+}
+
+agent_ended() {
+  [ "$(fm_backend_tmux_agent_state "$(window_target)")" = dead ]
 }
 
 server_running() {
@@ -611,6 +616,36 @@ test_a_worker_stopped_before_the_restart_stays_stopped() {
   pass "fm-session-start: a worker stopped deliberately before a restart is listed apart and never brought back by it"
 }
 
+# An agent that already ended on its own leaves its busy generation armed, and
+# a deliberate exit afterwards retires it all the same.
+test_exit_after_the_agent_ended_stays_stopped() {
+  local out rc before
+  out=$(fm_env "$ROOT/bin/fm-control.sh" revive "$ID" 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "revive before the agent ends on its own"$'\n'"$out"
+  tmux send-keys -t "$(window_target)" /exit Enter
+  wait_for 10 agent_ended || fail "the stand-in agent did not end on /exit"
+  [ -e "$STATE_DIR/$ID.busy-gen" ] \
+    || fail "divergence lost: an agent that ends on its own must leave its busy generation armed"
+  out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" exit 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "a deliberate stop of an agent that already ended"$'\n'"$out"
+  assert_contains "$out" "already-stopped $ID" "exit should report the agent already stopped"
+  [ ! -e "$STATE_DIR/$ID.busy-gen" ] || fail "a deliberate stop must retire the busy generation even when the agent had already ended"
+  simulate_restart boot-h
+  before=$(launches)
+  out=$(run_session_start)
+  assert_contains "$out" "Already stopped before the restart" "the deliberately stopped worker must be listed apart"$'\n'"$out"
+  grep -qx "stopped_before=$ID" "$STATE_DIR/.restart-stopped" || fail "the stopped list must record it as stopped before"
+  out=$(fm_env "$ROOT/bin/fm-control.sh" revive --stopped-by-restart 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "revive --stopped-by-restart"
+  assert_contains "$out" "nothing to revive" "the deliberately stopped worker must not be brought back by the restart command"
+  [ "$(launches)" = "$before" ] || fail "revive --stopped-by-restart started a deliberately stopped worker"
+  server_running && fail "revive --stopped-by-restart must not reopen a deliberately stopped worker's endpoint"
+  pass "fm-control exit: stopping a worker whose agent already ended still keeps it out of the restart bring-back"
+}
+
 test_other_backends_cannot_reopen_an_endpoint() {
   local out rc
   out=$(fm_backend_recreate_task herdr "s:fm-x" "$WT_DIR" 2>&1)
@@ -634,5 +669,6 @@ test_revive_without_a_recorded_conversation_starts_fresh
 test_revive_waits_for_a_reopened_shell_to_finish_starting
 test_a_swallowed_move_is_completed_by_a_later_revive
 test_a_worker_stopped_before_the_restart_stays_stopped
+test_exit_after_the_agent_ended_stays_stopped
 test_other_backends_cannot_reopen_an_endpoint
 echo "# all fm-restart-recovery tests passed"

@@ -33,7 +33,9 @@
 #              every uncommitted change. Interrupts first when the task reads
 #              busy, then submits the harness's exit command. Postcondition:
 #              the backend's recovery-grade classifier reports the agent gone.
-#              Already-stopped is success (idempotent).
+#              Already-stopped is success (idempotent). Either way the task's
+#              busy generation is retired, which is how a later machine restart
+#              tells a deliberate stop apart (bin/fm-restart-lib.sh).
 #   relaunch   Transactionally replace the running agent with a new one, in the
 #              SAME endpoint and SAME worktree, on the same or a newly chosen
 #              harness/model/effort - so switching harness is one ordinary use
@@ -588,10 +590,10 @@ do_exit_agent_view() {
         || die "claude stop $AGENT_VIEW_ID failed for task $ID; its background session may still be running"
       state=$(wait_agent_state "$EXIT_WAIT" dead missing) \
         || die "exit-delivered $ID stop=delivered agent-state=$state exit=unconfirmed; background session $AGENT_VIEW_ID did not stop within ${EXIT_WAIT}s"
-      retire_busy_incarnation
       ;;
     *) die "task $ID's background session $AGENT_VIEW_ID reads '$state' rather than a positively classified state; refusing to act on a session that may not be this worker's alone" ;;
   esac
+  retire_busy_incarnation
   fm_agent_view_release_window "$T" \
     || echo "warning: task $ID's background session is stopped, but window $T shows something other than its shell; a relaunch needs the window at its shell" >&2
   printf '%s' "$result"
@@ -609,6 +611,7 @@ do_exit() {
   state=$(agent_state)
   case "$state" in
     dead)
+      retire_busy_incarnation
       printf 'already-stopped'
       return 0
       ;;
@@ -722,7 +725,8 @@ restore_instructions() {
 
 relaunch_rollback() {
   local state retry="bin/fm-control.sh revive $ID can be run again"
-  [ "${REVIVE_VIA:-}" != resume ] \
+  local kept="its work is preserved at $WT and its restart note at $NOTE_FILE"
+  [ "${REVIVE_VIA:-}" != resume ] || [ -n "$AGENT_VIEW_ID" ] \
     || retry="bin/fm-control.sh revive $ID can be run again to retry the resume, or with --fresh to start it from its instructions and the restart note"
   [ "$RELAUNCH_ACTIVE" = 1 ] || return 0
   [ "$RELAUNCH_PHASE" != complete ] || return 0
@@ -782,7 +786,7 @@ relaunch_rollback() {
         echo "error: $ID's worker is running again in $T, but it was not confirmed to have resumed its recorded conversation $REVIVE_SESSION within ${LAUNCH_WAIT}s; look at the window before acting further. A later revive reports it as already running rather than starting a second one" >&2
       else
         journal_write "failed:$RELAUNCH_PHASE" "rollback=none-resume-exited" || true
-        echo "error: $ID's resumed worker exited before it confirmed its recorded conversation $REVIVE_SESSION (its endpoint reads '$state'); no agent is running, and its work plus the restart note are preserved at $WT. Run bin/fm-control.sh revive $ID again to retry the resume, or with --fresh to start it from its instructions and the restart note" >&2
+        echo "error: $ID's resumed worker exited before it confirmed its recorded conversation $REVIVE_SESSION (its endpoint reads '$state'); no agent is running, and $kept. Run bin/fm-control.sh revive $ID again to retry the resume, or with --fresh to start it from its instructions and the restart note" >&2
       fi
       ;;
     delivering)
@@ -805,14 +809,14 @@ relaunch_rollback() {
         # worse inaccuracy.
         journal_write "failed:$RELAUNCH_PHASE" "rollback=none-new-record-kept" || true
         if [ "$VERB" = revive ]; then
-          echo "error: $ID was launched again on $TARGET_HARNESS but no running agent could be confirmed; its work and restart note are preserved at $WT, and $retry" >&2
+          echo "error: $ID was launched again on $TARGET_HARNESS but no running agent could be confirmed; $kept, and $retry" >&2
         else
           echo "error: $ID was relaunched on $TARGET_HARNESS but no running agent could be confirmed; its work is preserved at $WT" >&2
         fi
       else
         journal_write "failed:$RELAUNCH_PHASE" "rollback=prior-record-kept" || true
         if [ "$VERB" = revive ]; then
-          echo "error: $ID's worker did not launch; no agent is running, and its work plus the restart note are preserved at $WT, so $retry" >&2
+          echo "error: $ID's worker did not launch; no agent is running, and $kept, so $retry" >&2
         else
           echo "error: $ID's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at $WT" >&2
         fi
