@@ -119,7 +119,7 @@ A pilot worker differs from an ordinary Claude Code worker in five ways:
   The proof needs two independent signals: the window's foreground job is `claude attach <id>`, and its screen shows the composer border titled `fm-<id>` without the agent view's footer.
   Keys other than Escape, Enter, Up, Down, Tab, and a single digit are refused, and so are the `/exit`, `/quit`, `/bg`, and `/background` commands, because each can take the viewer off the session.
 - Cleanup stops and removes the session with `claude stop` and `claude rm` after its landed-work checks pass, so the agent view lists only live work, and it refuses, even with `--force`, while it cannot prove the session gone.
-  [agent-control.md](agent-control.md) owns how interrupt, exit, and relaunch behave for a pilot worker, including relaunch resuming the real conversation.
+  [agent-control.md](agent-control.md) owns how interrupt, exit, relaunch, and revive behave for a pilot worker, including relaunch and revive resuming the real conversation.
 
 In a viewer, the left arrow on an empty prompt, `/exit`, and a double Ctrl+C each turn the viewer into the agent view in place while the session keeps running.
 From the agent view, Escape returns to the shell, and Ctrl+Z suspends a viewer.
