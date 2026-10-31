@@ -733,6 +733,15 @@ test_revive_after_a_restart() {
   assert_contains "$out" "MACHINE RESTART" "the restart section is missing"$'\n'"$out"
   assert_contains "$out" "- $ID: ship no-mistakes; resumes its background session" \
     "a stopped pilot must be listed as resuming its background session"
+  assert_not_contains "$out" "--fresh" "a digest listing only pilots must not offer --fresh, which revive refuses for them"
+  printf 'kind=ship\nmode=no-mistakes\nwindow=firstmate:fm-other1\nbusy_gen=1\n' > "$HOME_DIR/state/other1.meta"
+  printf 'boot-c\n' > "$BOOT_FILE"
+  out=$(run_session_start)
+  rm -f "$HOME_DIR/state/other1".*
+  assert_contains "$out" "- other1: ship no-mistakes; starts fresh" "the other stopped worker is not listed"$'\n'"$out"
+  assert_contains "$out" "add --fresh to start a worker from its instructions" "the other worker must be offered --fresh"
+  assert_contains "$out" "--fresh does not apply to agent-view pilot workers, so give it only the chosen ids of the others." \
+    "a digest listing a pilot beside others must say --fresh is not for the pilot"
   out=$(fm_env env SHELL=/bin/bash "$ROOT/bin/fm-control.sh" revive --stopped-by-restart 2>&1)
   rc=$?
   tmux new-session -d -s lab -n w0 "bash --norc --noprofile"

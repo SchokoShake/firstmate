@@ -229,10 +229,12 @@
 # recorded, and its last status line, capped like every status line here; it
 # names the secondmates the startup secondmate check brings back; and it prints
 # the exact bin/fm-control.sh revive commands that bring back all of them or
-# chosen ones. It lists apart, in the same shape, the tasks already stopped
-# before the restart (a deliberate stop retired their busy generation) and the
-# tasks whose harness keeps no busy generation, for which it says it cannot
-# tell the two apart; `revive --stopped-by-restart` brings back neither, and
+# chosen ones, adding the --fresh hint only when a listed worker is not an
+# agent-view pilot (revive refuses --fresh for a pilot) and, when pilots are
+# listed too, that it is given only the others' ids. It lists apart, in the
+# same shape, the tasks already stopped before the restart (a deliberate stop
+# retired their busy generation) and the tasks whose harness keeps no busy
+# generation, for which it says it cannot tell the two apart; `revive --stopped-by-restart` brings back neither, and
 # revive <id> brings back a chosen one. Nothing here brings a worker back.
 #
 # PROJECT REGISTRY: one line per data/projects.md entry - its name and posture
@@ -862,7 +864,7 @@ print_restart_task() {  # <id>
 # print_restart_section: the MACHINE RESTART section (see the header). Silent
 # when the machine did not restart and no restart's workers are still stopped.
 print_restart_section() {
-  local locked=1 rec detected id key
+  local locked=1 rec detected id key pilots=0 others=0
   local -a stopped=() secondmates=() before=() unarmed=()
   [ "$READ_ONLY" -eq 0 ] || locked=0
   fm_restart_observe "$STATE" "$locked"
@@ -881,6 +883,7 @@ print_restart_section() {
       if [ "$(fm_meta_get "$STATE/$id.meta" kind)" = secondmate ]; then
         secondmates+=("$id")
       else
+        if [ -n "$(fm_meta_get "$STATE/$id.meta" agent_view_id)" ]; then pilots=1; else others=1; fi
         case "$key" in
           task) stopped+=("$id") ;;
           stopped_before) before+=("$id") ;;
@@ -923,8 +926,10 @@ print_restart_section() {
   fi
   if [ "${#stopped[@]}" -gt 0 ] || [ "${#before[@]}" -gt 0 ] || [ "${#unarmed[@]}" -gt 0 ]; then
     printf 'bring chosen ones back: FM_HOME=%q %q revive <id> [<id>...]\n' "$FM_HOME" "$SCRIPT_DIR/fm-control.sh"
-    printf 'add --fresh to start a worker from its instructions instead of its conversation.\n'
   fi
+  [ "$others" -eq 0 ] || printf 'add --fresh to start a worker from its instructions instead of its conversation.\n'
+  [ "$others" -eq 0 ] || [ "$pilots" -eq 0 ] \
+    || printf '%s\n' '--fresh does not apply to agent-view pilot workers, so give it only the chosen ids of the others.'
 }
 
 hash_file_sha256() {

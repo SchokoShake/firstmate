@@ -138,6 +138,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   An agent already running is reported as running, and the same note is never appended twice in a row, so a second revive starts nothing and a revive that failed part way is simply run again.
   It runs relaunch's journaled transaction with `action=revive` and three phases of its own, `reopening`, `resuming`, and `delivering`, and every failure names what is left to do.
 - An agent-view pilot worker gets its window back and then the pilot relaunch plan above, which keeps its background session, and a resumed session gets the restart note typed in as described above.
+  `--fresh` does not apply to it, so the restart section offers `--fresh` only for the other workers it lists.
 
 `relaunch` refuses a gone endpoint before anything is written and names `revive`, because there is no agent to replace and nowhere to launch one.
 

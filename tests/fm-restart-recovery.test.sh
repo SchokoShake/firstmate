@@ -381,6 +381,8 @@ test_restart_is_reported_with_the_stopped_worker() {
   BRING_BACK=$(printf '%s\n' "$out" | sed -n 's/^bring every one back: //p')
   assert_contains "$BRING_BACK" "fm-control.sh revive --stopped-by-restart" "the bring-back-all command is missing"
   assert_contains "$out" "revive <id> [<id>...]" "the bring-back-chosen command is missing"
+  assert_contains "$out" "add --fresh to start a worker from its instructions" "the fresh choice is missing"
+  assert_not_contains "$out" "agent-view pilot" "no pilot is listed, so none may be excepted"
   grep -qx "task=$ID" "$STATE_DIR/.restart-stopped" || fail "the stopped list must name the worker"
   [ "$(cat "$STATE_DIR/.boot-id")" = boot-b ] || fail "the new boot id must be recorded"
   server_running && fail "session start must never bring a worker back"
