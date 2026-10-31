@@ -99,6 +99,31 @@ fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs> -> prints 
   printf '%s\n' "$wid"
 }
 
+# fm_backend_tmux_recreate_task: recreate a task window that is gone - its
+# tmux server or the whole machine restarted - under its RECORDED
+# <session>:<window-name> target, with its shell started in <dir>, so the task's
+# record names it again unchanged. A session that no longer exists is created
+# detached with that window as its only one; an existing session gets the
+# window the way fm_backend_tmux_create_task adds one, including its refusal of
+# a window that already exists. Prints the new window's stable id.
+fm_backend_tmux_recreate_task() {  # <session:window-name> <dir> -> prints window id
+  local target=$1 dir=$2 ses wname wid
+  ses=${target%%:*}
+  wname=${target#*:}
+  [ -n "$ses" ] && [ -n "$wname" ] && [ "$ses" != "$target" ] || {
+    echo "error: '$target' is not a <session>:<window> target" >&2
+    return 1
+  }
+  if tmux has-session -t "=$ses" 2>/dev/null; then
+    fm_backend_tmux_create_task "$ses" "$wname" "$dir"
+    return
+  fi
+  wid=$(tmux new-session -d -P -F '#{window_id}' -s "$ses" -n "$wname" -c "$dir") || return 1
+  tmux set-window-option -t "$wid" automatic-rename off 2>/dev/null || true
+  tmux set-window-option -t "$wid" allow-rename off 2>/dev/null || true
+  printf '%s\n' "$wid"
+}
+
 # fm_backend_tmux_current_path: the live pane's current working directory, or
 # empty on any tmux error. Mirrors fm-spawn.sh's worktree-discovery poll:
 # `tmux display-message -p -t "$T" '#{pane_current_path}'`.

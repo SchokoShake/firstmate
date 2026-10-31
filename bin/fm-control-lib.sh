@@ -22,9 +22,11 @@
 #   2. Per-harness control mechanics: which key interrupts a running turn, how
 #      many times it must be sent, whether the composer needs clearing after
 #      that key, which adapter-owned cancellation acknowledgement is observable,
-#      which command exits the agent, and which task kinds the adapter is
-#      verified to run. These are the empirically verified facts previously
-#      carried only in the harness-adapters skill's per-adapter tables; that
+#      which command exits the agent, which task kinds the adapter is
+#      verified to run, and whether a stopped agent's conversation can be
+#      resumed (fm_control_harness_resume_mode). These are the empirically
+#      verified facts previously carried only in the harness-adapters skill's
+#      per-adapter tables; that
 #      skill now points here so one executable owner holds them, and
 #      bin/fm-send.sh's --key path reads the same table rather than a second
 #      copy of it.
@@ -34,13 +36,13 @@
 #      stopped. A verb whose postcondition cannot be proven on the recorded
 #      backend is refused rather than performed blind.
 #
-# `resume` is deliberately NOT a verb. It is not deterministic across the
-# verified adapters: codex and grok resume only from a session id printed at
-# exit, opencode resumes the most recent session for the cwd with --continue,
-# and claude, pi, pi-signed, and kimi have no verified pane-resume contract at
-# all. `relaunch` covers the same need deterministically for every adapter,
-# because the brief on disk - not a harness-private session - is the durable
-# instruction.
+# `resume` is deliberately NOT a verb, because resuming is not deterministic
+# across the verified adapters. `revive` brings back an agent that stopped -
+# its endpoint gone after a machine or terminal-server restart, or the agent
+# simply exited - and resumes the recorded conversation only where
+# fm_control_harness_resume_mode below says a capture-and-resume path is
+# verified; everywhere else it starts a fresh agent from the brief on disk
+# plus a restart note, exactly as `relaunch` would.
 
 # The complete control-plane verb allowlist, one per line.
 fm_control_verbs() {
@@ -48,12 +50,13 @@ fm_control_verbs() {
 interrupt
 exit
 relaunch
+revive
 EOF
 }
 
 fm_control_verb_allowed() {  # <verb>
   case "${1-}" in
-    interrupt|exit|relaunch) return 0 ;;
+    interrupt|exit|relaunch|revive) return 0 ;;
   esac
   return 1
 }
@@ -104,6 +107,21 @@ fm_control_harness_supports_kind() {  # <harness> <kind>
     muse) [ "$kind" != secondmate ] || return 1 ;;
   esac
   return 0
+}
+
+# How `revive` brings back a stopped agent's conversation, per verified
+# adapter. `session-id`: the adapter's turn-boundary hooks keep the running
+# session's identity on disk (bin/fm-harness-session.sh owns that record) and
+# the adapter resumes that session by id in the worktree, verified live.
+# `none`: no capture-and-resume path is verified, so revive starts a fresh
+# agent from the instructions plus a restart note. The per-adapter reasons
+# live in the harness-adapters skill.
+fm_control_harness_resume_mode() {  # <harness>
+  case "${1-}" in
+    claude) printf 'session-id' ;;
+    codex|opencode|pi|pi-signed|grok|kimi|cursor|muse) printf 'none' ;;
+    *) return 1 ;;
+  esac
 }
 
 # The key that cancels a running turn. Escape for every adapter except grok,

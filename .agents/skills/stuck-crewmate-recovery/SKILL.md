@@ -2,8 +2,8 @@
 name: stuck-crewmate-recovery
 description: >-
   Agent-only playbook for stuck or missing ordinary Firstmate direct reports.
-  Use when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
-  Reconciles recorded work before escalating from targeted inspection through safe relaunch or failure.
+  Use when the session-start digest reports an ordinary direct report's endpoint dead, its metadata has no window, or a machine restart stopped it, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
+  Reconciles recorded work before escalating from targeted inspection through safe revive, relaunch, or failure.
 user-invocable: false
 metadata:
   internal: true
@@ -11,9 +11,9 @@ metadata:
 
 # stuck-crewmate-recovery
 
-Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, or when a steer failed to land.
+Use this playbook when the session-start digest reports an ordinary direct report's endpoint dead, its metadata has no window, or a machine restart stopped it, or when a direct report is stale, looping, repeatedly confused, asking a question its brief already answers, unresponsive, or when a steer failed to land.
 
-Interrupt, stop, and relaunch a worker through `bin/fm-control.sh <task-id> interrupt|exit|relaunch`, which resolves the recorded runtime itself, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](../../../docs/agent-control.md)).
+Interrupt, stop, relaunch, and revive a worker through `bin/fm-control.sh <task-id> interrupt|exit|relaunch|revive`, which resolves the recorded runtime itself, verifies each action, and never tears down or discards anything ([`docs/agent-control.md`](../../../docs/agent-control.md)).
 That plane covers workers running in this home; a remotely placed secondmate is refused by name and reconciled through `secondmate-provisioning` instead.
 Load `harness-adapters` before a resume command or a harness-specific skill invocation, and whenever the adapter's own quirks matter.
 The target window's harness is recorded as `harness=` in `state/<id>.meta`.
@@ -32,8 +32,12 @@ When no authoritative run accounts for the task, inspect only its recorded backe
 Use `treehouse status` for treehouse-backed tmux, herdr, zellij, or cmux tasks, and use the recorded `orca_worktree_id=` and `terminal=` for Orca tasks.
 Do not sweep another home's endpoints or infer ownership from a matching window label.
 
-Before relaunch, prove that no live agent still owns the recorded task and that the existing worktree remains available.
-Preserve its uncommitted changes and commits, keep the same task identity, and resume or relaunch the recorded harness in that existing worktree with the same brief plus a concise progress note.
+Bring a stopped worker back with `FM_HOME=<this-firstmate-home> bin/fm-control.sh revive <task-id>`, the one supported step ([Revive after a stop](../../../docs/agent-control.md#revive-after-a-stop)).
+It proves the recorded lease and that no agent is running, reopens a gone endpoint in the recorded worktree, and resumes the worker's own conversation where the harness allows it, otherwise starting it from its brief plus a restart note, keeping the same task identity, commits, and uncommitted changes.
+The restart note already tells the worker what no-mistakes says to do first, so do not add a hand-written validation instruction.
+When the digest's machine-restart section lists stopped workers, tell the captain plainly which work the restart stopped and that its local copies are intact.
+Nothing brings them back on its own: bringing them back is a deliberate decision, the captain's or firstmate's own, made with its printed `revive --stopped-by-restart` command or `revive` with chosen ids.
+If revive reports a resumed worker it could not confirm, peek the window before anything else, because a trust or bypass-permissions confirmation may be waiting, and `harness-adapters` owns accepting it.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
 
