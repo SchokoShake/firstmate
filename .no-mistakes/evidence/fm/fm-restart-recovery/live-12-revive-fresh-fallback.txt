@@ -1,0 +1,4 @@
+$ bin/fm-control.sh revive alpha   # no conversation recorded
+warning: /tmp/fm-livedrive.ZI6xnC/fmhome/data/alpha/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+revived alpha via=fresh harness=claude model=haiku effort=default backend=tmux endpoint=firstmate:fm-alpha worktree=/tmp/fm-livedrive.ZI6xnC/pool/1/wt reopened=yes fresh_because="no conversation was recorded for its current agent"
+exit=0

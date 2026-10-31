@@ -1,0 +1,14 @@
+$ bin/fm-control.sh alpha relaunch --note-file note.txt   # endpoint gone after the restart
+error: task alpha's recorded endpoint firstmate:fm-alpha is gone, so there is no agent to replace and nowhere to launch one; bring the worker back with bin/fm-control.sh revive alpha, which reopens the endpoint in its recorded worktree
+exit=1
+brief unchanged: yes
+meta unchanged: yes
+journal written: no
+
+$ (pool now leases worktree 1 to someone else) bin/fm-control.sh revive alpha
+error: cannot prove task alpha still owns its recorded worktree /tmp/fm-livedrive.ZI6xnC/pool/1/wt: the pool leases /tmp/fm-livedrive.ZI6xnC/pool/1/wt to fm-task:someone-else:l1 rather than to this record's claim fm-task:alpha:l1793462677.1492283.27467, and no record in this home carries that label as its claim on /tmp/fm-livedrive.ZI6xnC/pool/1/wt; refusing to revive a worker into a working copy that may hold another task's work, because ownership is never inferred. Spawn the task afresh from its branch through bin/fm-spawn.sh, which takes a durable lease under the task's own claim; or confirm by hand whose work the copy holds and tear the task down normally once its work has landed
+error: 1 of 1 revives did not complete; each one above names its task and what is left to do
+exit=1
+brief unchanged: yes
+journal written: no
+tmux server started: no

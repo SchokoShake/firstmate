@@ -1,0 +1,1 @@
+stopped bravo harness=claude backend=tmux endpoint=firstmate:fm-bravo worktree=/tmp/fm-livedrive.ZI6xnC/pool/2/wt

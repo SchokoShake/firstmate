@@ -1,0 +1,24 @@
+  exited - and have been brought back into the same local copy.
+  Every commit and uncommitted change there is exactly as it was left, but
+  anything that was running in it, such as a build, a test, or a validation
+  run, may have been ended by the stop.
+
+  Validation: no-mistakes reports that this branch's validation run (its
+  status: failed) still holds the branch and must hand it back first. Before
+  any edit, commit, or new validation run, run exactly no-mistakes axi sync
+  --recover, then confirm with no-mistakes axi status that
+  branch_sync.next_action no longer asks for recovery. That run cannot
+  continue, so after that confirmation, validate once more from the recovered
+  head.
+  That is what no-mistakes said when this note was written; no-mistakes axi
+  status is the current answer.
+
+  Continue the task from where it stopped.
+  ⎿  Not logged in · Please run /login
+
+✻ Sautéed for 0s · done 5:07 PM
+                                                            ◐ medium · /effort
+───────────────────────────────────────────────────────────────────── fm-alpha ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

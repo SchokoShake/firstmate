@@ -1,0 +1,22 @@
+{
+  "worktrees": [
+    {
+      "name": "1",
+      "path": "/tmp/fm-livedrive.ZI6xnC/pool/1/wt",
+      "leased": true,
+      "lease_holder": "fm-task:alpha:l1793462677.1492283.27467"
+    },
+    {
+      "name": "2",
+      "path": "/tmp/fm-livedrive.ZI6xnC/pool/2/wt",
+      "leased": true,
+      "lease_holder": "fm-task:bravo:l1793462701.1499611.23557"
+    },
+    {
+      "name": "3",
+      "path": "/tmp/fm-livedrive.ZI6xnC/pool/3/wt",
+      "leased": true,
+      "lease_holder": "fm-task:pilot1:l1793463037.1679969.6493"
+    }
+  ]
+}

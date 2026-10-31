@@ -1,0 +1,13 @@
+MACHINE RESTART
+================================================================================
+The machine restarted (noticed 2026-10-31T16:07:56Z). Every local copy is untouched, and
+nothing brings a worker back on its own.
+These workers stopped with it and are still stopped:
+- alpha: ship no-mistakes; starts fresh: no conversation was recorded for its current agent
+  validation: no run on its branch
+Already stopped before the restart (a deliberate stop retired its busy generation),
+so revive --stopped-by-restart leaves these alone:
+- bravo: ship no-mistakes; resumes its conversation
+bring every one back: FM_HOME=/tmp/fm-livedrive.ZI6xnC/fmhome /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M697GED6EN42RZE328GDKWK0/bin/fm-control.sh revive --stopped-by-restart
+bring chosen ones back: FM_HOME=/tmp/fm-livedrive.ZI6xnC/fmhome /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M697GED6EN42RZE328GDKWK0/bin/fm-control.sh revive <id> [<id>...]
+add --fresh to start a worker from its instructions instead of its conversation.

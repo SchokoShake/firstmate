@@ -1,0 +1,4 @@
+$ FM_HOME=/tmp/fm-livedrive.ZI6xnC/fmhome /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M697GED6EN42RZE328GDKWK0/bin/fm-control.sh revive --stopped-by-restart
+warning: /tmp/fm-livedrive.ZI6xnC/fmhome/data/alpha/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+revived alpha via=resume harness=claude model=haiku effort=default backend=tmux endpoint=firstmate:fm-alpha worktree=/tmp/fm-livedrive.ZI6xnC/pool/1/wt session=6f3bd27d-1a4c-4abd-b4b8-667289eddcad reopened=yes
+exit=0

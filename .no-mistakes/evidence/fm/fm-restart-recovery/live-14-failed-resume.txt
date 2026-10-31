@@ -1,0 +1,11 @@
+# recorded session 11111111-2222-4333-8444-555555555555 has no conversation Claude Code knows
+$ bin/fm-control.sh revive alpha
+warning: /tmp/fm-livedrive.ZI6xnC/fmhome/data/alpha/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+error: task alpha's resumed agent exited (its endpoint reads 'dead')
+error: alpha's resumed worker exited before it confirmed its recorded conversation 11111111-2222-4333-8444-555555555555 (its endpoint reads 'dead'); no agent is running, and its work is preserved at /tmp/fm-livedrive.ZI6xnC/pool/1/wt and its restart note at /tmp/fm-livedrive.ZI6xnC/fmhome/state/alpha.control-relaunch.note. Run bin/fm-control.sh revive alpha again to retry the resume, or with --fresh to start it from its instructions and the restart note
+error: 1 of 1 revives did not complete; each one above names its task and what is left to do
+exit=1
+journal phase: failed:resuming
+agents for alpha: 0
+restart notes in instructions: before=2 after=2
+endpoint: /tmp/fm-livedrive.ZI6xnC/pool/1/wt bash

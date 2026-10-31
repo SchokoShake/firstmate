@@ -1,0 +1,4 @@
+$ bin/fm-control.sh revive zed   # a record on the zellij backend
+error: task zed runs on the zellij backend, which has no recovery-grade agent-state classifier, so 'revive' cannot prove the agent actually stopped; refusing rather than reporting an unproven transition as done
+error: 1 of 1 revives did not complete; each one above names its task and what is left to do
+exit=1

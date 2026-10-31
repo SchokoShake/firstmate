@@ -1,0 +1,11 @@
+before: claude agents for alpha=1 restart notes in brief=1 journal phase=complete busy-gen=g1793462818.1570748.7588
+$ FM_HOME=/tmp/fm-livedrive.ZI6xnC/fmhome /home/metoo/.no-mistakes/worktrees/5f97ed91bec6/01M697GED6EN42RZE328GDKWK0/bin/fm-control.sh revive --stopped-by-restart
+nothing to revive: no task the last recorded machine restart stopped is still stopped
+exit=0
+$ bin/fm-control.sh revive alpha
+already-running alpha harness=claude backend=tmux endpoint=firstmate:fm-alpha worktree=/tmp/fm-livedrive.ZI6xnC/pool/1/wt
+exit=0
+$ bin/fm-control.sh alpha revive
+already-running alpha harness=claude backend=tmux endpoint=firstmate:fm-alpha worktree=/tmp/fm-livedrive.ZI6xnC/pool/1/wt
+exit=0
+after: claude agents for alpha=1 restart notes in brief=1 journal phase=complete busy-gen=g1793462818.1570748.7588

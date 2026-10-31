@@ -1,0 +1,2 @@
+warning: /tmp/fm-livedrive.ZI6xnC/fmhome/data/pilot1/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned pilot1 harness=claude kind=ship mode=no-mistakes yolo=off window=firstmate:fm-pilot1 worktree=/tmp/fm-livedrive.ZI6xnC/pool/3/wt agent_view=437ec7bd

@@ -1,0 +1,2 @@
+restart section present: 0
+stopped list file: retired

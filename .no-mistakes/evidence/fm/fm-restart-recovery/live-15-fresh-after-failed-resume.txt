@@ -1,0 +1,13 @@
+--- endpoint screen after the refused resume:
+-resume '11111111-2222-4333-8444-555555555555' "$(cat '/tmp/fm-livedrive.ZI6xnC/
+fmhome/state/alpha.control-relaunch.note')"
+No conversation found with session ID: 11111111-2222-4333-8444-555555555555
+metoo@i-am-alive:/tmp/fm-livedrive.ZI6xnC/pool/1/wt$
+$ bin/fm-control.sh revive alpha --fresh
+warning: /tmp/fm-livedrive.ZI6xnC/fmhome/data/alpha/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+revived alpha via=fresh harness=claude model=haiku effort=default backend=tmux endpoint=firstmate:fm-alpha worktree=/tmp/fm-livedrive.ZI6xnC/pool/1/wt fresh_because="--fresh was passed"
+exit=0
+journal phase: complete
+agents for alpha: 1
+restart notes in instructions: 2
+recorded session now: 629c2849-2e60-43e0-bcc0-f1a927210047 gen matches busy-gen: yes

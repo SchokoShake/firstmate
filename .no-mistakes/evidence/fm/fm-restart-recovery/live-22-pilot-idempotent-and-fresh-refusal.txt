@@ -1,0 +1,12 @@
+typed restart notes visible before: 1; sessions: 2
+$ bin/fm-control.sh revive pilot1
+already-running pilot1 harness=claude backend=tmux endpoint=firstmate:fm-pilot1 worktree=/tmp/fm-livedrive.ZI6xnC/pool/3/wt agent_view=437ec7bd
+exit=0
+$ bin/fm-control.sh revive --stopped-by-restart
+nothing to revive: no task the last recorded machine restart stopped is still stopped
+exit=0
+$ bin/fm-control.sh revive pilot1 --fresh
+error: task pilot1 is an agent-view pilot worker, whose conversation is its own background session; --fresh does not apply to it
+error: 1 of 1 revives did not complete; each one above names its task and what is left to do
+exit=1
+typed restart notes visible after: 1; sessions: 2

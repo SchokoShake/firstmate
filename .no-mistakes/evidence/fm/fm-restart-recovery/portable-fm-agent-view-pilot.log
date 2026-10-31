@@ -1,0 +1,24 @@
+FM_TEST_BEGIN 2026-10-31T16:02:48Z tests/fm-agent-view-pilot.test.sh family=backend-dispatch expected_gate_skip=none
+ok - typing guard: each of the three signals alone refuses, and only all three together read session
+ok - input guard: keys and commands that leave the session are refused, and so is any input to a detached window
+ok - release ends only viewer clients and never the session; attach clears the shell line and refuses a busy window
+ok - session state: alive, dead, missing, ambiguous, and unreadable come from the list by id, with the own scope for re-leased copies
+ok - switch, launch-line parsing, settings environment, hook gate, and client kinds
+ok - fm-spawn: a pilot launches as a named background session, records its id, gates its hooks, and attaches its window
+ok - fm-send: a key that leaves the session and any steer to a detached viewer are refused before typing
+ok - fm-control: re-attach keeps the record, interrupt keeps the session, exit is claude stop and idempotent
+ok - fm-control: relaunch of a stopped pilot resumes its own conversation
+ok - fm-control: relaunch of a running, shown pilot stops and resumes its own conversation
+ok - fm-control revive: a pilot stopped by a restart resumes its background session and gets its restart note once
+ok - fm-control revive: a pilot whose resume did not launch names its note file and a retry it accepts
+ok - liveness: a pilot's liveness follows its session, not its window
+ok - fm-control: relaunch of a removed pilot starts a fresh session from the instructions and the note
+ok - fm-control: exit stops a pilot's session by id even after its window is gone
+ok - fm-teardown: cleanup stops and removes the pilot's session
+ok - fm-spawn: a launch Claude Code refuses leaves a record that names no session
+ok - switch off: absent or off launches byte-identically to today, other harnesses are untouched, and an unreadable switch refuses first
+FM_TEST_END 2026-10-31T16:03:57Z tests/fm-agent-view-pilot.test.sh exit=0 duration_ms=68221 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=68277
+FM_TEST_SUMMARY_FAMILY family=backend-dispatch count=1 duration_ms=68221 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-agent-view-pilot.test.sh duration_ms=68221
+exit=0
