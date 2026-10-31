@@ -58,6 +58,20 @@ trap cleanup_lab EXIT
 # Claude Code, the host's tmux sessions, or the real no-mistakes daemon.
 mkdir -p "$LAB/home" "$LAB/shim" "$LAB/bin" "$LAB/ssbin" "$LAB/claude"
 export HOME="$LAB/home" SHELL=/bin/bash
+# The login profile a reopened window's shell reads. Only while one case asks
+# for it (test_revive_waits_for_a_reopened_shell_to_finish_starting), it holds
+# the shell's startup in a read until that case releases it, then runs a
+# program. The read waits on a FIFO rather than the terminal, so the shell is
+# the only process meanwhile and a line typed into it is left for the shell.
+cat > "$LAB/home/.bash_profile" <<'SH'
+if [ -e "$HOME/slow-start" ]; then
+  echo held >> "$HOME/slow-start.log"
+  read -r -t 30 _ <> "$HOME/slow-start.fifo" || true
+  echo program >> "$HOME/slow-start.log"
+  sleep 1
+  echo done >> "$HOME/slow-start.log"
+fi
+SH
 unset TMUX TMUX_PANE CLAUDE_CONFIG_DIR CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_PID \
   FM_TRACE_CONTEXT GOTMPDIR TRACEPARENT FM_AGENT_VIEW_TASK PI_CODING_AGENT FM_PI_HARNESS GROK_AGENT
 cat > "$LAB/shim/tmux" <<SH
@@ -410,6 +424,7 @@ test_revive_resumes_the_recorded_conversation() {
   prompt=$(jq -r .prompt "$FAKE_CLAUDE_DIR/transcripts/$SID1.jsonl" | tail -n +2)
   assert_contains "$prompt" "Restart note from firstmate" "the resumed conversation did not receive the restart note"
   assert_contains "$prompt" "run exactly \`no-mistakes axi sync --recover\`" "the note must quote no-mistakes' own recovery command"
+  assert_contains "$prompt" "validate once more from the recovered head" "the note must say the stopped validation run has to be repeated"
   [ "$(wc -l < "$FAKE_CLAUDE_DIR/transcripts/$SID1.jsonl" | tr -d ' ')" = 2 ] \
     || fail "the resumed conversation must continue the recorded one"
   record_names "$SID1" || fail "the resumed conversation must be recorded again under the new generation"
@@ -486,6 +501,47 @@ test_revive_without_a_recorded_conversation_starts_fresh() {
   pass "fm-control revive: with no recorded conversation it starts a fresh agent from the instructions and the note"
 }
 
+# A server started after a restart runs login shells, whose startup files can
+# leave a new shell looking idle before they run a program. Here the lab's
+# login profile holds the reopened shell's startup until the case releases it,
+# so a single idle read is guaranteed to come while the shell is still starting.
+test_revive_waits_for_a_reopened_shell_to_finish_starting() {
+  local out rc pid before held_state held_phase held_launches
+  simulate_restart boot-e
+  before=$(launches)
+  mkfifo "$HOME/slow-start.fifo"
+  : > "$HOME/slow-start.log"
+  touch "$HOME/slow-start"
+  fm_env "$ROOT/bin/fm-control.sh" revive "$ID" > "$LAB/slow-start.out" 2>&1 &
+  pid=$!
+  if ! wait_for 20 grep -qx held "$HOME/slow-start.log"; then
+    kill "$pid" 2>/dev/null
+    fail "the reopened shell never read its login profile"
+  fi
+  sleep 1
+  held_state=$(fm_backend_tmux_agent_state "$(window_target)")
+  held_phase=$(sed -n 's/^phase=//p' "$STATE_DIR/$ID.control-relaunch" | tail -n 1)
+  held_launches=$(launches)
+  printf 'go\n' > "$HOME/slow-start.fifo"
+  wait "$pid"
+  rc=$?
+  rm -f "$HOME/slow-start" "$HOME/slow-start.fifo"
+  out=$(cat "$LAB/slow-start.out")
+  [ "$held_state" = dead ] \
+    || fail "while its startup is held the reopened shell must read as idle, or this case proves nothing (it reads '$held_state')"
+  [ "$held_phase" = reopening ] \
+    || fail "revive must not move on while the reopened shell is still starting (journal phase: $held_phase)"$'\n'"$out"
+  [ "$held_launches" = "$before" ] || fail "an agent was launched while the reopened shell was still starting"
+  [ "$(cat "$HOME/slow-start.log")" = "$(printf 'held\nprogram\ndone')" ] \
+    || fail "the reopened shell must have run its whole login profile: $(cat "$HOME/slow-start.log")"
+  expect_code 0 "$rc" "revive into a shell still running its startup files"$'\n'"$out"
+  assert_contains "$out" "reopened=yes" "the endpoint must have been reopened"
+  agent_running || fail "the worker is not running after its shell finished starting"
+  [ "$(cd "$(fm_backend_tmux_current_path "$(window_target)")" && pwd -P)" = "$(cd "$WT_DIR" && pwd -P)" ] \
+    || fail "the reopened endpoint is not in the recorded worktree"
+  pass "fm-control revive: nothing launches until a reopened shell has finished its startup files"
+}
+
 test_other_backends_cannot_reopen_an_endpoint() {
   local out rc
   out=$(fm_backend_recreate_task herdr "s:fm-x" "$WT_DIR" 2>&1)
@@ -506,5 +562,6 @@ test_revive_is_idempotent
 test_a_later_start_retires_the_list
 test_a_failed_resume_is_completed_by_a_later_revive
 test_revive_without_a_recorded_conversation_starts_fresh
+test_revive_waits_for_a_reopened_shell_to_finish_starting
 test_other_backends_cannot_reopen_an_endpoint
 echo "# all fm-restart-recovery tests passed"

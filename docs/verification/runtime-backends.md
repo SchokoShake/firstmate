@@ -381,7 +381,7 @@ ok - claude 2.1.316 (Claude Code): the worker's own hooks record a resumable con
 ok - claude 2.1.316 (Claude Code): after the simulated restart session start lists the worker and the bring-back command
 ok - claude 2.1.316 (Claude Code): the revived worker answers from its original conversation <session-id>
 # all fm-restart-recovery live tests passed
-FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=21333
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=23891
 ```
 
 The lab's scratch worktree was new to Claude Code, which showed its workspace trust prompt with the refusing option preselected:
@@ -444,6 +444,8 @@ boot -3 last=2026-10-28T21:44:57+01:00 shutdown.target=3
 boot -2 last=2026-10-29T22:07:44+01:00 shutdown.target=3
 boot -1 last=2026-10-31T10:46:03+01:00 shutdown.target=3
 ```
+
+The journal does not record what ended each boot, so this shows that a stop step cannot be counted on, not which shutdown path skips it.
 
 ## Composer classification matrix
 

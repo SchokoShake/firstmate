@@ -102,7 +102,7 @@ fm_harness_session_payload() {
 
 fm_harness_session_record() {  # <state-dir> <id> <gen> <harness>   (payload on stdin)
   local state=${1-} id=${2-} gen=${3-} harness=${4-} family mode current parsed
-  local sid= transcript= cwd= event= path tmp
+  local sid='' transcript='' cwd='' event='' path tmp
   [ -d "$state" ] || return 0
   fm_busy_token_valid "$id" || return 0
   fm_busy_token_valid "$gen" || return 0
@@ -213,7 +213,7 @@ fm_harness_session_resumable() {  # <state-dir> <id>
 }
 
 fm_harness_session_main() {
-  local cmd=${1-} state id gen= harness=
+  local cmd=${1-} state id gen='' harness=''
   case "$cmd" in
     -h|--help)
       sed -n '2,${/^#/!q;p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'

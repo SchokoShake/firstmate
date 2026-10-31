@@ -127,6 +127,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   A resumed conversation receives the note as its next message, and a fresh agent reads it appended to its instructions.
 - **Where it runs.**
   A gone endpoint is reopened under its recorded identity with its shell in the recorded worktree, on tmux alone (`fm_backend_recreate_task` in `bin/fm-backend.sh`); every other backend refuses a gone endpoint by name.
+  The new shell starts beside the worktree and is moved in with a typed `cd`, as a fresh spawn's is, and nothing launches until it reads idle there twice in a row, because a new shell can read idle and still have a program from its startup files to run.
   An endpoint that is still there with no agent in it is reused as it is.
 - **What it proves first.**
   Relaunch's checkpoint runs unchanged before anything is reopened, written, or launched, so a worktree whose lease is released or unproven is refused with the same deliberate paths.

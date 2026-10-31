@@ -1188,7 +1188,7 @@ revive_validation_lines() {
   fi
   case "$next" in
     recover_custody)
-      echo "Validation: no-mistakes reports that this branch's validation run$run_part still holds the branch and must hand it back first. Before any edit, commit, or new validation run, $step, then confirm with \`no-mistakes axi status\` that branch_sync.next_action no longer asks for recovery."
+      echo "Validation: no-mistakes reports that this branch's validation run$run_part still holds the branch and must hand it back first. Before any edit, commit, or new validation run, $step, then confirm with \`no-mistakes axi status\` that branch_sync.next_action no longer asks for recovery. That run cannot continue, so after that confirmation, validate once more from the recovered head."
       ;;
     continue_active_run)
       echo "Validation: no-mistakes reports that a validation run$run_part still owns this branch. Do not edit, commit, or start a new run; continue that run from \`no-mistakes axi status\`, whose next action is to $step."
@@ -1255,27 +1255,35 @@ revive_record_note() {  # <note-body> <into-instructions: 1|0>
     || die "could not append the restart note to task $ID's instructions"
 }
 
-# reopen_endpoint: recreate the gone endpoint under its recorded identity with
-# its shell in the recorded worktree, and prove that shell is idle there.
+# reopen_endpoint: recreate the gone endpoint under its recorded identity and
+# settle its shell in the recorded worktree the way a fresh spawn does: the
+# shell starts beside the worktree and a typed cd moves it in, so seeing it
+# there proves it finished its startup files and read that line. A shell
+# started inside the worktree can read as idle and then still run a startup
+# program, which the launch owner's agent-free check refuses. Settled means
+# idle in the worktree on two consecutive reads, as fm-spawn.sh's own cd wait
+# requires, because a brand-new window can briefly report a stale path.
 reopen_endpoint() {
-  local state seen elapsed=0
-  fm_backend_recreate_task "$BACKEND" "$T" "$WT" >/dev/null \
-    || die "task $ID's endpoint $T could not be reopened in $WT"
-  state=$(wait_for_state window_state "$LAUNCH_WAIT" dead) \
-    || die "task $ID's reopened endpoint $T reads '$state' rather than an idle shell after ${LAUNCH_WAIT}s"
-  seen=$(fm_backend_tmux_current_path "$T")
-  if [ "$(real_dir "$seen")" != "$(real_dir "$WT")" ]; then
-    # A shell startup file moved it; move it back once, the way a fresh spawn
-    # moves its shell into the worktree.
-    fm_backend_send_text_submit "$BACKEND" "$T" "cd -- '${WT//\'/\'\\\'\'}'" 1 "$POLL" 0.5 "$LABEL" >/dev/null || true
-    while seen=$(fm_backend_tmux_current_path "$T") \
-          && [ "$(real_dir "$seen")" != "$(real_dir "$WT")" ]; do
-      awk -v e="$elapsed" 'BEGIN{exit !(e < 10)}' \
-        || die "task $ID's reopened endpoint $T is in '${seen:-unknown}', not its recorded worktree $WT"
-      sleep "$POLL"
-      elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
-    done
-  fi
+  local state='' seen='' settled=0 elapsed=0
+  fm_backend_recreate_task "$BACKEND" "$T" "$(dirname -- "$WT")" >/dev/null \
+    || die "task $ID's endpoint $T could not be reopened beside $WT"
+  fm_backend_tmux_send_text_line "$T" "cd -- '${WT//\'/\'\\\'\'}'" \
+    || die "task $ID's reopened endpoint $T could not be sent the move into $WT"
+  while :; do
+    seen=$(fm_backend_tmux_current_path "$T")
+    state=$(window_state)
+    if [ "$state" = dead ] && [ -n "$seen" ] \
+       && [ "$(real_dir "$seen")" = "$(real_dir "$WT")" ]; then
+      settled=$((settled + 1))
+      [ "$settled" -lt 2 ] || return 0
+    else
+      settled=0
+    fi
+    awk -v e="$elapsed" -v t="$LAUNCH_WAIT" 'BEGIN{exit !(e < t)}' \
+      || die "task $ID's reopened endpoint $T did not settle as an idle shell in $WT within ${LAUNCH_WAIT}s (it reads '$state' in '${seen:-unknown}')"
+    sleep "$POLL"
+    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+  done
 }
 
 # confirm_resumed: a resume is done only once the resumed session's own hook
