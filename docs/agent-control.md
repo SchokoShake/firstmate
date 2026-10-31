@@ -15,10 +15,10 @@ The failure repeated across harnesses and homes, and the workaround (remember to
 
 `bin/fm-control-lib.sh` is the single executable owner of three capability tables, with no side effects, so it can be read as a contract:
 
-- The **verb allowlist**: `interrupt`, `exit`, `relaunch`.
+- The **verb allowlist**: `interrupt`, `exit`, `relaunch`, `revive`.
   There is no arbitrary-text and no generic raw-key entry point.
   A caller either names an allowlisted verb or is refused.
-- **Per-harness mechanics**: the key that cancels a running turn, how many times it must be delivered, whether the composer needs clearing afterwards, the command that exits the agent, and which task kinds the adapter is verified to run.
+- **Per-harness mechanics**: the key that cancels a running turn, how many times it must be delivered, whether the composer needs clearing afterwards, the command that exits the agent, which task kinds the adapter is verified to run, and whether a stopped agent's conversation can be resumed.
   These were previously carried only in the [`harness-adapters`](../.agents/skills/harness-adapters/SKILL.md) skill's per-adapter tables, which now point here.
   `bin/fm-send.sh`'s `--key` path reads the composer-clear table from this owner too, rather than keeping a second copy of it.
 - **Per-backend capability**: which named keys a runtime backend can deliver, and whether it has a recovery-grade agent-state classifier able to prove an agent stopped.
@@ -31,8 +31,9 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 | Verb | Effect | Postcondition |
 | --- | --- | --- |
 | `interrupt` | Deliver the harness's verified interrupt sequence while leaving the agent running. | Delivery succeeds while the endpoint still exists and the agent is still alive where the backend can classify that; cancellation is confirmed only from an adapter-owned acknowledgement and otherwise reports `cancel=unconfirmed`. |
-| `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. |
+| `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. Either way the task's busy generation is retired, so a later machine restart lists it as already stopped before the restart. |
 | `relaunch` | Replace the running agent with a new one in the same endpoint and worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. | The new agent is alive on the recorded endpoint, and the durable record names the harness that is actually running. |
+| `revive` | Bring back a ship or scout whose agent stopped - the machine or its terminal server restarted, or the agent exited - in its recorded endpoint and worktree, on its recorded harness, model, and effort. | The worker is alive on the recorded endpoint, and a resumed one is proven to run its recorded conversation. An agent already running is reported and left alone. |
 
 An exit that delivers lifecycle input but cannot prove the agent stopped fails with `exit=unconfirmed`, reports the observed agent state and any interrupt cancellation claim, and never claims that nothing changed.
 Interrupt never rewrites busy state as proof of its own success.
@@ -48,8 +49,8 @@ The clear is refused before anything is sent when the recorded backend cannot de
 Removing a worktree, closing an endpoint, or discarding work stays with [`bin/fm-teardown.sh`](../bin/fm-teardown.sh), which owns the landed-work test.
 
 **`resume` is not a verb.**
-It is not deterministic across the verified adapters: codex and grok resume only from a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, and kimi have no verified pane-resume contract.
-`relaunch` covers the same need on every adapter, because the brief on disk - not a harness-private session - is the durable instruction.
+It is not deterministic across the verified adapters: codex and grok resume only from a session id printed at exit, opencode continues the most recent session for the cwd, and pi, pi-signed, kimi, cursor, and muse have no verified pane-resume contract.
+`revive` resumes a recorded conversation only where a capture-and-resume path is verified, today claude's, and everywhere else relies on the brief on disk - not a harness-private session - as the durable instruction, as `relaunch` does.
 An agent-view pilot worker is the one case where `relaunch` resumes the real conversation, because Claude Code keeps that worker's session by id; [Agent-view pilot workers](#agent-view-pilot-workers) owns how.
 
 ## Agent-view pilot workers
@@ -72,7 +73,7 @@ Every plan but re-attach runs the transaction below unchanged, including its lea
 
 ## Transactional relaunch
 
-`relaunch` is the only verb that changes durable records, so it runs as a transaction with a journal at `state/<id>.control-relaunch`, the prior record preserved beside it, and a ship or scout's prior instructions preserved when a progress note is appended.
+`relaunch` and `revive` are the verbs that change durable records, so each runs as a transaction with a journal at `state/<id>.control-relaunch`, the prior record preserved beside it, and a ship or scout's prior instructions preserved when a progress or restart note is appended.
 
 1. **Resolve the profile.**
    An explicit `--harness`, `--model`, or `--effort` wins.
@@ -109,6 +110,38 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - If the launch owner already published the new record but no running agent can be confirmed, the new record is kept: the task is recorded on the new harness with no agent confirmed, which is exactly what recovery reconciles.
   Rewriting it back to the old harness would be a second, worse inaccuracy.
 
+## Revive after a stop
+
+`revive` is the one supported step that brings stopped workers back, and nothing runs it on its own: after a machine restart, the session-start digest lists the workers the restart stopped and prints the exact command, and a person or firstmate decides to run it.
+`bin/fm-restart-lib.sh` owns restart detection and that list, and `bin/fm-control.sh`'s header owns the verb's exact forms and output.
+
+- **What it brings back.**
+  A ship or scout, by id, several ids in turn, or every task the last recorded restart stopped that is still stopped.
+  A task whose busy generation a deliberate stop had already retired before the restart, or whose harness keeps no busy generation so that cannot be told, is listed apart in the digest and comes back only by its own id.
+  A secondmate is left to the startup secondmate check, which already brings back a secondmate whose agent stopped.
+- **Its own conversation where the harness allows it.**
+  A worker's turn-boundary hooks rewrite a small record of its harness session at every turn (`bin/fm-harness-session.sh` owns it), because a machine can stop without running any shutdown step, so whatever was saved last is what survives.
+  When that record belongs to the current agent, ran in the task's worktree, and its conversation file still exists, and the adapter's resume is verified, revive resumes that conversation; otherwise it starts a fresh agent from the instructions and says why, and `--fresh` chooses that deliberately.
+  A resume counts only once the resumed session's own hook records the same session id under the new busy generation, and a resume that fails is never silently replaced by a fresh start.
+- **What it tells the worker.**
+  Every revive writes a restart note: the worker was stopped and brought back into the same local copy, anything running there may have been ended, and, for a no-mistakes ship, what no-mistakes says to do first, quoting its own recovery command when the stopped validation run still holds the branch.
+  A resumed conversation receives the note as its next message, and a fresh agent reads it appended to its instructions.
+  A resumed agent-view pilot session has the note typed in through `bin/fm-send.sh` once it runs, whose guard first proves the window shows that session.
+  A note not confirmed delivered there is reported with what is left to do, and a later revive reports the session as running without typing the note again.
+- **Where it runs.**
+  A gone endpoint is reopened under its recorded identity with its shell in the recorded worktree, on tmux alone (`fm_backend_recreate_task` in `bin/fm-backend.sh`); every other backend refuses a gone endpoint by name.
+  The new shell starts beside the worktree and is moved in with a typed `cd`, as a fresh spawn's is, and nothing launches until it reads idle there twice in a row, because a new shell can read idle and still have a program from its startup files to run.
+  An endpoint that is still there with no agent in it is reused, and when its idle shell is outside the worktree, as after a reopen whose typed `cd` a startup program swallowed, its line is cleared and the same `cd` is typed and waited for.
+- **What it proves first.**
+  Relaunch's checkpoint runs unchanged before anything is reopened, written, or launched, so a worktree whose lease is released or unproven is refused with the same deliberate paths.
+- **Idempotent and recoverable.**
+  An agent already running is reported as running, and the same note is never appended twice in a row, so a second revive starts nothing and a revive that failed part way is simply run again.
+  It runs relaunch's journaled transaction with `action=revive` and three phases of its own, `reopening`, `resuming`, and `delivering`, and every failure names what is left to do.
+- An agent-view pilot worker gets its window back and then the pilot relaunch plan above, which keeps its background session, and a resumed session gets the restart note typed in as described above.
+  `--fresh` does not apply to it, so the restart section offers `--fresh` only for the other workers it lists.
+
+`relaunch` refuses a gone endpoint before anything is written and names `revive`, because there is no agent to replace and nowhere to launch one.
+
 ## Fail-closed boundaries
 
 - Targeting is exact.
@@ -123,7 +156,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   Muse is a crewmate and scout adapter only, so relaunching a secondmate onto it refuses while its agent is still up rather than leaving that secondmate with no agent when the launch owner refuses.
 - A backend that cannot deliver the harness's interrupt key, or the composer clear that key needs, is refused rather than sent a different key.
   Orca's terminal API exposes only an interrupt and an Enter, so it can deliver neither Escape nor Ctrl+U.
-- `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux and herdr - because without one the "the agent stopped" postcondition cannot be proven.
+- `exit`, `relaunch`, and `revive` require a backend with a recovery-grade agent-state classifier - tmux and herdr - because without one the "the agent stopped" postcondition cannot be proven.
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
@@ -157,3 +190,5 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.
 - `tests/fm-agent-view-pilot.test.sh` - the agent-view pilot verbs on real tmux against a stand-in Claude Code: re-attach, interrupt behind the viewer proof, exit by session id, every relaunch plan, and the refusals.
 - `tests/fm-agent-view-pilot-live-e2e.test.sh` - the same lifecycle against the installed Claude Code, opted in with `FM_AGENT_VIEW_PILOT_LIVE=1`.
+- `tests/fm-restart-recovery.test.sh` - restart recovery on real tmux against a stand-in Claude Code: the record the hooks keep, the restart digest after a killed server, the printed bring-back command, resume with the restart note, idempotence, the fresh fallbacks, and the refusals.
+- `tests/fm-restart-recovery-live-e2e.test.sh` - the same restart and resume against the installed Claude Code, opted in with `FM_RESTART_RECOVERY_LIVE=1`.

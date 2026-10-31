@@ -190,7 +190,7 @@ family_for_basename() {
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
     fm-cursor-primary-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-liveness-drift-live-e2e.test.sh|\
-    fm-agent-view-pilot-live-e2e.test.sh|\
+    fm-agent-view-pilot-live-e2e.test.sh|fm-restart-recovery-live-e2e.test.sh|\
     fm-board-session-live-e2e.test.sh|fm-inbox-post-live-e2e.test.sh|\
     fm-muse-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|\
@@ -202,7 +202,7 @@ family_for_basename() {
       ;;
     fm-backend-herdr.test.sh|fm-backend-tmux-smoke.test.sh|fm-backend.test.sh|\
     fm-tmux-agent-liveness.test.sh|fm-agent-view-pilot.test.sh|\
-    fm-control.test.sh|fm-control-relaunch.test.sh|\
+    fm-control.test.sh|fm-control-relaunch.test.sh|fm-restart-recovery.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-resolve-key.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-dispatch-profile.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
@@ -977,6 +977,23 @@ families_for_changed_path() {
       # pre-teardown run abort (pr-forge).
       printf '%s\n' pure-contract-unit
       printf '%s\n' pr-forge
+      ;;
+    bin/fm-harness-session.sh)
+      # The conversation record a revive resumes from: written by the spawned
+      # worker's hooks and read by revive (backend-dispatch) and the restart
+      # section of the session-start digest (session-bootstrap). Its fields come
+      # from the vendor's hook payload, so a change re-selects the live guard
+      # (fm-restart-recovery-live-e2e) too.
+      printf '%s\n' backend-dispatch
+      printf '%s\n' session-bootstrap
+      printf '%s\n' live-harness-optin
+      ;;
+    bin/fm-restart-lib.sh)
+      # Restart detection and the stopped list, read by the session-start
+      # digest (session-bootstrap) and revive --stopped-by-restart
+      # (backend-dispatch).
+      printf '%s\n' backend-dispatch
+      printf '%s\n' session-bootstrap
       ;;
     bin/fm-agent-view-lib.sh)
       # The agent-view pilot's typing guard reads vendor-rendered signal, so a

@@ -2460,7 +2460,7 @@ cleanup_firstmate_home_children() {
       "$sub_state/$child_id.meta" "$sub_state/$child_id.pi-ext.ts" \
       "$sub_state/$child_id.grok-turnend-token" "$sub_state/$child_id.kimi-turnend-token" \
       "$sub_state/$child_id.muse-session" "$sub_state/$child_id.muse-session-current" \
-      "$sub_state/$child_id.cursor-session"
+      "$sub_state/$child_id.cursor-session" "$sub_state/$child_id.harness-session"
   done
 }
 
@@ -2488,7 +2488,7 @@ task_plain_record_files() {  # <state> <id> <target>
     "$state/$id.muse-session" "$state/$id.muse-session-current" \
     "$state/$id.cursor-session" "$state/$id.control-relaunch" \
     "$state/$id.control-relaunch.meta-prior" "$state/$id.control-relaunch.brief-prior" \
-    "$state/$id.control-relaunch.note" "$state/$id.meta"
+    "$state/$id.control-relaunch.note" "$state/$id.harness-session" "$state/$id.meta"
   # Supervision markers keyed to this task, in the formats owned by
   # fm_wake_signal_seen_path, bin/fm-push-transition-lib.sh, bin/fm-watch.sh, and
   # bin/fm-supervise-daemon.sh. Left behind they are litter, and a later task

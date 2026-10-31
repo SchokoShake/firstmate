@@ -30,7 +30,9 @@ Inheritance also copies the literal `config/crew-dispatch.json` file, so secondm
 
 Each adapter splits into mechanics and knowledge.
 The per-task mechanics, including launch command, autonomy flag, and any enabled crewmate turn-end hook, live in `bin/fm-spawn.sh`.
-Agent lifecycle mechanics - which key interrupts a turn, how many times it must be sent, whether the composer needs clearing afterwards, which command exits the agent, and which task kinds the adapter can run - are owned by the executable control plane in `bin/fm-control-lib.sh` and delivered by `bin/fm-control.sh <task-id> interrupt|exit|relaunch`.
+Agent lifecycle mechanics - which key interrupts a turn, how many times it must be sent, whether the composer needs clearing afterwards, which command exits the agent, which task kinds the adapter can run, and whether a stopped agent's conversation can be resumed - are owned by the executable control plane in `bin/fm-control-lib.sh` and delivered by `bin/fm-control.sh <task-id> interrupt|exit|relaunch|revive`.
+Only claude has a verified capture-and-resume path for `revive` today, recorded under its section below.
+Every other adapter comes back fresh from its brief plus a restart note: codex and grok resume by a session id firstmate does not capture for a pane worker, opencode's `--continue` takes the most recent session for the directory rather than a recorded one, and pi, pi-signed, kimi, cursor, and muse have no verified pane-resume contract, so the per-adapter `Resume` facts below stay manual knowledge.
 Never hand-type an interrupt key or exit command through `fm-send`: a routing-marked lifecycle command becomes chat the agent reasons about instead of executing, which is the defect the control plane exists to remove ([`docs/agent-control.md`](../../../docs/agent-control.md)).
 The per-adapter `Exit command` and `Interrupt` rows below remain the verification record for those values; the executable owner is what firstmate actually runs, so a newly verified adapter is not reachable by the control plane until its rows land in that owner.
 The primary-session "no turn ends blind" guard contract and harness hook installation paths live in `docs/turnend-guard.md`.
@@ -219,6 +221,12 @@ The one case it does not cover is a board whose card carries no such branch row;
 First launch in a fresh worktree, or first ever on a machine, may show a trust or bypass-permissions confirmation.
 After every spawn, peek the pane within about 20 seconds.
 If such a dialog is showing, accept it from an active firstmate session using `FM_HOME=<this-firstmate-home> bin/fm-send.sh <window> --key Enter`, or the choice the dialog requires, unless `FM_HOME` is already set to the active firstmate home; verify the brief started processing.
+Claude Code 2.1.316 preselects `No, exit` on the workspace trust prompt for a path it has never trusted, so Enter alone ends the worker; the trusting choice is one Down, then Enter, which `fm-send --key` cannot deliver (verified 2026-10-31 by `tests/fm-restart-recovery-live-e2e.test.sh`).
+
+**Restart recovery (verified 2026-10-31, Claude Code 2.1.316).**
+A claude crewmate's own `UserPromptSubmit` and `Stop` hooks save its session id, conversation file, and working directory from the hook payload at every turn, so the last turn before a machine stop is what survives; `bin/fm-harness-session.sh` owns that record, and only the worker's own agent, the process carrying the task's `GOTMPDIR`, writes it.
+Run in the worktree, `claude --resume <session-id> "<prompt>"` continues that conversation under the same session id and submits the prompt as its next turn, and an unknown id prints `No conversation found with session ID: <id>` and exits 1.
+`bin/fm-control.sh revive` resumes a stopped claude worker exactly that way, with its restart note as the prompt; [`docs/verification/runtime-backends.md`](../../../docs/verification/runtime-backends.md#restart-recovery) holds the evidence.
 
 Claude renders a predicted-next-prompt suggestion as dim/faint text inside an otherwise-empty composer after a turn completes.
 A plain `tmux capture-pane` cannot tell that ghost text apart from typed text.

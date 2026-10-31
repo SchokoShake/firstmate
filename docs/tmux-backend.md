@@ -65,6 +65,13 @@ Cursor is identified from its exact `cursor-agent` identity or versioned install
 The CI-enforced portable regression and opt-in real-harness drift guard follow the split owned by `.agents/skills/firstmate-coding-guidelines/SKILL.md`.
 Run the real-harness guard after any harness upgrade and before trusting refreshed evidence.
 
+### Restart recovery
+
+A machine restart, or a killed tmux server, ends every task window and every agent in it, while each worker's local copy stays exactly as it was.
+The next locked session start notices the new boot and lists the workers that stopped, with the one command that brings them back, and nothing brings them back on its own.
+That command, `bin/fm-control.sh revive`, reopens each gone window under its recorded session and window name with its shell in the recorded worktree, and resumes the worker's own conversation where its harness allows it; tmux is the only backend that can reopen a gone endpoint.
+[`agent-control.md`](agent-control.md#revive-after-a-stop) owns the verb.
+
 ### Composer, busy state, and delivery
 
 Agent liveness and composer safety are separate checks.
@@ -112,7 +119,7 @@ A pilot worker differs from an ordinary Claude Code worker in five ways:
   The proof needs two independent signals: the window's foreground job is `claude attach <id>`, and its screen shows the composer border titled `fm-<id>` without the agent view's footer.
   Keys other than Escape, Enter, Up, Down, Tab, and a single digit are refused, and so are the `/exit`, `/quit`, `/bg`, and `/background` commands, because each can take the viewer off the session.
 - Cleanup stops and removes the session with `claude stop` and `claude rm` after its landed-work checks pass, so the agent view lists only live work, and it refuses, even with `--force`, while it cannot prove the session gone.
-  [agent-control.md](agent-control.md) owns how interrupt, exit, and relaunch behave for a pilot worker, including relaunch resuming the real conversation.
+  [agent-control.md](agent-control.md) owns how interrupt, exit, relaunch, and revive behave for a pilot worker, including relaunch and revive resuming the real conversation.
 
 In a viewer, the left arrow on an empty prompt, `/exit`, and a double Ctrl+C each turn the viewer into the agent view in place while the session keeps running.
 From the agent view, Escape returns to the shell, and Ctrl+Z suspends a viewer.
@@ -148,7 +155,9 @@ tests/fm-tmux-submit-busy.test.sh
 tests/fm-bootstrap.test.sh
 tests/fm-agent-view-pilot.test.sh
 FM_AGENT_VIEW_PILOT_LIVE=1 tests/fm-agent-view-pilot-live-e2e.test.sh
+tests/fm-restart-recovery.test.sh
+FM_RESTART_RECOVERY_LIVE=1 tests/fm-restart-recovery-live-e2e.test.sh
 ```
 
 [`verification/runtime-backends.md`](verification/runtime-backends.md#tmux) records the active foreground-process and submit evidence.
-Its [agent-view pilot record](verification/runtime-backends.md#agent-view-pilot) holds the dated Claude Code evidence for the pilot.
+Its [agent-view pilot record](verification/runtime-backends.md#agent-view-pilot) holds the dated Claude Code evidence for the pilot, and its [restart recovery record](verification/runtime-backends.md#restart-recovery) the evidence for bringing workers back after a restart.

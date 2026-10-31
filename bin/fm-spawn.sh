@@ -17,6 +17,7 @@
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
+#                    [--resume-session <session-id> --resume-prompt <file>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded endpoint and worktree instead of creating either. It is
 #   the launch half of the control plane (bin/fm-control.sh relaunch), which
@@ -41,6 +42,18 @@
 #   a record whose ownership could not be proven.
 #   Nothing it adds to the record lands after a recorded PR's lines, so that
 #   PR's merge poll stays bound across the relaunch.
+#   --resume-session <session-id> --resume-prompt <file> (both or neither, with
+#   --relaunch only) launch the replacement INTO the task's recorded
+#   conversation instead of a fresh one: the adapter's resume command with that
+#   session id, run in the recorded worktree, and the prompt file's text
+#   submitted as the conversation's next message instead of the brief. It is
+#   the launch half of bin/fm-control.sh revive, which decides when a recorded
+#   conversation may be resumed (bin/fm-harness-session.sh owns that rule); it
+#   is refused for an adapter whose fm_control_harness_resume_mode is not
+#   session-id and for an agent-view pilot worker, which resumes through its
+#   own background session. Every launch WITHOUT it starts a new conversation,
+#   so it first drops the task's state/<id>.harness-session record, and a
+#   resume keeps that record for the resumed session's own hooks to rewrite.
 #   --base <branch> is the branch this task's work will merge into: the branch the
 #   brief tells the crew to branch FROM. It is recorded as base=<branch> and is
 #   what a consumer building a branch tree has to go on until the task has a PR,
@@ -325,6 +338,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-harness-session.sh
+. "$SCRIPT_DIR/fm-harness-session.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
@@ -360,6 +375,10 @@ YOLO_SET=0
 BASE_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
+RESUME_SESSION=
+RESUME_PROMPT=
+RESUME_SESSION_SET=0
+RESUME_PROMPT_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -376,6 +395,8 @@ for a in "$@"; do
       yolo) YOLO=$a; YOLO_SET=1 ;;
       base) BASE=$a; BASE_SET=1 ;;
       traceparent) TRACEPARENT_ARG=$a; TRACEPARENT_SET=1 ;;
+      resume-session) RESUME_SESSION=$a; RESUME_SESSION_SET=1 ;;
+      resume-prompt) RESUME_PROMPT=$a; RESUME_PROMPT_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -401,6 +422,10 @@ for a in "$@"; do
     --base=*) BASE=${a#--base=}; BASE_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --resume-session) want_value=resume-session ;;
+    --resume-session=*) RESUME_SESSION=${a#--resume-session=}; RESUME_SESSION_SET=1 ;;
+    --resume-prompt) want_value=resume-prompt ;;
+    --resume-prompt=*) RESUME_PROMPT=${a#--resume-prompt=}; RESUME_PROMPT_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -430,6 +455,31 @@ case "$EFFORT" in
   ''|low|medium|high|xhigh|max) ;;
   *) echo "error: --effort must be one of low, medium, high, xhigh, max" >&2; exit 1 ;;
 esac
+# A resume continues one recorded conversation of an existing task, so it is
+# only ever the launch half of a relaunch, and it needs both its session and the
+# message that conversation receives next.
+if [ "$RESUME_SESSION_SET" -eq 1 ] || [ "$RESUME_PROMPT_SET" -eq 1 ]; then
+  [ "$RELAUNCH" -eq 1 ] || {
+    echo "error: --resume-session and --resume-prompt apply only to --relaunch" >&2
+    exit 1
+  }
+  [ "$RESUME_SESSION_SET" -eq 1 ] && [ "$RESUME_PROMPT_SET" -eq 1 ] || {
+    echo "error: --resume-session and --resume-prompt are passed together" >&2
+    exit 1
+  }
+  [[ "$RESUME_SESSION" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || {
+    echo "error: --resume-session must be a session id (got '$RESUME_SESSION')" >&2
+    exit 1
+  }
+  [ -f "$RESUME_PROMPT" ] && [ -r "$RESUME_PROMPT" ] && [ -s "$RESUME_PROMPT" ] || {
+    echo "error: --resume-prompt '$RESUME_PROMPT' is not a readable, non-empty file" >&2
+    exit 1
+  }
+  case "$RESUME_PROMPT" in
+    /*) ;;
+    *) RESUME_PROMPT="$(cd "$(dirname "$RESUME_PROMPT")" && pwd)/$(basename "$RESUME_PROMPT")" ;;
+  esac
+fi
 
 # The branch this task's work merges into, recorded so a consumer can build the
 # branch tree from durable state alone. A secondmate has no task branch to
@@ -1699,6 +1749,42 @@ elif [ -e "$CONFIG/agent-view-workers" ] || [ -L "$CONFIG/agent-view-workers" ];
   fi
 fi
 
+# A resume continues the recorded conversation only on an adapter verified to
+# resume one by id, and never for a pilot worker, whose conversation lives in
+# its own background session.
+if [ "$RESUME_SESSION_SET" -eq 1 ]; then
+  [ "$AGENT_VIEW" -eq 0 ] || {
+    echo "error: task $ID is an agent-view pilot worker, which resumes through its own background session; --resume-session does not apply to it" >&2
+    exit 1
+  }
+  case "$ARG3" in
+    *' '*)
+      echo "error: a raw launch command cannot resume a recorded conversation; relaunch $ID without --resume-session" >&2
+      exit 1
+      ;;
+  esac
+  RESUME_FAMILY=$(fm_control_harness_family "$HARNESS" 2>/dev/null) || RESUME_FAMILY=
+  [ "$(fm_control_harness_resume_mode "$RESUME_FAMILY" 2>/dev/null)" = session-id ] || {
+    echo "error: harness '$HARNESS' has no verified way to resume a recorded conversation; relaunch $ID without --resume-session" >&2
+    exit 1
+  }
+  # The resume is the adapter's own launch command with its brief argument
+  # swapped for the session to resume and the message it receives next, so
+  # every other part of the launch - environment, name, profile flags - stays
+  # exactly what a fresh launch would run. claude: `--resume <session-id>`.
+  # shellcheck disable=SC2016  # single quotes are deliberate: $(...) expands in the crewmate pane
+  RESUME_BRIEF_ARG='"$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
+  case "$LAUNCH" in
+    *"$RESUME_BRIEF_ARG"*) ;;
+    *)
+      echo "error: the $HARNESS launch command carries no brief argument to swap for a resume; refusing to guess one" >&2
+      exit 1
+      ;;
+  esac
+  RESUME_ARG="--resume $(shell_quote "$RESUME_SESSION") \"\$(cat $(shell_quote "$RESUME_PROMPT"))\""
+  LAUNCH=${LAUNCH//"$RESUME_BRIEF_ARG"/"$RESUME_ARG"}
+fi
+
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -2606,6 +2692,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_STATE=$STATE_REAL
   RELAUNCH_REPLACEMENT_WT=$WT
 fi
+# A launch that does not resume starts a new conversation, so the record of
+# the previous one must not survive to be resumed into later
+# (bin/fm-harness-session.sh); a resume keeps it for its own hooks to rewrite.
+[ "$RESUME_SESSION_SET" -eq 1 ] || fm_harness_session_clear "$STATE_REAL" "$ID"
 if [ "$KIND" != secondmate ]; then
   # Arm the semantic busy-state contract (bin/fm-busy-lib.sh) for every
   # adapter with a verified semantic source. The launch brief sent below IS a
@@ -2669,8 +2759,21 @@ if [ "$KIND" != secondmate ]; then
       j_stop=$(json_escape "${hook_gate}touch $(shell_quote "$TURNEND"); $busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true; $PRESENCE_WAITING")
       j_stopfail=$(json_escape "$hook_gate$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true; $PRESENCE_WAITING")
       j_sessionend=$(json_escape "$hook_gate$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true; $PRESENCE_END")
+      # The conversation record a revive resumes from (bin/fm-harness-session.sh)
+      # is rewritten at both turn edges, as a hook entry of its own so it gets
+      # the payload on stdin without taking it from the commands above. Only the
+      # worker's own agent records: it alone carries the GOTMPDIR exported into
+      # this task's pane right before launch, so another session opened in the
+      # same worktree never replaces the conversation a revive would resume. A
+      # pilot worker's conversation is its background session, so it records
+      # none.
+      j_record=
+      if [ "$AGENT_VIEW" -ne 1 ]; then
+        j_record=$(json_escape "[ \"\${GOTMPDIR:-}\" = $(shell_quote "$TASK_TMP/gotmp") ] || exit 0; $(shell_quote "$FM_ROOT/bin/fm-harness-session.sh") record $(shell_quote "$STATE_REAL") $(shell_quote "$ID") --gen $(shell_quote "$BUSY_GEN") --harness claude >/dev/null 2>&1 || true")
+        j_record=",{\"type\":\"command\",\"command\":\"$j_record\"}"
+      fi
       cat > "$WT/.claude/settings.local.json" <<EOF
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"$j_submit"}$j_record]}],"Stop":[{"hooks":[{"type":"command","command":"$j_stop"}$j_record]}],"StopFailure":[{"hooks":[{"type":"command","command":"$j_stopfail"}]}],"SessionEnd":[{"hooks":[{"type":"command","command":"$j_sessionend"}]}]}}
 EOF
       exclude_path '.claude/settings.local.json'
       ;;
@@ -3392,4 +3495,6 @@ fi
 
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
-echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$AGENT_VIEW_REPORT"
+SPAWN_RESUME_REPORT=
+[ "$RESUME_SESSION_SET" -eq 0 ] || SPAWN_RESUME_REPORT=" resumed=$RESUME_SESSION"
+echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT$AGENT_VIEW_REPORT$SPAWN_RESUME_REPORT"

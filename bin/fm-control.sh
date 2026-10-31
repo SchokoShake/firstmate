@@ -7,6 +7,9 @@
 #        fm-control.sh <task-id> relaunch [--harness <name>] [--model <name>]
 #                                         [--effort <level>]
 #                                         (--note <text> | --note-file <path>)
+#        fm-control.sh revive <task-id>... [--fresh]
+#        fm-control.sh revive --stopped-by-restart [--fresh]
+#        fm-control.sh <task-id> revive [--fresh]
 #
 # Why this exists, and how it differs from fm-send.sh. bin/fm-send.sh is the
 # DATA plane: conversational text for the agent to read, always routing-marked
@@ -30,7 +33,9 @@
 #              every uncommitted change. Interrupts first when the task reads
 #              busy, then submits the harness's exit command. Postcondition:
 #              the backend's recovery-grade classifier reports the agent gone.
-#              Already-stopped is success (idempotent).
+#              Already-stopped is success (idempotent). Either way the task's
+#              busy generation is retired, which is how a later machine restart
+#              tells a deliberate stop apart (bin/fm-restart-lib.sh).
 #   relaunch   Transactionally replace the running agent with a new one, in the
 #              SAME endpoint and SAME worktree, on the same or a newly chosen
 #              harness/model/effort - so switching harness is one ordinary use
@@ -58,7 +63,47 @@
 #              re-armed refuses the relaunch before the agent is touched. A
 #              failure before publication keeps the prior durable record in
 #              place and reports the concrete state; it never leaves a
-#              half-transitioned task claiming to be running.
+#              half-transitioned task claiming to be running. A task whose
+#              recorded endpoint is gone has no agent to replace, so relaunch
+#              refuses it before anything is written and names revive.
+#   revive     Bring back a ship or scout whose agent stopped - its endpoint
+#              gone because the machine or its tmux server restarted, or its
+#              window still there with no agent in it - into the SAME worktree
+#              on the same recorded harness, model, and effort. Every proof
+#              relaunch makes comes first and changes nothing: the recorded
+#              worktree is a readable worktree root and, on a treehouse-backed
+#              backend, the pool's durable lease proves the record still owns
+#              it. Only then is a gone endpoint recreated under its recorded
+#              name with its shell in that worktree; that is tmux only, and
+#              every other backend is refused by name. Revive writes its own
+#              restart note: what happened, and for a no-mistakes ship task
+#              whose branch no-mistakes reports a next action for (a
+#              validation run a shutdown killed leaves recover_custody),
+#              exactly what to run before any commit or new run. Then the
+#              relaunch transaction above runs with that note. The agent comes
+#              back INTO its recorded conversation when
+#              bin/fm-harness-session.sh says that conversation may be resumed
+#              (claude today: `claude --resume <session-id>` in the worktree,
+#              the note submitted as its next message), and otherwise fresh
+#              from its instructions with the note appended, as relaunch does;
+#              --fresh forces the fresh path. A resume counts as done only once
+#              the resumed session's own hook has recorded that same session id
+#              under the new generation. Idempotent: an agent already running
+#              is reported and left alone, and the same note is never appended
+#              twice in a row, so a revive that failed part way is simply run
+#              again. Several ids are revived one after another, and
+#              --stopped-by-restart revives every task the last recorded
+#              machine restart stopped that is still stopped
+#              (bin/fm-restart-lib.sh owns that list), leaving secondmates to
+#              the startup secondmate check. An agent-view pilot worker gets
+#              its window back and then the pilot relaunch plan below, which
+#              resumes its background session. A resumed session never
+#              re-reads its instructions, so once it is confirmed running,
+#              revive types the restart note into it through bin/fm-send.sh,
+#              whose guard first proves the window shows that session; a note
+#              not confirmed delivered is reported with what is left to do,
+#              and a later revive reports the session as running without
+#              typing the note again. Nothing calls revive on its own.
 #
 # An agent-view pilot worker (bin/fm-agent-view-lib.sh owns the pilot) is a
 # Claude Code background session that its window only views, so every verb
@@ -78,9 +123,9 @@
 # landed-work test.
 #
 # `resume` is not a verb: it is not deterministic across the verified adapters
-# (bin/fm-control-lib.sh's header owns that reasoning). `relaunch` covers the
-# same need for every adapter because the brief on disk, not a harness-private
-# session, is the durable instruction.
+# (bin/fm-control-lib.sh's header owns that reasoning). `revive` resumes a
+# recorded conversation only where that is verified, and otherwise relies on
+# the brief on disk, not a harness-private session, as the durable instruction.
 #
 # Targeting is EXACT: only a bare task id with a state/<id>.meta record in
 # THIS home is accepted, and the record must pass the shared endpoint-identity
@@ -97,10 +142,12 @@
 #     is refused rather than guessed at.
 #   - A backend that cannot deliver the harness's interrupt key is refused
 #     (Orca's terminal API has no Escape).
-#   - `exit` and `relaunch` require a backend with a recovery-grade agent-state
-#     classifier (tmux, herdr), because without one the "the agent stopped"
-#     postcondition cannot be proven. zellij, orca, and cmux are refused rather
-#     than reported as successful blind.
+#   - `exit`, `relaunch`, and `revive` require a backend with a recovery-grade
+#     agent-state classifier (tmux, herdr), because without one the "the agent
+#     stopped" postcondition cannot be proven. zellij, orca, and cmux are
+#     refused rather than reported as successful blind. `revive` reopens a
+#     gone endpoint on tmux alone, so a gone herdr endpoint is refused by
+#     name; a herdr window that is still there with no agent in it revives.
 #   - An ambiguous or unreadable endpoint state refuses; only a positively
 #     classified state acts.
 #
@@ -110,6 +157,7 @@
 #   FM_CONTROL_EXIT_WAIT         alive->dead wait after the exit command (30)
 #   FM_CONTROL_LAUNCH_WAIT       dead->alive wait after a relaunch (90)
 #   FM_CONTROL_EXIT_RETRIES      Enter retries for the exit command (3)
+#   FM_CONTROL_NM_TIMEOUT        bound on revive's `no-mistakes axi status` (15)
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -157,12 +205,19 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-slot-lib.sh
 . "$SCRIPT_DIR/fm-slot-lib.sh"
+# shellcheck source=bin/fm-nm-run-lib.sh
+. "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-restart-lib.sh
+. "$SCRIPT_DIR/fm-restart-lib.sh"
+# shellcheck source=bin/fm-harness-session.sh
+. "$SCRIPT_DIR/fm-harness-session.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
 EXIT_WAIT=${FM_CONTROL_EXIT_WAIT:-30}
 LAUNCH_WAIT=${FM_CONTROL_LAUNCH_WAIT:-90}
 EXIT_RETRIES=${FM_CONTROL_EXIT_RETRIES:-3}
+NM_TIMEOUT=${FM_CONTROL_NM_TIMEOUT:-15}
 
 die() {  # <message>
   echo "error: $1" >&2
@@ -187,6 +242,50 @@ control_cleanup() {
   return "$status"
 }
 
+# --- revive over several tasks ----------------------------------------------
+#
+# `revive <task-id>...` and `revive --stopped-by-restart` run the single-task
+# form below once per task, one after another, each under its own lock and
+# transaction, and fail when any of them failed. A secondmate is never on the
+# restart list: the startup secondmate check owns bringing one back.
+
+if [ "${1:-}" = revive ]; then
+  shift
+  REVIVE_IDS=()
+  REVIVE_FLAGS=()
+  REVIVE_RESTART=0
+  for a in "$@"; do
+    case "$a" in
+      --fresh) REVIVE_FLAGS=(--fresh) ;;
+      --stopped-by-restart) REVIVE_RESTART=1 ;;
+      -*) die "unexpected argument '$a'" ;;
+      *) REVIVE_IDS+=("$a") ;;
+    esac
+  done
+  if [ "$REVIVE_RESTART" = 1 ]; then
+    [ "${#REVIVE_IDS[@]}" -eq 0 ] \
+      || die "--stopped-by-restart names its own tasks; pass task ids or --stopped-by-restart, not both"
+    while IFS= read -r a; do
+      [ -n "$a" ] || continue
+      [ "$(fm_meta_get "$STATE/$a.meta" kind)" != secondmate ] || continue
+      REVIVE_IDS+=("$a")
+    done < <(fm_restart_stopped_tasks "$STATE")
+    if [ "${#REVIVE_IDS[@]}" -eq 0 ]; then
+      echo "nothing to revive: no task the last recorded machine restart stopped is still stopped"
+      exit 0
+    fi
+  fi
+  [ "${#REVIVE_IDS[@]}" -gt 0 ] || { usage >&2; exit 2; }
+  REVIVE_FAILED=0
+  for a in "${REVIVE_IDS[@]}"; do
+    "$SCRIPT_DIR/fm-control.sh" "$a" revive "${REVIVE_FLAGS[@]+"${REVIVE_FLAGS[@]}"}" \
+      || REVIVE_FAILED=$((REVIVE_FAILED + 1))
+  done
+  [ "$REVIVE_FAILED" -eq 0 ] \
+    || die "$REVIVE_FAILED of ${#REVIVE_IDS[@]} revives did not complete; each one above names its task and what is left to do"
+  exit 0
+fi
+
 # --- argument parsing -------------------------------------------------------
 
 RAW_ID=${1:-}
@@ -197,7 +296,7 @@ shift 2
 if ! fm_control_verb_allowed "$VERB"; then
   {
     if [ "$VERB" = resume ]; then
-      echo "error: 'resume' is not a control verb: resuming an exited agent is not deterministic across the verified adapters (codex and grok need a session id printed at exit, opencode continues the most recent session for the cwd, and claude, pi, pi-signed, and kimi have no verified pane-resume contract). Use 'relaunch', which carries the brief plus a progress note into a fresh agent on any adapter."
+      echo "error: 'resume' is not a control verb: resuming an exited agent is not deterministic across the verified adapters. Use 'revive', which brings a stopped agent back into its recorded conversation where the adapter's resume is verified and otherwise fresh from its brief plus a restart note, or 'relaunch' to replace a running agent with a progress note."
     else
       echo "error: '$VERB' is not a control verb"
     fi
@@ -215,6 +314,7 @@ MODEL_SET=0
 EFFORT_SET=0
 NOTE=
 NOTE_SET=0
+FRESH=0
 want_value=
 for a in "$@"; do
   if [ -n "$want_value" ]; then
@@ -250,6 +350,7 @@ for a in "$@"; do
       NOTE=$(cat "${a#--note-file=}")
       NOTE_SET=1
       ;;
+    --fresh) FRESH=1 ;;
     *) die "unexpected argument '$a'" ;;
   esac
 done
@@ -259,6 +360,7 @@ if [ "$VERB" != relaunch ]; then
   [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
     || die "--harness, --model, --effort, and --note apply to 'relaunch' only"
 fi
+[ "$FRESH" = 0 ] || [ "$VERB" = revive ] || die "--fresh applies to 'revive' only"
 [ "$HARNESS_SET" = 0 ] || [ -n "$NEW_HARNESS" ] || die "--harness requires a non-empty value"
 [ "$MODEL_SET" = 0 ] || [ -n "$NEW_MODEL" ] || die "--model requires a non-empty value"
 [ "$EFFORT_SET" = 0 ] || [ -n "$NEW_EFFORT" ] || die "--effort requires a non-empty value"
@@ -341,11 +443,17 @@ agent_state() {
   fm_task_agent_state "$META" "$BACKEND" "$T"
 }
 
+# The endpoint's own state, which for an agent-view pilot is its window rather
+# than its background session.
+window_state() {
+  fm_backend_agent_state "$BACKEND" "$T"
+}
+
 busy_verdict() {
   fm_busy_classify_meta "$META" "$ID" "$STATE"
 }
 
-# wait_agent_state <wanted...> <timeout>: poll until agent_state prints one of
+# wait_agent_state <timeout> <wanted...>: poll until agent_state prints one of
 # the wanted values. Prints the final observed state; returns 0 on a match.
 wait_agent_state() {  # <timeout> <wanted>...
   local timeout=$1 state want elapsed=0
@@ -482,10 +590,10 @@ do_exit_agent_view() {
         || die "claude stop $AGENT_VIEW_ID failed for task $ID; its background session may still be running"
       state=$(wait_agent_state "$EXIT_WAIT" dead missing) \
         || die "exit-delivered $ID stop=delivered agent-state=$state exit=unconfirmed; background session $AGENT_VIEW_ID did not stop within ${EXIT_WAIT}s"
-      retire_busy_incarnation
       ;;
     *) die "task $ID's background session $AGENT_VIEW_ID reads '$state' rather than a positively classified state; refusing to act on a session that may not be this worker's alone" ;;
   esac
+  retire_busy_incarnation
   fm_agent_view_release_window "$T" \
     || echo "warning: task $ID's background session is stopped, but window $T shows something other than its shell; a relaunch needs the window at its shell" >&2
   printf '%s' "$result"
@@ -503,6 +611,7 @@ do_exit() {
   state=$(agent_state)
   case "$state" in
     dead)
+      retire_busy_incarnation
       printf 'already-stopped'
       return 0
       ;;
@@ -562,6 +671,7 @@ BRIEF_PRIOR="$JOURNAL.brief-prior"
 NOTE_FILE="$JOURNAL.note"
 RELAUNCH_META_PUBLISHED=0
 RELAUNCH_AGENT_CONFIRMED=0
+RELAUNCH_BRIEF_SAVED=0
 RELAUNCH_TX=
 RELAUNCH_BRIEF=
 RELAUNCH_PR=
@@ -583,6 +693,7 @@ journal_write() {  # <phase> [extra-line]...
     echo "v1"
     echo "task=$ID"
     echo "phase=$phase"
+    echo "action=$VERB"
     echo "ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "backend=$BACKEND"
     echo "endpoint=$T"
@@ -605,8 +716,18 @@ journal_write() {  # <phase> [extra-line]...
   return 1
 }
 
+# restore_instructions: put back the instructions THIS transaction preserved,
+# and never a copy an earlier transaction left beside the journal.
+restore_instructions() {
+  [ "$RELAUNCH_BRIEF_SAVED" = 1 ] && [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ] || return 0
+  cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
+}
+
 relaunch_rollback() {
-  local state
+  local state retry="bin/fm-control.sh revive $ID can be run again"
+  local kept="its work is preserved at $WT and its restart note at $NOTE_FILE"
+  [ "${REVIVE_VIA:-}" != resume ] || [ -n "$AGENT_VIEW_ID" ] \
+    || retry="bin/fm-control.sh revive $ID can be run again to retry the resume, or with --fresh to start it from its instructions and the restart note"
   [ "$RELAUNCH_ACTIVE" = 1 ] || return 0
   [ "$RELAUNCH_PHASE" != complete ] || return 0
   RELAUNCH_ACTIVE=0
@@ -614,29 +735,35 @@ relaunch_rollback() {
     checkpoint|noted)
       # The old agent was never touched. Restore the instructions byte-exact so
       # a refused relaunch leaves nothing behind.
-      if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
-        cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
-      fi
+      restore_instructions
       journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored" || true
-      echo "error: relaunch of $ID was refused before its agent was touched; nothing changed" >&2
+      if [ "$VERB" = revive ]; then
+        echo "error: revive of $ID was refused before anything was started; nothing changed" >&2
+      else
+        echo "error: relaunch of $ID was refused before its agent was touched; nothing changed" >&2
+      fi
       ;;
     rearming)
       # The old agent was never touched, so its instructions are restored as
       # for any earlier refusal. The poll owner may already have rewritten the
       # record's PR lines or revoked the poll, so this claims no more than that.
-      if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
-        cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
-      fi
+      restore_instructions
       journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored-poll-not-rearmed" || true
-      echo "error: relaunch of $ID was refused before its agent was touched, because its PR merge poll could not be re-armed; its instructions were restored. Re-arm the poll with bin/fm-pr-check.sh $ID $RELAUNCH_PR, then relaunch" >&2
+      echo "error: $VERB of $ID was refused before its agent was touched, because its PR merge poll could not be re-armed; its instructions were restored. Re-arm the poll with bin/fm-pr-check.sh $ID $RELAUNCH_PR, then $VERB" >&2
+      ;;
+    reopening)
+      # revive only: nothing was started. A window it opened, or found idle
+      # outside the worktree, is left as it is, and the next revive moves its
+      # shell into the worktree again before launching.
+      restore_instructions
+      journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored" || true
+      echo "error: revive of $ID could not settle its endpoint $T as an idle shell in $WT; no agent was started and its instructions were restored. Once that window is back at an idle shell, run bin/fm-control.sh revive $ID again, which moves the shell into $WT before launching" >&2
       ;;
     stopping)
       state=$(agent_state 2>/dev/null || printf unknown)
       case "$state" in
         alive)
-          if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
-            cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
-          fi
+          restore_instructions
           journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored-agent-alive" || true
           echo "error: relaunch of $ID failed while stopping the old agent, which is still running; its original instructions were restored" >&2
           ;;
@@ -649,6 +776,24 @@ relaunch_rollback() {
           echo "error: relaunch of $ID failed while stopping the old agent and its state is '$state'; the durable record and progress note were retained for recovery" >&2
           ;;
       esac
+      ;;
+    resuming)
+      # revive only: the resumed agent was confirmed running, but not yet in
+      # its recorded conversation.
+      state=$(agent_state 2>/dev/null || printf unknown)
+      if [ "$state" = alive ]; then
+        journal_write "failed:$RELAUNCH_PHASE" "rollback=none-agent-running-resume-unconfirmed" || true
+        echo "error: $ID's worker is running again in $T, but it was not confirmed to have resumed its recorded conversation $REVIVE_SESSION within ${LAUNCH_WAIT}s; look at the window before acting further. A later revive reports it as already running rather than starting a second one" >&2
+      else
+        journal_write "failed:$RELAUNCH_PHASE" "rollback=none-resume-exited" || true
+        echo "error: $ID's resumed worker exited before it confirmed its recorded conversation $REVIVE_SESSION (its endpoint reads '$state'); no agent is running, and $kept. Run bin/fm-control.sh revive $ID again to retry the resume, or with --fresh to start it from its instructions and the restart note" >&2
+      fi
+      ;;
+    delivering)
+      # revive only: a pilot's resumed background session was confirmed
+      # running, but its restart note was not confirmed typed into it.
+      journal_write "failed:$RELAUNCH_PHASE" "rollback=none-agent-running-note-unconfirmed" || true
+      echo "error: $ID's background session $AGENT_VIEW_ID is running again, but its restart note ($NOTE_FILE) was not confirmed delivered to it. Look at window $T: if the note is not in the session's conversation, re-attach its viewer with bin/fm-control.sh $ID relaunch if the window does not show the session, then send the note's text with bin/fm-send.sh $ID. A later revive reports the session as running and never types the note again" >&2
       ;;
     exited|launching)
       if [ "$RELAUNCH_AGENT_CONFIRMED" = 1 ]; then
@@ -663,10 +808,18 @@ relaunch_rollback() {
         # reconciles. Rewriting it back to the old harness would be a second,
         # worse inaccuracy.
         journal_write "failed:$RELAUNCH_PHASE" "rollback=none-new-record-kept" || true
-        echo "error: $ID was relaunched on $TARGET_HARNESS but no running agent could be confirmed; its work is preserved at $WT" >&2
+        if [ "$VERB" = revive ]; then
+          echo "error: $ID was launched again on $TARGET_HARNESS but no running agent could be confirmed; $kept, and $retry" >&2
+        else
+          echo "error: $ID was relaunched on $TARGET_HARNESS but no running agent could be confirmed; its work is preserved at $WT" >&2
+        fi
       else
         journal_write "failed:$RELAUNCH_PHASE" "rollback=prior-record-kept" || true
-        echo "error: $ID's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at $WT" >&2
+        if [ "$VERB" = revive ]; then
+          echo "error: $ID's worker did not launch; no agent is running, and $kept, so $retry" >&2
+        else
+          echo "error: $ID's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at $WT" >&2
+        fi
       fi
       ;;
   esac
@@ -754,30 +907,30 @@ CHECKPOINT_LINES=()
 safe_checkpoint() {
   local wt_real wt_top wt_top_real head head_ref head_ref_status status_output dirty children marker child_meta
   CHECKPOINT_LINES=()
-  [ -n "$WT" ] || die "task $ID has no recorded worktree; refusing to relaunch without a recorded local copy to preserve"
-  [ -d "$WT" ] || die "task $ID's recorded worktree $WT is missing; refusing to relaunch and lose track of its work"
+  [ -n "$WT" ] || die "task $ID has no recorded worktree; refusing to $VERB without a recorded local copy to preserve"
+  [ -d "$WT" ] || die "task $ID's recorded worktree $WT is missing; refusing to $VERB and lose track of its work"
   wt_real=$(cd "$WT" 2>/dev/null && pwd -P) || die "task $ID's recorded worktree $WT cannot be resolved"
   wt_top=$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null) \
-    || die "task $ID's recorded worktree $WT is not a git worktree; refusing to relaunch without a checkout whose unlanded work can be accounted for"
+    || die "task $ID's recorded worktree $WT is not a git worktree; refusing to $VERB without a checkout whose unlanded work can be accounted for"
   wt_top_real=$(cd "$wt_top" 2>/dev/null && pwd -P) || wt_top_real=$wt_top
   [ "$wt_real" = "$wt_top_real" ] \
-    || die "task $ID's recorded worktree $WT is not a worktree root (root is $wt_top); refusing to relaunch against an ambiguous checkout"
+    || die "task $ID's recorded worktree $WT is not a worktree root (root is $wt_top); refusing to $VERB against an ambiguous checkout"
   if head=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null); then
     :
   elif head_ref=$(git -C "$WT" symbolic-ref -q HEAD 2>/dev/null); then
     if git -C "$WT" show-ref --verify --quiet "$head_ref" 2>/dev/null; then
-      die "task $ID's worktree HEAD exists but cannot be resolved; refusing to relaunch from an unreadable checkout"
+      die "task $ID's worktree HEAD exists but cannot be resolved; refusing to $VERB from an unreadable checkout"
     else
       head_ref_status=$?
       [ "$head_ref_status" -eq 1 ] \
-        || die "task $ID's worktree HEAD cannot be inspected; refusing to relaunch from an unreadable checkout"
+        || die "task $ID's worktree HEAD cannot be inspected; refusing to $VERB from an unreadable checkout"
       head=unborn
     fi
   else
-    die "task $ID's worktree HEAD cannot be inspected; refusing to relaunch from an unreadable checkout"
+    die "task $ID's worktree HEAD cannot be inspected; refusing to $VERB from an unreadable checkout"
   fi
   status_output=$(git -C "$WT" status --porcelain 2>/dev/null) \
-    || die "task $ID's worktree status cannot be inspected; refusing to relaunch without accounting for local changes"
+    || die "task $ID's worktree status cannot be inspected; refusing to $VERB without accounting for local changes"
   if [ -n "$status_output" ]; then
     dirty=yes
   else
@@ -785,13 +938,19 @@ safe_checkpoint() {
   fi
   CHECKPOINT_LINES+=("worktree_head=$head" "worktree_dirty=$dirty")
   if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-    fm_slot_verdict "$STATE" "$ID" || die "task $ID has no readable record at $META; refusing to relaunch"
+    fm_slot_verdict "$STATE" "$ID" || die "task $ID has no readable record at $META; refusing to $VERB"
     case "$FM_SLOT_VERDICT" in
       own) ;;
       released)
+        if [ "$VERB" = revive ]; then
+          die "task $ID's recorded worktree $WT is no longer its own: $FM_SLOT_EVIDENCE; refusing to revive a worker inside another holder's working copy. Retire only this task's record with bin/fm-teardown.sh $ID --retire-record, or spawn the task afresh from its branch through bin/fm-spawn.sh, which takes a durable lease under the task's own claim"
+        fi
         die "task $ID's recorded worktree $WT is no longer its own: $FM_SLOT_EVIDENCE; refusing to relaunch a replacement inside another holder's working copy. Stop the agent with bin/fm-control.sh $ID exit, then retire only this task's record with bin/fm-teardown.sh $ID --retire-record or spawn the task afresh from its branch through bin/fm-spawn.sh, which takes a durable lease under the task's own claim"
         ;;
       *)
+        if [ "$VERB" = revive ]; then
+          die "cannot prove task $ID still owns its recorded worktree $WT: $FM_SLOT_EVIDENCE; refusing to revive a worker into a working copy that may hold another task's work, because ownership is never inferred. Spawn the task afresh from its branch through bin/fm-spawn.sh, which takes a durable lease under the task's own claim; or confirm by hand whose work the copy holds and tear the task down normally once its work has landed"
+        fi
         die "cannot prove task $ID still owns its recorded worktree $WT: $FM_SLOT_EVIDENCE; refusing to relaunch a replacement into a working copy that may hold another task's work, because ownership is never inferred. Stop the agent with bin/fm-control.sh $ID exit, then spawn the task afresh from its branch through bin/fm-spawn.sh, which takes a durable lease under the task's own claim; or confirm by hand whose work the copy holds and tear the task down normally once its work has landed"
         ;;
     esac
@@ -804,11 +963,11 @@ safe_checkpoint() {
     # work behind an unreadable home.
     marker=$(cat "$WT/.fm-secondmate-home" 2>/dev/null || true)
     [ "$marker" = "$ID" ] \
-      || die "task $ID's home $WT is not marked as its own seeded secondmate home (marker: ${marker:-none}); refusing to relaunch"
+      || die "task $ID's home $WT is not marked as its own seeded secondmate home (marker: ${marker:-none}); refusing to $VERB"
     [ -d "$WT/state" ] \
-      || die "secondmate $ID's home has no readable state directory, so its child work cannot be accounted for; refusing to relaunch"
+      || die "secondmate $ID's home has no readable state directory, so its child work cannot be accounted for; refusing to $VERB"
     find "$WT/state" -mindepth 1 -maxdepth 1 -print >/dev/null 2>&1 \
-      || die "secondmate $ID's child records cannot be traversed; refusing to relaunch"
+      || die "secondmate $ID's child records cannot be traversed; refusing to $VERB"
     children=0
     for child_meta in "$WT/state"/*.meta; do
       if [ ! -e "$child_meta" ] && [ ! -L "$child_meta" ]; then
@@ -816,7 +975,7 @@ safe_checkpoint() {
       fi
       if [ ! -f "$child_meta" ] || [ -L "$child_meta" ] \
          || ! cat "$child_meta" >/dev/null 2>&1; then
-        die "secondmate $ID's child record $child_meta is not a readable regular file; refusing to relaunch"
+        die "secondmate $ID's child record $child_meta is not a readable regular file; refusing to $VERB"
       fi
       children=$((children + 1))
     done
@@ -855,6 +1014,7 @@ record_note() {
     ship|scout)
       cp -p "$RELAUNCH_BRIEF" "$BRIEF_PRIOR" \
         || die "could not preserve task $ID's instructions before recording the progress note"
+      RELAUNCH_BRIEF_SAVED=1
       {
         echo
         echo "## Progress note ($stamp)"
@@ -910,7 +1070,7 @@ agent_view_reattach() {
     1) die "task $ID's window $T is not at its shell, so no viewer was attached; its background session $AGENT_VIEW_ID is still running" ;;
     *) die "a viewer of task $ID's background session $AGENT_VIEW_ID was started in window $T but could not be confirmed showing it within ${LAUNCH_WAIT}s, so firstmate still refuses to type there; the session is still running" ;;
   esac
-  echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT agent_view=$AGENT_VIEW_ID via=reattach"
+  echo "${VERB%e}ed $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT agent_view=$AGENT_VIEW_ID via=reattach"
 }
 
 do_relaunch() {
@@ -918,6 +1078,14 @@ do_relaunch() {
   local -a spawn_args
 
   require_state_verified_backend relaunch
+  # A gone endpoint has no agent to replace and no shell to launch one in, so
+  # it is refused here, before a checkpoint, note, or poll is written.
+  if [ "$(fm_backend_agent_state "$BACKEND" "$T")" = missing ]; then
+    if [ "$KIND" = secondmate ]; then
+      die "secondmate $ID's recorded endpoint $T is gone, so there is no agent to replace; the startup secondmate check brings a secondmate whose endpoint is gone back, so reconcile it through the secondmate recovery path"
+    fi
+    die "task $ID's recorded endpoint $T is gone, so there is no agent to replace and nowhere to launch one; bring the worker back with bin/fm-control.sh revive $ID, which reopens the endpoint in its recorded worktree"
+  fi
   [ -z "$AGENT_VIEW_ID" ] || agent_view_relaunch_plan
   resolve_relaunch_profile
   if [ "$AGENT_VIEW_PLAN" = reattach ]; then
@@ -995,6 +1163,334 @@ do_relaunch() {
   echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT$agent_view_report"
 }
 
+# --- revive -----------------------------------------------------------------
+#
+# revive reuses the relaunch transaction above - its journal, checkpoint, poll
+# re-arm, single launch owner, and rollback - with no old agent to stop, and
+# with one step relaunch never needs: reopening a gone endpoint. Its journal
+# phases are checkpoint, noted, rearming (only with a recorded PR), reopening
+# (only when the endpoint is gone or its idle shell is outside the worktree),
+# launching, resuming (only when a recorded conversation is resumed),
+# delivering (only when a pilot's background session is resumed), and
+# complete.
+
+WINDOW_STATE=
+REVIVE_VIA=
+REVIVE_SESSION=
+REVIVE_WHY=
+
+# revive_validation_lines: for a no-mistakes ship task, what no-mistakes says
+# must happen first on the branch, quoted from its own structured next action.
+revive_validation_lines() {
+  local run next cmd step run_part=''
+  [ "$KIND" = ship ] && [ "$(fm_meta_get "$META" mode)" = no-mistakes ] || return 0
+  if ! fm_restart_validation_read "$WT" "$NM_TIMEOUT"; then
+    echo "Validation: no-mistakes could not be asked about this branch just now. Before any edit, commit, or new validation run, run \`no-mistakes axi status\` here and follow its branch_sync.next_action exactly."
+    return 0
+  fi
+  run=$FM_RESTART_NM_RUN
+  next=$FM_RESTART_NM_NEXT
+  cmd=$FM_RESTART_NM_COMMAND
+  [ "$run" = none ] || run_part=" (its status: $run)"
+  if [ -n "$cmd" ]; then
+    step="run exactly \`$cmd\`"
+  else
+    step="run exactly the command \`no-mistakes axi status\` names as branch_sync.next_action.command"
+  fi
+  case "$next" in
+    recover_custody)
+      echo "Validation: no-mistakes reports that this branch's validation run$run_part still holds the branch and must hand it back first. Before any edit, commit, or new validation run, $step, then confirm with \`no-mistakes axi status\` that branch_sync.next_action no longer asks for recovery. That run cannot continue, so after that confirmation, validate once more from the recovered head."
+      ;;
+    continue_active_run)
+      echo "Validation: no-mistakes reports that a validation run$run_part still owns this branch. Do not edit, commit, or start a new run; continue that run from \`no-mistakes axi status\`, whose next action is to $step."
+      ;;
+    sync)
+      echo "Validation: no-mistakes reports that this branch must first be brought to its validated head. Before any edit, commit, or new validation run, $step."
+      ;;
+    none)
+      [ "$run" != none ] || return 0
+      echo "Validation: no-mistakes reports this branch's latest validation run as $run, with nothing to recover. Check \`no-mistakes axi status\` before continuing from it."
+      ;;
+    *)
+      echo "Validation: no-mistakes reports \`$next\` as this branch's next action. Before any edit, commit, or new validation run, $step."
+      ;;
+  esac
+  echo "That is what no-mistakes said when this note was written; \`no-mistakes axi status\` is the current answer."
+}
+
+# revive_note_body: the restart note. It is the same text for every attempt at
+# the same state, so a retried revive recognizes the note it already recorded.
+revive_note_body() {
+  local validation
+  validation=$(revive_validation_lines)
+  echo "You were stopped - the machine or its terminal restarted, or your agent exited - and have been brought back into the same local copy."
+  echo "Every commit and uncommitted change there is exactly as it was left, but anything that was running in it, such as a build, a test, or a validation run, may have been ended by the stop."
+  if [ -n "$validation" ]; then
+    echo
+    printf '%s\n' "$validation"
+  fi
+  echo
+  echo "Continue the task from where it stopped."
+}
+
+# brief_ends_with: 0 when the instructions already end with <text> - the same
+# note recorded by an earlier attempt, which is never appended twice in a row.
+brief_ends_with() {  # <text>
+  local want
+  want=$(printf '%s\n' "$1" | wc -c | tr -d ' ')
+  [ "$(wc -c < "$RELAUNCH_BRIEF" | tr -d ' ')" -ge "$want" ] || return 1
+  tail -c "$want" "$RELAUNCH_BRIEF" | cmp -s - <(printf '%s\n' "$1")
+}
+
+# revive_record_note: write the restart note beside the journal, which is also
+# the message a resumed conversation receives next, and append it to the
+# instructions a fresh agent reads unless they already end with it.
+revive_record_note() {  # <note-body> <into-instructions: 1|0>
+  local body=$1 into=$2 stamp
+  stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  {
+    printf 'Restart note from firstmate (%s)\n\n' "$stamp"
+    printf '%s\n' "$body"
+  } > "$NOTE_FILE" || die "could not record the restart note for task $ID"
+  [ "$into" = 1 ] || return 0
+  ! brief_ends_with "$body" || return 0
+  cp -p "$RELAUNCH_BRIEF" "$BRIEF_PRIOR" \
+    || die "could not preserve task $ID's instructions before recording the restart note"
+  RELAUNCH_BRIEF_SAVED=1
+  {
+    echo
+    echo "## Restart note ($stamp)"
+    echo
+    printf '%s\n' "$body"
+  } >> "$RELAUNCH_BRIEF" \
+    || die "could not append the restart note to task $ID's instructions"
+}
+
+# shell_in_worktree: 0 when the tmux endpoint's shell is in the recorded
+# worktree. Sets SHELL_DIR to the directory it read.
+SHELL_DIR=
+shell_in_worktree() {
+  fm_backend_source tmux || return 1
+  SHELL_DIR=$(fm_backend_tmux_current_path "$T")
+  [ -n "$SHELL_DIR" ] \
+    && [ "$(fm_harness_session_canonical "$SHELL_DIR")" = "$(fm_harness_session_canonical "$WT")" ]
+}
+
+# reopen_endpoint: settle the endpoint's shell in the recorded worktree the way
+# a fresh spawn does, recreating a gone endpoint under its recorded identity
+# first with its shell started beside the worktree. A typed cd moves the shell
+# in, so seeing it there proves it finished its startup files and read that
+# line. A shell started inside the worktree can read as idle and then still run
+# a startup program, which the launch owner's agent-free check refuses. A
+# window that is still there is idle at its shell but outside the worktree -
+# one an earlier revive opened whose cd a startup program swallowed - so its
+# line is cleared and the same cd is typed. Settled means idle in the worktree
+# on two consecutive reads, as fm-spawn.sh's own cd wait requires, because a
+# brand-new window can briefly report a stale path.
+reopen_endpoint() {
+  local state='' settled=0 elapsed=0
+  if [ "$WINDOW_STATE" = missing ]; then
+    fm_backend_recreate_task "$BACKEND" "$T" "$(dirname -- "$WT")" >/dev/null \
+      || die "task $ID's endpoint $T could not be reopened beside $WT"
+  else
+    fm_backend_tmux_send_key "$T" C-u \
+      || die "task $ID's endpoint $T could not have its shell's line cleared before the move into $WT"
+  fi
+  fm_backend_tmux_send_text_line "$T" "cd -- '${WT//\'/\'\\\'\'}'" \
+    || die "task $ID's endpoint $T could not be sent the move into $WT"
+  while :; do
+    state=$(window_state)
+    if [ "$state" = dead ] && shell_in_worktree; then
+      settled=$((settled + 1))
+      [ "$settled" -lt 2 ] || return 0
+    else
+      settled=0
+    fi
+    awk -v e="$elapsed" -v t="$LAUNCH_WAIT" 'BEGIN{exit !(e < t)}' \
+      || die "task $ID's endpoint $T did not settle as an idle shell in $WT within ${LAUNCH_WAIT}s (it reads '$state' in '${SHELL_DIR:-unknown}')"
+    sleep "$POLL"
+    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+  done
+}
+
+# deliver_restart_note: a resumed pilot session never re-reads its
+# instructions, so its restart note is typed into its viewer as one line
+# through bin/fm-send.sh, the pilot typing path, whose guard
+# (fm_agent_view_input_guard) refuses unless the window shows this worker's own
+# session.
+deliver_restart_note() {
+  local line
+  line=$(awk 'NF { printf "%s%s", sep, $0; sep = " " }' "$NOTE_FILE")
+  "$SCRIPT_DIR/fm-send.sh" "$ID" "$line" >/dev/null \
+    || die "task $ID's restart note could not be confirmed typed into its resumed background session $AGENT_VIEW_ID"
+}
+
+# confirm_resumed: a resume is done only once the resumed session's own hook
+# has recorded the same session id under the generation this launch armed.
+confirm_resumed() {
+  local record gen sid state elapsed=0
+  record=$(fm_harness_session_path "$STATE" "$ID")
+  gen=$(fm_busy_current_gen "$STATE" "$ID" 2>/dev/null) || gen=
+  [ -n "$gen" ] || die "task $ID's new agent has no busy-state generation, so its resume cannot be confirmed"
+  while :; do
+    if [ "$(fm_harness_session_get "$record" gen)" = "$gen" ]; then
+      sid=$(fm_harness_session_get "$record" session_id)
+      [ "$sid" = "$REVIVE_SESSION" ] \
+        || die "task $ID's agent came back in conversation ${sid:-unknown} rather than its recorded $REVIVE_SESSION"
+      return 0
+    fi
+    state=$(agent_state)
+    [ "$state" = alive ] || die "task $ID's resumed agent exited (its endpoint reads '$state')"
+    awk -v e="$elapsed" -v t="$LAUNCH_WAIT" 'BEGIN{exit !(e < t)}' \
+      || die "task $ID's resumed agent did not confirm its recorded conversation $REVIVE_SESSION within ${LAUNCH_WAIT}s"
+    sleep "$POLL"
+    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
+  done
+}
+
+# revive_transaction: the relaunch transaction without an agent to stop. The
+# note goes into the instructions unless a pilot resumes its own session, which
+# has it typed in once it runs.
+revive_transaction() {  # <note-into-instructions: 1|0>
+  local into=$1 body state note_line="note_file=$NOTE_FILE" why_line='' report
+  local -a spawn_args
+  body=$(revive_note_body)
+  [ -z "$REVIVE_WHY" ] || why_line="fresh_because=$REVIVE_WHY"
+  cp -p "$META" "$META_PRIOR" || die "could not preserve task $ID's durable record before reviving"
+  RELAUNCH_ACTIVE=1
+  journal_write checkpoint "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA" ${why_line:+"$why_line"}
+
+  revive_record_note "$body" "$into"
+  journal_write noted "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA" ${why_line:+"$why_line"}
+
+  rearm_pr_poll "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA"
+
+  if [ -n "$AGENT_VIEW_ID" ] && [ "$WINDOW_STATE" != missing ]; then
+    fm_agent_view_release_window "$T" \
+      || die "task $ID's window $T shows something other than a Claude Code viewer or its shell, so its worker cannot be brought back there"
+  fi
+  if [ "$WINDOW_STATE" = missing ] || { [ "$BACKEND" = tmux ] && ! shell_in_worktree; }; then
+    journal_write reopening "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA"
+    reopen_endpoint
+  fi
+
+  RELAUNCH_TX="${BASHPID:-$$}.$(date -u +%Y%m%dT%H%M%SZ).$RANDOM"
+  journal_write launching "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA" "relaunch_tx=$RELAUNCH_TX"
+  spawn_args=("$ID" --relaunch --harness "$TARGET_HARNESS")
+  [ "$TARGET_MODEL" = default ] || spawn_args+=(--model "$TARGET_MODEL")
+  [ "$TARGET_EFFORT" = default ] || spawn_args+=(--effort "$TARGET_EFFORT")
+  if [ "$REVIVE_VIA" = resume ] && [ -z "$AGENT_VIEW_ID" ]; then
+    spawn_args+=(--resume-session "$REVIVE_SESSION" --resume-prompt "$NOTE_FILE")
+  fi
+  if FM_CONTROL_RELAUNCH_TX="$RELAUNCH_TX" \
+      "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
+    RELAUNCH_META_PUBLISHED=1
+  else
+    [ "$(fm_meta_get "$META" control_relaunch_tx)" != "$RELAUNCH_TX" ] \
+      || RELAUNCH_META_PUBLISHED=1
+    die "the worker for $ID could not be launched again on $TARGET_HARNESS"
+  fi
+
+  state=$(wait_agent_state "$LAUNCH_WAIT" alive) || {
+    die "the worker for $ID did not come up within ${LAUNCH_WAIT}s (it reads '$state')"
+  }
+  RELAUNCH_AGENT_CONFIRMED=1
+
+  if [ "$REVIVE_VIA" = resume ] && [ -z "$AGENT_VIEW_ID" ]; then
+    journal_write resuming "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA" "session=$REVIVE_SESSION"
+    confirm_resumed
+  elif [ "$REVIVE_VIA" = resume ]; then
+    journal_write delivering "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA" "session=$AGENT_VIEW_ID"
+    deliver_restart_note
+  fi
+
+  journal_write complete "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA" ${why_line:+"$why_line"}
+  RELAUNCH_ACTIVE=0
+  report="revived $ID via=$REVIVE_VIA harness=$TARGET_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
+  [ "$REVIVE_VIA" != resume ] || [ -n "$AGENT_VIEW_ID" ] || report="$report session=$REVIVE_SESSION"
+  [ -z "$AGENT_VIEW_ID" ] || report="$report agent_view=$(fm_meta_get "$META" agent_view_id)"
+  [ "$WINDOW_STATE" != missing ] || report="$report reopened=yes"
+  [ -z "$REVIVE_WHY" ] || report="$report fresh_because=\"$REVIVE_WHY\""
+  echo "$report"
+}
+
+# revive_agent_view: a pilot worker's conversation is its background session.
+# A running session that its window shows is already running; one whose window
+# or viewer is gone gets a window and a viewer back and nothing durable
+# changes; a stopped session is resumed, and only a session that no longer
+# exists starts afresh from the instructions and the restart note.
+revive_agent_view() {
+  local session
+  session=$(agent_state)
+  case "$session" in
+    alive|dead|missing) ;;
+    *) die "cannot prove the state of task $ID's background session $AGENT_VIEW_ID (it reads '$session'); refusing to revive alongside an agent that may still own $WT" ;;
+  esac
+  if [ "$session" = alive ] && [ "$WINDOW_STATE" != missing ] \
+     && [ "$(fm_agent_view_viewer_state "$T" "$ID" "$AGENT_VIEW_ID")" = session ]; then
+    echo "already-running $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT agent_view=$AGENT_VIEW_ID"
+    return 0
+  fi
+  safe_checkpoint
+  if [ "$session" = alive ]; then
+    [ "$WINDOW_STATE" != missing ] || reopen_endpoint
+    agent_view_reattach
+    return
+  fi
+  if [ "$session" = dead ]; then
+    REVIVE_VIA=resume
+    revive_transaction 0
+  else
+    REVIVE_VIA=fresh
+    REVIVE_WHY="its background session no longer exists"
+    revive_transaction 1
+  fi
+}
+
+do_revive() {
+  require_state_verified_backend revive
+  case "$KIND" in
+    ship|scout) ;;
+    secondmate) die "task $ID is a secondmate; the startup secondmate check brings back a secondmate whose agent stopped, so revive leaves it to the secondmate recovery path" ;;
+    *) die "task $ID records kind '$KIND', which has no defined revive shape" ;;
+  esac
+  WINDOW_STATE=$(window_state)
+  case "$WINDOW_STATE" in
+    alive|dead|missing) ;;
+    *) die "task $ID's endpoint $T reads '$WINDOW_STATE' rather than a positively classified state; refusing to revive into an endpoint that may still hold an agent" ;;
+  esac
+  if [ "$WINDOW_STATE" = alive ] && [ -z "$AGENT_VIEW_ID" ]; then
+    echo "already-running $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
+    return 0
+  fi
+  [ "$WINDOW_STATE" != missing ] || [ "$BACKEND" = tmux ] \
+    || die "task $ID's endpoint is gone, and the $BACKEND backend cannot reopen a gone endpoint under its recorded identity; spawn the task afresh from its branch through bin/fm-spawn.sh"
+  [ "$RECORDED_HARNESS" = "$HARNESS" ] \
+    || die "task $ID records harness '$RECORDED_HARNESS', a raw launch command whose original form cannot be rebuilt from its recorded name, so revive cannot bring it back as itself; spawn the task afresh from its branch through bin/fm-spawn.sh"
+  RELAUNCH_BRIEF="$DATA/$ID/brief.md"
+  [ -f "$RELAUNCH_BRIEF" ] \
+    || die "task $ID has no instructions at $RELAUNCH_BRIEF; refusing to revive a worker with nothing to work from"
+  resolve_relaunch_profile
+  if [ -n "$AGENT_VIEW_ID" ]; then
+    [ "$FRESH" = 0 ] \
+      || die "task $ID is an agent-view pilot worker, whose conversation is its own background session; --fresh does not apply to it"
+    revive_agent_view
+    return
+  fi
+  safe_checkpoint
+  if [ "$FRESH" = 1 ]; then
+    REVIVE_VIA=fresh
+    REVIVE_WHY="--fresh was passed"
+  elif fm_harness_session_resumable "$STATE" "$ID"; then
+    REVIVE_VIA=resume
+    REVIVE_SESSION=$FM_HARNESS_SESSION_ID
+  else
+    REVIVE_VIA=fresh
+    REVIVE_WHY=$FM_HARNESS_SESSION_REASON
+  fi
+  revive_transaction 1
+}
+
 # --- verbs ------------------------------------------------------------------
 
 case "$VERB" in
@@ -1023,5 +1519,8 @@ case "$VERB" in
     ;;
   relaunch)
     do_relaunch
+    ;;
+  revive)
+    do_revive
     ;;
 esac

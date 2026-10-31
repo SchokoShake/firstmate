@@ -360,6 +360,93 @@ rc=1
 
 The session list then held no row with that id.
 
+### Restart recovery
+
+[Restart recovery](../agent-control.md#revive-after-a-stop) was verified on 2026-10-31 with Claude Code 2.1.316 and tmux 3.6 on Linux (WSL2).
+The live guard spawns a real claude worker through `bin/fm-spawn.sh` on a private tmux socket, with a scratch firstmate home and a scratch repository, and gives it a random token.
+It kills the private tmux server as the simulated restart, runs the bring-back command the session-start digest printed, and asks the revived worker for the token in a form its conversation never contained.
+`tests/fm-restart-recovery.test.sh` is the portable half that CI runs.
+Run the live guard after every Claude Code update and before refreshing this record:
+
+```sh
+FM_RESTART_RECOVERY_LIVE=1 bin/fm-test-run.sh tests/fm-restart-recovery-live-e2e.test.sh
+```
+
+Bounded output from the run that produced this record:
+
+```text
+# harness claude 2.1.316 (Claude Code)
+# accepted Claude Code's workspace trust prompt for the lab's fresh worktree
+ok - claude 2.1.316 (Claude Code): the worker's own hooks record a resumable conversation <session-id> in its worktree
+ok - claude 2.1.316 (Claude Code): after the simulated restart session start lists the worker and the bring-back command
+ok - claude 2.1.316 (Claude Code): the revived worker answers from its original conversation <session-id>
+# all fm-restart-recovery live tests passed
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=23891
+```
+
+The lab's scratch worktree was new to Claude Code, which showed its workspace trust prompt with the refusing option preselected:
+
+```text
+ Quick safety check: Is this a project you created or one you trust? (Like your
+ own code, a well-known open source project, or work from your team). If not,
+ take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+```
+
+The guard presses Down, waits until `Yes, I trust this folder` is the selected option, and only then presses Enter, after which the worker took its brief.
+
+A probe worker's own hooks logged their payloads, projected to the fields the record keeps, after `claude --resume <session-id> "<prompt>"` ran in the probe's working directory:
+
+```sh
+jq -c '{session_id,hook_event_name,source,transcript_path: (.transcript_path|split("/")|last)}' <hook-log>
+```
+
+```text
+{"session_id":"<session-id>","hook_event_name":"SessionStart","source":"resume","transcript_path":"<session-id>.jsonl"}
+{"session_id":"<session-id>","hook_event_name":"UserPromptSubmit","source":null,"transcript_path":"<session-id>.jsonl"}
+{"session_id":"<session-id>","hook_event_name":"Stop","source":null,"transcript_path":"<session-id>.jsonl"}
+```
+
+The resumed session kept the id and the conversation file it had before the stop.
+Killing the probe's tmux server fired `SessionEnd` with `"reason":"other"`, so a record cleared at session end would be lost exactly when a restart needs it, which is why nothing clears it then.
+An id with no conversation refuses:
+
+```sh
+CLAUDE_CODE_DISABLE_AGENT_VIEW=1 claude --dangerously-skip-permissions --model haiku --resume 11111111-2222-4333-8444-555555555555 "hello"; echo EXIT=$?
+```
+
+```text
+No conversation found with session ID: 11111111-2222-4333-8444-555555555555
+EXIT=1
+```
+
+A shutdown step cannot be relied on to save state, so the record is rewritten at every turn instead.
+On the same WSL2 host (systemd 259, kernel 6.18.26.1-microsoft-standard-WSL2), two of the last seven boots ended with no shutdown sequence at all:
+
+```sh
+for b in -7 -6 -5 -4 -3 -2 -1; do last=$(journalctl -b $b -n 1 --no-pager -o short-iso 2>/dev/null | tail -1 | cut -c1-25); clean=$(journalctl -b $b --no-pager -o cat 2>/dev/null | grep -c 'Reached target shutdown.target'); echo "boot $b last=$last shutdown.target=$clean"; done
+```
+
+```text
+boot -7 last=2026-10-25T19:02:04+01:00 shutdown.target=2
+boot -6 last=2026-10-27T09:00:11+01:00 shutdown.target=3
+boot -5 last=2026-10-27T13:00:27+01:00 shutdown.target=0
+boot -4 last=2026-10-27T21:02:14+01:00 shutdown.target=0
+boot -3 last=2026-10-28T21:44:57+01:00 shutdown.target=3
+boot -2 last=2026-10-29T22:07:44+01:00 shutdown.target=3
+boot -1 last=2026-10-31T10:46:03+01:00 shutdown.target=3
+```
+
+The journal does not record what ended each boot, so this shows that a stop step cannot be counted on, not which shutdown path skips it.
+
 ## Composer classification matrix
 
 The shared composer classifier (`bin/fm-composer-lib.sh`, `fm_composer_classify_screen`) owns every composer shape fleet-wide; each backend contributes only a capture and a capability descriptor.

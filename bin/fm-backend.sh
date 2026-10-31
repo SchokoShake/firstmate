@@ -756,6 +756,27 @@ fm_backend_kill() {  # <backend> <target>
   esac
 }
 
+# fm_backend_recreate_task: recreate a task endpoint that is gone under its
+# recorded target, with its shell started in <dir> (bin/fm-control.sh revive).
+# Implemented for tmux only; every other backend refuses by name with exit 2,
+# because its endpoint identity is a server-issued id that cannot be recreated
+# under the recorded value.
+fm_backend_recreate_task() {  # <backend> <target> <dir> -> prints the new endpoint id
+  local backend=$1
+  shift
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || { echo "error: refusing an empty endpoint recreation target or directory" >&2; return 1; }
+  case "$backend" in
+    tmux)
+      fm_backend_source tmux || return 1
+      fm_backend_tmux_recreate_task "$@"
+      ;;
+    *)
+      echo "error: the $backend backend cannot recreate a gone endpoint under its recorded identity" >&2
+      return 2
+      ;;
+  esac
+}
+
 fm_backend_remove_worktree() {  # <backend> <worktree-id>
   local backend=$1
   shift

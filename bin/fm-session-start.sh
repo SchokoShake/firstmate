@@ -47,7 +47,8 @@
 #                       detected primary harness.
 #   5. read-once contract - the do-not-re-read contract covering every source
 #                       represented by the two digests below.
-#   6. fleet digest   - a bounded data/backlog.md projection, the recovery
+#   6. fleet digest   - a MACHINE RESTART section when one applies (below),
+#                       then a bounded data/backlog.md projection, the recovery
 #                       fields of every state/*.meta, each task's last
 #                       state/*.status line, state/.afk, and a cheap per-task
 #                       endpoint-liveness read: read-only, always runs.
@@ -214,6 +215,27 @@
 # because the section prints the commands that read every meta field and older
 # status lines, and AGENTS.md section 8 treats a status line as a wake EVENT
 # rather than current state - bin/fm-crew-state.sh owns current state.
+#
+# MACHINE RESTART: printed first in the fleet digest, and only when the machine
+# restarted since the last locked start or a restart's stopped workers are still
+# stopped. bin/fm-restart-lib.sh owns the detection (the kernel boot id, never
+# uptime), the durable stopped list, and which tasks count as still stopped; a
+# locked start records them, a read-only one only observes. The section says the
+# machine restarted, lists each still-stopped ship or scout the restart stopped
+# with its kind, mode, PR, whether it comes back in its own conversation (an
+# agent-view pilot resumes its background session; any other worker resumes
+# its recorded conversation when bin/fm-harness-session.sh allows it), the
+# validation state no-mistakes reported for its branch when the restart was
+# recorded, and its last status line, capped like every status line here; it
+# names the secondmates the startup secondmate check brings back; and it prints
+# the exact bin/fm-control.sh revive commands that bring back all of them or
+# chosen ones, adding the --fresh hint only when a listed worker is not an
+# agent-view pilot (revive refuses --fresh for a pilot) and, when pilots are
+# listed too, that it is given only the others' ids. It lists apart, in the
+# same shape, the tasks already stopped before the restart (a deliberate stop
+# retired their busy generation) and the tasks whose harness keeps no busy
+# generation, for which it says it cannot tell the two apart; `revive --stopped-by-restart` brings back neither, and
+# revive <id> brings back a chosen one. Nothing here brings a worker back.
 #
 # PROJECT REGISTRY: one line per data/projects.md entry - its name and posture
 # as written plus the first clause of its description - and its short "sub"
@@ -400,6 +422,12 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-line-cap-lib.sh"
 # shellcheck source=bin/fm-captain-hold-lib.sh
 . "$SCRIPT_DIR/fm-captain-hold-lib.sh"
+# shellcheck source=bin/fm-nm-run-lib.sh
+. "$SCRIPT_DIR/fm-nm-run-lib.sh"
+# shellcheck source=bin/fm-restart-lib.sh
+. "$SCRIPT_DIR/fm-restart-lib.sh"
+# shellcheck source=bin/fm-harness-session.sh
+. "$SCRIPT_DIR/fm-harness-session.sh"
 
 # One tasks-axi compatibility verdict per session start. The probe costs three
 # tasks-axi subprocesses and this digest needs the same answer twice - here for
@@ -804,6 +832,106 @@ print_work_heading() {  # <label>
     "$STATE" "$STATE"
 }
 
+# print_restart_task: one task's lines in the MACHINE RESTART section.
+print_restart_task() {  # <id>
+  local id=$1 meta kind mode pr validation conv last
+  meta="$STATE/$id.meta"
+  kind=$(fm_meta_get "$meta" kind)
+  mode=$(fm_meta_get "$meta" mode)
+  pr=$(fm_meta_get "$meta" pr)
+  if [ -n "$(fm_meta_get "$meta" agent_view_id)" ]; then
+    conv="resumes its background session"
+  elif fm_harness_session_resumable "$STATE" "$id"; then
+    conv="resumes its conversation"
+  else
+    conv="starts fresh: $FM_HARNESS_SESSION_REASON"
+  fi
+  printf -- '- %s: %s%s%s; %s\n' "$id" "${kind:-ship}" "${mode:+ $mode}" "${pr:+ pr=$pr}" "$conv"
+  validation=$(fm_restart_record_get "$STATE" "validation.$id")
+  case "$validation" in
+    '') ;;
+    unchecked) printf '  validation: not checked at startup; revive asks no-mistakes and tells the worker what to run first\n' ;;
+    none,none) printf '  validation: no run on its branch\n' ;;
+    *) printf '  validation: run %s, next action %s (revive tells the worker exactly what to run first)\n' "${validation%%,*}" "${validation#*,}" ;;
+  esac
+  if [ -f "$STATE/$id.status" ]; then
+    last=$(tail -n 1 "$STATE/$id.status" 2>/dev/null)
+    fm_cap_line_var "$last"
+    printf '  last status: %s\n' "$FM_LINE_CAP_LINE"
+  fi
+}
+
+# print_restart_section: the MACHINE RESTART section (see the header). Silent
+# when the machine did not restart and no restart's workers are still stopped.
+print_restart_section() {
+  local locked=1 rec detected id key pilots=0 others=0
+  local -a stopped=() secondmates=() before=() unarmed=()
+  [ "$READ_ONLY" -eq 0 ] || locked=0
+  fm_restart_observe "$STATE" "$locked"
+  rec=$(fm_restart_record_path "$STATE")
+  if [ "$FM_RESTART_VERDICT" = restarted ] && [ "$locked" -eq 0 ]; then
+    section "MACHINE RESTART"
+    printf 'The machine restarted since the last locked session start (kernel boot id changed).\n'
+    printf 'This read-only session records nothing; the session holding the lock lists the\n'
+    printf 'workers it stopped. Work under way below shows each gone endpoint as dead.\n'
+    return 0
+  fi
+  [ -f "$rec" ] || return 0
+  for key in task stopped_before unarmed; do
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      if [ "$(fm_meta_get "$STATE/$id.meta" kind)" = secondmate ]; then
+        secondmates+=("$id")
+      else
+        if [ -n "$(fm_meta_get "$STATE/$id.meta" agent_view_id)" ]; then pilots=1; else others=1; fi
+        case "$key" in
+          task) stopped+=("$id") ;;
+          stopped_before) before+=("$id") ;;
+          unarmed) unarmed+=("$id") ;;
+        esac
+      fi
+    done < <(fm_restart_stopped_tasks "$STATE" "$key")
+  done
+  [ "${#stopped[@]}" -gt 0 ] || [ "${#secondmates[@]}" -gt 0 ] \
+    || [ "${#before[@]}" -gt 0 ] || [ "${#unarmed[@]}" -gt 0 ] || return 0
+  detected=$(fm_restart_record_get "$STATE" detected)
+  section "MACHINE RESTART"
+  printf 'The machine restarted (noticed %s). Every local copy is untouched, and\n' "${detected:-at an earlier session start}"
+  printf 'nothing brings a worker back on its own.\n'
+  if [ "${#stopped[@]}" -gt 0 ]; then
+    printf 'These workers stopped with it and are still stopped:\n'
+    for id in "${stopped[@]}"; do
+      print_restart_task "$id"
+    done
+  fi
+  if [ "${#secondmates[@]}" -gt 0 ]; then
+    printf 'secondmates: %s - the startup secondmate check brings these back (NETWORK CHECKS below).\n' "${secondmates[*]}"
+  fi
+  if [ "${#before[@]}" -gt 0 ]; then
+    printf 'Already stopped before the restart (a deliberate stop retired its busy generation),\n'
+    printf 'so revive --stopped-by-restart leaves these alone:\n'
+    for id in "${before[@]}"; do
+      print_restart_task "$id"
+    done
+  fi
+  if [ "${#unarmed[@]}" -gt 0 ]; then
+    printf 'Stopped, but whether by the restart or already before it cannot be told, because\n'
+    printf 'its harness keeps no busy generation, so revive --stopped-by-restart leaves these alone:\n'
+    for id in "${unarmed[@]}"; do
+      print_restart_task "$id"
+    done
+  fi
+  if [ "${#stopped[@]}" -gt 0 ]; then
+    printf 'bring every one back: FM_HOME=%q %q revive --stopped-by-restart\n' "$FM_HOME" "$SCRIPT_DIR/fm-control.sh"
+  fi
+  if [ "${#stopped[@]}" -gt 0 ] || [ "${#before[@]}" -gt 0 ] || [ "${#unarmed[@]}" -gt 0 ]; then
+    printf 'bring chosen ones back: FM_HOME=%q %q revive <id> [<id>...]\n' "$FM_HOME" "$SCRIPT_DIR/fm-control.sh"
+  fi
+  [ "$others" -eq 0 ] || printf 'add --fresh to start a worker from its instructions instead of its conversation.\n'
+  [ "$others" -eq 0 ] || [ "$pilots" -eq 0 ] \
+    || printf '%s\n' '--fresh does not apply to agent-view pilot workers, so give it only the chosen ids of the others.'
+}
+
 hash_file_sha256() {
   local file=$1 digest
   [ -f "$file" ] || return 1
@@ -1084,6 +1212,7 @@ EOF
 # Before CONTEXT: see this file's ORDERING note. Live fleet identity is what a
 # truncated tail must never take.
 stage fleet-state
+print_restart_section
 section "FLEET STATE"
 print_backlog_compact "$DATA/backlog.md" "data/backlog.md"
 
