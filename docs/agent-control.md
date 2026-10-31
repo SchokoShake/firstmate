@@ -117,6 +117,7 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 
 - **What it brings back.**
   A ship or scout, by id, several ids in turn, or every task the last recorded restart stopped that is still stopped.
+  A task whose busy generation a deliberate stop had already retired before the restart, or whose harness keeps no busy generation so that cannot be told, is listed apart in the digest and comes back only by its own id.
   A secondmate is left to the startup secondmate check, which already brings back a secondmate whose agent stopped.
 - **Its own conversation where the harness allows it.**
   A worker's turn-boundary hooks rewrite a small record of its harness session at every turn (`bin/fm-harness-session.sh` owns it), because a machine can stop without running any shutdown step, so whatever was saved last is what survives.
@@ -125,16 +126,18 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
 - **What it tells the worker.**
   Every revive writes a restart note: the worker was stopped and brought back into the same local copy, anything running there may have been ended, and, for a no-mistakes ship, what no-mistakes says to do first, quoting its own recovery command when the stopped validation run still holds the branch.
   A resumed conversation receives the note as its next message, and a fresh agent reads it appended to its instructions.
+  A resumed agent-view pilot session has the note typed in through `bin/fm-send.sh` once it runs, whose guard first proves the window shows that session.
+  A note not confirmed delivered there is reported with what is left to do, and a later revive reports the session as running without typing the note again.
 - **Where it runs.**
   A gone endpoint is reopened under its recorded identity with its shell in the recorded worktree, on tmux alone (`fm_backend_recreate_task` in `bin/fm-backend.sh`); every other backend refuses a gone endpoint by name.
   The new shell starts beside the worktree and is moved in with a typed `cd`, as a fresh spawn's is, and nothing launches until it reads idle there twice in a row, because a new shell can read idle and still have a program from its startup files to run.
-  An endpoint that is still there with no agent in it is reused as it is.
+  An endpoint that is still there with no agent in it is reused, and when its idle shell is outside the worktree, as after a reopen whose typed `cd` a startup program swallowed, its line is cleared and the same `cd` is typed and waited for.
 - **What it proves first.**
   Relaunch's checkpoint runs unchanged before anything is reopened, written, or launched, so a worktree whose lease is released or unproven is refused with the same deliberate paths.
 - **Idempotent and recoverable.**
   An agent already running is reported as running, and the same note is never appended twice in a row, so a second revive starts nothing and a revive that failed part way is simply run again.
-  It runs relaunch's journaled transaction with `action=revive` and two phases of its own, `reopening` and `resuming`, and every failure names what is left to do.
-- An agent-view pilot worker gets its window back and then the pilot relaunch plan above, which keeps its background session.
+  It runs relaunch's journaled transaction with `action=revive` and three phases of its own, `reopening`, `resuming`, and `delivering`, and every failure names what is left to do.
+- An agent-view pilot worker gets its window back and then the pilot relaunch plan above, which keeps its background session, and a resumed session gets the restart note typed in as described above.
 
 `relaunch` refuses a gone endpoint before anything is written and names `revive`, because there is no agent to replace and nowhere to launch one.
 

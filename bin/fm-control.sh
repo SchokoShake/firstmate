@@ -95,7 +95,13 @@
 #              (bin/fm-restart-lib.sh owns that list), leaving secondmates to
 #              the startup secondmate check. An agent-view pilot worker gets
 #              its window back and then the pilot relaunch plan below, which
-#              resumes its background session. Nothing calls revive on its own.
+#              resumes its background session. A resumed session never
+#              re-reads its instructions, so once it is confirmed running,
+#              revive types the restart note into it through bin/fm-send.sh,
+#              whose guard first proves the window shows that session; a note
+#              not confirmed delivered is reported with what is left to do,
+#              and a later revive reports the session as running without
+#              typing the note again. Nothing calls revive on its own.
 #
 # An agent-view pilot worker (bin/fm-agent-view-lib.sh owns the pilot) is a
 # Claude Code background session that its window only views, so every verb
@@ -448,14 +454,10 @@ busy_verdict() {
 # wait_agent_state <timeout> <wanted...>: poll until agent_state prints one of
 # the wanted values. Prints the final observed state; returns 0 on a match.
 wait_agent_state() {  # <timeout> <wanted>...
-  wait_for_state agent_state "$@"
-}
-
-wait_for_state() {  # <reader> <timeout> <wanted>...
-  local reader=$1 timeout=$2 state want elapsed=0
-  shift 2
+  local timeout=$1 state want elapsed=0
+  shift
   while :; do
-    state=$("$reader")
+    state=$(agent_state)
     for want in "$@"; do
       if [ "$state" = "$want" ]; then
         printf '%s' "$state"
@@ -746,11 +748,12 @@ relaunch_rollback() {
       echo "error: $VERB of $ID was refused before its agent was touched, because its PR merge poll could not be re-armed; its instructions were restored. Re-arm the poll with bin/fm-pr-check.sh $ID $RELAUNCH_PR, then $VERB" >&2
       ;;
     reopening)
-      # revive only: nothing was started. A window it did create is left at its
-      # shell in the worktree, where the next revive simply uses it.
+      # revive only: nothing was started. A window it opened, or found idle
+      # outside the worktree, is left as it is, and the next revive moves its
+      # shell into the worktree again before launching.
       restore_instructions
       journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored" || true
-      echo "error: revive of $ID could not reopen its endpoint $T in $WT; no agent was started and its instructions were restored" >&2
+      echo "error: revive of $ID could not settle its endpoint $T as an idle shell in $WT; no agent was started and its instructions were restored. Once that window is back at an idle shell, run bin/fm-control.sh revive $ID again, which moves the shell into $WT before launching" >&2
       ;;
     stopping)
       state=$(agent_state 2>/dev/null || printf unknown)
@@ -781,6 +784,12 @@ relaunch_rollback() {
         journal_write "failed:$RELAUNCH_PHASE" "rollback=none-resume-exited" || true
         echo "error: $ID's resumed worker exited before it confirmed its recorded conversation $REVIVE_SESSION (its endpoint reads '$state'); no agent is running, and its work plus the restart note are preserved at $WT. Run bin/fm-control.sh revive $ID again to retry the resume, or with --fresh to start it from its instructions and the restart note" >&2
       fi
+      ;;
+    delivering)
+      # revive only: a pilot's resumed background session was confirmed
+      # running, but its restart note was not confirmed typed into it.
+      journal_write "failed:$RELAUNCH_PHASE" "rollback=none-agent-running-note-unconfirmed" || true
+      echo "error: $ID's background session $AGENT_VIEW_ID is running again, but its restart note ($NOTE_FILE) was not confirmed delivered to it. Look at window $T: if the note is not in the session's conversation, re-attach its viewer with bin/fm-control.sh $ID relaunch if the window does not show the session, then send the note's text with bin/fm-send.sh $ID. A later revive reports the session as running and never types the note again" >&2
       ;;
     exited|launching)
       if [ "$RELAUNCH_AGENT_CONFIRMED" = 1 ]; then
@@ -1156,17 +1165,15 @@ do_relaunch() {
 # re-arm, single launch owner, and rollback - with no old agent to stop, and
 # with one step relaunch never needs: reopening a gone endpoint. Its journal
 # phases are checkpoint, noted, rearming (only with a recorded PR), reopening
-# (only when the endpoint is gone), launching, resuming (only when a recorded
-# conversation is resumed), and complete.
+# (only when the endpoint is gone or its idle shell is outside the worktree),
+# launching, resuming (only when a recorded conversation is resumed),
+# delivering (only when a pilot's background session is resumed), and
+# complete.
 
 WINDOW_STATE=
 REVIVE_VIA=
 REVIVE_SESSION=
 REVIVE_WHY=
-
-real_dir() {  # <path>
-  (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
-}
 
 # revive_validation_lines: for a no-mistakes ship task, what no-mistakes says
 # must happen first on the branch, quoted from its own structured next action.
@@ -1255,35 +1262,63 @@ revive_record_note() {  # <note-body> <into-instructions: 1|0>
     || die "could not append the restart note to task $ID's instructions"
 }
 
-# reopen_endpoint: recreate the gone endpoint under its recorded identity and
-# settle its shell in the recorded worktree the way a fresh spawn does: the
-# shell starts beside the worktree and a typed cd moves it in, so seeing it
-# there proves it finished its startup files and read that line. A shell
-# started inside the worktree can read as idle and then still run a startup
-# program, which the launch owner's agent-free check refuses. Settled means
-# idle in the worktree on two consecutive reads, as fm-spawn.sh's own cd wait
-# requires, because a brand-new window can briefly report a stale path.
+# shell_in_worktree: 0 when the tmux endpoint's shell is in the recorded
+# worktree. Sets SHELL_DIR to the directory it read.
+SHELL_DIR=
+shell_in_worktree() {
+  fm_backend_source tmux || return 1
+  SHELL_DIR=$(fm_backend_tmux_current_path "$T")
+  [ -n "$SHELL_DIR" ] \
+    && [ "$(fm_harness_session_canonical "$SHELL_DIR")" = "$(fm_harness_session_canonical "$WT")" ]
+}
+
+# reopen_endpoint: settle the endpoint's shell in the recorded worktree the way
+# a fresh spawn does, recreating a gone endpoint under its recorded identity
+# first with its shell started beside the worktree. A typed cd moves the shell
+# in, so seeing it there proves it finished its startup files and read that
+# line. A shell started inside the worktree can read as idle and then still run
+# a startup program, which the launch owner's agent-free check refuses. A
+# window that is still there is idle at its shell but outside the worktree -
+# one an earlier revive opened whose cd a startup program swallowed - so its
+# line is cleared and the same cd is typed. Settled means idle in the worktree
+# on two consecutive reads, as fm-spawn.sh's own cd wait requires, because a
+# brand-new window can briefly report a stale path.
 reopen_endpoint() {
-  local state='' seen='' settled=0 elapsed=0
-  fm_backend_recreate_task "$BACKEND" "$T" "$(dirname -- "$WT")" >/dev/null \
-    || die "task $ID's endpoint $T could not be reopened beside $WT"
+  local state='' settled=0 elapsed=0
+  if [ "$WINDOW_STATE" = missing ]; then
+    fm_backend_recreate_task "$BACKEND" "$T" "$(dirname -- "$WT")" >/dev/null \
+      || die "task $ID's endpoint $T could not be reopened beside $WT"
+  else
+    fm_backend_tmux_send_key "$T" C-u \
+      || die "task $ID's endpoint $T could not have its shell's line cleared before the move into $WT"
+  fi
   fm_backend_tmux_send_text_line "$T" "cd -- '${WT//\'/\'\\\'\'}'" \
-    || die "task $ID's reopened endpoint $T could not be sent the move into $WT"
+    || die "task $ID's endpoint $T could not be sent the move into $WT"
   while :; do
-    seen=$(fm_backend_tmux_current_path "$T")
     state=$(window_state)
-    if [ "$state" = dead ] && [ -n "$seen" ] \
-       && [ "$(real_dir "$seen")" = "$(real_dir "$WT")" ]; then
+    if [ "$state" = dead ] && shell_in_worktree; then
       settled=$((settled + 1))
       [ "$settled" -lt 2 ] || return 0
     else
       settled=0
     fi
     awk -v e="$elapsed" -v t="$LAUNCH_WAIT" 'BEGIN{exit !(e < t)}' \
-      || die "task $ID's reopened endpoint $T did not settle as an idle shell in $WT within ${LAUNCH_WAIT}s (it reads '$state' in '${seen:-unknown}')"
+      || die "task $ID's endpoint $T did not settle as an idle shell in $WT within ${LAUNCH_WAIT}s (it reads '$state' in '${SHELL_DIR:-unknown}')"
     sleep "$POLL"
     elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
   done
+}
+
+# deliver_restart_note: a resumed pilot session never re-reads its
+# instructions, so its restart note is typed into its viewer as one line
+# through bin/fm-send.sh, the pilot typing path, whose guard
+# (fm_agent_view_input_guard) refuses unless the window shows this worker's own
+# session.
+deliver_restart_note() {
+  local line
+  line=$(awk 'NF { printf "%s%s", sep, $0; sep = " " }' "$NOTE_FILE")
+  "$SCRIPT_DIR/fm-send.sh" "$ID" "$line" >/dev/null \
+    || die "task $ID's restart note could not be confirmed typed into its resumed background session $AGENT_VIEW_ID"
 }
 
 # confirm_resumed: a resume is done only once the resumed session's own hook
@@ -1310,7 +1345,8 @@ confirm_resumed() {
 }
 
 # revive_transaction: the relaunch transaction without an agent to stop. The
-# note goes into the instructions unless a pilot resumes its own session.
+# note goes into the instructions unless a pilot resumes its own session, which
+# has it typed in once it runs.
 revive_transaction() {  # <note-into-instructions: 1|0>
   local into=$1 body state note_line="note_file=$NOTE_FILE" why_line='' report
   local -a spawn_args
@@ -1325,12 +1361,13 @@ revive_transaction() {  # <note-into-instructions: 1|0>
 
   rearm_pr_poll "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA"
 
-  if [ "$WINDOW_STATE" = missing ]; then
-    journal_write reopening "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA"
-    reopen_endpoint
-  elif [ -n "$AGENT_VIEW_ID" ]; then
+  if [ -n "$AGENT_VIEW_ID" ] && [ "$WINDOW_STATE" != missing ]; then
     fm_agent_view_release_window "$T" \
       || die "task $ID's window $T shows something other than a Claude Code viewer or its shell, so its worker cannot be brought back there"
+  fi
+  if [ "$WINDOW_STATE" = missing ] || { [ "$BACKEND" = tmux ] && ! shell_in_worktree; }; then
+    journal_write reopening "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA"
+    reopen_endpoint
   fi
 
   RELAUNCH_TX="${BASHPID:-$$}.$(date -u +%Y%m%dT%H%M%SZ).$RANDOM"
@@ -1358,6 +1395,9 @@ revive_transaction() {  # <note-into-instructions: 1|0>
   if [ "$REVIVE_VIA" = resume ] && [ -z "$AGENT_VIEW_ID" ]; then
     journal_write resuming "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA" "session=$REVIVE_SESSION"
     confirm_resumed
+  elif [ "$REVIVE_VIA" = resume ]; then
+    journal_write delivering "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA" "session=$AGENT_VIEW_ID"
+    deliver_restart_note
   fi
 
   journal_write complete "${CHECKPOINT_LINES[@]}" "$note_line" "via=$REVIVE_VIA" ${why_line:+"$why_line"}

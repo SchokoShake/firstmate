@@ -3,7 +3,8 @@
 # list of the workers that restart stopped. ONE owner for how a restart is
 # detected, for the two records below, and for which tasks count as stopped by
 # one. bin/fm-session-start.sh prints its restart section from here, and
-# bin/fm-control.sh revive --stopped-by-restart brings back what it lists.
+# bin/fm-control.sh revive --stopped-by-restart brings back the tasks it lists
+# as stopped by the restart.
 # Nothing here brings a worker back: a restart is reported, and bringing
 # workers back stays a deliberate action.
 #
@@ -20,30 +21,44 @@
 # not reported yet.
 #
 # state/.restart-stopped - written by the locked session start that first sees
-# a new boot id, and retired by a later locked start once no task it lists is
-# still stopped:
+# a new boot id, and retired by a later locked start once no task it lists as
+# task or unarmed is still stopped:
 #   v1
 #   detected=<ISO-8601 UTC>
 #   previous_boot=<boot id>
 #   boot=<boot id>
 #   task=<id>                     one per task whose recorded endpoint was gone
-#   validation.<id>=<run>,<next>  for a no-mistakes ship task: the status of the
-#                                 branch's validation run attributed to the
-#                                 worktree's code (or none), and the
-#                                 branch_sync.next_action code no-mistakes
-#                                 reports (or none); `unchecked` when the bounded
-#                                 probe below did not reach it
+#                                 and whose agent's busy generation was still
+#                                 armed, so it was not deliberately stopped:
+#                                 the restart stopped it
+#   stopped_before=<id>           one per task whose recorded endpoint was gone
+#                                 and whose agent's busy generation had been
+#                                 retired, as a deliberate stop
+#                                 (bin/fm-control.sh exit) retires it: it was
+#                                 already stopped before the restart
+#   unarmed=<id>                  one per task whose recorded endpoint was gone
+#                                 and whose agent never had a busy generation
+#                                 (its adapter arms none), so which of the two
+#                                 it was cannot be told
+#   validation.<id>=<run>,<next>  for a no-mistakes ship task listed as task or
+#                                 unarmed: the status of the branch's validation
+#                                 run attributed to the worktree's code (or
+#                                 none), and the branch_sync.next_action code
+#                                 no-mistakes reports (or none); `unchecked`
+#                                 when the bounded probe below did not reach it
 # A listed task counts as still stopped while its metadata exists and its
 # recorded endpoint is still gone (bin/fm-backend.sh fm_backend_target_exists).
-# A remotely placed secondmate's endpoint lives on another host, so it is never
-# listed.
+# Only task= entries are what `revive --stopped-by-restart` brings back; a
+# stopped_before or unarmed task comes back only by its own id. A remotely
+# placed secondmate's endpoint lives on another host, so it is never listed.
 #
 # The validation probe runs only when the record is written, once per restart,
 # under FM_RESTART_NM_TIMEOUT (default 5 seconds) per `no-mistakes axi status`
 # call and FM_RESTART_NM_BUDGET (default 20 seconds) for the whole record, so a
 # slow or absent daemon delays one session start by a bounded amount.
 #
-# Callers source bin/fm-backend.sh and bin/fm-nm-run-lib.sh first.
+# Callers source bin/fm-backend.sh, bin/fm-busy-lib.sh, and
+# bin/fm-nm-run-lib.sh first.
 
 fm_restart_boot_id() {
   local id=
@@ -179,17 +194,26 @@ fm_restart_validation_probe() {  # <meta-file> <timeout-seconds>
   fi
 }
 
-# fm_restart_record_write: list every task whose recorded endpoint is gone,
-# probe each no-mistakes ship task's validation run within the bounds above,
+# fm_restart_record_write: list every task whose recorded endpoint is gone
+# under the key its busy generation decides (see the format above), probe each
+# no-mistakes ship task the restart may have stopped within the bounds above,
 # and publish the record atomically. Locked callers only.
 fm_restart_record_write() {  # <state-dir> <previous-boot> <boot>
-  local state=$1 previous=$2 boot=$3 path tmp meta id ids=() per budget start value
+  local state=$1 previous=$2 boot=$3 path tmp meta id key entry entries=() per budget start value
   path=$(fm_restart_record_path "$state")
   tmp="$path.tmp.${BASHPID:-$$}"
   for meta in "$state"/*.meta; do
     [ -f "$meta" ] || continue
     id=$(basename "$meta" .meta)
-    fm_restart_task_stopped "$state" "$id" && ids+=("$id")
+    fm_restart_task_stopped "$state" "$id" || continue
+    if [ -z "$(fm_meta_get "$meta" busy_gen)" ]; then
+      key=unarmed
+    elif fm_busy_current_gen "$state" "$id" >/dev/null 2>&1; then
+      key=task
+    else
+      key=stopped_before
+    fi
+    entries+=("$key=$id")
   done
   per=${FM_RESTART_NM_TIMEOUT:-5}
   budget=${FM_RESTART_NM_BUDGET:-20}
@@ -199,10 +223,12 @@ fm_restart_record_write() {  # <state-dir> <previous-boot> <boot>
     printf 'detected=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'previous_boot=%s\n' "$previous"
     printf 'boot=%s\n' "$boot"
-    for id in "${ids[@]+"${ids[@]}"}"; do
-      printf 'task=%s\n' "$id"
+    for entry in "${entries[@]+"${entries[@]}"}"; do
+      printf '%s\n' "$entry"
     done
-    for id in "${ids[@]+"${ids[@]}"}"; do
+    for entry in "${entries[@]+"${entries[@]}"}"; do
+      case "$entry" in stopped_before=*) continue ;; esac
+      id=${entry#*=}
       meta="$state/$id.meta"
       [ "$(fm_meta_get "$meta" kind)" != secondmate ] || continue
       [ "$(fm_meta_get "$meta" mode)" = no-mistakes ] || continue
@@ -217,23 +243,24 @@ fm_restart_record_write() {  # <state-dir> <previous-boot> <boot>
   mv -f "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
 }
 
-# fm_restart_stopped_tasks: the ids the record lists that are still stopped,
-# one per line, in record order.
-fm_restart_stopped_tasks() {  # <state-dir>
-  local rec id
+# fm_restart_stopped_tasks: the ids the record lists under <key> (task, the
+# ones the restart stopped, by default) that are still stopped, one per line,
+# in record order.
+fm_restart_stopped_tasks() {  # <state-dir> [task|stopped_before|unarmed]
+  local rec id key=${2:-task}
   rec=$(fm_restart_record_path "$1")
   [ -f "$rec" ] || return 0
   while IFS= read -r id; do
     fm_restart_task_stopped "$1" "$id" && printf '%s\n' "$id"
-  done < <(sed -n 's/^task=//p' "$rec")
+  done < <(sed -n "s/^$key=//p" "$rec")
   return 0
 }
 
 # fm_restart_observe: the session-start step. Compares boot ids and, only when
 # <locked> is 1, records the current boot, writes the stopped list when the
-# machine restarted, and retires a list nothing in it is still stopped by. A
-# read-only session observes and writes nothing. Leaves fm_restart_check's
-# variables set for the caller.
+# machine restarted, and retires a list in which no task the restart stopped,
+# or may have stopped, is still stopped. A read-only session observes and
+# writes nothing. Leaves fm_restart_check's variables set for the caller.
 fm_restart_observe() {  # <state-dir> <locked>
   local state=$1 locked=$2
   fm_restart_check "$state"
@@ -249,7 +276,8 @@ fm_restart_observe() {  # <state-dir> <locked>
       ;;
   esac
   if [ -f "$(fm_restart_record_path "$state")" ] \
-     && [ -z "$(fm_restart_stopped_tasks "$state")" ]; then
+     && [ -z "$(fm_restart_stopped_tasks "$state")" ] \
+     && [ -z "$(fm_restart_stopped_tasks "$state" unarmed)" ]; then
     rm -f "$(fm_restart_record_path "$state")" 2>/dev/null || true
   fi
   return 0

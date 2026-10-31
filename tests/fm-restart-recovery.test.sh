@@ -18,15 +18,18 @@
 #   2. Session start records the boot id, and after the simulated restart lists
 #      the stopped worker with its conversation, its validation state, and the
 #      exact revive commands; a later start retires the list once nothing in it
-#      is still stopped.
+#      is still stopped. A worker deliberately stopped before the restart is
+#      listed apart, and revive --stopped-by-restart leaves it stopped.
 #   3. relaunch refuses a gone endpoint before writing anything, and revive
 #      refuses a working copy whose lease it cannot prove before creating
 #      anything.
 #   4. revive reopens the endpoint in the recorded worktree and resumes the
 #      recorded conversation with a restart note that tells the worker exactly
 #      what no-mistakes says to run first; it is idempotent; it falls back to a
-#      fresh agent when no conversation is recorded or --fresh is passed; and a
-#      failed resume leaves a record a second revive completes.
+#      fresh agent when no conversation is recorded or --fresh is passed; a
+#      failed resume leaves a record a second revive completes; and a reopened
+#      shell whose typed cd a startup program swallowed is moved into the
+#      worktree by the next revive.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -63,6 +66,9 @@ export HOME="$LAB/home" SHELL=/bin/bash
 # the shell's startup in a read until that case releases it, then runs a
 # program. The read waits on a FIFO rather than the terminal, so the shell is
 # the only process meanwhile and a line typed into it is left for the shell.
+# Only while another case asks for it
+# (test_a_swallowed_move_is_completed_by_a_later_revive), a startup program
+# reads one line from the terminal, which swallows the typed cd.
 cat > "$LAB/home/.bash_profile" <<'SH'
 if [ -e "$HOME/slow-start" ]; then
   echo held >> "$HOME/slow-start.log"
@@ -70,6 +76,9 @@ if [ -e "$HOME/slow-start" ]; then
   echo program >> "$HOME/slow-start.log"
   sleep 1
   echo done >> "$HOME/slow-start.log"
+fi
+if [ -e "$HOME/swallow-line" ]; then
+  read -r -t 30 _ || true
 fi
 SH
 unset TMUX TMUX_PANE CLAUDE_CONFIG_DIR CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_PID \
@@ -113,7 +122,7 @@ chmod +x "$LAB/bin/no-mistakes"
 # conversation, fires the worktree's UserPromptSubmit and Stop hooks with a
 # payload carrying session_id, transcript_path, cwd, and hook_event_name, and
 # then stays in the foreground under the argv0 `claude`, so the tmux classifier
-# reads it as a running agent on every platform.
+# reads it as a running agent on every platform, until it reads `/exit`.
 export FAKE_CLAUDE_DIR="$LAB/claude"
 cat > "$LAB/bin/claude" <<'SH'
 #!/bin/bash
@@ -154,7 +163,7 @@ fire() {  # <event>
 fire UserPromptSubmit
 fire Stop
 echo "stand-in claude: conversation $sid"
-exec -a claude /bin/bash -c 'while :; do sleep 1; done'
+exec -a claude /bin/bash -c 'while IFS= read -r l; do [ "$l" != /exit ] || exit 0; done; while :; do sleep 1; done'
 SH
 chmod +x "$LAB/bin/claude"
 
@@ -542,6 +551,66 @@ test_revive_waits_for_a_reopened_shell_to_finish_starting() {
   pass "fm-control revive: nothing launches until a reopened shell has finished its startup files"
 }
 
+# A startup program that reads the terminal swallows the cd a reopen types, so
+# the shell finishes starting beside the worktree. The failed revive leaves that
+# window where it is, and the next one moves its shell in before launching.
+test_a_swallowed_move_is_completed_by_a_later_revive() {
+  local out rc before notes
+  simulate_restart boot-f
+  before=$(launches)
+  notes=$(note_count)
+  touch "$HOME/swallow-line"
+  out=$(LAUNCH_WAIT=4 fm_env "$ROOT/bin/fm-control.sh" revive "$ID" 2>&1)
+  rc=$?
+  rm -f "$HOME/swallow-line"
+  expect_code 1 "$rc" "a reopen whose cd was swallowed"
+  assert_contains "$out" "run bin/fm-control.sh revive $ID again" "the failure should name the retry"
+  [ "$(sed -n 's/^phase=//p' "$STATE_DIR/$ID.control-relaunch" | tail -n 1)" = failed:reopening ] \
+    || fail "the journal must record the failed reopen"
+  [ "$(launches)" = "$before" ] || fail "nothing may launch into a shell outside the worktree"
+  [ "$(fm_backend_tmux_agent_state "$(window_target)")" = dead ] || fail "the reopened window must be left at its shell"
+  [ "$(cd "$(fm_backend_tmux_current_path "$(window_target)")" && pwd -P)" != "$(cd "$WT_DIR" && pwd -P)" ] \
+    || fail "divergence lost: the swallowed cd must leave the shell outside the worktree"
+  out=$(fm_env "$ROOT/bin/fm-control.sh" revive "$ID" 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "revive after a swallowed cd"$'\n'"$out"
+  assert_contains "$out" "revived $ID via=resume" "the worker should come back into its conversation"
+  agent_running || fail "the worker is not running after the second revive"
+  [ "$(cd "$(fm_backend_tmux_current_path "$(window_target)")" && pwd -P)" = "$(cd "$WT_DIR" && pwd -P)" ] \
+    || fail "the second revive must move the shell into the recorded worktree"
+  [ "$(launches)" = $((before + 1)) ] || fail "the second revive must launch exactly one agent"
+  [ "$(note_count)" = "$notes" ] || fail "the same restart note must not be appended again"
+  pass "fm-control revive: a reopened shell whose cd was swallowed is moved into the worktree by the next revive"
+}
+
+# A deliberate stop retires the worker's busy generation; a restart leaves it.
+test_a_worker_stopped_before_the_restart_stays_stopped() {
+  local out rc before
+  out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" exit 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "a deliberate stop"$'\n'"$out"
+  assert_contains "$out" "stopped $ID" "exit should report the worker stopped"
+  [ ! -e "$STATE_DIR/$ID.busy-gen" ] || fail "a deliberate stop must retire the busy generation"
+  simulate_restart boot-g
+  before=$(launches)
+  out=$(run_session_start)
+  assert_contains "$out" "Already stopped before the restart" "a deliberately stopped worker must be listed apart"$'\n'"$out"
+  assert_contains "$out" "- $ID: ship no-mistakes" "the deliberately stopped worker must still be named"
+  assert_not_contains "$out" "bring every one back" "nothing the restart stopped is left to bring back"
+  grep -qx "stopped_before=$ID" "$STATE_DIR/.restart-stopped" || fail "the stopped list must record it as stopped before"
+  grep -qx "task=$ID" "$STATE_DIR/.restart-stopped" && fail "a deliberately stopped worker must not be listed as stopped by the restart"
+  out=$(fm_env "$ROOT/bin/fm-control.sh" revive --stopped-by-restart 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "revive --stopped-by-restart"
+  assert_contains "$out" "nothing to revive" "a deliberately stopped worker must not be brought back by the restart command"
+  [ "$(launches)" = "$before" ] || fail "revive --stopped-by-restart started a deliberately stopped worker"
+  server_running && fail "revive --stopped-by-restart must not reopen a deliberately stopped worker's endpoint"
+  out=$(run_session_start)
+  assert_not_contains "$out" "MACHINE RESTART" "a list with nothing the restart stopped must retire"
+  [ ! -e "$STATE_DIR/.restart-stopped" ] || fail "the stopped list must be retired"
+  pass "fm-session-start: a worker stopped deliberately before a restart is listed apart and never brought back by it"
+}
+
 test_other_backends_cannot_reopen_an_endpoint() {
   local out rc
   out=$(fm_backend_recreate_task herdr "s:fm-x" "$WT_DIR" 2>&1)
@@ -563,5 +632,7 @@ test_a_later_start_retires_the_list
 test_a_failed_resume_is_completed_by_a_later_revive
 test_revive_without_a_recorded_conversation_starts_fresh
 test_revive_waits_for_a_reopened_shell_to_finish_starting
+test_a_swallowed_move_is_completed_by_a_later_revive
+test_a_worker_stopped_before_the_restart_stays_stopped
 test_other_backends_cannot_reopen_an_endpoint
 echo "# all fm-restart-recovery tests passed"

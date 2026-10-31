@@ -23,9 +23,11 @@
 #   4. The scripts: fm-spawn launches, records, gates hooks, and attaches, and a
 #      launch Claude Code refuses leaves no session id; fm-send refuses a
 #      detached viewer; fm-control re-attaches, interrupts, stops, and relaunches
-#      by every plan (resume, restart, fresh); fm-teardown stops and removes the
-#      session; and with the switch absent or off the launch is byte-identical
-#      to an ordinary one.
+#      by every plan (resume, restart, fresh); after a simulated restart the
+#      session-start digest says the pilot resumes its background session, and
+#      revive resumes it and types its restart note into it exactly once;
+#      fm-teardown stops and removes the session; and with the switch absent or
+#      off the launch is byte-identical to an ordinary one.
 #
 # The stand-in's viewer is a /bin/bash whose argv is `claude attach <id>`, so its
 # argv names claude while `ps -o comm=` names bash: the tmux classifier's
@@ -42,6 +44,7 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
 command -v lsof >/dev/null 2>&1 || { echo "skip: lsof not found"; exit 0; }
 
 REAL_TMUX=$(command -v tmux)
+REAL_PS=$(command -v ps)
 LAB=$(fm_test_tmproot fm-agent-view-pilot)
 mkdir -p "$LAB"
 LAB=$(cd "$LAB" && pwd -P)
@@ -84,7 +87,9 @@ printf '[]\n' > "$FAKE_CLAUDE_DIR/sessions.json"
 #   --bg ...        records a background session named --name in $PWD and
 #                   prints the `backgrounded · <id> · <name>` line.
 #   agents --json   prints the list; agents alone paints the agent view.
-#   attach <id>     resumes a stopped session, then paints it until it stops.
+#   attach <id>     resumes a stopped session, then paints it until it stops,
+#                   with the cursor in its composer; each line typed into it is
+#                   appended to <id>.typed and clears the composer again.
 #   stop / rm       stop or remove one session by id.
 # A viewer and the agent view repaint from a bash re-executed with exactly the
 # argv the real CLI's process carries, `claude attach <id>` or `claude agents`.
@@ -97,7 +102,7 @@ put() { jq -c "$@" "$LIST" > "$LIST.tmp" && mv -f "$LIST.tmp" "$LIST"; }
 row() { jq -c --arg id "$1" '.[] | select(.id == $id)' "$LIST"; }
 running() { [ "$(jq -r --arg id "$1" '.[] | select(.id == $id) | .pid | type' "$LIST")" = number ]; }
 paint_loop() {  # <screen-file-or-default> <id-or-empty>
-  local last= sum
+  local last= sum row line
   while :; do
     if [ -n "$2" ] && ! running "$2"; then
       printf '\nSession %s has exited\n' "$2"
@@ -107,9 +112,16 @@ paint_loop() {  # <screen-file-or-default> <id-or-empty>
     if [ "$sum" != "$last" ]; then
       printf '\033[H\033[2J'
       cat "$1"
+      row=$(grep -n '^❯' "$1" | head -n 1 | cut -d: -f1)
+      [ -z "$row" ] || printf '\033[%s;3H' "$row"
       last=$sum
     fi
-    sleep 0.2
+    if [ -z "$2" ]; then
+      sleep 0.2
+    elif IFS= read -r -t 0.2 line < /dev/tty; then
+      printf '%s\n' "$line" >> "$D/$2.typed"
+      last=
+    fi
   done
 }
 paint_as() {  # <argv> <screen-file> <id-or-empty>
@@ -158,7 +170,7 @@ case "${1:-}" in
     screen="$D/screen-$id"
     if [ ! -f "$screen" ]; then
       name=$(row "$id" | jq -r .name)
-      printf ' * Claude Code (stand-in)\n\n> working on the brief\n\n───────────────────────────── %s ─\n> \n────────────────────────────────────────\n  bypass permissions on · ← for agents\n' "$name" > "$screen"
+      printf ' * Claude Code (stand-in)\n\n> working on the brief\n\n───────────────────────────── %s ─\n❯ \n────────────────────────────────────────\n  bypass permissions on · ← for agents\n' "$name" > "$screen"
     fi
     paint_as "claude attach $id" "$screen" "$id"
     ;;
@@ -508,6 +520,36 @@ fm_env() {  # <command...>
     "$@"
 }
 
+SS_ROOT="$LAB/ssroot"
+BOOT_FILE="$LAB/boot-id"
+
+# Session start's lock reads the harness that owns the session from the
+# process ancestry. This ps answers "claude" for this test's own process only
+# and asks the real ps everything else, so the digest runs as the lock holder.
+mkdir -p "$LAB/ssbin"
+cat > "$LAB/ssbin/ps" <<SH
+#!/usr/bin/env bash
+pid= prev=
+for a in "\$@"; do [ "\$prev" = -p ] && pid=\$a; prev=\$a; done
+if [ -n "\$pid" ] && [ "\$pid" = "\${FM_FAKE_HARNESS_PID:-}" ]; then
+  case "\$*" in *comm=*|*args=*) echo claude; exit 0 ;; esac
+fi
+exec "$REAL_PS" "\$@"
+SH
+chmod +x "$LAB/ssbin/ps"
+fm_fake_exit0 "$LAB/ssbin" gh gh-axi node chrome-devtools-axi lavish-axi
+
+run_session_start() {
+  env -u FM_ROOT_OVERRIDE FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$SS_ROOT" \
+    FM_BOOT_ID_FILE="$BOOT_FILE" FM_FAKE_HARNESS_PID=$$ FM_STARTUP_NETWORK_TIMEOUT=10 \
+    FM_RESTART_NM_TIMEOUT=5 PATH="$LAB/ssbin:$PATH" \
+    "$ROOT/bin/fm-session-start.sh" 2>&1
+}
+
+typed_notes() {  # <id>
+  grep -c '^Restart note from firstmate' "$FAKE_CLAUDE_DIR/$1.typed" 2>/dev/null
+}
+
 write_pool_lease() {  # <label>
   : > "$LAB/pool/treehouse-state.lock"
   printf '{"worktrees":[{"name":"1","path":"%s","leased":true,"lease_holder":"%s"}]}\n' "$WT_DIR" "$1" \
@@ -664,6 +706,54 @@ test_control_restarts() {
   [ "$(jq length "$FAKE_CLAUDE_DIR/sessions.json")" = 1 ] || fail "restart must not start a second session"
   [ "$(fm_agent_view_viewer_state "$t" "$ID" "$SID")" = session ] || fail "restart must leave the window showing the session"
   pass "fm-control: relaunch of a running, shown pilot stops and resumes its own conversation"
+}
+
+# The simulated restart: the background session stops and the private tmux
+# server is gone with every window in it, as a machine stop leaves them, and the
+# boot id changes. Revive starts the server again by reopening the window, and
+# the lab's own session and options are put back afterwards.
+test_revive_after_a_restart() {
+  local t out rc i
+  t=$(sed -n 's/^window=//p' "$HOME_DIR/state/$ID.meta")
+  git init -q -b main "$SS_ROOT"
+  git -C "$SS_ROOT" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -q --allow-empty -m init
+  printf 'boot-a\n' > "$BOOT_FILE"
+  run_session_start >/dev/null
+  claude stop "$SID" >/dev/null
+  tmux kill-server
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    tmux list-sessions >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  ! tmux list-sessions >/dev/null 2>&1 || fail "the private tmux server did not stop"
+  printf 'boot-b\n' > "$BOOT_FILE"
+  out=$(run_session_start)
+  assert_contains "$out" "MACHINE RESTART" "the restart section is missing"$'\n'"$out"
+  assert_contains "$out" "- $ID: ship no-mistakes; resumes its background session" \
+    "a stopped pilot must be listed as resuming its background session"
+  out=$(fm_env env SHELL=/bin/bash "$ROOT/bin/fm-control.sh" revive --stopped-by-restart 2>&1)
+  rc=$?
+  tmux new-session -d -s lab -n w0 "bash --norc --noprofile"
+  tmux set-option -g default-command "bash --norc --noprofile"
+  tmux set-option -g remain-on-exit off
+  expect_code 0 "$rc" "revive of a stopped pilot"$'\n'"$out"
+  assert_contains "$out" "revived $ID via=resume" "a stopped session must be resumed"
+  assert_contains "$out" "agent_view=$SID" "the report should name the resumed session"
+  assert_contains "$out" "reopened=yes" "the gone window must have been reopened"
+  session_running "$SID" || fail "revive must bring the same session back"
+  [ "$(jq length "$FAKE_CLAUDE_DIR/sessions.json")" = 1 ] || fail "revive must not start a second session"
+  [ "$(fm_agent_view_viewer_state "$t" "$ID" "$SID")" = session ] || fail "the window must show the resumed session"
+  [ "$(typed_notes "$SID")" = 1 ] || fail "the restart note must be typed into the resumed session once: $(cat "$FAKE_CLAUDE_DIR/$SID.typed" 2>/dev/null)"
+  assert_grep "Before any edit, commit, or new validation run" "$FAKE_CLAUDE_DIR/$SID.typed" \
+    "the typed note must carry the validation step"
+  [ "$(sed -n 's/^phase=//p' "$HOME_DIR/state/$ID.control-relaunch" | tail -n 1)" = complete ] \
+    || fail "the journal must end complete"
+  out=$(fm_env "$ROOT/bin/fm-control.sh" revive "$ID" 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "a second revive"$'\n'"$out"
+  assert_contains "$out" "already-running $ID" "a running pilot must be reported, not revived again"
+  [ "$(typed_notes "$SID")" = 1 ] || fail "a second revive typed the restart note again"
+  pass "fm-control revive: a pilot stopped by a restart resumes its background session and gets its restart note once"
 }
 
 test_watch_liveness_reads_the_session() {
@@ -862,6 +952,7 @@ test_send_refuses_a_detached_viewer
 test_control_reattach_interrupt_exit
 test_control_resumes
 test_control_restarts
+test_revive_after_a_restart
 test_watch_liveness_reads_the_session
 test_control_starts_fresh
 test_control_exit_without_window

@@ -125,7 +125,7 @@ state/               runtime records and signals; gitignored
   .<id>.open-decisions-cursor  per-task byte cursor and folded open-decision set bounding the OPEN DECISIONS scan's cost to new status-log appends; written only by fm-classify-lib.sh's status_open_decisions_incremental, removed by teardown, safe to delete (forces one full re-fold)
   .status-presentation-cursor .status-presentation-lock  fleet-wide per-task status identity/byte-offset manifest and serialization lock preventing already-presented status lines from being replayed as new; owned by fm-classify-lib.sh, with each task's row retired by teardown
   .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
-  .boot-id .restart-stopped  last recorded machine boot id and the workers a detected machine restart stopped; bin/fm-restart-lib.sh
+  .boot-id .restart-stopped  last recorded machine boot id and the workers a detected machine restart found stopped, split by whether the restart stopped them; bin/fm-restart-lib.sh
   .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
   .ask-revisions.lock  serialization lock for the revision bump and restore bin/fm-ask.sh again performs on data/ask-revisions
   .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch

@@ -35,8 +35,10 @@ Do not sweep another home's endpoints or infer ownership from a matching window 
 Bring a stopped worker back with `FM_HOME=<this-firstmate-home> bin/fm-control.sh revive <task-id>`, the one supported step ([Revive after a stop](../../../docs/agent-control.md#revive-after-a-stop)).
 It proves the recorded lease and that no agent is running, reopens a gone endpoint in the recorded worktree, and resumes the worker's own conversation where the harness allows it, otherwise starting it from its brief plus a restart note, keeping the same task identity, commits, and uncommitted changes.
 The restart note already tells the worker what no-mistakes says to do first, so do not add a hand-written validation instruction.
+For an agent-view pilot whose background session revive resumed, revive types that note into the session itself; when it reports the note was not confirmed delivered, peek the window and, only if the note is not in the conversation, send its text once with `bin/fm-send.sh`.
 When the digest's machine-restart section lists stopped workers, tell the captain plainly which work the restart stopped and that its local copies are intact.
 Nothing brings them back on its own: bringing them back is a deliberate decision, the captain's or firstmate's own, made with its printed `revive --stopped-by-restart` command or `revive` with chosen ids.
+The section lists apart the workers already stopped before the restart and those whose harness cannot show which it was; `--stopped-by-restart` leaves both alone, so bring one of them back only by its id and only when the captain wants it running.
 If revive reports a resumed worker it could not confirm, peek the window before anything else, because a trust or bypass-permissions confirmation may be waiting, and `harness-adapters` owns accepting it.
 Do not use a fresh generic spawn while the recorded worktree is unaccounted for, because allocating another worktree can split one task across two copies.
 If the worktree or ownership cannot be reconciled safely, leave all state intact and report the task failed or blocked with the conflicting evidence.
