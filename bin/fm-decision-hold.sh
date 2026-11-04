@@ -74,7 +74,10 @@
 # archive while their origin may still be live. Every reader of a hold's durable
 # resolution therefore also accepts that identity's latest archived Done record,
 # judged by the same checks as a live one; an archived record with no resolution
-# block still fails. The archive is read-only here: `repair` refuses an archived hold.
+# block still fails. `hold` refuses an archived identity that carries its resolution,
+# but treats one without a resolution as absent and opens a fresh live hold under it,
+# which then wins over the archived record everywhere. The archive is read-only here:
+# `repair` refuses an archived hold that has no resolution record.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -441,7 +444,7 @@ command_hold() {
   require_tasks_axi
   origin_exists_here "$origin" || fail "origin $origin is not owned by the active home $FM_HOME"
   id=$(hold_id "$origin" "$key")
-  if show=$(hold_record "$id"); then
+  if show=$(task_show "$id"); then
     state=$(show_field "$show" state)
     kind=$(show_field "$show" kind)
     existing_title=$(show_field "$show" title)
@@ -450,6 +453,8 @@ command_hold() {
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
     existing_until=$(show_field "$show" hold_until)
   else
+    ! verify_hold_resolved "$id" \
+      || fail "captain decision $id is already durably resolved; use a new decision key for a new decision"
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)
       repo=${repo%/}

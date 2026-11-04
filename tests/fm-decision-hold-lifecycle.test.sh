@@ -747,7 +747,7 @@ test_out_of_band_close_is_repairable_before_teardown() {
 # investigation is still live, so an answered decision must keep clearing the gate
 # from there, while an archived close with no recorded answer must not.
 test_archived_decision_still_counts_only_when_resolved() {
-  local home id hold sum
+  local home id hold sum show
   home=$(make_home archived-decision)
   id=sample-archive-review
   mkdir -p "$home/data/$id"
@@ -779,6 +779,7 @@ test_archived_decision_still_counts_only_when_resolved() {
     > "$home/rehold.out" 2> "$home/rehold.err"; then
     fail "an archived answered decision was asked again under the same identity"
   fi
+  assert_grep "already durably resolved" "$home/rehold.err" "the archived answered re-hold was refused for the wrong reason"
   [ "$(cksum < "$home/data/done-archive.md")" = "$sum" ] || fail "a decision read wrote to the archive"
 
   printf '\n## Archived 2026-07-14\n- [x] %s-decision-malformed - Malformed archived hold (repo: sample) (kind: ship)\n  Resolution recorded by fm-decision-hold.\n  Routed work:\n  (none)\n' \
@@ -786,6 +787,7 @@ test_archived_decision_still_counts_only_when_resolved() {
   if run_decisions "$home" complete "$id" malformed > "$home/malformed.out" 2> "$home/malformed.err"; then
     fail "a malformed archived record satisfied completion"
   fi
+  assert_grep "neither open nor durably resolved" "$home/malformed.err" "the malformed archived record was not judged"
 
   hold=$(run_decisions "$home" hold "$id" unanswered \
     --title "Choose the sample archive format" --reason "captain archive format pending" --repo sample) \
@@ -797,13 +799,27 @@ test_archived_decision_still_counts_only_when_resolved() {
   if run_decisions "$home" verify "$id" > "$home/unanswered-verify.out" 2> "$home/unanswered-verify.err"; then
     fail "an archived decision with no recorded answer satisfied verification"
   fi
+  assert_grep "neither open nor durably resolved" "$home/unanswered-verify.err" "the unanswered archived record was not judged"
   printf 'An answer recorded too late.\n' > "$home/late-decision.txt"
   sum=$(cksum < "$home/data/done-archive.md")
   if run_decisions "$home" repair "$id" unanswered --decision-file "$home/late-decision.txt" \
     > "$home/archived-repair.out" 2> "$home/archived-repair.err"; then
     fail "repair claimed to record an answer on an archived decision"
   fi
+  assert_grep "archived without a resolution record" "$home/archived-repair.err" "the archived repair was refused for the wrong reason"
   [ "$(cksum < "$home/data/done-archive.md")" = "$sum" ] || fail "repair wrote to the archive"
+
+  hold=$(run_decisions "$home" hold "$id" unanswered \
+    --title "Choose the sample archive format" --reason "captain archive format pending" --repo sample) \
+    || fail "an archived decision with no recorded answer could not be held again"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "the re-held archived decision is not open in the live backlog"
+  assert_contains "$show" "kind: captain" "the re-held archived decision is not a captain hold"
+  run_decisions "$home" decline "$id" unanswered --decision-file "$home/late-decision.txt" >/dev/null \
+    || fail "could not decline the re-held archived decision"
+  run_decisions "$home" verify "$id" >/dev/null 2> "$home/reheld-verify.err" \
+    || fail "the re-held and answered decision did not clear the gate: $(cat "$home/reheld-verify.err")"
+  [ "$(cksum < "$home/data/done-archive.md")" = "$sum" ] || fail "re-holding wrote to the archive"
   pass "an archived decision clears the gate only with its recorded answer, and the archive stays read-only"
 }
 
