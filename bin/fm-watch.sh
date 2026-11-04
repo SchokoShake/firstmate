@@ -808,7 +808,7 @@ printf '%s\n' "$FM_WATCH_DELIVERY_IDENTITY" > "$WATCH_LOCK/pid-identity" 2>/dev/
 
 [ -e "$STATE/.last-heartbeat" ] || touch "$STATE/.last-heartbeat"
 
-# A merged poll may have queued its terminal wake and then lost the process
+# A terminal poll (merged or closed-unmerged) may have queued its wake and then lost the process
 # between receipt publication and fixed-path removal.
 # Finish only identity-bound retirement receipts before any check can run.
 if ! fm_pr_poll_retirement_recover_all "$STATE" "$SCRIPT_DIR/fm-pr-poll.sh"; then
@@ -940,12 +940,16 @@ while :; do
       if [ -n "$out" ]; then
         reason="check: $c: $out"
         fm_wake_append check "$c" "$reason" || exit 1
-        if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ]; then
-          if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$out"; then
+        terminal=
+        if [ "$is_pr_poll" -eq 1 ]; then
+          case "$out" in merged|"closed-unmerged $url by "*) terminal=${out%% *} ;; esac
+        fi
+        if [ -n "$terminal" ]; then
+          if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$terminal"; then
             fm_pr_poll_retirement_recover_one "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
-              || triage_log "merged PR poll retirement remains recoverable for $id"
+              || triage_log "$terminal PR poll retirement remains recoverable for $id"
           else
-            triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
+            triage_log "$terminal PR poll retirement deferred because its canonical snapshot changed for $id"
           fi
         fi
         touch "$STATE/.last-check"

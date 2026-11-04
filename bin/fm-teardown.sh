@@ -2567,7 +2567,7 @@ refuse_if_slot_released_or_contested() {
 
 # A watcher check still armed for the task is a wait firstmate asked for, and a
 # PR merge poll's trust binding would be orphaned by dropping the record under
-# it, so --retire-record refuses while either is armed. A validated merged
+# it, so --retire-record refuses while either is armed. A validated terminal
 # result whose retirement was interrupted is finished first, exactly as
 # ordinary teardown finishes it.
 retire_record_refuse_armed_check() {
