@@ -43,6 +43,7 @@ Every candidate found in the listing prefilter is confirmed against its own stru
 The `repair` subcommand records the resolution block on a hold that was already closed outside the script, such as by a direct `tasks-axi done`, so an origin whose decision was genuinely answered stops failing `verify`.
 It refuses a hold that is still open, whether or not its deadline has passed, never reopens a closed hold, and never clears a dependency edge, so an unanswered decision keeps blocking teardown until the captain's word closes it.
 It also requires the identity to carry the captain-hold provenance that tasks-axi preserves through a close, so an ordinary captain-kind task that was never held cannot be repaired into a resolved decision.
+Every reader of a recorded resolution also accepts the identity's latest Done record that tasks-axi pruned into the `.tasks.toml` archive, which the script never writes, so `repair` refuses an archived hold that has no resolution record; the script header owns that contract, including how `hold` reopens such an identity.
 
 ## Structured read surfaces
 
