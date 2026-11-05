@@ -613,7 +613,8 @@ command_resolve() {
     printf 'resolved: %s\n' "$id"
     return 0
   fi
-  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  hold_show=$(task_show "$id") \
+    || fail "captain hold $id is absent from $FM_HOME/data/backlog.md; hold it under this decision key first"
   verify_hold_open "$id" "$hold_show"
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
@@ -681,7 +682,8 @@ command_decline() {
     printf 'declined: %s\n' "$id"
     return 0
   fi
-  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  hold_show=$(task_show "$id") \
+    || fail "captain hold $id is absent from $FM_HOME/data/backlog.md; hold it under this decision key first"
   state=$(show_field "$hold_show" state)
   [ "$state" != "done" ] \
     || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
@@ -733,7 +735,7 @@ command_repair() {
   [ "$state" = "done" ] \
     || fail "captain hold $id is still open (state=$state); use resolve or decline to close it with the captain's decision"
   task_show "$id" >/dev/null \
-    || fail "captain decision $id is archived without a resolution record, and this script never writes to the Done archive"
+    || fail "captain decision $id is archived without a resolution record, and this script never writes to the Done archive; hold it again under this decision key, then resolve or decline it with the captain's answer"
   body=$(resolution_body repaired "$ROUTED_NONE")
   tasks_axi update "$id" --body "$body" >/dev/null \
     || fail "could not record the captain decision on $id"

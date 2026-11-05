@@ -820,6 +820,13 @@ test_archived_decision_still_counts_only_when_resolved() {
   run_decisions "$home" verify "$id" >/dev/null 2> "$home/reheld-verify.err" \
     || fail "the re-held and answered decision did not clear the gate: $(cat "$home/reheld-verify.err")"
   [ "$(cksum < "$home/data/done-archive.md")" = "$sum" ] || fail "re-holding wrote to the archive"
+
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not prune the answered re-hold into the archive"
+  assert_no_grep "$hold" "$home/data/backlog.md" "the answered re-hold was not pruned"
+  [ "$(grep -cF -- "- [x] $hold - " "$home/data/done-archive.md")" = 2 ] \
+    || fail "the archive does not hold both the unanswered and the answered record"
+  run_decisions "$home" verify "$id" >/dev/null 2> "$home/twice-archived-verify.err" \
+    || fail "the latest archived record did not decide the gate: $(cat "$home/twice-archived-verify.err")"
   pass "an archived decision clears the gate only with its recorded answer, and the archive stays read-only"
 }
 
