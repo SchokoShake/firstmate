@@ -2567,7 +2567,7 @@ refuse_if_slot_released_or_contested() {
 
 # A watcher check still armed for the task is a wait firstmate asked for, and a
 # PR merge poll's trust binding would be orphaned by dropping the record under
-# it, so --retire-record refuses while either is armed. A validated merged
+# it, so --retire-record refuses while either is armed. A validated terminal
 # result whose retirement was interrupted is finished first, exactly as
 # ordinary teardown finishes it.
 retire_record_refuse_armed_check() {
@@ -2593,7 +2593,7 @@ retire_record_refuse_armed_check() {
   [ -n "$armed" ] || return 0
   if [ "$poll_armed" = 1 ]; then
     echo "REFUSED: $ID still has an armed PR merge poll (${armed# }) watching ${PR_URL:-its PR}; dropping the record under it would orphan the poll and its trust binding." >&2
-    echo "The watcher retires that poll itself when it reports the merge, so retry once the merge lands; a PR closed without merging means the work never landed, which is a decision for the captain rather than bookkeeping." >&2
+    echo "The watcher retires that poll itself when it reports the merge or a close without merging, so retry once that wake lands; a PR closed without merging means the work never landed, which is a decision for the captain rather than bookkeeping." >&2
   else
     echo "REFUSED: $ID has a registered watcher check (${armed# }) that firstmate armed on purpose; dropping the record would silently drop that wait." >&2
     echo "Let it fire, or remove the check and its trust record deliberately, then retry." >&2

@@ -27,6 +27,7 @@ REAL_STAT=$(command -v stat)
 REAL_CHMOD=$(command -v chmod)
 REAL_BASENAME=$(command -v basename)
 REAL_JQ=$(command -v jq || true)
+unset GH_HOST
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation
@@ -77,19 +78,27 @@ SH
   cat > "$fakebin/gh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
-# The REST pull request read bin/fm-stack-check.sh makes: serve a JSON fixture
-# through the checker's own --jq program with the real jq.
+# The REST reads bin/fm-stack-check.sh (pulls) and bin/fm-pr-poll.sh (issues)
+# make: serve a JSON fixture through the caller's own --jq program with the
+# real jq, and fail the read when no fixture exists. Like gh, the read goes to
+# --hostname when given and otherwise to GH_HOST or github.com, and only
+# github.com holds fixtures.
 if [ "${1:-}" = api ]; then
-  path= program=
+  path= program= host=${GH_HOST:-github.com}
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -H) shift 2 ;;
+      --hostname) host=$2; shift 2 ;;
       --jq) program=$2; shift 2 ;;
       *) path=$1; shift ;;
     esac
   done
-  [ -f "${FM_TEST_PULLS:-}/${path##*/}.json" ] || exit 1
-  exec "$FM_TEST_JQ" -r "$program" "$FM_TEST_PULLS/${path##*/}.json"
+  case "$path" in
+    */issues/*) fixtures=${FM_TEST_ISSUES:-} ;;
+    *) fixtures=${FM_TEST_PULLS:-} ;;
+  esac
+  [ "$host" = github.com ] && [ -f "$fixtures/${path##*/}.json" ] || exit 1
+  exec "$FM_TEST_JQ" -r "$program" "$fixtures/${path##*/}.json"
 fi
 case " $* " in
   *" headRefOid "*) printf '%s\n' "${FM_TEST_GH_HEAD:-0123456789abcdef0123456789abcdef01234567}" ;;
@@ -904,7 +913,7 @@ test_static_poll_contract() {
   dir=$(make_case poll-contract)
   make_poll_fixture "$dir"
 
-  for state in OPEN CLOSED EMPTY MALFORMED; do
+  for state in OPEN EMPTY MALFORMED; do
     case "$state" in
       EMPTY) value= ;;
       MALFORMED) value='not-a-state' ;;
@@ -951,6 +960,54 @@ test_static_poll_contract() {
   [ "$rc" -eq 0 ] || fail "watcher did not surface merged poll"
   [ "$(grep -c '^check: .*: merged$' "$dir/watch.out")" -eq 1 ] || fail "watcher did not convert merged output into exactly one wake"
   pass "static poll is silent except for one merged line and remains watcher-bounded"
+}
+
+# write_issue <case-dir> <number> <closed_by JSON> <closed_at JSON>
+# The shape of GitHub's REST "Get an issue" response for a closed pull request:
+# the closer is closed_by, distinct from the author in user and from any merger.
+write_issue() {
+  mkdir -p "$1/issues"
+  printf '{"number":%s,"state":"closed","user":{"login":"pr-author"},"closed_by":%s,"closed_at":%s,"pull_request":{"merged_at":null}}\n' \
+    "$2" "$3" "$4" > "$1/issues/$2.json"
+}
+
+run_closed_poll() {
+  FM_TEST_GH_STATE=CLOSED FM_TEST_ISSUES="$1/issues" FM_TEST_JQ="$REAL_JQ" run_poll "$1"
+}
+
+test_closed_unmerged_poll_line() {
+  local dir out
+  if [ -z "$REAL_JQ" ]; then
+    echo "skip: jq not found (the gh stub serves issue fixtures through it)"
+    return 0
+  fi
+  dir=$(make_case poll-closed-unmerged)
+  make_poll_fixture "$dir"
+
+  # A PR closed without merging is its own terminal line, naming who and when,
+  # read from the PR's own host even when gh's default host is another one.
+  write_issue "$dir" 1 '{"login":"octocat","type":"User"}' '"2026-10-08T09:15:00Z"'
+  out=$(GH_HOST=ghe.example run_closed_poll "$dir")
+  [ "$out" = "closed-unmerged https://github.com/o/r/pull/1 by octocat at 2026-10-08T09:15:00Z" ] \
+    || fail "static poll did not emit exactly one closed-unmerged line naming the closer: $out"
+  grep -q '^api .*repos/o/r/issues/1 ' "$dir/gh.log" \
+    || fail "closed-unmerged poll did not read the closer from the validated PR's issue record"
+  write_issue "$dir" 1 '{"login":"github-actions[bot]","type":"Bot"}' '"2026-10-08T09:15:00Z"'
+  out=$(run_closed_poll "$dir")
+  [ "$out" = "closed-unmerged https://github.com/o/r/pull/1 by github-actions[bot] at 2026-10-08T09:15:00Z" ] \
+    || fail "closed-unmerged poll dropped an app closer: $out"
+  write_issue "$dir" 1 null null
+  out=$(run_closed_poll "$dir")
+  [ "$out" = "closed-unmerged https://github.com/o/r/pull/1 by unknown at unknown" ] \
+    || fail "closed-unmerged poll did not report absent closer fields as unknown: $out"
+  write_issue "$dir" 1 '{"login":"evil\tlogin"}' '"2026-10-08T09:15:00Z\ninjected"'
+  out=$(run_closed_poll "$dir")
+  [ "$out" = "closed-unmerged https://github.com/o/r/pull/1 by unknown at unknown" ] \
+    || fail "closed-unmerged poll passed forge bytes into its wake line: $out"
+  rm -f "$dir/issues/1.json"
+  out=$(run_closed_poll "$dir")
+  [ -z "$out" ] || fail "closed-unmerged poll emitted after its closer read failed"
+  pass "a PR closed without merging emits one closed-unmerged line with GitHub's closer and close time"
 }
 
 test_atomic_interruption_leaves_no_partial_artifact() {
@@ -3126,39 +3183,51 @@ poll_artifact_snapshot() {
   done
 }
 
-test_merged_poll_retires_once() {
-  local dir state rc first second meta_before
-  dir=$(make_case merged-retirement-once)
+# Both terminal outcomes notify once and retire the poll the same way, so a
+# later beat neither repeats the wake nor re-reads the forge.
+test_terminal_poll_retires_once() {  # <gh state> <expected poll line>
+  local gh_state=$1 expected=$2 dir state rc first second meta_before
+  if [ "$gh_state" = CLOSED ] && [ -z "$REAL_JQ" ]; then
+    echo "skip: jq not found (the gh stub serves issue fixtures through it)"
+    return 0
+  fi
+  dir=$(make_case "terminal-retirement-once-$gh_state")
   state="$dir/home/state"
+  write_issue "$dir" 1 '{"login":"octocat","type":"User"}' '"2026-10-08T09:15:00Z"'
   write_poll_meta "$state" task-a https://github.com/o/r/pull/1
   meta_before=$(cat "$state/task-a.meta")
   seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
   add_stop_custom_check "$dir"
 
   set +e
-  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
+  FM_TEST_GH_STATE=$gh_state FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_ISSUES="$dir/issues" FM_TEST_JQ="$REAL_JQ" \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
   rc=$?
   set -e
-  [ "$rc" -eq 0 ] || fail "merged retirement watcher failed: $(cat "$dir/watch-1.err")"
+  [ "$rc" -eq 0 ] || fail "$gh_state retirement watcher failed: $(cat "$dir/watch-1.err")"
   first=$(cat "$dir/watch-1.out")
-  case "$first" in check:*task-a.check.sh:*merged) ;; *) fail "first merged notification was not preserved: $first" ;; esac
-  ack_watcher_cycle "$state" || fail "first merged notification handling acknowledgement failed"
+  [ "$first" = "check: $state/task-a.check.sh: $expected" ] \
+    || fail "first $gh_state notification was not preserved: $first"
+  ack_watcher_cycle "$state" || fail "first $gh_state notification handling acknowledgement failed"
   assert_poll_absent "$state" task-a
-  [ "$(cat "$state/task-a.meta")" = "$meta_before" ] || fail "merged retirement changed canonical metadata"
+  [ "$(cat "$state/task-a.meta")" = "$meta_before" ] || fail "$gh_state retirement changed canonical metadata"
 
+  : > "$dir/gh.log"
   rm -f "$state/.last-check"
   set +e
-  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
+  FM_TEST_GH_STATE=$gh_state FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_ISSUES="$dir/issues" FM_TEST_JQ="$REAL_JQ" \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "second watcher cycle failed: $(cat "$dir/watch-2.err")"
   second=$(cat "$dir/watch-2.out")
   case "$second" in check:*z-stop.check.sh:*stop-cycle) ;; *) fail "second cycle did not reach the control check: $second" ;; esac
-  ! grep -F 'task-a.check.sh: merged' "$dir/watch-2.out" >/dev/null \
-    || fail "retired merged poll executed a second time"
+  ! grep -F 'task-a.check.sh: ' "$dir/watch-2.out" >/dev/null \
+    || fail "retired $gh_state poll executed a second time"
+  [ ! -s "$dir/gh.log" ] || fail "retired $gh_state poll read the forge again"
   ! grep "$(printf '\tcheck\ttask-a.check.sh\t')" "$state/.wake-queue" >/dev/null 2>&1 \
-    || fail "handled merged notification remained queued after acknowledgement"
-  pass "validated merged polls notify once and retire before the next watcher cycle"
+    || fail "handled $gh_state notification remained queued after acknowledgement"
+  pass "validated $gh_state polls notify once and retire before the next watcher cycle"
 }
 
 test_persistent_secondmate_retirement_is_poll_only() {
@@ -3333,15 +3402,15 @@ test_external_merge_transition_retires_only_terminal_poll() {
   add_stop_custom_check "$dir"
   before=$(poll_artifact_snapshot "$state" task-a)
 
-  for label in open-green open-red closed-unmerged forge-error malformed; do
+  for label in open-green open-red closed-read-error forge-error malformed; do
     rm -f "$state/.last-check"
     set +e
     case "$label" in
       open-green|open-red)
         FM_TEST_GH_STATE=OPEN run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/$label.out" 2> "$dir/$label.err"
         ;;
-      closed-unmerged)
-        FM_TEST_GH_STATE=CLOSED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/$label.out" 2> "$dir/$label.err"
+      closed-read-error)
+        FM_TEST_GH_STATE=CLOSED FM_TEST_ISSUES="$dir/no-issues" run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/$label.out" 2> "$dir/$label.err"
         ;;
       forge-error)
         FM_TEST_GH_FAIL=1 run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/$label.out" 2> "$dir/$label.err"
@@ -3366,7 +3435,7 @@ test_external_merge_transition_retires_only_terminal_poll() {
   [ "$rc" -eq 0 ] || fail "external merged transition failed: $(cat "$dir/merged.err")"
   case "$(cat "$dir/merged.out")" in check:*task-a.check.sh:*merged) ;; *) fail "external merge did not preserve its notification" ;; esac
   assert_poll_absent "$state" task-a
-  pass "open/red, closed-unmerged, malformed, and forge errors remain armed until an exact merged transition"
+  pass "open/red, an unreadable closer, malformed, and forge errors remain armed until an exact merged transition"
 }
 
 test_retirement_refuses_replacement_and_nonterminal_results() {
@@ -3536,7 +3605,8 @@ test_gitlab_merged_poll_retires() {
 
 test_parser_matrix
 test_gitlab_merge_watch
-test_merged_poll_retires_once
+test_terminal_poll_retires_once MERGED merged
+test_terminal_poll_retires_once CLOSED "closed-unmerged https://github.com/o/r/pull/1 by octocat at 2026-10-08T09:15:00Z"
 test_persistent_secondmate_retirement_is_poll_only
 test_retirement_crash_recovery
 test_external_merge_transition_retires_only_terminal_poll
@@ -3549,6 +3619,7 @@ test_pr_base_recording
 test_stack_recording_requires_github_proof
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract
+test_closed_unmerged_poll_line
 test_atomic_interruption_leaves_no_partial_artifact
 test_concurrent_watcher_sees_only_complete_publication
 test_postrename_poll_validation_revokes_and_retries

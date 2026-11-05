@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Static watcher program for a validated PR/MR poll sidecar.
-# It emits exactly one merged line for a merged PR or MR and stays silent
-# otherwise, including on every error, so a failed lookup can never be read as
-# a merge. The provider-tagged identity is data in the sidecar and is never
+# It emits exactly one merged line for a merged PR or MR, exactly one
+# "closed-unmerged <url> by <login> at <time>" line for a GitHub PR closed
+# without merging, and stays silent otherwise, including on every error, so a
+# failed lookup can never be read as a terminal outcome. Both lines are terminal:
+# the watcher retires the poll after queueing either one. The provider-tagged identity is data in the sidecar and is never
 # interpolated into this source: these bytes are identical for every task.
 # Each provider is read through its own standard CLI, gh for GitHub and glab
 # for GitLab, so an upstream checkout needs no extra tooling to follow either.
@@ -64,6 +66,26 @@ case "$provider" in
     [ "$url" = "https://github.com/$owner/$repo/pull/$number" ] || exit 0
     state=$(gh pr view "$url" --json state -q .state 2>/dev/null) || exit 0
     [ "$state" = MERGED ] && printf '%s\n' merged
+    [ "$state" = CLOSED ] || exit 0
+    # gh pr view exposes no closer, so the issue record of the same number is
+    # read once, only on this terminal path. A failed read stays silent and is
+    # retried on the next beat; an unusable field reads "unknown", because the
+    # validated CLOSED state alone is the terminal fact.
+    closed=$(gh api --hostname "$host" "repos/$owner/$repo/issues/$number" \
+      --jq '"\(.closed_by.login // "") \(.closed_at // "")"' 2>/dev/null) || exit 0
+    login=${closed%% *}
+    at=${closed#* }
+    # A GitHub App closes as "<name>[bot]"; only that suffix may extend a login.
+    base=${login%\[bot\]}
+    [ "${#base}" -ge 1 ] && [ "${#base}" -le 39 ] || login=unknown
+    case "$base" in
+      *[!A-Za-z0-9-]*) login=unknown ;;
+    esac
+    case "$at" in
+      [0-9][0-9][0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-6][0-9]Z) ;;
+      *) at=unknown ;;
+    esac
+    printf 'closed-unmerged %s by %s at %s\n' "$url" "$login" "$at"
     ;;
   gitlab)
     [ "${#host}" -ge 1 ] && [ "${#host}" -le 253 ] || exit 0
