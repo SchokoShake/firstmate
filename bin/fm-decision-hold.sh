@@ -69,6 +69,15 @@
 # blocking teardown until `resolve` or `decline` closes it with the captain's word.
 # It also refuses an identity that does not carry surviving captain-hold
 # provenance, so an ordinary captain-kind task cannot be repaired into a decision.
+#
+# `tasks-axi done` prunes older Done records into the configured `.tasks.toml`
+# archive while their origin may still be live. Every reader of a hold's durable
+# resolution therefore also accepts that identity's latest archived Done record,
+# judged by the same checks as a live one; an archived record with no resolution
+# block still fails. `hold` refuses an archived identity that carries its resolution,
+# but treats one without a resolution as absent and opens a fresh live hold under it,
+# which then wins over the archived record everywhere. The archive is read-only here:
+# `repair` refuses an archived hold that has no resolution record.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -182,6 +191,46 @@ require_tasks_axi() {
 
 task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
+}
+
+# shortcut: reads only a double-quoted [markdown] archive in FM_HOME/.tasks.toml,
+# not ~/.tasks-axi/config.toml; upgrade if a home ever configures it there.
+archive_path() {
+  local configured
+  configured=$(awk -F'"' '/^\[/ { t = $0 } t == "[markdown]" && /^archive[ \t]*=/ { print $2; exit }' \
+    "$FM_HOME/.tasks.toml" 2>/dev/null) || true
+  [ -n "$configured" ] || configured=data/done-archive.md
+  case "$configured" in
+    /*) printf '%s\n' "$configured" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$configured" ;;
+  esac
+}
+
+# The archived Done record for <id>, parsed by tasks-axi itself from a private
+# copy of the latest archived block that holds it, so the archive is never written.
+archived_show() {  # <id>
+  local id=$1 archive block tmp show rc=0
+  archive=$(archive_path)
+  [ -f "$archive" ] || return 1
+  block=$(awk -v id="$id" '
+    /^## / { if (hit) keep = buf; buf = ""; hit = 0; next }
+    { buf = buf $0 "\n" }
+    index($0, "- [x] " id " - ") == 1 { hit = 1 }
+    END { if (hit) keep = buf; printf "%s", keep }
+  ' "$archive")
+  [ -n "$block" ] || return 1
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-decision-archive.XXXXXX") || return 1
+  printf '## Done\n%s\n' "$block" > "$tmp/backlog.md"
+  show=$(cd "$tmp" && tasks-axi show "$id" --full --file "$tmp/backlog.md" --backend markdown 2>/dev/null) || rc=$?
+  rm -rf "$tmp"
+  [ "$rc" -eq 0 ] || return 1
+  printf '%s\n' "$show"
+}
+
+# Every reader of a hold's durable resolution goes through this, because
+# `tasks-axi done` prunes older Done records out of the live backlog.
+hold_record() {  # <id>
+  task_show "$1" || archived_show "$1"
 }
 
 show_field() {  # <show-output> <field>
@@ -320,7 +369,7 @@ verify_hold_active() {  # <hold-id>
 
 verify_hold_resolved() {  # <hold-id>
   local id=$1 show state kind body
-  show=$(task_show "$id") || return 1
+  show=$(hold_record "$id") || return 1
   state=$(show_field "$show" state)
   kind=$(show_field "$show" kind)
   body=$(show_field "$show" body)
@@ -331,7 +380,8 @@ verify_hold_resolved() {  # <hold-id>
 
 verify_hold_durable() {  # <hold-id>
   local id=$1 show state kind hold_kind body
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
+  show=$(hold_record "$id") \
+    || fail "captain decision $id is absent from $FM_HOME/data/backlog.md and its Done archive"
   state=$(show_field "$show" state)
   kind=$(show_field "$show" kind)
   hold_kind=$(show_field "$show" hold_kind)
@@ -403,6 +453,8 @@ command_hold() {
     [ "$existing_title" = "$title" ] || fail "existing captain hold $id has a different title"
     existing_until=$(show_field "$show" hold_until)
   else
+    ! verify_hold_resolved "$id" \
+      || fail "captain decision $id is already durably resolved; use a new decision key for a new decision"
     if [ -z "$repo" ] && [ -f "$STATE/$origin.meta" ]; then
       repo=$(meta_value "$STATE/$origin.meta" project)
       repo=${repo%/}
@@ -555,13 +607,14 @@ command_resolve() {
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
   if verify_hold_resolved "$id"; then
-    hold_show=$(task_show "$id")
+    hold_show=$(hold_record "$id")
     hold_body=$(show_field "$hold_show" body)
     verify_resolution_identity "$id" "$hold_body" "$DECISION_DIGEST" "$routed_csv"
     printf 'resolved: %s\n' "$id"
     return 0
   fi
-  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  hold_show=$(task_show "$id") \
+    || fail "captain hold $id is absent from $FM_HOME/data/backlog.md; hold it under this decision key first"
   verify_hold_open "$id" "$hold_show"
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
@@ -623,13 +676,14 @@ command_decline() {
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
   if verify_hold_resolved "$id"; then
-    hold_show=$(task_show "$id")
+    hold_show=$(hold_record "$id")
     hold_body=$(show_field "$hold_show" body)
     verify_resolution_identity "$id" "$hold_body" "$DECISION_DIGEST" "$ROUTED_NONE"
     printf 'declined: %s\n' "$id"
     return 0
   fi
-  hold_show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  hold_show=$(task_show "$id") \
+    || fail "captain hold $id is absent from $FM_HOME/data/backlog.md; hold it under this decision key first"
   state=$(show_field "$hold_show" state)
   [ "$state" != "done" ] \
     || fail "captain hold $id was closed outside fm-decision-hold; use repair to record the captain decision"
@@ -661,7 +715,8 @@ command_repair() {
   load_decision "$decision_file"
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
+  show=$(hold_record "$id") \
+    || fail "captain decision $id is absent from $FM_HOME/data/backlog.md and its Done archive"
   kind=$(show_field "$show" kind)
   [ "$kind" = captain ] || fail "backlog item $id is not kind captain"
   # tasks-axi keeps hold_kind after a close, so it is the surviving proof that
@@ -679,6 +734,8 @@ command_repair() {
   fi
   [ "$state" = "done" ] \
     || fail "captain hold $id is still open (state=$state); use resolve or decline to close it with the captain's decision"
+  task_show "$id" >/dev/null \
+    || fail "captain decision $id is archived without a resolution record, and this script never writes to the Done archive; hold it again under this decision key, then resolve or decline it with the captain's answer"
   body=$(resolution_body repaired "$ROUTED_NONE")
   tasks_axi update "$id" --body "$body" >/dev/null \
     || fail "could not record the captain decision on $id"

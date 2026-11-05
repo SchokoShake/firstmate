@@ -743,6 +743,93 @@ test_out_of_band_close_is_repairable_before_teardown() {
   pass "a decision closed outside the script is repairable and then clears teardown"
 }
 
+# tasks-axi prunes older Done entries into the configured archive while the origin
+# investigation is still live, so an answered decision must keep clearing the gate
+# from there, while an archived close with no recorded answer must not.
+test_archived_decision_still_counts_only_when_resolved() {
+  local home id hold sum show
+  home=$(make_home archived-decision)
+  id=sample-archive-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the sample archive" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create archived-decision origin"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Sample archive review\n\nOne captain choice remains.\n' > "$home/data/$id/report.md"
+  hold=$(run_decisions "$home" hold "$id" answered \
+    --title "Choose the sample archive target" --reason "captain archive choice pending" --repo sample) \
+    || fail "could not register the answered hold"
+  run_decisions "$home" complete "$id" answered >/dev/null || fail "completion failed for the answered hold"
+  printf 'Declined: keep the sample archive as it is.\n' > "$home/answered-decision.txt"
+  run_decisions "$home" decline "$id" answered --decision-file "$home/answered-decision.txt" >/dev/null \
+    || fail "could not decline the answered hold"
+
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not prune the answered hold into the archive"
+  assert_no_grep "$hold" "$home/data/backlog.md" "the pruned shape was not reproduced"
+  assert_grep "$hold" "$home/data/done-archive.md" "the answered hold did not reach the archive"
+  sum=$(cksum < "$home/data/done-archive.md")
+  run_decisions "$home" verify "$id" >/dev/null 2> "$home/archived-verify.err" \
+    || fail "an archived answered decision failed verification: $(cat "$home/archived-verify.err")"
+  run_decisions "$home" complete "$id" answered >/dev/null 2> "$home/archived-complete.err" \
+    || fail "an archived answered decision failed completion: $(cat "$home/archived-complete.err")"
+  run_decisions "$home" decline "$id" answered --decision-file "$home/answered-decision.txt" >/dev/null \
+    || fail "an identical decline retry of an archived decision was not idempotent"
+  if run_decisions "$home" hold "$id" answered \
+    --title "Choose the sample archive target" --reason "captain archive choice pending" --repo sample \
+    > "$home/rehold.out" 2> "$home/rehold.err"; then
+    fail "an archived answered decision was asked again under the same identity"
+  fi
+  assert_grep "already durably resolved" "$home/rehold.err" "the archived answered re-hold was refused for the wrong reason"
+  [ "$(cksum < "$home/data/done-archive.md")" = "$sum" ] || fail "a decision read wrote to the archive"
+
+  printf '\n## Archived 2026-07-14\n- [x] %s-decision-malformed - Malformed archived hold (repo: sample) (kind: ship)\n  Resolution recorded by fm-decision-hold.\n  Routed work:\n  (none)\n' \
+    "$id" >> "$home/data/done-archive.md"
+  if run_decisions "$home" complete "$id" malformed > "$home/malformed.out" 2> "$home/malformed.err"; then
+    fail "a malformed archived record satisfied completion"
+  fi
+  assert_grep "neither open nor durably resolved" "$home/malformed.err" "the malformed archived record was not judged"
+
+  hold=$(run_decisions "$home" hold "$id" unanswered \
+    --title "Choose the sample archive format" --reason "captain archive format pending" --repo sample) \
+    || fail "could not register the unanswered hold"
+  run_decisions "$home" complete "$id" unanswered >/dev/null || fail "completion failed for the unanswered hold"
+  tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the unanswered hold out of band"
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not prune the unanswered hold into the archive"
+  assert_grep "$hold" "$home/data/done-archive.md" "the unanswered hold did not reach the archive"
+  if run_decisions "$home" verify "$id" > "$home/unanswered-verify.out" 2> "$home/unanswered-verify.err"; then
+    fail "an archived decision with no recorded answer satisfied verification"
+  fi
+  assert_grep "neither open nor durably resolved" "$home/unanswered-verify.err" "the unanswered archived record was not judged"
+  printf 'An answer recorded too late.\n' > "$home/late-decision.txt"
+  sum=$(cksum < "$home/data/done-archive.md")
+  if run_decisions "$home" repair "$id" unanswered --decision-file "$home/late-decision.txt" \
+    > "$home/archived-repair.out" 2> "$home/archived-repair.err"; then
+    fail "repair claimed to record an answer on an archived decision"
+  fi
+  assert_grep "archived without a resolution record" "$home/archived-repair.err" "the archived repair was refused for the wrong reason"
+  [ "$(cksum < "$home/data/done-archive.md")" = "$sum" ] || fail "repair wrote to the archive"
+
+  hold=$(run_decisions "$home" hold "$id" unanswered \
+    --title "Choose the sample archive format" --reason "captain archive format pending" --repo sample) \
+    || fail "an archived decision with no recorded answer could not be held again"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "the re-held archived decision is not open in the live backlog"
+  assert_contains "$show" "kind: captain" "the re-held archived decision is not a captain hold"
+  run_decisions "$home" decline "$id" unanswered --decision-file "$home/late-decision.txt" >/dev/null \
+    || fail "could not decline the re-held archived decision"
+  run_decisions "$home" verify "$id" >/dev/null 2> "$home/reheld-verify.err" \
+    || fail "the re-held and answered decision did not clear the gate: $(cat "$home/reheld-verify.err")"
+  [ "$(cksum < "$home/data/done-archive.md")" = "$sum" ] || fail "re-holding wrote to the archive"
+
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not prune the answered re-hold into the archive"
+  assert_no_grep "$hold" "$home/data/backlog.md" "the answered re-hold was not pruned"
+  [ "$(grep -cF -- "- [x] $hold - " "$home/data/done-archive.md")" = 2 ] \
+    || fail "the archive does not hold both the unanswered and the answered record"
+  run_decisions "$home" verify "$id" >/dev/null 2> "$home/twice-archived-verify.err" \
+    || fail "the latest archived record did not decide the gate: $(cat "$home/twice-archived-verify.err")"
+  pass "an archived decision clears the gate only with its recorded answer, and the archive stays read-only"
+}
+
 # The unrouted close paths must not become a way past the gate. An unanswered
 # decision keeps blocking cleanup, and neither new path can manufacture an answer.
 test_unanswered_decision_still_blocks_completion_and_teardown() {
@@ -1336,6 +1423,7 @@ test_uninventoried_report_decision_refuses_completion
 test_scout_teardown_always_requires_inventory_verification
 test_declined_decision_closes_without_routed_work
 test_out_of_band_close_is_repairable_before_teardown
+test_archived_decision_still_counts_only_when_resolved
 test_unanswered_decision_still_blocks_completion_and_teardown
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction
