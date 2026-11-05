@@ -1,0 +1,6 @@
+ok - fm-send: a task whose agent has exited gets no text and no key, and the refusal names the fix
+ok - fm-send: a secondmate whose agent has exited is refused before any reply expectation is recorded
+ok - fm-send: a live agent's send is unchanged
+ok - fm-send: an unidentifiable foreground refuses text but still takes a key
+# all fm-send-exited-agent tests passed
+exit=0

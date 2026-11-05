@@ -1,0 +1,18 @@
+ok - fm-spawn: the worker's own hooks keep its conversation record under its busy generation
+ok - fm-harness-session: only the worker's own agent, under its current generation, rewrites the record
+ok - fm-session-start: a locked start records the boot id and claims nothing on first sight
+ok - fm-session-start: after a restart it lists the stopped worker, its conversation and validation, and the revive commands
+ok - fm-control relaunch: a gone endpoint is refused before anything is written, naming revive
+ok - fm-control revive: an unproven lease is refused before any endpoint, note, or journal exists
+ok - fm-control revive: reopens the endpoint in its worktree and resumes the recorded conversation with the restart note
+ok - fm-control revive: running it again starts nothing and appends nothing
+ok - fm-session-start: the stopped list retires once every worker in it is back
+ok - fm-control revive: a failed resume leaves a record a later revive completes, and --fresh starts afresh
+ok - fm-control revive: with no recorded conversation it starts a fresh agent from the instructions and the note
+ok - fm-control revive: nothing launches until a reopened shell has finished its startup files
+ok - fm-control revive: a reopened shell whose cd was swallowed is moved into the worktree by the next revive
+not ok - relaunch over a wedged prompt
+warning: /private/var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T/fm-restart-recovery.q2Dy1B/fmhome/data/rr29229/brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+error: the replacement agent for rr29229 did not come up within 20s (endpoint reads 'dead')
+error: rr29229 was relaunched on claude but no running agent could be confirmed; its work is preserved at /private/var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T/fm-restart-recovery.q2Dy1B/pool/1/wt: expected exit 0, got 1
+exit=1

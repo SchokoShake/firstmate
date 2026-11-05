@@ -1,0 +1,83 @@
+=== AFTER (target 16588d5): fm-send against a real tmux lab (root={run-worktree}) ===
+
+## A. ship s1, agent exited, zsh at its prompt: a steer that is a shell command
+  classifier: dead
+$ fm-send.sh s1 touch /private/tmp/fm-gate-lab.xMYeZc/steer-ran
+  | ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  | ●  WATCHER DOWN - SUPERVISION IS OFF
+  | ●  5 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+  | ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+  | ●  This is a supervision warning only; the requested message WILL still be sent.
+  | ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+  | ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  | error: task s1's agent has exited and lab:ship-dead is at a bare shell, so nothing was sent; bring it back with bin/fm-control.sh s1 revive (or relaunch)
+  exit=1
+  side effect: steer-ran absent
+
+## B. same shell, a steer with an apostrophe
+$ fm-send.sh s1 don't do that, keep the tests green
+  | WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+  | error: task s1's agent has exited and lab:ship-dead is at a bare shell, so nothing was sent; bring it back with bin/fm-control.sh s1 revive (or relaunch)
+  exit=1
+--- pane lab:ship-dead (capture) ---
+  > zsh%
+
+## C. explicit backend target lab:ship-dead (matched back to s1's meta)
+$ fm-send.sh lab:ship-dead touch /private/tmp/fm-gate-lab.xMYeZc/explicit-ran
+  | WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+  | error: task s1's agent has exited and lab:ship-dead is at a bare shell, so nothing was sent; bring it back with bin/fm-control.sh s1 revive (or relaunch)
+  exit=1
+  side effect: explicit-ran absent
+
+## D. ship s2, bash with a pending typed line, --key Enter
+  classifier: dead
+$ fm-send.sh s2 --key Enter
+  | WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+  | error: task s2's agent has exited and lab:ship-pending is at a bare shell, so nothing was sent; bring it back with bin/fm-control.sh s2 revive (or relaunch)
+  exit=1
+  side effect: pending-ran absent
+--- pane lab:ship-pending (capture) ---
+  > 
+  > The default interactive shell is now zsh.
+  > To update your account to use zsh, please run `chsh -s /bin/zsh`.
+  > For more details, please visit https://support.apple.com/kb/HT208050.
+  > bash$ touch /private/tmp/fm-gate-lab.xMYeZc/pending-ran
+
+## E. secondmate m1, agent exited, bash at its prompt
+  classifier: dead
+$ fm-send.sh m1 status please
+  | WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+  | error: task m1's agent has exited and lab:mate-dead is at a bare shell, so nothing was sent; bring it back with bin/fm-control.sh m1 relaunch
+  exit=1
+  pending-replies: 0 file(s)
+--- pane lab:mate-dead (capture) ---
+  > 
+  > The default interactive shell is now zsh.
+  > To update your account to use zsh, please run `chsh -s /bin/zsh`.
+  > For more details, please visit https://support.apple.com/kb/HT208050.
+  > bash$
+
+## F. ship s3, live stand-in agent (argv0 claude)
+  classifier: alive
+$ fm-send.sh s3 carry on with the plan
+  | WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+  exit=0
+$ fm-send.sh s3 --key Enter
+  | WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+  exit=0
+  agent received:
+    line:carry on with the plan
+    line:
+
+## G. ship s4, unidentifiable foreground (python3 reader)
+  classifier: ambiguous
+$ fm-send.sh s4 carry on
+  | WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+  | error: task s4's endpoint lab:ship-odd runs something not identifiable as its agent, so no text was sent (--key still is); if its agent has exited, bring it back with bin/fm-control.sh s4 revive (or relaunch)
+  exit=1
+--- pane lab:ship-odd (capture) ---
+$ fm-send.sh s4 --key Enter
+  | WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+  exit=0
+  reader received:
+    '\n'
