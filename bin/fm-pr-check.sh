@@ -77,8 +77,8 @@ elif grep -q '^Delivery contract: mode=[^ ]* stack=native$' "$DATA/$ID/brief.md"
   exit 1
 fi
 
-# A prior exact merged result may have queued its durable wake immediately
-# before interruption.
+# A prior exact terminal result, merged or closed-unmerged, may have queued its
+# durable wake immediately before interruption.
 # Finish only its identity-bound receipt before publishing a replacement poll.
 fm_pr_poll_retirement_recover_one "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh" || {
   echo "error: pending PR poll retirement could not be validated" >&2
