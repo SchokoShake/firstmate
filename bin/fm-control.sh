@@ -1284,7 +1284,8 @@ shell_in_worktree() {
 # a startup program, which the launch owner's agent-free check refuses. A
 # window that is still there is idle at its shell but outside the worktree -
 # one an earlier revive opened whose cd a startup program swallowed - so its
-# line is cleared and the same cd is typed. Settled means idle in the worktree
+# line is cleared with C-c, which also ends a quote continuation that C-u
+# would leave in place, and the same cd is typed. Settled means idle in the worktree
 # on two consecutive reads, as fm-spawn.sh's own cd wait requires, because a
 # brand-new window can briefly report a stale path.
 reopen_endpoint() {
@@ -1293,7 +1294,7 @@ reopen_endpoint() {
     fm_backend_recreate_task "$BACKEND" "$T" "$(dirname -- "$WT")" >/dev/null \
       || die "task $ID's endpoint $T could not be reopened beside $WT"
   else
-    fm_backend_tmux_send_key "$T" C-u \
+    fm_backend_tmux_send_key "$T" C-c \
       || die "task $ID's endpoint $T could not have its shell's line cleared before the move into $WT"
   fi
   fm_backend_tmux_send_text_line "$T" "cd -- '${WT//\'/\'\\\'\'}'" \

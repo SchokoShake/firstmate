@@ -12,6 +12,12 @@
 # An agent-view pilot worker takes a key or a message only while its viewer
 # shows the worker's own session, and never a key or command that would take
 # the viewer off it (bin/fm-agent-view-lib.sh's fm_agent_view_input_guard).
+# A recorded task whose agent has exited gets nothing: text or a key aimed at
+# its bare shell is refused, naming bin/fm-control.sh revive or relaunch, and
+# an endpoint running something unidentifiable still takes a key but no text.
+# The remote secondmate route is not covered by this refusal yet: the remote
+# host's fm-send resolves an explicit target with no task record, so the gate
+# does not run there.
 #
 # Text submission is verified: the line is typed ONCE, then Enter is sent and
 # retried (Enter only, never retyped) until the target backend confirms a
@@ -408,7 +414,9 @@ fm_send_close_resolved_keys() {  # <answer-text>
 # unknown and treated as non-codex (the safe default that keeps the fast path).
 # The target's BACKEND comes from selector meta, from matching an explicit target
 # back to recorded meta, or from strict explicit-target shape validation.
-# Do not add a separate passive liveness preflight here. Active send paths own
+# Do not add a separate passive endpoint-readiness preflight here (the
+# exited-agent refusal below is about what runs in the endpoint, not whether
+# it is reachable). Active send paths own
 # backend readiness: herdr, for example, must route through its session-aware
 # target_ready path before sending, while zellij verifies pane labels in its
 # send implementation. A failed backend send is still surfaced below as a hard
@@ -431,6 +439,32 @@ if [ -n "$TARGET_AGENT_VIEW_ID" ]; then
   else
     fm_agent_view_input_guard "$(fm_send_id_from_meta "$TARGET_META")" "$TARGET_AGENT_VIEW_ID" "$T" text "$*" || exit 1
   fi
+fi
+
+# A task endpoint whose agent has exited holds a bare shell, where typed text
+# runs as a command or wedges the shell in quote continuation. The
+# recovery-grade classifier (fm_backend_agent_state) decides before anything
+# is typed or recorded: dead refuses everything, ambiguous refuses text but
+# still takes a --key (such as a trust-dialog answer), and every other verdict
+# keeps the send path below unchanged. An agent-view pilot is proven by its own
+# guard above. The remote secondmate route is not covered yet: the remote host's
+# fm-send resolves an explicit target with no task record, so the gate does not
+# run there.
+if [ -n "$TARGET_META" ] && [ "$TARGET_BACKEND" != remote ] && [ -z "$TARGET_AGENT_VIEW_ID" ]; then
+  gate_id=$(fm_send_id_from_meta "$TARGET_META")
+  gate_fix="bin/fm-control.sh $gate_id revive (or relaunch)"
+  [ "$(fm_meta_get "$TARGET_META" kind)" != secondmate ] || gate_fix="bin/fm-control.sh $gate_id relaunch"
+  case "$(fm_backend_agent_state "$TARGET_BACKEND" "$T"):${1:-}" in
+    dead:*)
+      echo "error: task $gate_id's agent has exited and $T is at a bare shell, so nothing was sent; bring it back with $gate_fix" >&2
+      exit 1
+      ;;
+    ambiguous:--key) ;;
+    ambiguous:*)
+      echo "error: task $gate_id's endpoint $T runs something not identifiable as its agent, so no text was sent (--key still is); if its agent has exited, bring it back with $gate_fix" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 if [ "${1:-}" = "--key" ]; then
