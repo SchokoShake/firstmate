@@ -1,0 +1,222 @@
+
+## Scenario R: reported incident - answered decision pruned by tasks-axi done, then scout teardown
+declined: rougeic-art-style-decision-palette
+=> PASS: answered hold rougeic-art-style-decision-palette was pruned from data/backlog.md into data/done-archive.md
+$ teardown rougeic-art-style
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown rougeic-art-style complete (window firstmate:fm-rougeic-art-style, worktree /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-archived-drive.2Ihqlj/target/incident/projects/missing-rougeic-art-style)
+Backlog: rougeic-art-style just finished. Run tasks-axi done rougeic-art-style --report data/rougeic-art-style/report.md, then run bin/fm-ready.sh for dependency-cleared candidates - it is firstmate's own dispatchable set and withholds lapsed captain holds, which are still unanswered questions - check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+=> PASS: scout teardown passes the decision gate for the archived answered decision (expected ok)
+=> PASS: teardown went through (origin metadata removed)
+
+## Scenario A: answered decision pruned into data/done-archive.md by ordinary tasks-axi done
+hold id: tour-review-decision-art-style
+complete: tour-review decision inventory reviewed (art-style)
+declined: tour-review-decision-art-style
+=> PASS: answered hold tour-review-decision-art-style is gone from data/backlog.md
+=> PASS: answered hold tour-review-decision-art-style is in data/done-archive.md
+=> PASS: other origin's unanswered hold other-review-decision-art-style is in data/done-archive.md
+--- archived block for tour-review-decision-art-style (data/done-archive.md) ---
+- [x] tour-review-decision-art-style - Choose the tour art style (repo: sample) (kind: captain) (done 2026-11-05) (hold: captain art style choice pending) (hold-kind: captain) (hold-until: 2026-11-12)
+  Resolution recorded by fm-decision-hold.
+  Decision digest: 0a0fe421cd56d0032a11cdebc110910dde9eb6e04b0a335d89c6b264d8e7a0d4
+  Routed identities: (none)
+  Resolution mode: declined
+
+  Captain decision:
+  Declined: keep the current art style.
+
+  Routed work:
+  (none)
+
+## Archived 2026-11-05
+---
+$ dec verify tour-review
+verified: tour-review unresolved-decision inventory
+[exit 0]
+=> PASS: verify passes for an archived answered decision (expected ok)
+$ dec complete tour-review art-style
+complete: tour-review decision inventory reviewed (art-style)
+[exit 0]
+=> PASS: complete passes for an archived answered decision (expected ok)
+$ dec decline tour-review art-style --decision-file /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-archived-drive.2Ihqlj/target/answered/decision.txt
+declined: tour-review-decision-art-style
+[exit 0]
+=> PASS: identical decline retry of the archived decision is idempotent (expected ok, "declined: tour-review-decision-art-style")
+$ dec decline tour-review art-style --decision-file /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-archived-drive.2Ihqlj/target/answered/drift.txt
+fm-decision-hold: captain hold tour-review-decision-art-style records a different captain decision
+[exit 1]
+=> PASS: a changed answer is rejected against the archived record (expected fail, "records a different captain decision")
+$ dec hold tour-review art-style --title Choose the tour art style --reason captain art style choice pending --repo sample
+fm-decision-hold: captain decision tour-review-decision-art-style is already durably resolved; use a new decision key for a new decision
+[exit 1]
+=> PASS: re-asking an archived answered decision under the same identity is refused (expected fail, "already durably resolved")
+$ dec verify other-review
+fm-decision-hold: captain decision other-review-decision-art-style is neither open nor durably resolved
+[exit 1]
+=> PASS: same key under a different origin, archived without an answer, still fails (expected fail, "neither open nor durably resolved")
+=> PASS: archive unchanged by every decision-hold read above
+=> PASS: no new live hold was created for tour-review-decision-art-style
+$ teardown tour-review
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown tour-review complete (window firstmate:fm-tour-review, worktree /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-archived-drive.2Ihqlj/target/answered/projects/missing-tour-review)
+Backlog: tour-review just finished. Run tasks-axi done tour-review --report data/tour-review/report.md, then run bin/fm-ready.sh for dependency-cleared candidates - it is firstmate's own dispatchable set and withholds lapsed captain holds, which are still unanswered questions - check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+=> PASS: teardown of the origin passes the decision gate (expected ok)
+=> PASS: teardown removed the origin metadata
+$ teardown other-review
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+fm-decision-hold: captain decision other-review-decision-art-style is neither open nor durably resolved
+REFUSED: scout task other-review has not passed the unresolved-decision completion gate.
+Inventory its report and any visual review through bin/fm-decision-hold.sh before teardown.
+[exit 1]
+=> PASS: teardown of the other origin is still refused (expected fail, "REFUSED")
+
+## Scenario B: decision closed out of band with no answer, then pruned into the archive
+hold id: audio-flow-decision-format
+complete: audio-flow decision inventory reviewed (format)
+=> PASS: unanswered hold audio-flow-decision-format is in data/done-archive.md only
+$ dec verify audio-flow
+fm-decision-hold: captain decision audio-flow-decision-format is neither open nor durably resolved
+[exit 1]
+=> PASS: verify fails for an archived decision with no answer (expected fail, "neither open nor durably resolved")
+$ dec complete audio-flow format
+fm-decision-hold: captain decision audio-flow-decision-format is neither open nor durably resolved
+[exit 1]
+=> PASS: complete fails for an archived decision with no answer (expected fail, "neither open nor durably resolved")
+$ teardown audio-flow
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+fm-decision-hold: captain decision audio-flow-decision-format is neither open nor durably resolved
+REFUSED: scout task audio-flow has not passed the unresolved-decision completion gate.
+Inventory its report and any visual review through bin/fm-decision-hold.sh before teardown.
+[exit 1]
+=> PASS: teardown refuses while the archived decision has no answer (expected fail, "REFUSED")
+=> PASS: refused teardown kept the origin metadata
+$ dec repair audio-flow format --decision-file /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-archived-drive.2Ihqlj/target/unanswered/decision.txt
+fm-decision-hold: captain decision audio-flow-decision-format is archived without a resolution record, and this script never writes to the Done archive; hold it again under this decision key, then resolve or decline it with the captain's answer
+[exit 1]
+=> PASS: repair refuses and names the recovery path (expected fail, "hold it again under this decision key")
+$ dec decline audio-flow format --decision-file /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-archived-drive.2Ihqlj/target/unanswered/decision.txt
+fm-decision-hold: captain hold audio-flow-decision-format is absent from /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-archived-drive.2Ihqlj/target/unanswered/data/backlog.md; hold it under this decision key first
+[exit 1]
+=> PASS: decline before re-holding names the recovery path (expected fail, "hold it under this decision key first")
+=> PASS: archive unchanged by verify/complete/repair/decline
+$ dec hold audio-flow format --title Choose the audio format --reason captain format choice pending --repo sample
+audio-flow-decision-format
+[exit 0]
+=> PASS: hold again under the same key opens a fresh live hold (expected ok, "audio-flow-decision-format")
+=> PASS: archive unchanged by the re-hold itself
+$ tx show audio-flow-decision-format --full
+task:
+  id: audio-flow-decision-format
+  title: Choose the audio format
+  state: queued
+  blocked: no
+  blocked_by: none
+  held: yes
+  hold_reason: captain format choice pending
+  hold_kind: captain
+  hold_until: 2026-11-12
+  kind: captain
+  repo: sample
+  priority: "-"
+  created: 2026-11-05
+  closed: "-"
+  deps: none
+  links: none
+  body: "Origin: audio-flow\nDecision key: format\nState: awaiting captain decision."
+[exit 0]
+=> PASS: the re-held decision is open in the live backlog (expected ok, "state: queued")
+$ dec decline audio-flow format --decision-file /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-archived-drive.2Ihqlj/target/unanswered/decision.txt
+declined: audio-flow-decision-format
+[exit 0]
+=> PASS: decline records the captain's answer on the live re-hold (expected ok, "declined: audio-flow-decision-format")
+$ dec verify audio-flow
+verified: audio-flow unresolved-decision inventory
+[exit 0]
+=> PASS: verify passes once the re-held decision is answered (expected ok)
+--- archive diff across decline (tasks-axi done_keep prune) ---
+6a7,9
+> 
+> ## Archived 2026-11-05
+> - [x] filler-21 - Filler work 21 (repo: sample) (done 2026-11-05)
+---
+=> PASS: the archive only grew by appended records; nothing in it was rewritten
+=> PASS: the archived unanswered record was not touched (no resolution written into it)
+=> PASS: the identity now appears twice in the archive (unanswered then answered)
+2:## Archived 2026-11-05
+3:- [x] audio-flow-decision-format - Choose the audio format (repo: sample) (kind: captain) (done 2026-11-05) (hold: captain format choice pending) (hold-kind: captain) (hold-until: 2026-11-12)
+8:## Archived 2026-11-05
+11:## Archived 2026-11-05
+14:## Archived 2026-11-05
+17:## Archived 2026-11-05
+20:## Archived 2026-11-05
+23:## Archived 2026-11-05
+26:## Archived 2026-11-05
+29:## Archived 2026-11-05
+32:## Archived 2026-11-05
+35:## Archived 2026-11-05
+38:## Archived 2026-11-05
+39:- [x] audio-flow-decision-format - Choose the audio format (repo: sample) (kind: captain) (done 2026-11-05) (hold: captain format choice pending) (hold-kind: captain) (hold-until: 2026-11-12)
+$ dec verify audio-flow
+verified: audio-flow unresolved-decision inventory
+[exit 0]
+=> PASS: verify judges the latest archived record (answered) and passes (expected ok)
+$ teardown audio-flow
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+teardown audio-flow complete (window firstmate:fm-audio-flow, worktree /var/folders/pf/ztbq073j4hxbfzll9_lxvfx00000gn/T//fm-archived-drive.2Ihqlj/target/unanswered/projects/missing-audio-flow)
+Backlog: audio-flow just finished. Run tasks-axi done audio-flow --report data/audio-flow/report.md, then run bin/fm-ready.sh for dependency-cleared candidates - it is firstmate's own dispatchable set and withholds lapsed captain holds, which are still unanswered questions - check date gates, and dispatch only work whose blockers are gone and date is due.
+[exit 0]
+=> PASS: teardown passes after the answered re-hold was pruned too (expected ok)
+
+## Scenario C: custom [markdown] archive path in .tasks.toml
+5:archive = "data/history/old-done.md"
+declined: app-stats-decision-palette
+=> PASS: answered hold reached the configured archive data/history/old-done.md
+=> PASS: default data/done-archive.md was never created
+$ dec verify app-stats
+verified: app-stats unresolved-decision inventory
+[exit 0]
+=> PASS: verify reads the configured archive and passes (expected ok)
+=> PASS: unanswered layout hold reached the configured archive
+--- forged decoy in the unconfigured default path ---
+## Archived 2026-11-05
+- [x] app-stats-decision-layout - Choose the stats layout (repo: sample) (kind: captain) (done 2026-11-05) (hold: captain layout choice pending) (hold-kind: captain) (hold-until: 2026-11-12)
+  Resolution recorded by fm-decision-hold.
+  Decision digest: ff453c3fd331860dfc8909b291cf2d61682f3636fd729916e6a56e50917eaec8
+  Routed identities: (none)
+  Resolution mode: declined
+
+  Captain decision:
+  Declined: keep the current layout.
+
+  Routed work:
+  (none)
+
+## Archived 2026-11-05
+---
+$ dec verify app-stats
+fm-decision-hold: captain decision app-stats-decision-layout is neither open nor durably resolved
+[exit 1]
+=> PASS: a forged answer in the unconfigured default archive is ignored (expected fail, "neither open nor durably resolved")
+
+SUMMARY root={run-worktree} passes=40 fails=0
