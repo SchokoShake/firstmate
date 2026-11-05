@@ -1,0 +1,34 @@
+=== S1: GitHub PR closed without merging wakes once, names closer + time, and retires the poll
+# forge stand-in: gh pr view -> CLOSED; issue record closed_by.login=maintainer-x (author pr-author), closed_at=2026-07-21T05:01:45Z
+# GH_HOST=ghe.example is exported in the watcher env to show the closer read stays bound to github.com
+$ bin/fm-pr-check.sh task-a https://github.com/cli/cli/pull/13902
+[fm-pr-check.sh exit=0]
+skipped: tasks-axi is absent or older than 0.2.5, so the backlog was not written
+armed: state/task-a.check.sh
+state/: task-a.check.sh task-a.meta task-a.pr-poll task-a.pr-poll-registration 
+meta pr=: pr=https://github.com/cli/cli/pull/13902
+--- beat 1
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s1/home/state/task-a.check.sh: closed-unmerged https://github.com/cli/cli/pull/13902 by maintainer-x at 2026-07-21T05:01:45Z
+[fm-watch.sh exit=0]
+forge reads in beat 1:
+  gh pr view https://github.com/cli/cli/pull/13902 --json state -q .state
+  gh api --hostname github.com repos/cli/cli/issues/13902 --jq "\(.closed_by.login // "") \(.closed_at // "")"
+state/: task-a.meta 
+meta pr=: pr=https://github.com/cli/cli/pull/13902
+durable wake queue:
+  1	check	/tmp/fm-e2e-01M6/run/s1/home/state/task-a.check.sh	check: /tmp/fm-e2e-01M6/run/s1/home/state/task-a.check.sh: closed-unmerged https://github.com/cli/cli/pull/13902 by maintainer-x at 2026-07-21T05:01:45Z
+[wake acknowledged through 1]
+--- beat 2 (after acknowledging the wake)
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s1/home/state/z-stop.check.sh: stop-cycle
+[fm-watch.sh exit=0]
+forge reads in beat 2: 0
+state/: task-a.meta 
+meta pr=: pr=https://github.com/cli/cli/pull/13902
+[wake acknowledged through 2]
+--- beat 3
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s1/home/state/z-stop.check.sh: stop-cycle
+[fm-watch.sh exit=0]
+forge reads after retirement (beats 2+3): 0

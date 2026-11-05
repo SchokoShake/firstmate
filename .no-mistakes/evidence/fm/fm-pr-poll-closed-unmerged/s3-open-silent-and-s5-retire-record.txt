@@ -1,0 +1,29 @@
+=== S3: still-open PR stays silent on every beat and stays armed
+$ bin/fm-pr-check.sh task-a https://github.com/cli/cli/pull/14914
+[fm-pr-check.sh exit=0]
+skipped: tasks-axi is absent or older than 0.2.5, so the backlog was not written
+armed: state/task-a.check.sh
+--- beat 1
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s3/home/state/z-stop.check.sh: stop-cycle
+[fm-watch.sh exit=0]
+forge reads:
+  gh pr view https://github.com/cli/cli/pull/14914 --json state -q .state
+state/: task-a.check.sh task-a.meta task-a.pr-poll task-a.pr-poll-registration 
+meta pr=: pr=https://github.com/cli/cli/pull/14914
+[wake acknowledged through 1]
+--- beat 2
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s3/home/state/z-stop.check.sh: stop-cycle
+[fm-watch.sh exit=0]
+forge reads:
+  gh pr view https://github.com/cli/cli/pull/14914 --json state -q .state
+state/: task-a.check.sh task-a.meta task-a.pr-poll task-a.pr-poll-registration 
+meta pr=: pr=https://github.com/cli/cli/pull/14914
+[wake acknowledged through 2]
+=== S5: --retire-record refusal while the poll is armed names both self-retiring outcomes
+$ bin/fm-teardown.sh task-a --retire-record
+error: no-mistakes gate agent must not drive the fleet (NO_MISTAKES_GATE set)
+[fm-teardown.sh exit=3]
+state/: task-a.check.sh task-a.meta task-a.pr-poll task-a.pr-poll-registration 
+meta pr=: pr=https://github.com/cli/cli/pull/14914

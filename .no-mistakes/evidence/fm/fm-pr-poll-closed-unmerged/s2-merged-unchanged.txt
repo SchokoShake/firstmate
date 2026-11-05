@@ -1,0 +1,19 @@
+=== S2: merged PR still wakes with exactly 'merged' and retires
+$ bin/fm-pr-check.sh task-a https://github.com/cli/cli/pull/14918
+[fm-pr-check.sh exit=0]
+skipped: tasks-axi is absent or older than 0.2.5, so the backlog was not written
+armed: state/task-a.check.sh
+--- beat 1
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s2/home/state/task-a.check.sh: merged
+[fm-watch.sh exit=0]
+forge reads in beat 1:
+  gh pr view https://github.com/cli/cli/pull/14918 --json state -q .state
+state/: task-a.meta 
+meta pr=: pr=https://github.com/cli/cli/pull/14918
+[wake acknowledged through 1]
+--- beat 2
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s2/home/state/z-stop.check.sh: stop-cycle
+[fm-watch.sh exit=0]
+forge reads in beat 2: 0

@@ -1,0 +1,45 @@
+=== S4a: PR is CLOSED but the closer read fails -> silent, poll stays armed; once readable -> one wake
+$ bin/fm-pr-check.sh task-a https://github.com/cli/cli/pull/13902
+[fm-pr-check.sh exit=0]
+skipped: tasks-axi is absent or older than 0.2.5, so the backlog was not written
+armed: state/task-a.check.sh
+--- beat 1 (issues endpoint unreadable)
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s4a/home/state/z-stop.check.sh: stop-cycle
+[fm-watch.sh exit=0]
+forge reads:
+  gh pr view https://github.com/cli/cli/pull/13902 --json state -q .state
+  gh api --hostname github.com repos/cli/cli/issues/13902 --jq "\(.closed_by.login // "") \(.closed_at // "")"
+state/: task-a.check.sh task-a.meta task-a.pr-poll task-a.pr-poll-registration 
+meta pr=: pr=https://github.com/cli/cli/pull/13902
+[wake acknowledged through 1]
+--- beat 2 (issues endpoint readable again)
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s4a/home/state/task-a.check.sh: closed-unmerged https://github.com/cli/cli/pull/13902 by maintainer-x at 2026-07-21T05:01:45Z
+[fm-watch.sh exit=0]
+state/: task-a.meta 
+meta pr=: pr=https://github.com/cli/cli/pull/13902
+[wake acknowledged through 2]
+--- beat 3
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s4a/home/state/z-stop.check.sh: stop-cycle
+[fm-watch.sh exit=0]
+forge reads in beat 3: 0
+
+=== S4b: forge returns tab/newline bytes in closed_by.login and closed_at -> fields read 'unknown', one clean queue record
+$ bin/fm-pr-check.sh task-a https://github.com/cli/cli/pull/13902
+[fm-pr-check.sh exit=0]
+skipped: tasks-axi is absent or older than 0.2.5, so the backlog was not written
+armed: state/task-a.check.sh
+--- beat 1
+$ bin/fm-watch.sh   (one bounded cycle)
+check: /tmp/fm-e2e-01M6/run/s4b/home/state/task-a.check.sh: closed-unmerged https://github.com/cli/cli/pull/13902 by unknown at unknown
+[fm-watch.sh exit=0]
+durable wake queue (cat -A style, tabs shown as ^I):
+  1793838386\t1\tcheck\t/tmp/fm-e2e-01M6/run/s4b/home/state/t\
+  ask-a.check.sh\tcheck: /tmp/fm-e2e-01M6/run/s4b/home/state/\
+  task-a.check.sh: closed-unmerged https://github.com/cli/cli\
+  /pull/13902 by unknown at unknown$
+queue lines: 1
+state/: task-a.meta 
+meta pr=: pr=https://github.com/cli/cli/pull/13902
