@@ -31,6 +31,8 @@
 #      failed resume leaves a record a second revive completes; and a reopened
 #      shell whose typed cd a startup program swallowed is moved into the
 #      worktree by the next revive.
+#   5. fm-send refuses an exited agent's shell, and relaunch clears a shell
+#      wedged in quote continuation before it launches.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -590,6 +592,34 @@ test_a_swallowed_move_is_completed_by_a_later_revive() {
   pass "fm-control revive: a reopened shell whose cd was swallowed is moved into the worktree by the next revive"
 }
 
+# Text typed at an exited agent's shell runs as a command, and an apostrophe
+# leaves the shell in quote continuation, where a typed launch is swallowed as
+# more of the quoted string. fm-send refuses that shell, and a relaunch clears
+# the wedged prompt before it launches.
+test_relaunch_over_a_wedged_shell_still_launches() {
+  local out rc before
+  out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" exit 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "stopping the worker"$'\n'"$out"
+  out=$(fm_env "$ROOT/bin/fm-send.sh" "$ID" "touch $LAB/steer-ran" 2>&1)
+  rc=$?
+  expect_code 1 "$rc" "a steer to the exited agent's shell"$'\n'"$out"
+  assert_contains "$out" "bin/fm-control.sh $ID revive" "the refusal should name the fix"
+  tmux send-keys -t "$(window_target)" "echo 'it" Enter
+  tmux send-keys -t "$(window_target)" "touch $LAB/wedge-probe" Enter
+  sleep 1
+  [ ! -e "$LAB/steer-ran" ] || fail "the refused steer ran as a shell command"
+  [ ! -e "$LAB/wedge-probe" ] || fail "divergence lost: the shell must be wedged in quote continuation"
+  before=$(launches)
+  out=$(fm_env "$ROOT/bin/fm-control.sh" "$ID" relaunch --note "relaunched over a wedged prompt" 2>&1)
+  rc=$?
+  expect_code 0 "$rc" "relaunch over a wedged prompt"$'\n'"$out"
+  agent_running || fail "the relaunched worker is not running"
+  [ "$(launches)" = $((before + 1)) ] || fail "the relaunch must launch exactly one agent"
+  [ ! -e "$LAB/wedge-probe" ] || fail "clearing the wedged prompt ran the swallowed text"
+  pass "fm-control relaunch: a shell wedged in quote continuation is cleared before the launch, and fm-send refuses it"
+}
+
 # A deliberate stop retires the worker's busy generation; a restart leaves it.
 test_a_worker_stopped_before_the_restart_stays_stopped() {
   local out rc before
@@ -670,6 +700,7 @@ test_a_failed_resume_is_completed_by_a_later_revive
 test_revive_without_a_recorded_conversation_starts_fresh
 test_revive_waits_for_a_reopened_shell_to_finish_starting
 test_a_swallowed_move_is_completed_by_a_later_revive
+test_relaunch_over_a_wedged_shell_still_launches
 test_a_worker_stopped_before_the_restart_stays_stopped
 test_exit_after_the_agent_ended_stays_stopped
 test_other_backends_cannot_reopen_an_endpoint

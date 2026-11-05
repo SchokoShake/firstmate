@@ -32,7 +32,9 @@
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
 #   or herdr), refuses unless the endpoint's shell is sitting in the recorded
 #   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation. On a treehouse-backed backend it relaunches a ship or
+#   the new incarnation. Before typing its launch lines it sends C-c, so a shell
+#   left in quote continuation by text typed at it returns to an empty prompt
+#   instead of swallowing the launch. On a treehouse-backed backend it relaunches a ship or
 #   scout only when the pool's durable lease proves the record still owns its
 #   worktree (bin/fm-slot-lib.sh owns that verdict): a re-leased slot names
 #   bin/fm-teardown.sh <id> --retire-record instead, and an unproven one names
@@ -3429,6 +3431,13 @@ agent_view_launch() {
 if [ "$AGENT_VIEW" -eq 1 ]; then
   agent_view_launch || exit 1
 else
+  # A relaunch adopts a shell that text typed at it may have left in quote
+  # continuation, where every line below would be swallowed; C-c returns it to
+  # an empty prompt. A fresh endpoint's shell has had nothing typed at it.
+  if [ "$RELAUNCH" -eq 1 ] && ! spawn_send_key "$T" C-c; then
+    echo "error: could not clear the shell prompt in $T before relaunching $ID" >&2
+    exit 1
+  fi
   # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
   # process (go build, go test, ...) inherit it. Sent before the launch command so
   # the env is set when the agent starts; the brief sleep lets the export land.
