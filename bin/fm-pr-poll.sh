@@ -71,7 +71,7 @@ case "$provider" in
     # read once, only on this terminal path. A failed read stays silent and is
     # retried on the next beat; an unusable field reads "unknown", because the
     # validated CLOSED state alone is the terminal fact.
-    closed=$(gh api "repos/$owner/$repo/issues/$number" \
+    closed=$(gh api --hostname "$host" "repos/$owner/$repo/issues/$number" \
       --jq '"\(.closed_by.login // "") \(.closed_at // "")"' 2>/dev/null) || exit 0
     login=${closed%% *}
     at=${closed#* }

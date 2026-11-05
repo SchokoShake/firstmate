@@ -27,6 +27,7 @@ REAL_STAT=$(command -v stat)
 REAL_CHMOD=$(command -v chmod)
 REAL_BASENAME=$(command -v basename)
 REAL_JQ=$(command -v jq || true)
+unset GH_HOST
 
 ack_watcher_cycle() {  # <state>
   local state=$1 err sequence generation
@@ -79,12 +80,15 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 # The REST reads bin/fm-stack-check.sh (pulls) and bin/fm-pr-poll.sh (issues)
 # make: serve a JSON fixture through the caller's own --jq program with the
-# real jq, and fail the read when no fixture exists.
+# real jq, and fail the read when no fixture exists. Like gh, the read goes to
+# --hostname when given and otherwise to GH_HOST or github.com, and only
+# github.com holds fixtures.
 if [ "${1:-}" = api ]; then
-  path= program=
+  path= program= host=${GH_HOST:-github.com}
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -H) shift 2 ;;
+      --hostname) host=$2; shift 2 ;;
       --jq) program=$2; shift 2 ;;
       *) path=$1; shift ;;
     esac
@@ -93,7 +97,7 @@ if [ "${1:-}" = api ]; then
     */issues/*) fixtures=${FM_TEST_ISSUES:-} ;;
     *) fixtures=${FM_TEST_PULLS:-} ;;
   esac
-  [ -f "$fixtures/${path##*/}.json" ] || exit 1
+  [ "$host" = github.com ] && [ -f "$fixtures/${path##*/}.json" ] || exit 1
   exec "$FM_TEST_JQ" -r "$program" "$fixtures/${path##*/}.json"
 fi
 case " $* " in
@@ -980,12 +984,13 @@ test_closed_unmerged_poll_line() {
   dir=$(make_case poll-closed-unmerged)
   make_poll_fixture "$dir"
 
-  # A PR closed without merging is its own terminal line, naming who and when.
+  # A PR closed without merging is its own terminal line, naming who and when,
+  # read from the PR's own host even when gh's default host is another one.
   write_issue "$dir" 1 '{"login":"octocat","type":"User"}' '"2026-10-08T09:15:00Z"'
-  out=$(run_closed_poll "$dir")
+  out=$(GH_HOST=ghe.example run_closed_poll "$dir")
   [ "$out" = "closed-unmerged https://github.com/o/r/pull/1 by octocat at 2026-10-08T09:15:00Z" ] \
     || fail "static poll did not emit exactly one closed-unmerged line naming the closer: $out"
-  grep -q '^api repos/o/r/issues/1 ' "$dir/gh.log" \
+  grep -q '^api .*repos/o/r/issues/1 ' "$dir/gh.log" \
     || fail "closed-unmerged poll did not read the closer from the validated PR's issue record"
   write_issue "$dir" 1 '{"login":"github-actions[bot]","type":"Bot"}' '"2026-10-08T09:15:00Z"'
   out=$(run_closed_poll "$dir")
