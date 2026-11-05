@@ -15,6 +15,9 @@
 # A recorded task whose agent has exited gets nothing: text or a key aimed at
 # its bare shell is refused, naming bin/fm-control.sh revive or relaunch, and
 # an endpoint running something unidentifiable still takes a key but no text.
+# The remote secondmate route is not covered by this refusal yet: the remote
+# host's fm-send resolves an explicit target with no task record, so the gate
+# does not run there.
 #
 # Text submission is verified: the line is typed ONCE, then Enter is sent and
 # retried (Enter only, never retyped) until the target backend confirms a
@@ -444,7 +447,9 @@ fi
 # is typed or recorded: dead refuses everything, ambiguous refuses text but
 # still takes a --key (such as a trust-dialog answer), and every other verdict
 # keeps the send path below unchanged. An agent-view pilot is proven by its own
-# guard above, and a remote secondmate's host runs this check in its own send.
+# guard above. The remote secondmate route is not covered yet: the remote host's
+# fm-send resolves an explicit target with no task record, so the gate does not
+# run there.
 if [ -n "$TARGET_META" ] && [ "$TARGET_BACKEND" != remote ] && [ -z "$TARGET_AGENT_VIEW_ID" ]; then
   gate_id=$(fm_send_id_from_meta "$TARGET_META")
   gate_fix="bin/fm-control.sh $gate_id revive (or relaunch)"
