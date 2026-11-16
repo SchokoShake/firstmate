@@ -1,0 +1,94 @@
+# Live check: firstmate worker endpoints start with the launching primary's HOME (tmux 3.4)
+# Fixture: private tmux server started with HOME=<T>/captain-home (session 'work' = captain's own session).
+#          primary (bin/fm-spawn.sh / bin/fm-control.sh) runs with HOME=<T>/primary-home, PATH starting with <T>/fakebin.
+#          <T> = a disposable /tmp/fm-envtest-run.* directory (removed after the run).
+
+## server global environment (must stay the captain's)
+global HOME: HOME=<T>/captain-home
+global PATH contains fakebin: no
+session 'work' HOME: unknown variable: HOME
+session 'firstmate' HOME (session recreated by the adapter on revive): HOME=<T>/primary-home
+
+## every pane: shell's own HOME and whether PATH carries the primary's fakebin (read from /proc/<pane_pid>/environ)
+firstmate:fm-envhome-d1      HOME=<T>/primary-home       PATH-has-fakebin=yes
+work:bash                    HOME=<T>/captain-home       PATH-has-fakebin=no
+work:fm-envhome-a1           HOME=<T>/primary-home       PATH-has-fakebin=yes
+work:fm-envhome-b0           HOME=<T>/captain-home       PATH-has-fakebin=yes
+work:fm-envhome-c1           HOME=<T>/primary-home       PATH-has-fakebin=yes
+work:fm-envhome-sm1          HOME=<T>/primary-home       PATH-has-fakebin=yes
+
+## what each launched (fake) claude agent recorded about itself
+--- claude-wt-178444.env
+HOME=<T>/primary-home
+SELF=<T>/fakebin/claude
+PATH_HAS_FAKEBIN=yes
+PWD=<T>/pool/2/wt
+--- revive1-claude-wt-182734.env
+HOME=<T>/primary-home
+SELF=<T>/fakebin/claude
+PATH_HAS_FAKEBIN=yes
+PWD=<T>/pool/2/wt
+--- revive2-claude-wt-256537.env
+HOME=<T>/primary-home
+SELF=<T>/fakebin/claude
+PATH_HAS_FAKEBIN=yes
+PWD=<T>/pool/2/wt
+--- spawn-d1-claude-wt-340925.env
+HOME=<T>/primary-home
+SELF=<T>/fakebin/claude
+PATH_HAS_FAKEBIN=yes
+PWD=<T>/pool/3/wt
+--- claude-sm-home-363252.env
+HOME=<T>/primary-home
+SELF=<T>/fakebin/claude
+PATH_HAS_FAKEBIN=yes
+PWD=<T>/sm-home
+--- claude-wt-165134.env
+HOME=<T>/captain-home
+SELF=<T>/fakebin/claude
+PATH_HAS_FAKEBIN=yes
+PWD=<T>/pool/1/wt
+--- claude-wt-333927.env
+HOME=<T>/primary-home
+SELF=<T>/fakebin/claude
+PATH_HAS_FAKEBIN=yes
+PWD=<T>/pool/2/wt
+--- claude-wt-352151.env
+HOME=<T>/primary-home
+SELF=<T>/fakebin/claude
+PATH_HAS_FAKEBIN=yes
+PWD=<T>/pool/3/wt
+--- claude-wt-a-116984.env
+HOME=<T>/primary-home
+SELF=<T>/fakebin/claude
+PATH_HAS_FAKEBIN=yes
+PWD=<T>/wt-a
+
+## firstmate's own output
+--- spawn-a1.log
+spawned envhome-a1 harness=claude kind=ship mode=no-mistakes yolo=off window=work:fm-envhome-a1 worktree=<T>/wt-a
+--- spawn-b0-base.log
+spawned envhome-b0 harness=claude kind=ship mode=direct-PR yolo=off window=work:fm-envhome-b0 worktree=<T>/pool/1/wt
+--- spawn-c1.log
+spawned envhome-c1 harness=claude kind=ship mode=direct-PR yolo=off window=work:fm-envhome-c1 worktree=<T>/pool/2/wt
+--- revive-c1.log
+revived envhome-c1 via=fresh harness=claude model=default effort=default backend=tmux endpoint=work:fm-envhome-c1 worktree=<T>/pool/2/wt reopened=yes fresh_because="--fresh was passed"
+--- spawn-d1.log
+spawned envhome-d1 harness=claude kind=ship mode=direct-PR yolo=off window=firstmate:fm-envhome-d1 worktree=<T>/pool/3/wt
+--- revive-d1.log
+revived envhome-d1 via=fresh harness=claude model=default effort=default backend=tmux endpoint=firstmate:fm-envhome-d1 worktree=<T>/pool/3/wt reopened=yes fresh_because="--fresh was passed"
+--- spawn-sm1.log
+warning: secondmate envhome-sm1 sync skipped before launch: primary default-branch commit cannot be resolved
+spawned envhome-sm1 harness=claude kind=secondmate mode=secondmate yolo=off window=work:fm-envhome-sm1 worktree=<T>/sm-home
+
+## legend: which run wrote each agent record
+claude-wt-a-116984     fresh spawn envhome-a1, primary inside captain's session 'work' (fixed code)        -> primary-home
+claude-wt-165134       fresh spawn envhome-b0 with the PRE-FIX code (git archive of base f8e04b0)          -> captain-home (bug reproduced)
+claude-wt-178444       fresh spawn envhome-c1 (fixed code)                                                -> primary-home
+revive1-/revive2-*     revive envhome-c1 attempts whose fake agent did not yet carry the process name
+                       `claude` (fixture issue: exec'd sleep / #!/usr/bin/env), so revive could not confirm
+                       liveness; the window was recreated and the agent still saw the primary's HOME
+claude-wt-333927       bin/fm-control.sh revive envhome-c1 --fresh: window gone, 'work' live -> new-window   -> primary-home
+spawn-d1-*-340925      fresh spawn envhome-d1 with the primary OUTSIDE tmux -> dedicated 'firstmate' session -> primary-home
+claude-wt-352151       bin/fm-control.sh revive envhome-d1 --fresh: whole 'firstmate' session gone -> new-session -> primary-home
+claude-sm-home-363252  bin/fm-spawn.sh envhome-sm1 <home> --secondmate into 'work'                        -> primary-home
