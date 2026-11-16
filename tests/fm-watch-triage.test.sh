@@ -2013,14 +2013,18 @@ SH
 # actionable wake uses - rather than leaving it to be found by a manual drain.
 
 # Run the runner against a case home. FM_ROOT_OVERRIDE (exported by the shared
-# wake harness to keep the drain's tangle check inert) would otherwise point the
-# runner at a root with no installed adapters, and the claim root must stay
-# inside the case so nothing here can observe a real home's source ownership.
+# wake harness to keep the drain's tangle check inert) is pointed at a case-local
+# root holding one fixture adapter with no terminal knowledge, and the claim root
+# must stay inside the case so nothing here can observe a real home's source
+# ownership.
 pe_case() {  # <dir> <command>...
   local dir=$1
   shift
-  (unset FM_ROOT_OVERRIDE
-   FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_HOME="$dir" "$ROOT/bin/fm-procevent.sh" "$@")
+  mkdir -p "$dir/adapter-root/bin"
+  printf '#!/usr/bin/env bash\nexit 2\n' > "$dir/adapter-root/bin/fm-procevent-fixture.sh"
+  chmod +x "$dir/adapter-root/bin/fm-procevent-fixture.sh"
+  FM_ROOT_OVERRIDE="$dir/adapter-root" FM_PROCEVENT_CLAIM_ROOT="$dir/claims" FM_HOME="$dir" \
+    "$ROOT/bin/fm-procevent.sh" "$@"
 }
 
 # Capture one real process-event result into <dir>'s home, then retire the
@@ -2028,8 +2032,8 @@ pe_case() {  # <dir> <command>...
 # captured, unhandled, queued result and no remaining poll work.
 seed_captured_procevent_result() {  # <dir>
   local dir=$1 i=0
-  pe_case "$dir" register lavish delivery-src -- \
-    /bin/sh -c 'printf "session:\n  file: /a.html\n  status: waiting\n"' >/dev/null || return 1
+  pe_case "$dir" register fixture delivery-src -- \
+    /bin/sh -c 'printf "fixture result\n"' >/dev/null || return 1
   pe_case "$dir" reconcile >/dev/null || return 1
   while [ "$i" -lt 100 ]; do
     [ -s "$dir/state/.wake-queue" ] && break
@@ -2054,7 +2058,7 @@ test_procevent_captured_result_surfaces_proactively() {
   dir=$(make_case procevent-delivery); state="$dir/state"
   out="$dir/watch.out"; drain_out="$dir/drain.out"
   seed_captured_procevent_result "$dir" || fail "the fixture captured no process-event result"
-  grep -F "procevent lavish delivery-src 1" "$state/.wake-queue" >/dev/null \
+  grep -F "procevent fixture delivery-src 1" "$state/.wake-queue" >/dev/null \
     || fail "the captured result was never published to the durable queue"
 
   procevent_watch_bg "$dir" "$out"
@@ -2070,7 +2074,7 @@ test_procevent_captured_result_surfaces_proactively() {
   [ "$beacon_age" -lt 60 ] || fail "the surfacing watcher was not a healthy one (beacon age ${beacon_age}s)"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the process-event wake failed"
-  grep "$(printf '\tcheck\t')" "$drain_out" | grep -F "procevent lavish delivery-src 1" >/dev/null \
+  grep "$(printf '\tcheck\t')" "$drain_out" | grep -F "procevent fixture delivery-src 1" >/dev/null \
     || fail "the process-event result was not queued for the drain that follows the wake"
   pass "a captured process-event result wakes a healthy watcher proactively, with no manual drain"
 }
@@ -2097,7 +2101,7 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
     || fail "the successor did not report recovery for the unacknowledged result: $(cat "$out")"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$replay_out" 2> "$replay_err" \
     || fail "the successor could not re-drain the unacknowledged process-event result"
-  grep "$(printf '\tcheck\t')" "$replay_out" | grep -F 'procevent lavish delivery-src 1' >/dev/null \
+  grep "$(printf '\tcheck\t')" "$replay_out" | grep -F 'procevent fixture delivery-src 1' >/dev/null \
     || fail "the successor drain did not re-print the durable process-event row"
 
   pe_case "$dir" handled delivery-src 1 >/dev/null || fail "could not acknowledge the captured result"

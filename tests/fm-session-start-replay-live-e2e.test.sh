@@ -244,7 +244,7 @@ build_base() {
     esac
     write_recorder "$base/bin/$name"
   done
-  for name in gh gh-axi quota-axi no-mistakes lavish-axi treehouse chrome-devtools-axi \
+  for name in gh gh-axi quota-axi no-mistakes treehouse chrome-devtools-axi \
     curl wget npm npx brew psql supabase; do
     write_shim "$name" "$(command -v "$name" 2>/dev/null || true)"
   done

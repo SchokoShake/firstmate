@@ -539,7 +539,7 @@ fi
 exec "$REAL_PS" "\$@"
 SH
 chmod +x "$LAB/ssbin/ps"
-fm_fake_exit0 "$LAB/ssbin" gh gh-axi node chrome-devtools-axi lavish-axi
+fm_fake_exit0 "$LAB/ssbin" gh gh-axi node chrome-devtools-axi
 
 run_session_start() {
   env -u FM_ROOT_OVERRIDE FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$SS_ROOT" \

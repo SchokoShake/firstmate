@@ -29,6 +29,10 @@
 #            start a runner for any registered source that has no live owner.
 #            This is liveness repair only - it never discovers results by
 #            polling the source, because the child blocks on the source itself.
+#            A registration whose adapter script is no longer installed is
+#            retired instead, through the same path as `retire`: nothing can
+#            classify, apply, or end its results, so it must not keep polling
+#            or keep supervision required. Its captured results stay pending.
 # handled    Durably and idempotently record that a captured result has been
 #            fully handled: <source-id> <sequence>. Prints "handled: id seq"
 #            the first time for that exact source-and-sequence generation and
@@ -103,9 +107,13 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,87p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,91p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
+
+# The one installed-adapter test: register refuses, start refuses, and reconcile
+# retires exactly when this is false.
+adapter_installed() { [ -f "$(adapter_script "$1")" ]; }
 
 # Ask the source's own adapter whether a captured result ends the source. Exit 0
 # is the only terminal verdict; everything else - including a missing adapter
@@ -187,7 +195,7 @@ cmd_register() {
   for arg in "$@"; do
     case "$arg" in *$'\n'*) die "argv elements cannot contain newlines" ;; esac
   done
-  [ -f "$(adapter_script "$adapter")" ] || die "no installed adapter for: $adapter"
+  adapter_installed "$adapter" || die "no installed adapter for: $adapter"
   fm_procevent_source_lock_acquire "$id" || die "cannot lock the source"
   if ! fm_procevent_registration_publish_locked "$STATE" "$adapter" "$id" "$@"; then
     fm_procevent_source_lock_release "$id"
@@ -287,6 +295,10 @@ cmd_start() {
   if ! fm_procevent_adapter_valid "$adapter"; then
     fm_procevent_source_lock_release "$id"
     die "registration names an invalid adapter"
+  fi
+  if ! adapter_installed "$adapter"; then
+    fm_procevent_source_lock_release "$id"
+    die "no installed adapter for: $adapter"
   fi
   if ! read_argv "$id"; then
     fm_procevent_source_lock_release "$id"
@@ -463,7 +475,7 @@ detach_runner() {  # <source-id>
 }
 
 cmd_reconcile() {
-  local rec id published started=0 stopped=0 uncertain=0 claim owner pid token identity claim_state stop_state
+  local rec id adapter published started=0 stopped=0 uncertain=0 claim owner pid token identity claim_state stop_state
   published=$(publish_pending)
 
   # Stop a runner this home owns whose source is no longer registered. Without
@@ -515,6 +527,16 @@ cmd_reconcile() {
       fm_procevent_source_id_valid "$id" || continue
       fm_procevent_source_lock_acquire "$id" || continue
       if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
+        if adapter=$(read_adapter "$id") && fm_procevent_adapter_valid "$adapter" \
+          && ! adapter_installed "$adapter"; then
+          if retire_locked "$id"; then
+            stopped=$((stopped + 1))
+          else
+            uncertain=$((uncertain + 1))
+          fi
+          fm_procevent_source_lock_release "$id"
+          continue
+        fi
         fm_procevent_claim_state_locked "$id"
         claim_state=$?
         if [ "$claim_state" -eq 1 ]; then
@@ -636,15 +658,14 @@ cmd_handled() {
   esac
 }
 
-cmd_retire() {
-  local id=${1-} owner='' pid='' token='' identity='' stop_state
-  fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
-  fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
+# Retire one source while its source lock is held: stop and release a runner
+# this home owns, then drop the registration. A claim another home owns is left
+# untouched. 0 retired, 1 ownership unreadable, 2 runner identity unconfirmed,
+# 3 ownership not released; every nonzero status keeps the registration.
+retire_locked() {  # <source-id>
+  local id=$1 owner pid token identity stop_state
   if [ -e "$(fm_procevent_claim_path "$id")" ]; then
-    if ! fm_procevent_claim_load_locked "$id" 2>/dev/null; then
-      fm_procevent_source_lock_release "$id"
-      die "cannot safely read source ownership: $id"
-    fi
+    fm_procevent_claim_load_locked "$id" 2>/dev/null || return 1
     if [ "$FM_PROCEVENT_CLAIM_HOME" = "$FM_HOME" ]; then
       owner=$FM_PROCEVENT_CLAIM_HOME
       pid=$FM_PROCEVENT_CLAIM_PID
@@ -652,21 +673,28 @@ cmd_retire() {
       identity=$FM_PROCEVENT_CLAIM_IDENTITY
       stop_runner_pid "$pid" "$identity"
       stop_state=$?
-      if [ "$stop_state" -eq 2 ]; then
-        fm_procevent_source_lock_release "$id"
-        die "cannot confirm runner identity; source remains registered: $id"
-      fi
-      if ! fm_procevent_claim_release_locked "$id" "$owner" "$pid" "$token"; then
-        fm_procevent_source_lock_release "$id"
-        die "cannot release source ownership: $id"
-      fi
+      [ "$stop_state" -ne 2 ] || return 2
+      fm_procevent_claim_release_locked "$id" "$owner" "$pid" "$token" || return 3
       rm -f -- "$(staging_file "$id" "$token")"
     fi
   fi
   rm -f -- "$(source_file "$id")"
   rm -f -- "$(runner_file "$id")"
+}
+
+cmd_retire() {
+  local id=${1-} status
+  fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
+  fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
+  retire_locked "$id"
+  status=$?
   fm_procevent_source_lock_release "$id"
-  printf 'retired: %s\n' "$id"
+  case "$status" in
+    0) printf 'retired: %s\n' "$id" ;;
+    1) die "cannot safely read source ownership: $id" ;;
+    2) die "cannot confirm runner identity; source remains registered: $id" ;;
+    *) die "cannot release source ownership: $id" ;;
+  esac
 }
 
 sweep_add_id() {
