@@ -5,7 +5,9 @@
 # list, kill)" from data/fm-backend-design-d7/report.md. Every other suite in
 # this repo fakes tmux; this one is the one place that talks to a REAL tmux
 # server, isolated on a private socket (`-L`) so it never touches the host's
-# actual sessions.
+# actual sessions. Its last section restarts that server from a different HOME
+# to prove every task window the adapter creates or recreates starts with the
+# launching process's HOME instead.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,11 +32,13 @@ command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-backend-smoke-$$"
 SHIM_DIR=
+ENV_DIR=
 trap cleanup_all EXIT
 
 cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   [ -n "${SHIM_DIR:-}" ] && rm -rf "$SHIM_DIR"
+  [ -n "${ENV_DIR:-}" ] && rm -rf "$ENV_DIR"
 }
 
 # A `tmux` shim on PATH that transparently redirects every call to the private
@@ -168,6 +172,69 @@ state=$(fm_backend_agent_state tmux "$TARGET")
 # Best-effort contract: killing an already-gone window must not error.
 fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead target must stay best-effort (never fail)"
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
+
+# --- endpoint environment: the launcher's HOME, not the server's -------------
+# A worker must start with the HOME of the firstmate that launched it even when
+# the tmux server, and so any session it reuses, was started from another
+# environment, as when the primary runs inside the captain's own session.
+# Restart the private server from a different HOME, then read HOME back from
+# the shell of a created window, of a window recreated into a live session, and
+# of a window recreated into a gone session.
+
+# endpoint_home: the HOME <target>'s shell reports, written through <out-file>.
+# The probe is retyped until the new shell has read its startup files and runs it.
+endpoint_home() {  # <target> <out-file>
+  local target=$1 out=$2 i
+  rm -f "$out"
+  for _ in $(seq 1 100); do
+    tmux send-keys -t "$target" C-c
+    tmux send-keys -t "$target" -l "printf '%s\\n' \"\$HOME\" > '$out'"
+    tmux send-keys -t "$target" Enter
+    for i in $(seq 1 10); do
+      [ -s "$out" ] && { cat "$out"; return 0; }
+      sleep 0.1
+    done
+  done
+  return 1
+}
+
+"$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
+ENV_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-backend-smoke-env.XXXXXX")
+SERVER_HOME="$ENV_DIR/server-home"
+LAUNCHER_HOME="$ENV_DIR/launcher-home"
+mkdir -p "$SERVER_HOME" "$LAUNCHER_HOME"
+HOME="$SERVER_HOME" SHELL=/bin/sh tmux -f /dev/null new-session -d -s "$SESSION" -x 200 -y 50 \
+  || fail "real tmux: could not start the private server from its own HOME"
+[ "$(tmux show-environment -g HOME)" = "HOME=$SERVER_HOME" ] \
+  || fail "the private server did not start with its own HOME, so this case would prove nothing"
+HOME=$LAUNCHER_HOME
+
+wid=$(fm_backend_tmux_create_task "$SESSION" "fm-env-create" "$ENV_DIR") \
+  || fail "fm_backend_tmux_create_task failed on the server started from another HOME"
+got=$(endpoint_home "$wid" "$ENV_DIR/create.home") || fail "the created window's shell never reported its HOME"
+[ "$got" = "$LAUNCHER_HOME" ] \
+  || fail "a created window's shell sees HOME '$got', not the launcher's '$LAUNCHER_HOME'"
+
+wid=$(fm_backend_tmux_recreate_task "$SESSION:fm-env-recreate" "$ENV_DIR") \
+  || fail "fm_backend_tmux_recreate_task failed to reopen a window in the live session"
+got=$(endpoint_home "$wid" "$ENV_DIR/recreate-live.home") || fail "the reopened window's shell never reported its HOME"
+[ "$got" = "$LAUNCHER_HOME" ] \
+  || fail "a window reopened in a live session sees HOME '$got', not the launcher's '$LAUNCHER_HOME'"
+
+tmux has-session -t "=fm-env-gone" 2>/dev/null && fail "session fm-env-gone should not exist yet"
+wid=$(fm_backend_tmux_recreate_task "fm-env-gone:fm-env-recreate" "$ENV_DIR") \
+  || fail "fm_backend_tmux_recreate_task failed to reopen a window in a gone session"
+got=$(endpoint_home "$wid" "$ENV_DIR/recreate-gone.home") || fail "the recreated session's shell never reported its HOME"
+[ "$got" = "$LAUNCHER_HOME" ] \
+  || fail "a window recreated with its session sees HOME '$got', not the launcher's '$LAUNCHER_HOME'"
+
+# The reused session and the server keep their own environment.
+[ "$(tmux show-environment -g HOME)" = "HOME=$SERVER_HOME" ] \
+  || fail "creating task windows changed the server's global HOME"
+if tmux show-environment -t "$SESSION" HOME >/dev/null 2>&1; then
+  fail "creating task windows set HOME in the reused session's environment"
+fi
+pass "real tmux: created and recreated task windows start with the launcher's HOME, not the server's, and leave the session's environment alone"
 
 cleanup_all
 trap - EXIT
