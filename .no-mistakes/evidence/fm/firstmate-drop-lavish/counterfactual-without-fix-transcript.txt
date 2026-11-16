@@ -1,0 +1,12 @@
+registered: lavish-65e41f036e3e209a (lavish)
+armed: lavish-65e41f036e3e209a
+artifact: $SCRATCH/art/r.html
+### COUNTERFACTUAL: adapter file deleted but runner WITHOUT this branch's fix
+reconciled: published=0 started=1 stopped=0 uncertain=0
+reconciled: published=0 started=0 stopped=0 uncertain=0
+lavish source still registered: yes; fake lavish-axi polls running: 1
+supervision needed: yes
+### Same home, this branch's runner
+reconciled: published=0 started=0 stopped=1 uncertain=0
+lavish source still registered: no; fake lavish-axi polls running: 0
+supervision needed: no

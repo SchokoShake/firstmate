@@ -1,0 +1,10 @@
+Targeted suites on branch fm/firstmate-drop-lavish (target 2bec89f):
+tests/fm-procevent.test.sh: exit=0 secs=41 ok=39 -> all procevent tests passed
+  ok - a registration whose adapter is no longer installed is retired without losing its captured result
+tests/fm-watch-triage.test.sh: exit=0 secs=220 ok=57 not_ok=0
+tests/fm-bootstrap.test.sh (default host PATH): exit=1 - fails on BOTH base and target at the orca-backend case because this Linux host ships GNOME's /usr/bin/orca screen reader
+tests/fm-bootstrap.test.sh with FM_TEST_BASE_PATH = system bins minus host orca/node/npm/npx: target exit=0 ok=28; base exit=0 ok=29 (base includes the deleted lavish-axi floor case)
+tests/fm-bearings-snapshot.test.sh: exit=0 ok=41
+tests/fm-fleet-snapshot-view.test.sh: exit=0 ok=20
+tests/fm-decision-hold-lifecycle.test.sh: exit=0 ok=25
+tests/fm-secondmate-safety.test.sh: exit=0 ok=77

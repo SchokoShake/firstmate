@@ -1,0 +1,34 @@
+fake toolchain: chrome-devtools-axi gh gh-axi node no-mistakes npm quota-axi tasks-axi tmux treehouse 
+lavish-axi on PATH: none
+
+### BASE commit detect (lavish-axi absent)
+MISSING: lavish-axi (install: npm install -g lavish-axi && lavish-axi setup hooks)
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+[exit 0]
+
+### THIS branch detect (lavish-axi absent) - expect silence
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+[exit 0]
+
+### THIS branch detect with an old lavish-axi 0.0.9 on PATH - expect no version complaint
+lavish-axi --version: 0.0.9
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+[exit 0]
+(same home on BASE for contrast)
+MISSING: lavish-axi (install: npm install -g lavish-axi && lavish-axi setup hooks)
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+[exit 0]
+
+### THIS branch: explicit install request for lavish-axi
+error: unknown tool lavish-axi
+[exit 1]
+### BASE commit: same request (fake npm only records)
+installing lavish-axi: npm install -g lavish-axi && lavish-axi setup hooks
+$SCRATCH/base/bin/fm-bootstrap.sh: line 1193: lavish-axi: command not found
+[exit 0]
+fake npm calls recorded:
+  npm install -g lavish-axi

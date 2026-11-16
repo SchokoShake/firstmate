@@ -1,0 +1,128 @@
+
+### BASE commit: arm two Lavish reviews with the base adapter, start runners
+$ $SCRATCH/base/bin/fm-procevent-lavish.sh arm $SCRATCH/art/review-a.html
+registered: lavish-1c9014c207acc3eb (lavish)
+armed: lavish-1c9014c207acc3eb
+artifact: $SCRATCH/art/review-a.html
+[exit 0]
+$ $SCRATCH/base/bin/fm-procevent-lavish.sh arm $SCRATCH/art/review-b.html
+registered: lavish-dbeaf22883c34f98 (lavish)
+armed: lavish-dbeaf22883c34f98
+artifact: $SCRATCH/art/review-b.html
+[exit 0]
+$ $SCRATCH/base/bin/fm-procevent.sh reconcile
+reconciled: published=0 started=2 stopped=0 uncertain=0
+[exit 0]
+
+### BASE commit: review-b returns captain feedback, captured as a pending result; runner restarted
+$ $SCRATCH/base/bin/fm-procevent.sh reconcile
+reconciled: published=1 started=1 stopped=0 uncertain=0
+[exit 0]
+
+### BASE commit: also arm an unrelated 'when' watch that must survive the upgrade
+$ $SCRATCH/base/bin/fm-procevent-when.sh arm keepalive --interval 0.2 --stable 1 --condition /usr/bin/test -e $SCRATCH/flag-keep --action /usr/bin/touch $SCRATCH/keep-fired
+armed: when-keepalive
+starts on the watcher's next cycle; or run: bin/fm-procevent.sh reconcile
+reminder: deterministic, safe, reversible actions only; judgment and destructive actions stay on the wake-and-decide path
+[exit 0]
+$ $SCRATCH/base/bin/fm-procevent.sh reconcile
+reconciled: published=1 started=1 stopped=0 uncertain=0
+[exit 0]
+runner pids: lavish-1c9014c207acc3eb=2913739 (alive)  lavish-dbeaf22883c34f98=2914524 (alive)  when-keepalive=2915064 (alive)
+fake 'lavish-axi poll' children blocking: 2
+$ $SCRATCH/base/bin/fm-procevent.sh list
+SOURCE                       ADAPTER      OWNER      PENDING
+lavish-1c9014c207acc3eb      lavish       live       0
+lavish-dbeaf22883c34f98      lavish       live       1
+when-keepalive               when         live       0
+[exit 0]
+supervision needed: yes
+
+### UPGRADE: same home, this branch's runner (no Lavish adapter installed)
+0
+$ {run-worktree}/bin/fm-procevent.sh reconcile
+reconciled: published=1 started=0 stopped=2 uncertain=0
+[exit 0]
+runner pids after: lavish-1c9014c207acc3eb=2913739 (gone)  lavish-dbeaf22883c34f98=2914524 (gone)  when-keepalive=2915064 (alive)
+fake 'lavish-axi poll' children blocking: 0
+lavish-1c9014c207acc3eb: registration=removed claim=released
+lavish-dbeaf22883c34f98: registration=removed claim=released
+$ {run-worktree}/bin/fm-procevent.sh list
+SOURCE                       ADAPTER      OWNER      PENDING
+when-keepalive               when         live       0
+[exit 0]
+wake queue after upgrade reconcile:
+  check: procevent lavish lavish-dbeaf22883c34f98 1
+
+### Handler reads the pending pre-removal result as plain evidence, then acknowledges generically
+$ cat $SCRATCH/fmhome/state/procevent-inbox/lavish-dbeaf22883c34f98.1.result
+session:
+  status: feedback
+  file: $SCRATCH/art/review-b.html
+prompts[1]:
+  - "captain: move the legend left"
+[exit 0]
+$ {run-worktree}/bin/fm-procevent.sh handled lavish-dbeaf22883c34f98 1
+handled: lavish-dbeaf22883c34f98 1
+[exit 0]
+$ {run-worktree}/bin/fm-procevent.sh handled lavish-dbeaf22883c34f98 1
+already-handled: lavish-dbeaf22883c34f98 1
+[exit 0]
+$ {run-worktree}/bin/fm-procevent.sh reconcile
+reconciled: published=0 started=0 stopped=0 uncertain=0
+[exit 0]
+wake queue after acknowledgement: 0 records
+
+### ADVERSARIAL: a leftover Lavish registration reappears; start and register must refuse it
+$ {run-worktree}/bin/fm-procevent.sh start lavish-1c9014c207acc3eb
+error: no installed adapter for: lavish
+[exit 1]
+claim after refused start: none; results: 0; fake polls: 0
+$ {run-worktree}/bin/fm-procevent.sh register lavish lavish-new -- lavish-axi poll $SCRATCH/art/review-a.html
+error: no installed adapter for: lavish
+[exit 1]
+$ {run-worktree}/bin/fm-procevent.sh reconcile
+reconciled: published=0 started=0 stopped=1 uncertain=0
+[exit 0]
+lavish-1c9014c207acc3eb registration after reconcile: removed
+
+### GENERIC machinery: the surviving when watch fires; a fresh when watch armed on this branch fires
+keepalive outcome: fired
+keepalive action ran: yes
+$ {run-worktree}/bin/fm-procevent.sh handled when-keepalive 1
+handled: when-keepalive 1
+[exit 0]
+$ {run-worktree}/bin/fm-procevent-when.sh retire keepalive
+retired: when-keepalive
+retired: when-keepalive
+[exit 0]
+$ {run-worktree}/bin/fm-procevent-when.sh arm fresh --interval 0.2 --stable 1 --condition /usr/bin/true --action /usr/bin/touch $SCRATCH/fresh-fired
+armed: when-fresh
+starts on the watcher's next cycle; or run: bin/fm-procevent.sh reconcile
+reminder: deterministic, safe, reversible actions only; judgment and destructive actions stay on the wake-and-decide path
+[exit 0]
+$ {run-worktree}/bin/fm-procevent.sh reconcile
+reconciled: published=0 started=1 stopped=0 uncertain=0
+[exit 0]
+fresh outcome: fired
+fresh action ran: yes
+wake queue:
+  check: procevent when when-keepalive 1
+  check: procevent when when-fresh 1
+$ {run-worktree}/bin/fm-procevent.sh handled when-fresh 1
+handled: when-fresh 1
+[exit 0]
+$ {run-worktree}/bin/fm-procevent-when.sh retire fresh
+retired: when-fresh
+retired: when-fresh
+[exit 0]
+
+### FINAL: home state after the upgrade
+$ {run-worktree}/bin/fm-procevent.sh list
+no sources registered
+[exit 0]
+supervision needed: no
+fake 'lavish-axi poll' children still blocking: 0
+$ {run-worktree}/bin/fm-procevent.sh sweep-home
+swept: attempted=0
+[exit 0]

@@ -1,0 +1,2 @@
+home checkout with untracked .lavish/board.html and this branch .gitignore -> dirty_status: []
+counterfactual: committed .gitignore WITHOUT .lavish/ + untracked .lavish/board.html -> dirty_status: [?? .lavish/]

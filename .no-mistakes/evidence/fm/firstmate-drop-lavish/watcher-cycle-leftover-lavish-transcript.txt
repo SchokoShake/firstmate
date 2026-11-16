@@ -1,0 +1,22 @@
+### BASE: arm a Lavish review, capture one feedback result, restart its runner
+registered: lavish-9942e3628c3c6ffe (lavish)
+armed: lavish-9942e3628c3c6ffe
+artifact: $SCRATCH/art/review-c.html
+reconciled: published=0 started=1 stopped=0 uncertain=0
+reconciled: published=1 started=1 stopped=0 uncertain=0
+SOURCE                       ADAPTER      OWNER      PENDING
+lavish-9942e3628c3c6ffe      lavish       live       1
+runner 2976710: alive
+supervision needed: yes
+
+### UPGRADE: run this branch's real watcher (bin/fm-watch.sh) on its ordinary cycle
+watcher exit: 0
+watcher output:
+  check: process-event result captured: procevent:lavish-9942e3628c3c6ffe:1
+runner 2976710: gone
+fake 'lavish-axi poll' children blocking: 0
+registration: removed; claim: released
+no sources registered
+supervision needed: no
+pending result kept: yes; handled marker: no
+handled: lavish-9942e3628c3c6ffe 1
