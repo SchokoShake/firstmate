@@ -97,7 +97,7 @@ cat > "$LAB/bin/agent-presence" <<'SH'
 exit 1
 SH
 chmod +x "$LAB/bin/agent-presence"
-fm_fake_exit0 "$LAB/bin" gh gh-axi node chrome-devtools-axi lavish-axi
+fm_fake_exit0 "$LAB/bin" gh gh-axi node chrome-devtools-axi
 
 # The no-mistakes stand-in answers `axi status` from $FAKE_NM_STATUS when that
 # file exists, and otherwise reports no run on the branch.
