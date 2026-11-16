@@ -62,13 +62,34 @@ fm_backend_tmux_send_text_submit() {  # <target> <text> <retries> <enter-sleep> 
 # fm_backend_tmux_container_ensure: reuse the current tmux session when
 # firstmate itself runs inside tmux, else ensure a dedicated detached
 # "firstmate" session exists. Mirrors fm-spawn.sh's container-ensure block;
-# prints the resolved session name.
+# prints the resolved session name. Either session keeps its own environment:
+# each task window carries the launcher's (fm_backend_tmux_endpoint_env).
 fm_backend_tmux_container_ensure() {
   if [ -n "${TMUX:-}" ]; then
     tmux display-message -p '#S'
   else
     tmux has-session -t firstmate 2>/dev/null || tmux new-session -d -s firstmate
     printf 'firstmate'
+  fi
+}
+
+# fm_backend_tmux_endpoint_env: set FM_BACKEND_TMUX_ENDPOINT_ENV to the
+# `-e NAME=value` arguments that start every task window this adapter creates
+# or recreates with the launching process's own value of each variable this
+# function names - the one list of forwarded variables. tmux builds a new
+# pane's environment from the server's and the session's, so a worker opened
+# in the captain's own session, or on a server started from another
+# environment, would otherwise get that environment's HOME and miss the
+# primary's signed-in tools. Only HOME travels: tmux already hands a new pane
+# the PATH of the client command that created it, so the agent binary resolves
+# as it does for the primary. On new-window the arguments reach that pane
+# alone; on new-session they become the environment of the session this
+# adapter just created; no existing session's or global environment changes.
+# Needs tmux 3.0 for new-window -e and 3.2 for new-session -e.
+fm_backend_tmux_endpoint_env() {
+  FM_BACKEND_TMUX_ENDPOINT_ENV=()
+  if [ -n "${HOME:-}" ]; then
+    FM_BACKEND_TMUX_ENDPOINT_ENV+=(-e "HOME=$HOME")
   fi
 }
 
@@ -85,6 +106,8 @@ fm_backend_tmux_container_ensure() {
 #   - PIN the window name by disabling automatic-rename and allow-rename on the
 #     new window: the captain's tmux may rename the window away from fm-<id> once
 #     treehouse cd's into the worktree, which would break name-based targeting.
+#   - START the window's shell with the launcher's HOME, not the session's
+#     (fm_backend_tmux_endpoint_env).
 # The returned window id lets callers target the window even if its name is ever
 # lost, so worktree discovery cannot fall back to the active client's window.
 fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs> -> prints window id
@@ -93,7 +116,9 @@ fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs> -> prints 
     echo "error: window $ses:$wname already exists" >&2
     return 1
   fi
-  wid=$(tmux new-window -dP -F '#{window_id}' -t "$ses:" -n "$wname" -c "$proj_abs") || return 1
+  fm_backend_tmux_endpoint_env
+  wid=$(tmux new-window -dP -F '#{window_id}' -t "$ses:" -n "$wname" -c "$proj_abs" \
+    ${FM_BACKEND_TMUX_ENDPOINT_ENV[@]+"${FM_BACKEND_TMUX_ENDPOINT_ENV[@]}"}) || return 1
   tmux set-window-option -t "$wid" automatic-rename off 2>/dev/null || true
   tmux set-window-option -t "$wid" allow-rename off 2>/dev/null || true
   printf '%s\n' "$wid"
@@ -105,7 +130,8 @@ fm_backend_tmux_create_task() {  # <session> <window-name> <proj-abs> -> prints 
 # record names it again unchanged. A session that no longer exists is created
 # detached with that window as its only one; an existing session gets the
 # window the way fm_backend_tmux_create_task adds one, including its refusal of
-# a window that already exists. Prints the new window's stable id.
+# a window that already exists. Either way the shell starts with the launcher's
+# HOME (fm_backend_tmux_endpoint_env). Prints the new window's stable id.
 fm_backend_tmux_recreate_task() {  # <session:window-name> <dir> -> prints window id
   local target=$1 dir=$2 ses wname wid
   ses=${target%%:*}
@@ -118,7 +144,9 @@ fm_backend_tmux_recreate_task() {  # <session:window-name> <dir> -> prints windo
     fm_backend_tmux_create_task "$ses" "$wname" "$dir"
     return
   fi
-  wid=$(tmux new-session -d -P -F '#{window_id}' -s "$ses" -n "$wname" -c "$dir") || return 1
+  fm_backend_tmux_endpoint_env
+  wid=$(tmux new-session -d -P -F '#{window_id}' -s "$ses" -n "$wname" -c "$dir" \
+    ${FM_BACKEND_TMUX_ENDPOINT_ENV[@]+"${FM_BACKEND_TMUX_ENDPOINT_ENV[@]}"}) || return 1
   tmux set-window-option -t "$wid" automatic-rename off 2>/dev/null || true
   tmux set-window-option -t "$wid" allow-rename off 2>/dev/null || true
   printf '%s\n' "$wid"

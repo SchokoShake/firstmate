@@ -5,7 +5,7 @@ tmux is Firstmate's verified reference runtime backend and the fully supported b
 
 ## Setup
 
-Install tmux with `brew install tmux` or your platform package manager.
+Install tmux 3.2 or newer with `brew install tmux` or your platform package manager.
 The universal harness and toolchain requirements are in [`configuration.md`](configuration.md#toolchain).
 
 tmux is the hard default when no explicit setting or runtime auto-detection selects another backend.
@@ -71,6 +71,13 @@ A machine restart, or a killed tmux server, ends every task window and every age
 The next locked session start notices the new boot and lists the workers that stopped, with the one command that brings them back, and nothing brings them back on its own.
 That command, `bin/fm-control.sh revive`, reopens each gone window under its recorded session and window name with its shell in the recorded worktree, and resumes the worker's own conversation where its harness allows it; tmux is the only backend that can reopen a gone endpoint.
 [`agent-control.md`](agent-control.md#revive-after-a-stop) owns the verb.
+
+### Worker environment
+
+Every task window Firstmate creates or reopens, for a crewmate, scout, or secondmate, starts its shell with the `HOME` of the Firstmate process that launched it, whatever the tmux server's or the reused session's environment says.
+Without that, a Firstmate running with a different `HOME` from its tmux server, for example inside the captain's own session, would start workers that miss the tools signed in under its own `HOME`.
+tmux itself already gives a new window the `PATH` of the command that creates it, so only `HOME` is forwarded, and `fm_backend_tmux_endpoint_env` in `bin/backends/tmux.sh` names it.
+Firstmate never changes tmux's global environment or that of a session it did not create.
 
 ### Composer, busy state, and delivery
 

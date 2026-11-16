@@ -172,6 +172,35 @@ Valid cleanup removed only the exact task-bound target and left the control wind
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
 Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, Cursor, and Muse share that backend cleanup boundary; their harness-specific hook files, tokens, transcript bindings, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
 
+### Worker environment
+
+A new pane's `HOME` and `PATH` sources were verified on 2026-11-16 with tmux 3.4 on Linux, on a private socket whose server started with a different `HOME` and `PATH` from the client creating windows.
+
+```sh
+env -i HOME=/server/home PATH=/usr/bin:/bin TERM=xterm SHELL=/bin/sh tmux -S "$SOCK" -f /dev/null new-session -d -s s1
+env -u TMUX HOME=/launcher/home PATH=/launcher/bin:/usr/bin:/bin tmux -S "$SOCK" new-window -d -t s1: "sh -c 'echo HOME=\$HOME PATH=\$PATH > $D/plain'"
+env -u TMUX HOME=/launcher/home PATH=/launcher/bin:/usr/bin:/bin tmux -S "$SOCK" new-window -d -t s1: -e HOME=/launcher/home "sh -c 'echo HOME=\$HOME PATH=\$PATH > $D/forwarded'"
+cat "$D/plain" "$D/forwarded"
+tmux -S "$SOCK" show-environment -g HOME
+tmux -S "$SOCK" show-environment -t s1 HOME
+```
+
+Observed output:
+
+```text
+HOME=/server/home PATH=/launcher/bin:/usr/bin:/bin
+HOME=/launcher/home PATH=/launcher/bin:/usr/bin:/bin
+HOME=/server/home
+unknown variable: HOME
+```
+
+tmux hands a new pane the creating client's `PATH` but the server's `HOME`, and `new-window -e` changes only that pane, not the session's or the global environment.
+`tests/fm-backend-tmux-smoke.test.sh` pins the forwarded `HOME` through the real shell of a created window, a window reopened in a live session, and a window recreated with its session:
+
+```text
+ok - real tmux: created and recreated task windows start with the launcher's HOME, not the server's, and leave the session's environment alone
+```
+
 ### Agent-view pilot
 
 The [agent-view pilot](../tmux-backend.md#agent-view-pilot) was verified on 2026-10-30 with Claude Code 2.1.314 and tmux 3.6 on Linux (WSL2).
