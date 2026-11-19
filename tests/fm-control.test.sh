@@ -13,7 +13,8 @@
 #      and a record bound to another task are all refused.
 #   4. Verb allowlist: no arbitrary text, no raw keys, no resume.
 #   5. Lifecycle states: busy interrupts first, idle does not, already-stopped
-#      is idempotent success, and an agent that does not stop fails closed.
+#      is idempotent success, an agent that does not stop fails closed, and a
+#      herdr composer that already holds unsent text gets no exit command.
 #   6. Marker non-regression: a control command to a kind=secondmate task
 #      carries NO from-firstmate marker and opens no pending-reply expectation,
 #      while fm-send's marking of the same task is untouched.
@@ -800,6 +801,71 @@ test_agent_that_does_not_stop_fails_closed() {
   pass "fm-control exit: a stubborn agent reports delivered input and an unconfirmed exit"
 }
 
+# A herdr stub for the exit command's typed-draft guard, on the same files as
+# the tmux stub: `literal` and `keys` record what was typed and pressed,
+# `herdr-agent` holds the agent's raw status (an Enter that submits the exit
+# command turns it into `gone`), and `herdr-screen` is the rendered pane.
+make_herdr_stub() {  # <case-dir>
+  cat > "$1/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+D=$FM_FAKE_DIR
+case "${1:-} ${2:-}" in
+  "status --json") printf '{"client":{"version":"0.9.5","protocol":22},"server":{"running":true}}\n' ;;
+  "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
+  "agent get")
+    if [ "$(cat "$D/herdr-agent")" = gone ]; then
+      printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "${3:-}"
+    else
+      printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "$(cat "$D/herdr-agent")"
+    fi ;;
+  "pane read") cat "$D/herdr-screen" ;;
+  "pane send-text") printf '%s\n' "${4:-}" >> "$D/literal" ;;
+  "pane send-keys")
+    printf '%s\n' "${4:-}" >> "$D/keys"
+    if [ "${4:-}" = enter ] && [ "$(tail -n 1 "$D/literal")" = /exit ]; then
+      printf 'gone' > "$D/herdr-agent"
+    fi ;;
+esac
+exit 0
+SH
+  chmod +x "$1/fakebin/herdr"
+}
+
+# A herdr worker's composer can already hold text typed by hand; an exit
+# command typed after it would merge into it and submit as one message, so
+# exit must type nothing and must not claim the exit command was delivered.
+# The same exit into an empty composer stops the agent, so the refusal cannot
+# pass for a reason other than the draft.
+test_herdr_exit_refuses_a_composer_holding_unsent_text() {
+  local dir out rc rule
+  dir=$(new_case herdr-draft)
+  add_task "$dir" t1 claude ship herdr "default:w1:p2"
+  printf '%s\n' "herdr_session=default" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" "herdr_pane_id=w1:p2" \
+    >> "$dir/home/state/t1.meta"
+  make_herdr_stub "$dir"
+  rule='\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80'
+  printf 'idle' > "$dir/fake/herdr-agent"
+  printf '%b\n\xe2\x9d\xaf\xc2\xa0please also list three fruits\n%b\n' "$rule" "$rule" > "$dir/fake/herdr-screen"
+  out=$(run_control "$dir" t1 exit); rc=$?
+  expect_code 1 "$rc" "exit into a composer holding a draft should refuse"$'\n'"$out"
+  assert_contains "$out" "the exit command was not typed into task t1" \
+    "the refusal should say the exit command was not typed"
+  assert_contains "$out" "already holds unsent text" "the refusal should name the unsent text as the reason"
+  assert_not_contains "$out" "exit-command=delivered" \
+    "the refusal must not claim an exit command that was never typed"
+  [ -z "$(literals "$dir")" ] || fail "nothing may be typed after a draft, got: $(literals "$dir")"
+  [ ! -s "$dir/fake/keys" ] || fail "no key may reach a composer holding a draft, got: $(cat "$dir/fake/keys")"
+  [ "$(cat "$dir/fake/herdr-agent")" = idle ] || fail "the agent must still be running after the refusal"
+
+  printf '%b\n\xe2\x9d\xaf\xc2\xa0\n%b\n' "$rule" "$rule" > "$dir/fake/herdr-screen"
+  out=$(run_control "$dir" t1 exit); rc=$?
+  expect_code 0 "$rc" "exit into an empty composer should stop the agent, or the refusal above proves nothing"$'\n'"$out"
+  assert_contains "$out" "stopped t1 harness=claude backend=herdr" "the empty-composer exit should report the stop"
+  [ "$(literals "$dir")" = /exit ] || fail "the empty-composer exit should type exactly /exit, got: $(literals "$dir")"
+  pass "fm-control exit (herdr): a composer holding unsent text gets no exit command and the exit refuses"
+}
+
 test_grok_interrupt_without_acknowledgement_reports_unconfirmed() {
   local dir out rc
   dir=$(new_case nosettle)
@@ -902,6 +968,7 @@ test_muse_interrupt_confirms_adapter_acknowledgement
 test_interrupt_revalidates_agent_after_acknowledgement_wait
 test_exit_accepts_agent_stopped_by_busy_interrupt
 test_agent_that_does_not_stop_fails_closed
+test_herdr_exit_refuses_a_composer_holding_unsent_text
 test_grok_interrupt_without_acknowledgement_reports_unconfirmed
 test_grok_idle_footer_does_not_confirm_cancellation
 test_secondmate_control_command_carries_no_marker
