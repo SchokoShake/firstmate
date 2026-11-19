@@ -527,7 +527,7 @@ The portable regression is `test_matrix_claude_named_top_rule` in `tests/fm-comp
 ## Herdr
 
 The compatibility floor is protocol 14.
-The whole real-Herdr lane's latest active verification uses both Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
+The whole real-Herdr lane's latest active verification uses Herdr 0.9.5 protocol 22 on Linux x86_64, after earlier whole-lane runs on both Herdr 0.7.4 protocol 16 and Herdr 0.8.0 protocol 19 on macOS aarch64, while focused Herdr 0.7.5 protocol 17, earlier protocol-16, protocol-14, and 0.7.3 evidence is retained where it defines current behavior or fallbacks.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 Default-on presentation projection has its own floor at Herdr 0.8.0, protocol 19, verified below.
 
@@ -750,6 +750,14 @@ ok - version floor: an unconfigured home stays projected on herdr 0.8.0 and the 
 evidence: herdr=0.8.0 protocol=19 steal_live=0 floor_verdict=0 default-session-tripwire=armed
 ```
 
+On 2026-11-19 the same command against Herdr 0.9.5 protocol 22 on Linux x86_64 printed the same first four lines, then:
+
+```text
+ok - version floor: herdr 0.9.5 protocol 22 is at or above the floor and preserves focus
+ok - version floor: an unconfigured home stays projected on herdr 0.9.5 and the explicit opt-in agrees
+evidence: herdr=0.9.5 protocol=22 steal_live=0 floor_verdict=0 default-session-tripwire=armed
+```
+
 Part C is the case the suite could not reach before: a doomed pane whose shell holds a persistent background child fails the lone-idle-shell proof on every sample, so the plan takes the plain explicit close, in the geometry where the closing workspace's right neighbour is a spacer rather than the focused anchor.
 On 0.7.5 that fallback exposed a bounded four-sample wrong-focus window and restored the anchor exactly; on 0.8.0 the same fallback exposed none, which is why default-on projection is floored at 0.8.0 rather than mitigated further below it.
 The suite also cross-checks its own Part A measurement against the floor classifier on whatever release it runs, so a drifted protocol-to-release mapping fails there rather than silently gating on the wrong thing.
@@ -780,6 +788,12 @@ Refresh this table with the opt-in guard, which re-downloads the pinned assets, 
 FM_HERDR_VERSION_FLOOR_LIVE_E2E=1 tests/fm-herdr-version-floor-live-e2e.test.sh
 ```
 
+On 2026-11-19 on Linux x86_64 the guard first classified the installed release, then classified the pinned v0.7.5, preview, and v0.8.0 Linux assets exactly as the table records:
+
+```text
+ok - installed herdr 0.9.5 protocol 22 classifies above the presentation floor
+```
+
 The classifier itself, the config preference it composes with, and the one-warning-per-release behavior are pinned portably with no Herdr installed:
 
 ```sh
@@ -788,7 +802,7 @@ tests/fm-backend-herdr.test.sh
 
 Observed guarantees: every measured release classifies as the table records; either the protocol or the version signal alone carries an at-or-above verdict, and each divergent pair flips once the carrying signal is removed; client and running selected-session server verdicts compose conservatively, an unreadable server-running state and losing both release signals report indeterminate and fall back flat, the default is rechecked after server ensure before projection publication, an unconfigured home is projected only at or above the floor, an explicit `on`, including the historical empty opt-in file, is honored below it, and the below-floor warning is emitted once per home per detected release rather than once per spawn.
 
-The whole real-Herdr lane was run on 2026-08-05 against both the CI-pinned Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it:
+The whole real-Herdr lane was run on 2026-08-05 against both Herdr 0.7.4 protocol 16, which is below the floor, and Herdr 0.8.0 protocol 19, which is at it:
 
 ```sh
 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh bin/fm-test-run.sh --lane real-herdr-gated
@@ -801,6 +815,16 @@ The projection suite's unconfigured-home case is release-aware rather than pinne
 ok - real Herdr lab: a home that configured nothing is projected by default on herdr 0.8.0
 ok - real Herdr lab: a home that configured nothing falls back flat on below-floor herdr 0.7.4 with one naming warning
 ```
+
+On 2026-11-19 the lane ran against Herdr 0.9.5 protocol 22 on Linux x86_64, the release `bin/fm-install-herdr.sh` now pins for CI, as `bin/fm-test-run.sh --family real-herdr-gated --fail-on-gate-skip 'herdr not found'`, which selects the same suites and also fails if any of them skips for a missing Herdr.
+It reported `FM_TEST_SUMMARY total=12 failed=0 skipped_gate=0`, including:
+
+```text
+ok - real Herdr lab: a home that configured nothing is projected by default on herdr 0.9.5
+ok - real Herdr lab validation completed on Herdr 0.9.5 with the default-session tripwire intact
+```
+
+Because CI now runs an at-or-above-floor release, the below-floor flat fallback is proven against real Herdr only by the 0.7.4 run above, with the portable classifier tests above still pinning it on every CI run.
 
 Every other case in that suite uses an explicit opt-in or opt-out, so the floor leaves them unchanged on both releases.
 
@@ -855,6 +879,18 @@ FM_SEND_MARKER_HERDR_E2E=1 \
   tests/fm-send-secondmate-marker-herdr-e2e.test.sh
 ```
 
+The typed-draft guard was measured on 2026-11-19 on Herdr 0.9.5 protocol 22 with a real Claude Code 2.1.328 worker in a named lab.
+A draft typed into the worker's composer with `herdr pane send-text` and no Enter, once while Claude was idle and once mid-turn while Herdr reported it working, made `bin/fm-send.sh` exit 1 within 0.1 seconds with this error, and the draft stayed intact and alone in the composer:
+
+```text
+error: nothing was typed into <lab-session>:w1:p2: its composer already holds unsent text (typed by hand, or an earlier message that never submitted); submit or clear that text first, then resend
+```
+
+After Ctrl+U cleared the draft, the next steer submitted normally, two back-to-back steers sent mid-turn both queued, and no submitted turn contained the draft text.
+`bin/fm-control.sh <task> exit` refused a held draft the same way.
+Without the guard, a steer is appended to the draft and both submit as one merged message.
+The portable regressions are the typed-draft cases in `tests/fm-backend-herdr.test.sh`, `tests/fm-send-strict.test.sh`, and `tests/fm-control.test.sh`.
+
 ### Native blocked event
 
 The protocol-16 event path was measured on 2026-07-11 with Herdr 0.7.3 and Python 3.13:
@@ -872,11 +908,19 @@ ok - real herdr: a driven idle->blocked transition returns the blocked record in
 ok - real herdr: the watcher fast-path enqueues a stale wake naming the task window
 ```
 
+On 2026-11-19 the same suite against Herdr 0.9.5 protocol 22 on Linux x86_64 printed:
+
+```text
+ok - real herdr (herdr 0.9.5): events.subscribe capability gate passes (protocol >= 16, events surface present in api schema)
+ok - real herdr (herdr 0.9.5): a driven idle->blocked transition returns the blocked record in 0.047s (pane w1:p2)
+ok - real herdr: the watcher fast-path enqueues a stale wake naming the task window from the live blocked transition
+```
+
 Polling remained active and is covered as the fallback for capability, connect, subscribe, and repeated reader failure.
 
 ### Agent lifecycle control
 
-Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating is measured against the real binary; reverified 2026-08-08 on Herdr 0.8.0, and first measured 2026-08-02 on Herdr 0.7.5 with identical results:
+Herdr is one of the two backends whose recovery-grade agent-state classifier the control plane may trust ([agent-control.md](../agent-control.md)), so its lifecycle gating is measured against the real binary; reverified 2026-11-19 on Herdr 0.9.5 protocol 22 on Linux x86_64 and 2026-08-08 on Herdr 0.8.0, and first measured 2026-08-02 on Herdr 0.7.5 with identical results:
 
 ```sh
 tests/fm-control-herdr-smoke.test.sh

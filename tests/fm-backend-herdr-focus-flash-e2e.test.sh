@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Real-Herdr regression for the projected-cleanup focus flash (upstream
-# ogulcancelik/herdr#1621 family, live on 0.7.5 stable).
+# herdrdev/herdr#1621 family, live on 0.7.5 stable).
 # Part A reproduces the OLD path: an explicit last-pane close that empties a
 # non-focused workspace steals the focused workspace.
 # Part B proves the mitigation: the focus-safe emptying-close plan
@@ -237,7 +237,11 @@ C_SURVIVOR_ORDER=$(printf '%s' "$C_ORDER" | tr ',' '\n' | grep -v "^$C_DOOMED_WS
 
 # One persistent background child of the pane's shell, started outside any
 # worktree so nothing reaps it, is enough to fail the proof on every sample.
-lab pane send-text "$C_DOOMED_PANE" 'cd / && sleep 3000 &' >/dev/null \
+# `sh -c '... exec sleep'` keeps sleep the shell's DIRECT child whatever the
+# pane's interactive shell is: bash 5.2 runs a backgrounded `cd / && sleep &`
+# list in a forked subshell, which leaves sleep a grandchild the check below
+# never sees.
+lab pane send-text "$C_DOOMED_PANE" "sh -c 'cd / && exec sleep 3000' &" >/dev/null \
   || fail 'could not send the Part C persistent-child command'
 lab pane send-keys "$C_DOOMED_PANE" enter >/dev/null \
   || fail 'could not submit the Part C persistent-child command'

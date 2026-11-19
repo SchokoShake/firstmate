@@ -74,6 +74,10 @@ case "${1:-} ${2:-}" in
   "status --json") printf '{"client":{"version":"0.7.5","protocol":16},"server":{"running":true}}\n' ;;
   "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
   "pane send-keys") : ;;
+  "agent get")
+    [ -z "${FM_FAKE_HERDR_AGENT_STATUS:-}" ] \
+      || printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "$FM_FAKE_HERDR_AGENT_STATUS" ;;
+  "pane read") [ -z "${FM_FAKE_HERDR_SCREEN:-}" ] || cat "$FM_FAKE_HERDR_SCREEN" ;;
 esac
 SH
   chmod +x "$fb/herdr"
@@ -197,6 +201,42 @@ test_healthy_fm_id_send_still_works() {
   pass "fm-send strict: healthy fm-<id> sends still type once and submit"
 }
 
+# A herdr worker's composer can already hold unsent text, such as a draft the
+# captain typed by hand; a steer typed after it would merge into it and submit
+# as one garbled turn, so nothing may be typed and the send must fail.
+# The same send into an empty composer is typed, so the refusal cannot pass
+# for a reason other than the draft.
+test_herdr_composer_holding_a_draft_gets_nothing_typed() {
+  local dir fb home err log herdr_log rule draft empty rc
+  dir="$TMP_ROOT/herdr-draft"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); home=$(setup_home herdrdraft); err="$dir/send.err"; log="$dir/tmux.log"; herdr_log="$dir/herdr.log"
+  draft="$dir/draft.screen"; empty="$dir/empty.screen"
+  : > "$log"
+  fm_write_meta "$home/state/draft.meta" \
+    "window=default:wB:p2" "backend=herdr" "herdr_session=default" "herdr_pane_id=wB:p2" "kind=ship" "harness=claude"
+  rule='\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80'
+  printf '%b\n\xe2\x9d\xaf\xc2\xa0please also list three fruits\n%b\n' "$rule" "$rule" > "$draft"
+  printf '%b\n\xe2\x9d\xaf\xc2\xa0\n%b\n' "$rule" "$rule" > "$empty"
+
+  : > "$herdr_log"
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_HERDR_LOG="$herdr_log" FM_SEND_SETTLE=0 \
+    FM_FAKE_HERDR_AGENT_STATUS=idle FM_FAKE_HERDR_SCREEN="$draft" \
+    "$SEND" draft "Reply with exactly the word PONG." >/dev/null 2>"$err"; rc=$?
+  [ "$rc" -ne 0 ] || fail "a steer into a composer holding a draft reported success"
+  assert_contains "$(cat "$err")" "nothing was typed into default:wB:p2" "the refusal should say nothing was typed and name the target"
+  assert_contains "$(cat "$err")" "already holds unsent text" "the refusal should name the unsent text as the reason"
+  assert_no_grep 'pane send-text' "$herdr_log" "the steer was typed into a composer that already held a draft"
+  assert_no_grep 'pane send-keys' "$herdr_log" "a key was sent to a composer that already held a draft"
+
+  : > "$herdr_log"
+  PATH="$fb:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$home" FM_TMUX_LOG="$log" FM_HERDR_LOG="$herdr_log" FM_SEND_SETTLE=0 \
+    FM_FAKE_HERDR_AGENT_STATUS=idle FM_FAKE_HERDR_SCREEN="$empty" \
+    "$SEND" draft "Reply with exactly the word PONG." >/dev/null 2>"$err"
+  assert_grep 'pane send-text wB:p2 Reply with exactly the word PONG.' "$herdr_log" "the same steer into an empty composer was not typed, so the draft refusal above proves nothing"
+  assert_no_grep 'already holds unsent text' "$err" "an empty composer was reported as holding unsent text"
+  pass "fm-send (herdr): a composer that already holds unsent text gets nothing typed and the send fails"
+}
+
 # A --key send is how firstmate interrupts a worker, so its exit status is the
 # only signal that the interrupt actually landed.
 # Reporting success for a key that was never delivered would leave supervision
@@ -232,4 +272,5 @@ test_unresolvable_target_does_not_tmux_fallback
 test_prefixless_herdr_pane_id_fails
 test_unmatched_single_colon_target_must_exist
 test_fm_prefixed_herdr_session_is_an_explicit_target
+test_herdr_composer_holding_a_draft_gets_nothing_typed
 test_healthy_fm_id_send_still_works

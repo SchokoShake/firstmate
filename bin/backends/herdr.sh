@@ -385,7 +385,7 @@ fm_backend_herdr_cli() {  # <session> <herdr-subcommand-and-args...>
 
 # fm_backend_herdr_tool_check: refuse loudly if herdr or jq is missing.
 fm_backend_herdr_tool_check() {
-  command -v herdr >/dev/null 2>&1 || { echo "error: backend=herdr selected but the 'herdr' CLI is not installed (https://herdr.dev) (dual-licensed AGPL-3.0-or-later/commercial)" >&2; return 1; }
+  command -v herdr >/dev/null 2>&1 || { echo "error: backend=herdr selected but the 'herdr' CLI is not installed (https://herdr.dev)" >&2; return 1; }
   command -v jq >/dev/null 2>&1 || { echo "error: backend=herdr selected but 'jq' is not installed (required to parse herdr's JSON output)" >&2; return 1; }
   return 0
 }
@@ -2782,14 +2782,37 @@ fm_backend_herdr_rendered_busy_state() {  # <target> [harness] -> busy|idle|unkn
 # path still never reads pane content, and a pane already mid-turn before we
 # typed keeps reporting `pending` rather than borrowing someone else's turn as
 # proof of our own delivery.
-# Echoes empty|pending|unknown|send-failed, a subset of the proof-carrying
-# submit vocabulary. Empty means confirmed submitted for every backend; how
-# each backend confirms it is an internal decision, and herdr's is no longer
-# literally "the composer read empty".
+# Typed-draft guard (before anything is typed): a herdr worker is meant to be
+# opened and typed into by hand, so its composer can already hold a draft that
+# was never submitted, or an earlier message whose Enter never landed.
+# Typing a steer then appends to that text and the Enter submits both as one
+# garbled turn that still confirms as delivered (the live measurement is in
+# docs/verification/runtime-backends.md).
+# So when herdr's native agent state reads idle, done, or working and the shared
+# classifier's verdict is exactly `pending`, nothing is typed and the verdict is
+# `occupied`.
+# Blocked is skipped: it covers a question dialog that hides the composer and
+# cursor's never-idle state, whose mid-turn row reads `pending` with no user
+# text.
+# An unreadable state or any other composer verdict proves nothing, so the
+# submit goes ahead exactly as before.
+# Echoes empty|pending|unknown|send-failed|occupied, a subset of the
+# proof-carrying submit vocabulary plus that guard's refusal. Empty means
+# confirmed submitted for every backend; how each backend confirms it is an
+# internal decision, and herdr's is no longer literally "the composer read
+# empty".
 fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep> <settle>
   local target=$1 text=$2 retries=$3 sleep_s=$4 settle=$5 i=0 verdict baseline confirm_sleep
   local raw_status footer_baseline=''
   fm_backend_herdr_parse_target "$target" || { printf 'unknown'; return 0; }
+  case "$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")" in
+    idle|done|working)
+      if [ "$(fm_backend_herdr_composer_state "$target")" = pending ]; then
+        printf 'occupied'
+        return 0
+      fi
+      ;;
+  esac
   fm_backend_herdr_send_literal "$target" "$text" || { printf 'send-failed'; return 0; }
   sleep "$settle"
   raw_status=$(fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE")
