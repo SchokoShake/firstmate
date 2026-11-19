@@ -1,0 +1,11 @@
+$ bin/fm-install-herdr.sh <disposable dir>
+fm-install-herdr.sh: downloading herdr-linux-x86_64 from https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-linux-x86_64
+fm-install-herdr.sh: installed herdr 0.9.5 (protocol 22) to /tmp/fm-install-herdr.V1iuVD/bin/herdr
+herdr 0.9.5
+rc=0
+$ <dir>/herdr --version
+herdr 0.9.5
+$ sha256sum <dir>/herdr
+14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d
+total 29576
+-rwxr-xr-x 1 paul paul 30285672 Nov 19 16:40 herdr

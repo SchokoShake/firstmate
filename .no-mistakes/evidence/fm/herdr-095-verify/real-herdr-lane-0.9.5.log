@@ -1,0 +1,219 @@
+FM_TEST_BEGIN 2026-11-19T15:37:53Z tests/fm-afk-inject-herdr-e2e.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - real herdr Scenario A: partial input defers injection; digest arrives clean after idle
+ok - real herdr Scenario B: swallowed Enter (via the herdr shim) produces exactly one clean digest
+ok - real herdr Scenario C: a normal captain status injects exactly one clean single-line sentinel digest
+ok - real herdr Scenario D: a persistently pending composer raises the max-defer wedge alarm, preserves the buffer, and never crashes the daemon
+all real-herdr afk injection e2e tests passed
+FM_TEST_END 2026-11-19T15:38:52Z tests/fm-afk-inject-herdr-e2e.test.sh exit=0 duration_ms=59188 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:38:52Z tests/fm-afk-launch.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - clear-stale: removes escalations buffer, sidecar, and wedge marker
+ok - clear-stale: leaves the durable wake-queue intact (no pending work dropped)
+ok - launcher paths: relative home and state ignore CDPATH before daemon command construction
+ok - launcher paths: absolute symlink spellings are preserved
+ok - launcher paths: unresolved relative FM_HOME fails loudly
+ok - launcher paths: unresolved relative FM_STATE_OVERRIDE fails loudly
+ok - refresh: daemon already alive - stale artifacts preserved (current session's buffer kept)
+ok - stop-ordering: daemon SIGTERM'd while .afk still present (flush is not a no-op)
+ok - stop-ordering: .afk cleared last
+ok - stop-ordering: daemon-terminal record removed
+ok - stop identity: stale lock cannot signal an unrelated live process
+ok - failed start: away flag and delivery artifacts roll back
+ok - concurrent start: one serialized daemon terminal remains tracked
+ok - launcher lock: incomplete publication receives initialization grace
+ok - launcher signal: TERM exits and releases the lifecycle lock
+fm-afk-launch: daemon launched in non-visible herdr workspace ws-partial (pane lab:pane-exact), supervising lab:captain
+ok - herdr create: malformed response recovers durable exact ownership
+fm-afk-launch: herdr create failed after returning exact ids; closing lab:pane-exact
+fm-afk-launch: recorded terminal teardown is unconfirmed; preserving exact id
+ok - herdr create error: unconfirmed exact id is persisted for reconciliation
+fm-afk-launch: failed to run daemon in herdr pane lab:pane-exact; closing it
+fm-afk-launch: recorded terminal teardown is unconfirmed; preserving exact id
+ok - herdr run failure: unconfirmed exact id remains reconcilable
+fm-afk-launch: failed to persist daemon terminal record; closing tmux:exact-session
+ok - record failure: newly created terminal is closed by exact id
+fm-afk-launch: daemon did not become ready; closing tmux:exact-session
+ok - readiness failure: exact terminal and durable record roll back
+fm-afk-launch: daemon did not become ready; closing tmux:exact-session
+fm-afk-launch: recorded terminal teardown is unconfirmed; preserving exact id
+ok - readiness failure: unconfirmed terminal retains its reconciliation id
+ok - tmux absence: clean missing differs from transport probe failure
+ok - native lifecycle: launcher owns state with no terminal
+ok - native lifecycle: uniform stop clears state without closing a terminal
+ok - native entry: launcher-prepared lifecycle state is not rewritten
+fm-afk-launch: reconciling leaked daemon terminal tmux:exact-session
+fm-afk-launch: recorded terminal teardown is unconfirmed; preserving exact id
+ok - teardown failure: exact terminal record is preserved
+ok - record publication: failed atomic rename preserves the complete prior record
+fm-afk-launch: daemon terminal record is malformed; refusing to act on it
+ok - record read: malformed record fails closed without acting on a partial id
+fm-afk-launch: daemon terminal record is malformed; refusing to act on it
+fm-afk-launch: malformed daemon terminal record; refusing to stop away mode
+ok - stop: malformed terminal record preserves away state and fails closed
+fm-afk-launch: failed to create detached tmux daemon session 'fm-afk-daemon-3927811239-3866914-16365-1795102763'
+ok - tmux launch: planned exact target is recorded before creation and removed on failure
+fm-afk-launch: failed to create detached tmux daemon session 'fm-afk-daemon-1478543-3866985-11273-1795102763'
+ok - tmux launch: unique names eliminate collision teardown
+ok - stop validation: malformed record causes no daemon or state side effects
+ok - launcher lock: incomplete metadata fails acquisition and releases lock
+fm-afk-launch: failed to clear away-mode flag
+fm-afk-launch: away mode stopped; terminal teardown remains recorded for retry
+ok - stop state: away-flag removal failure is surfaced
+fm-afk-launch: away-mode daemon did not exit after SIGTERM; preserving lifecycle state
+ok - stop liveness: captured live daemon preserves lifecycle state after lock release
+fm-afk-launch: daemon terminal record is malformed; refusing to act on it
+fm-afk-launch: daemon terminal record is malformed; refusing to act on it
+ok - refresh record: malformed terminal identity fails closed
+fm-afk-launch: failed to clear stale away-mode artifacts
+ok - clear failure: native entry aborts and restores prior state
+fm-afk-launch: reconciling leaked daemon terminal tmux:exact-session
+fm-afk-launch: terminal close command failed, but exact absence was confirmed
+ok - confirmed absence: cleanup succeeds and removes the stale record
+fm-afk-launch: rollback restoration incomplete; backup retained at /tmp/fm-afk-restore-fail.WOTGsI/state/.afk-launch-backup.11s6bV
+ok - rollback restore: incomplete restoration retains its recovery backup
+ok - flag failure: lifecycle aborts without active state
+ok - herdr e2e: captain tab pane count unchanged after start (no split)
+ok - herdr e2e: daemon launched in a separate non-visible workspace
+ok - herdr e2e: daemon pane is NOT in the captain's tab
+ok - herdr e2e: daemon terminal scoped to the lab session
+ok - herdr e2e: captain tab pane count restored after stop
+ok - herdr e2e: daemon workspace removed by exact id on stop
+ok - herdr e2e: record + .afk cleared on stop
+ok - tmux e2e: captain window pane count unchanged after start (no split-window)
+ok - tmux e2e: daemon launched in a separate detached session
+ok - tmux e2e: captain window pane count unchanged after stop
+ok - tmux e2e: daemon session killed by exact id on stop
+ok - tmux e2e: record + .afk cleared on stop
+FM_TEST_END 2026-11-19T15:39:25Z tests/fm-afk-launch.test.sh exit=0 duration_ms=32313 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:39:25Z tests/fm-backend-autodetect-smoke.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - real herdr: fm-spawn.sh auto-detects herdr from HERDR_ENV=1 (no explicit config) and prints the loud notice
+ok - real herdr: auto-detected spawn records backend=herdr and herdr_session/workspace/tab/pane fields in meta
+ok - real herdr: the auto-detected spawn's launch command actually ran in the herdr pane
+ok - real herdr: teardown completes the auto-detected spawn/teardown cycle (meta cleared, pane closed)
+ok - real herdr: isolated lab session removed and default fleet session unchanged
+FM_TEST_END 2026-11-19T15:39:29Z tests/fm-backend-autodetect-smoke.test.sh exit=0 duration_ms=4571 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:39:29Z tests/fm-backend-herdr-eventwait-smoke.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - real herdr (herdr 0.9.5): events.subscribe capability gate passes (protocol >= 16, events surface present in api schema)
+ok - real herdr (herdr 0.9.5): a driven idle->blocked transition returns the blocked record in 0.045s (pane w1:p2)
+ok - real herdr: the watcher fast-path enqueues a stale wake naming the task window from the live blocked transition
+FM_TEST_END 2026-11-19T15:39:31Z tests/fm-backend-herdr-eventwait-smoke.test.sh exit=0 duration_ms=1501 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:39:31Z tests/fm-backend-herdr-launcher-workspace-e2e.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - real herdr E2E: with one 'firstmate' workspace and no herdr parent, a crewmate still lands in this home's own workspace without stealing focus
+ok - real herdr E2E: the normal unique-label path is unchanged when the launcher's own pane identifies the workspace
+ok - real herdr E2E: presentation spaces still create the isolated child workspace and bind it under the launcher's exact parent, without stealing focus
+ok - real herdr E2E: with two 'firstmate' workspaces, a worker spawned from inside the second one lands in that exact workspace
+ok - real herdr E2E: the duplicate-labeled sibling workspace is left entirely untouched and focus is preserved
+ok - real herdr E2E: with a duplicated home label, a projected worker still hangs off the launcher's exact workspace and the sibling stays untouched
+ok - real herdr E2E: an ambiguous home label with no launcher identity refuses before any worker endpoint exists
+ok - real herdr E2E: a launcher pane that no longer exists refuses before any worker endpoint exists
+ok - real herdr E2E: a secondmate launching its own worker gets the same exact-workspace guarantee, and its same-labeled sibling is untouched
+ok - real herdr E2E: a --secondmate launch still stands up that secondmate's own workspace instead of inheriting the launcher's
+ok - real herdr E2E: teardown closes only the worker's own pane and leaves the launcher, its workspace, and the same-labeled sibling intact
+ok - real herdr E2E: isolated lab session removed and default fleet session unchanged
+FM_TEST_END 2026-11-19T15:39:56Z tests/fm-backend-herdr-launcher-workspace-e2e.test.sh exit=0 duration_ms=24893 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:39:56Z tests/fm-backend-herdr-presentation-e2e.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - real Herdr lab: an opted-out spawn retains the Stage 1 Herdr command sequence with zero ordering calls
+ok - real Herdr lab: a home that configured nothing is projected by default on herdr 0.9.5
+ok - real Herdr lab: every projected create, task-tab create, seeded prune, and move preserves active workspace and tab
+warning: herdr presentation cleanup could not verify the exact pane; refusing focus-unsafe pane close
+ok - real Herdr lab: active seeded-tab pruning refuses the exact pane and preserves exact focus
+ok - real Herdr lab: bounded lock contention warns and falls back flat without projection or focus drift
+ok - real Herdr lab: concurrent primary workers form one stable contiguous block without active workspace/tab drift
+ok - real Herdr lab: forced workspace.move failure leaves a successful worker in default order with a warning and no cleanup
+ok - real Herdr lab: concurrent post-create abort cleanup stays serialized with exact focus restoration
+ok - real Herdr lab: Treehouse commands and metadata shape are byte-identical except for endpoint IDs and spawn incarnation
+ok - real Herdr lab: exact task-pane close removes the projected workspace with no unrestored wrong-focus interval
+ok - real Herdr lab: concurrent projected cleanup is serialized and leaves active workspace/tab unchanged
+ok - real Herdr lab: three repeated concurrent create/order/cleanup waves have zero active workspace or tab drift
+ok - real Herdr lab: the primary presentation setting inherits into real secondmate homes
+ok - real Herdr lab: primary and two secondmate homes each own a top-level contiguous child block
+ok - real Herdr lab: concurrent primary/A/B spawns preserve parent order and exact focus
+ok - real Herdr lab: session lock contention from a secondmate home falls back flat with no journal
+ok - real Herdr lab: Hi Bit and Wheelhouse-style same-identity restarts reclaim one nested space with exact focus and idempotence
+ok - real Herdr lab: secondmate restart binding and reclaim stay isolated to the exact child home and parent
+ok - real Herdr lab: concurrent cross-home recoveries replace exact husks under one session lock with no focus drift
+ok - real Herdr lab: legacy projection labels and flat secondmate tabs are left unmigrated
+ok - real Herdr lab: multi-home exact-pane teardowns restore captain focus without workspace close authority
+warning: no exact herdr presentation token match for missing1; leaving any stale space untouched and spawning flat
+warning: no exact herdr presentation token match for renamed1; leaving any stale space untouched and spawning flat
+warning: 2 exact herdr presentation token matches for duplicate1 are quarantined; inspecting only for duplicate-agent risk
+warning: quarantined herdr presentation for duplicate1 is dead or agent-free; exact bound reclaim may proceed, otherwise spawning flat
+warning: 2 exact herdr presentation token matches for duplicate1 are quarantined; inspecting only for duplicate-agent risk
+error: quarantined herdr presentation for duplicate1 has a live pane; refusing duplicate launch
+ok - real Herdr lab: missing, renamed, and duplicate tokens trigger zero destructive or adoptive calls, and live duplicate risk refuses launch
+ok - real Herdr lab validation completed on Herdr 0.9.5 with the default-session tripwire intact
+FM_TEST_END 2026-11-19T15:42:41Z tests/fm-backend-herdr-presentation-e2e.test.sh exit=0 duration_ms=165250 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:42:41Z tests/fm-backend-herdr-prune-safety-e2e.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - repro setup: a pre-existing workspace labeled 'firstmate' collides with the primary home's own label
+ok - repro setup: a live long-running process is running in the startup workspace's single tab (label '1'), heartbeating to a marker file
+ok - fixed: container_ensure adopts the label-colliding startup workspace and reports NO seeded default tab (never a prune candidate)
+ok - fixed: the live pane (and its live process) survived create_task untouched - the exact 2026-07-02 self-kill incident does not reproduce
+ok - fixed: the startup workspace's original live tab is still present in tab list after the spawn
+ok - happy path: a genuinely fresh workspace's seeded default tab is still pruned, leaving exactly one clean fm-<id> task tab
+FM_TEST_END 2026-11-19T15:42:47Z tests/fm-backend-herdr-prune-safety-e2e.test.sh exit=0 duration_ms=6068 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:42:47Z tests/fm-backend-herdr-respawn-idem-e2e.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - repro setup: two real fm-<id> task tabs exist (crewmate-shaped and secondmate-shaped), neither with a registered agent
+ok - repro confirmed: after a real session restart, both task panes survive alive but with no registered agent - the restored-layout husk
+ok - fixed: create_task closes and replaces the crewmate-shaped restored husk instead of refusing - no manual pane close needed
+ok - fixed: create_task closes and replaces the secondmate-shaped restored husk instead of refusing - same fix, same function, both spawn shapes
+ok - fixed: the workspace holds exactly the 2 replacement tabs after both respawns - no leaked husk tabs, no destroyed workspace
+ok - fixed: a genuinely live duplicate (a real registered agent) still refuses exactly as before - the husk fix never closes a live pane
+FM_TEST_END 2026-11-19T15:42:49Z tests/fm-backend-herdr-respawn-idem-e2e.test.sh exit=0 duration_ms=1739 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:42:49Z tests/fm-backend-herdr-smoke.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - real herdr: version_check accepts the installed binary's protocol
+ok - real herdr: container_ensure starts the isolated session's server, creates the firstmate workspace (fm-lab-backend-smoke-41510:w1), and reports its seeded default tab id (w1:t1)
+ok - real herdr: container_ensure is idempotent (reuses/adopts the existing firstmate workspace, reports no seeded default tab on adoption)
+ok - real herdr: create_task prunes the freshly-created workspace's seeded default tab, leaving exactly one clean fm-<id> task tab
+ok - real herdr: create_task refuses a same-labeled tab whose pane hosts a genuinely live registered agent (unchanged behavior)
+ok - real herdr: create_task closes and replaces a same-labeled tab whose pane hosts no registered agent (the restored-husk shape), leaving the workspace intact
+ok - real herdr: a secondmate-shaped home (.fm-secondmate-home) gets its OWN herdr workspace, distinct from the primary's, in the SAME session
+ok - real herdr: the secondmate-shaped home's workspace is labeled 2ndmate-<secondmate-id> in herdr itself
+ok - real herdr: a task spawned into the secondmate-shaped home lands as a tab inside the secondmate's OWN workspace
+ok - real herdr: list_live stays scoped to each home's own workspace - neither home sees the other's tasks
+ok - real herdr: BOTH workspace ids/labels AND both tasks' pane ids survive a session stop + fresh server restart (multi-workspace shape)
+ok - real herdr: send_text_line runs a command atomically (pane run) and its output is capturable
+ok - real herdr: send_literal + send_key Enter submit as two separate steps (verified: send-text does NOT auto-submit)
+ok - real herdr: current_path reads the pane's live cwd
+note: FM_HERDR_SMOKE_REAL_CLAUDE=1 not set; skipping the real-agent busy_state check
+ok - real herdr: kill removes the pane and is idempotent/best-effort
+ok - real herdr: list_live discovers a live task tab by fm-<id> label
+FM_TEST_END 2026-11-19T15:42:53Z tests/fm-backend-herdr-smoke.test.sh exit=0 duration_ms=3870 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:42:53Z tests/fm-backend-herdr-workspace-per-home-e2e.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - real herdr E2E: a primary-shaped home spawns a crewmate on the herdr backend
+ok - real herdr E2E: the primary-shaped home's crewmate landed in the 'firstmate' workspace
+ok - real herdr E2E: the primary spawns a --secondmate task on the herdr backend
+ok - real herdr E2E: a --secondmate spawn by the PRIMARY lands in the SECONDMATE's own labeled workspace, distinct from the primary's
+ok - real herdr E2E: a crewmate spawns successfully FROM a secondmate-shaped home's own fm-spawn.sh process
+ok - real herdr E2E: a crewmate spawned FROM the secondmate-shaped home lands in the secondmate's OWN workspace - falls out of per-home resolution, no glue needed
+ok - real herdr E2E: list_live from the primary's own context sees only the primary's own task
+ok - real herdr E2E: list_live from the secondmate's own context sees only tasks in the secondmate's own workspace (both its own tab and its crewmate's)
+ok - real herdr E2E: tearing down cm1 closes only its own tab - the secondmate's and cm2's tabs survive untouched
+ok - real herdr E2E: tearing down cm2 closes only its own tab - the secondmate's own tab (same workspace) survives untouched
+FM_TEST_END 2026-11-19T15:43:02Z tests/fm-backend-herdr-workspace-per-home-e2e.test.sh exit=0 duration_ms=9201 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:43:02Z tests/fm-control-herdr-smoke.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - real herdr: exit on a pane with no registered agent is idempotent success
+ok - real herdr: interrupt refuses when herdr's own agent registry reports no agent
+ok - real herdr: interrupt delivers the harness's key and proves the agent survived it
+ok - real herdr: no control verb removed the endpoint or the task's local copy
+ok - real herdr: an agent that does not stop fails closed instead of being reported as stopped
+FM_TEST_END 2026-11-19T15:43:07Z tests/fm-control-herdr-smoke.test.sh exit=0 duration_ms=4913 gate_skip=false
+FM_TEST_BEGIN 2026-11-19T15:43:07Z tests/fm-herdr-session-cleanup-e2e.test.sh family=real-herdr-gated expected_gate_skip=herdr
+ok - real named lab reproduced the exact restored one-tab one-pane childless no-agent shell shape
+ok - real named lab cleanup closes only the exact stale pane and preserves exact focus
+ok - real named lab cleanup is idempotent and leaves the default fleet session to the teardown tripwire
+evidence: herdr=0.9.5 protocol=22 default-session-tripwire=armed
+FM_TEST_END 2026-11-19T15:43:08Z tests/fm-herdr-session-cleanup-e2e.test.sh exit=0 duration_ms=1794 gate_skip=false
+FM_TEST_SUMMARY total=12 failed=0 skipped_gate=0 duration_ms=315438
+FM_TEST_SUMMARY_FAMILY family=real-herdr-gated count=12 duration_ms=315301 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-backend-herdr-presentation-e2e.test.sh duration_ms=165250
+FM_TEST_SLOWEST rank=2 script=tests/fm-afk-inject-herdr-e2e.test.sh duration_ms=59188
+FM_TEST_SLOWEST rank=3 script=tests/fm-afk-launch.test.sh duration_ms=32313
+FM_TEST_SLOWEST rank=4 script=tests/fm-backend-herdr-launcher-workspace-e2e.test.sh duration_ms=24893
+FM_TEST_SLOWEST rank=5 script=tests/fm-backend-herdr-workspace-per-home-e2e.test.sh duration_ms=9201
+FM_TEST_SLOWEST rank=6 script=tests/fm-backend-herdr-prune-safety-e2e.test.sh duration_ms=6068
+FM_TEST_SLOWEST rank=7 script=tests/fm-control-herdr-smoke.test.sh duration_ms=4913
+FM_TEST_SLOWEST rank=8 script=tests/fm-backend-autodetect-smoke.test.sh duration_ms=4571
+FM_TEST_SLOWEST rank=9 script=tests/fm-backend-herdr-smoke.test.sh duration_ms=3870
+FM_TEST_SLOWEST rank=10 script=tests/fm-herdr-session-cleanup-e2e.test.sh duration_ms=1794
+FM_TEST_SLOWEST rank=11 script=tests/fm-backend-herdr-respawn-idem-e2e.test.sh duration_ms=1739
+FM_TEST_SLOWEST rank=12 script=tests/fm-backend-herdr-eventwait-smoke.test.sh duration_ms=1501
+LANE_EXIT=0

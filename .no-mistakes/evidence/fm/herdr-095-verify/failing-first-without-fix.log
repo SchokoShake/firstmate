@@ -1,0 +1,11 @@
+=== tests/fm-backend-herdr.test.sh (product fix reverted to 3e2c124)
+not ok - send_text_submit should catch a slow-but-valid transition inside the herdr minimum budget, got 'unknown'
+exit=1
+=== tests/fm-send-strict.test.sh (product fix reverted to 3e2c124)
+not ok - the refusal should say nothing was typed and name the target (missing: 'nothing was typed into default:wB:p2')
+error: text not submitted to default:wB:p2 (delivery unconfirmed; verdict=pending; tried meta=/tmp/fm-send-strict.U4f8g0/herdrdraft-28996/state/draft.meta; backend=from-meta)
+exit=1
+=== tests/fm-control.test.sh (product fix reverted to 3e2c124)
+not ok - exit into a composer holding a draft should refuse
+stopped t1 harness=claude backend=herdr endpoint=default:w1:p2 worktree=/tmp/fm-control.JpPnsr/herdr-draft-9697/wt-t1: expected exit 1, got 0
+exit=1

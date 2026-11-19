@@ -1,0 +1,71 @@
+herdr: herdr 0.9.5  lab session: fm-lab-draftguard-3892456-12320
+
+== self-check: the product classifier reads this composer
+empty composer -> empty (agent: idle)
+PASS - empty composer classifies empty
+
+== Scenario 1: hand-typed draft while Claude is idle, then fm-send
+composer -> pending, agent -> idle
+fm-send rc=1 (0.12s)
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: nothing was typed into fm-lab-draftguard-3892456-12320:w1:p2: its composer already holds unsent text (typed by hand, or an earlier message that never submitted); submit or clear that text first, then resend
+-- fm-peek draft:
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+lab worker (Claude-shaped composer)
+
+────────────────────────────────────────
+❯ please also list three fruits
+────────────────────────────────────────PASS - fm-send refused with the occupied error
+PASS - nothing was submitted
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+PASS - draft intact and alone in the composer
+
+== Scenario 2: hand-typed draft while Herdr reports the worker working, then fm-send
+agent -> working
+fm-send rc=1
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: nothing was typed into fm-lab-draftguard-3892456-12320:w1:p2: its composer already holds unsent text (typed by hand, or an earlier message that never submitted); submit or clear that text first, then resend
+PASS - fm-send refused mid-turn
+PASS - nothing was submitted
+
+== Scenario 3: fm-control exit with the draft still held
+fm-control rc=1
+error: the exit command was not typed into task draft: its composer already holds unsent text (interrupt=not-needed); submit or clear that text, then retry
+agent after -> idle
+-- fm-peek:
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+lab worker (Claude-shaped composer)
+
+────────────────────────────────────────
+❯ please also list three fruits
+────────────────────────────────────────PASS - exit refused with the occupied error
+PASS - exit did not claim the command was delivered
+PASS - worker still running
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+PASS - nothing submitted and draft intact
+
+== Scenario 4: captain clears the draft (Ctrl+U), the same steer now delivers
+composer -> empty
+fm-send rc=0
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+-- submitted turns:
+Reply with exactly the word PONG.
+PASS - fm-send confirmed delivery
+PASS - exactly the steer was submitted, no draft text
+
+== Scenario 5 (before the fix): the base commit's fm-send against the same draft
+base fm-send rc=0
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+-- submitted turns:
+please also list three fruitsReply with exactly the word PONG.
+REPRODUCED: base merged the draft and the steer into one submitted turn (rc=0)
+
+ALL GUARD SCENARIOS PASSED
+teardown rc=0 (tripwire verified on 0)
