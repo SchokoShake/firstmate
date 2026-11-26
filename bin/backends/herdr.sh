@@ -1458,7 +1458,7 @@ fm_backend_herdr_server_ensure() {  # <session>
   (
     for name in $(compgen -e); do
       case "$name" in
-        HOME|USER|LOGNAME|SHELL|PATH|LANG|LANGUAGE|LC_*|TZ|TMPDIR|XDG_*|DBUS_SESSION_BUS_ADDRESS|SSH_AUTH_SOCK|DISPLAY|WAYLAND_DISPLAY|HERDR_CONFIG_PATH) ;;
+        HOME|USER|LOGNAME|SHELL|PATH|LANG|LANGUAGE|LC_*|TZ|TMPDIR|XDG_*|DBUS_SESSION_BUS_ADDRESS|SSH_AUTH_SOCK|DISPLAY|XAUTHORITY|WAYLAND_DISPLAY|HERDR_CONFIG_PATH) ;;
         *) export -n "${name?}" ;;
       esac
     done
