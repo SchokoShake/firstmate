@@ -1,0 +1,4 @@
+real machine default before: {"default":true,"name":"default","running":true,"session_dir":"~/.config/herdr","socket_path":"~/.config/herdr/herdr.sock"}
+real machine default after:  {"default":true,"name":"default","running":true,"session_dir":"~/.config/herdr","socket_path":"~/.config/herdr/herdr.sock"}
+BYTE-IDENTICAL
+none of this run's lab names exist in the real Herdr root

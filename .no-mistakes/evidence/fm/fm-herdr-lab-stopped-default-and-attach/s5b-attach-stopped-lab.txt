@@ -1,0 +1,10 @@
+$ fm-herdr-lab.sh stop fm-lab-stopdef
+rc=0
+{"name":"default","default":true,"running":false}
+{"name":"fm-lab-stopdef","default":false,"running":false}
+$ fm-herdr-lab.sh attach fm-lab-stopdef   # lab is stopped
+fm-herdr-lab: attach requires the lab session 'fm-lab-stopdef' to exist, be non-default, and be running (default=false running=false)
+rc=1
+$ herdr session list --json   # lab must still be stopped (attach did not start it)
+{"name":"default","default":true,"running":false}
+{"name":"fm-lab-stopdef","default":false,"running":false}

@@ -1,0 +1,10 @@
+ok - fm-herdr-lab: names fail closed and require the lab prefix
+ok - fm-herdr-lab: provisioning, scoped calls, guarded teardown, and fleet tripwire are deterministic
+ok - fm-herdr-lab: missing tripwire refuses teardown before any Herdr call
+ok - fm-herdr-lab: changed default fleet state is a hard failure
+ok - fm-herdr-lab: a running or stopped default provisions, and must keep that state through teardown
+ok - fm-herdr-lab: no default session or more than one refuses provisioning
+ok - fm-herdr-lab: attach runs only a client on a running lab and refuses default, non-lab, and stopped sessions
+ok - fm-herdr-lab: an owned stopped lab can re-provision safely
+ok - fm-herdr-lab: failed deletion retains ownership until absence is confirmed
+ok - fm-herdr-lab: timed-out provisioning cancels the launch before teardown

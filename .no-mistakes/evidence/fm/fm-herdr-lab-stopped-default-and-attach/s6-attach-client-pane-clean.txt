@@ -1,0 +1,45 @@
+ spaces                  │   1      +
+                         │To run a command as administrator (user "root"), use "sudo <command>".
+ · ~                     │See "man sudo_root" for details.
+                         │
+                         │paul@pop-os:~$
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+ new                 menu│
+─────────────────────────│
+ agents           grouped│
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                        «│

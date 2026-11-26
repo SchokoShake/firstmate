@@ -1,0 +1,17 @@
+$ fm-herdr-lab.sh --help
+Provision and operate an isolated Herdr lab session without risking the live
+default session.
+
+Usage:
+  fm-herdr-lab.sh name <label>
+  fm-herdr-lab.sh prepare <session>
+  fm-herdr-lab.sh provision <session>
+  fm-herdr-lab.sh run <session> <herdr arguments...>
+  fm-herdr-lab.sh attach <session>
+  fm-herdr-lab.sh stop <session>
+  fm-herdr-lab.sh teardown <session>
+
+Session names must begin with "fm-lab-" and can never be "default".
+rc=0
+$ fm-herdr-lab.sh bogus
+rc=2

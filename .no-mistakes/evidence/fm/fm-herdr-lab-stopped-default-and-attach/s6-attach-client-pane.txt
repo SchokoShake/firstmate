@@ -1,0 +1,45 @@
+ spaces                  │   1      +
+                         │To run a command as administrator (user "root"), use "sudo <command>".
+ · ~                     │See "man sudo_root" for details.
+                         │
+                         │paul@pop-os:~$
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │                      ┌──────────────────────────────────────────────────────────────┐
+                         │                      │  herdr                                                       │
+                         │                      │  terminal workspace manager for coding agents                │
+                         │                      │                                                              │
+                         │                      │  this is a mouse-first terminal.                             │
+                         │                      │  click the sidebar to switch workspaces, drag pane           │
+                         │                      │  borders to resize, right-click for context menus.           │
+                         │                      │                                                              │
+ new                 menu│                      │  ctrl+b enters prefix mode · ? shows keybinds and settings   │
+─────────────────────────│                      │  next: install optional agent integrations for more reliable │
+ agents           grouped│                      │                                                              │
+                         │                      │                                                              │
+                         │                      │                                                              │
+                         │                      │                                                              │
+                         │                      │ ↵ continue                                                   │
+                         │                      └──────────────────────────────────────────────────────────────┘
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                         │
+                        «│

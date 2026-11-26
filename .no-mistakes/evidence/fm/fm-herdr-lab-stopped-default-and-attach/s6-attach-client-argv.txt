@@ -1,0 +1,5 @@
+pane pid=746767
+    PID    PPID COMMAND
+ 746768  746767 bash {run-worktree}/bin/fm-herdr-lab.sh attach fm-lab-stopdef
+    PID    PPID COMMAND
+ 746778  746768 herdr --session fm-lab-stopdef

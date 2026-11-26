@@ -1,0 +1,12 @@
+$ herdr session list --json   # isolated default running (throwaway server pid 871100)
+{"name":"default","default":true,"running":true,"socket_path":"/tmp/fmlabtest.e8RYpa/xdg/herdr/herdr.sock"}
+$ fm-herdr-lab.sh provision fm-lab-rundef
+rc=0
+$ cat tripwire
+{"name":"default","default":true,"running":true,"socket_path":"/tmp/fmlabtest.e8RYpa/xdg/herdr/herdr.sock"}
+{"name":"default","default":true,"running":true}
+{"name":"fm-lab-rundef","default":false,"running":true}
+$ fm-herdr-lab.sh teardown fm-lab-rundef   # default still running
+rc=0
+{"name":"default","default":true,"running":true}
+tripwire present after teardown: 0

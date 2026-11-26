@@ -1,0 +1,16 @@
+$ herdr session list --json   # isolated default stopped
+{"name":"default","default":true,"running":false}
+$ fm-herdr-lab.sh provision fm-lab-stop2run
+rc=0
+$ cat tripwire
+{"name":"default","default":true,"running":false,"socket_path":"/tmp/fmlabtest.e8RYpa/xdg/herdr/herdr.sock"}
+# start a throwaway isolated default server
+{"name":"default","default":true,"running":true}
+{"name":"fm-lab-stop2run","default":false,"running":true}
+$ fm-herdr-lab.sh teardown fm-lab-stop2run   # default went stopped -> running
+fm-herdr-lab: FLEET-STATE TRIPWIRE FAILED: default session changed during lab work
+fm-herdr-lab: before: {"name":"default","default":true,"running":false,"socket_path":"/tmp/fmlabtest.e8RYpa/xdg/herdr/herdr.sock"}
+fm-herdr-lab: after:  {"name":"default","default":true,"running":true,"socket_path":"/tmp/fmlabtest.e8RYpa/xdg/herdr/herdr.sock"}
+rc=1
+{"name":"default","default":true,"running":true}
+tripwire retained after failed verification: 1

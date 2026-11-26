@@ -1,0 +1,18 @@
+$ herdr session list --json   # before refusals
+{"name":"default","default":true,"running":false}
+{"name":"fm-lab-stopdef","default":false,"running":true}
+$ fm-herdr-lab.sh attach default
+fm-herdr-lab: refusing session name 'default'
+rc=1
+$ fm-herdr-lab.sh attach arbitrary-session
+fm-herdr-lab: session name must start with 'fm-lab-' and contain only letters, digits, underscores, or dashes: arbitrary-session
+rc=1
+$ fm-herdr-lab.sh attach fm-lab-missing
+fm-herdr-lab: attach requires the lab session 'fm-lab-missing' to exist, be non-default, and be running (not found)
+rc=1
+$ fm-herdr-lab.sh attach   # no session argument
+rc=2
+$ herdr session list --json   # after refusals: no session created, default still stopped
+{"name":"default","default":true,"running":false}
+{"name":"fm-lab-stopdef","default":false,"running":true}
+fm-lab-stopdef

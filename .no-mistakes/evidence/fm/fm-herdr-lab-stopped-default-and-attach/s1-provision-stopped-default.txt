@@ -1,0 +1,21 @@
+$ herdr session list --json   # isolated root, default never started
+{"name":"default","default":true,"running":false,"socket_path":"/tmp/fmlabtest.e8RYpa/xdg/herdr/herdr.sock"}
+
+## BASE commit e6bcbc0 helper
+$ fm-herdr-lab.sh provision fm-lab-stopdef-base
+fm-herdr-lab: fleet-state tripwire requires exactly one running default session
+rc=1
+
+## CHANGED commit c784944 helper
+$ fm-herdr-lab.sh provision fm-lab-stopdef
+rc=0
+$ cat tripwire
+{"name":"default","default":true,"running":false,"socket_path":"/tmp/fmlabtest.e8RYpa/xdg/herdr/herdr.sock"}
+$ herdr session list --json
+{"name":"default","default":true,"running":false,"socket_path":"/tmp/fmlabtest.e8RYpa/xdg/herdr/herdr.sock"}
+{"name":"fm-lab-stopdef","default":false,"running":true,"socket_path":"/tmp/fmlabtest.e8RYpa/xdg/herdr/sessions/fm-lab-stopdef/herdr.sock"}
+$ fm-herdr-lab.sh teardown fm-lab-stopdef   # default still stopped
+rc=0
+$ herdr session list --json
+{"name":"default","default":true,"running":false}
+tripwire present after teardown: 0

@@ -1,0 +1,7 @@
+$ XDG_CONFIG_HOME=<a regular file> herdr session list --json
+Error: Os { code: 20, kind: NotADirectory, message: "Not a directory" }
+rc=1
+$ XDG_CONFIG_HOME=<a regular file> fm-herdr-lab.sh provision fm-lab-unreadable
+fm-herdr-lab: cannot list Herdr sessions before provisioning 'fm-lab-unreadable'
+rc=1
+tripwire left: 0
