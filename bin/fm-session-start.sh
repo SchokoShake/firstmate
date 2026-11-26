@@ -209,7 +209,9 @@
 # truly needed.
 #
 # WORK UNDER WAY: per task, the fields recovery reads first (kind, mode, yolo,
-# pr, worktree or home, endpoint presence) and its last status line.
+# pr, worktree or home, endpoint presence) and its last status line. An
+# endpoint that exists but holds no agent (a Herdr pane restored after a
+# restart, bin/fm-backend.sh fm_backend_endpoint_agentless) reads dead.
 # FM_SESSION_START_STATUS_TAIL, default 1, sets how many status lines print and
 # bin/fm-line-cap-lib.sh bounds how long each may be. Both bounds are safe
 # because the section prints the commands that read every meta field and older
@@ -873,7 +875,7 @@ print_restart_section() {
     section "MACHINE RESTART"
     printf 'The machine restarted since the last locked session start (kernel boot id changed).\n'
     printf 'This read-only session records nothing; the session holding the lock lists the\n'
-    printf 'workers it stopped. Work under way below shows each gone endpoint as dead.\n'
+    printf 'workers it stopped. Work under way below shows each stopped endpoint as dead.\n'
     return 0
   fi
   [ -f "$rec" ] || return 0
@@ -1232,10 +1234,12 @@ for meta in "$STATE"/*.meta; do
   target=$(fm_backend_target_of_meta "$meta")
   if [ -n "$window" ]; then
     backend=$(fm_backend_of_meta "$meta")
-    if fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
-      printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
-    else
+    if ! fm_backend_target_exists "$backend" "${target:-$window}" "fm-$id"; then
       printf 'endpoint: dead (backend=%s window=%s)\n' "$backend" "$window"
+    elif fm_backend_endpoint_agentless "$backend" "${target:-$window}"; then
+      printf 'endpoint: dead (backend=%s window=%s, no agent in it)\n' "$backend" "$window"
+    else
+      printf 'endpoint: alive (backend=%s window=%s)\n' "$backend" "$window"
     fi
   else
     printf 'endpoint: unknown (no window recorded)\n'

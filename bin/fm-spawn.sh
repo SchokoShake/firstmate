@@ -3211,9 +3211,20 @@ case "$HARNESS" in
 esac
 LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
 LAUNCH=${LAUNCH//__AGENTNAME__/"$(shell_quote "fm-$ID")"}
+# On Herdr, a Claude crewmate or scout also starts without HERDR_ENV, so
+# Herdr's own Claude integration never reports its session id and Herdr's
+# resume_agents_on_restore has nothing to relaunch after a server restart: the
+# restored pane comes back agent-free, and revive alone brings the worker back
+# with this full launch line and its restart note. Herdr still detects the
+# agent natively from its process, so native state reads are unaffected. A
+# secondmate keeps HERDR_ENV, which its own runtime and supervisor-pane
+# detection read. docs/herdr-backend.md "Restart and liveness behavior" owns
+# the contract.
+HERDR_ENV_UNSET=
+[ "$BACKEND" != herdr ] || [ "$KIND" = secondmate ] || [ "$HARNESS" != claude ] || HERDR_ENV_UNSET=' -u HERDR_ENV'
 case "$HARNESS" in
   claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
-    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS $LAUNCH"
+    LAUNCH="env -u CURSOR_AGENT -u CURSOR_INVOKED_AS$HERDR_ENV_UNSET $LAUNCH"
     ;;
 esac
 # Crewmate panes are created by a long-lived tmux/herdr daemon that does not

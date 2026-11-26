@@ -191,6 +191,7 @@ family_for_basename() {
     fm-cursor-primary-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-liveness-drift-live-e2e.test.sh|\
     fm-agent-view-pilot-live-e2e.test.sh|fm-restart-recovery-live-e2e.test.sh|\
+    fm-restart-recovery-herdr-live-e2e.test.sh|\
     fm-board-session-live-e2e.test.sh|fm-inbox-post-live-e2e.test.sh|\
     fm-muse-signals-live-e2e.test.sh|\
     fm-herdr-version-floor-live-e2e.test.sh|fm-crew-state-herdr-live-e2e.test.sh|\

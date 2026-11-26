@@ -927,6 +927,18 @@ fm_backend_agent_state() {  # <backend> <target>
   esac
 }
 
+# fm_backend_endpoint_agentless: 0 when <target> still exists but its backend
+# positively proves it holds no agent. Only Herdr answers yes: it restores its
+# whole layout across a server restart or reboot, so a stopped worker's
+# endpoint comes back as an agent-free pane rather than going away, while a
+# tmux endpoint does not survive one. A passive read; it never starts a
+# server. The restart record and the session-start endpoint line both count
+# such an endpoint as stopped.
+fm_backend_endpoint_agentless() {  # <backend> <target>
+  [ "$1" = herdr ] || return 1
+  [ "$(fm_backend_agent_state herdr "$2")" = dead ]
+}
+
 # Backward-compatible three-state view for existing callers. An
 # authoritatively missing endpoint is confidently not a live agent, while every
 # ambiguous, unreadable, or unverified result stays unknown.

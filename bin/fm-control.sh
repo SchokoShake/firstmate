@@ -148,6 +148,9 @@
 #     refused rather than reported as successful blind. `revive` reopens a
 #     gone endpoint on tmux alone, so a gone herdr endpoint is refused by
 #     name; a herdr window that is still there with no agent in it revives.
+#     A herdr endpoint lives in a server a reboot leaves stopped, so revive
+#     first starts that server, as every pane-reading path does, and waits a
+#     bounded time for the restored pane to read as a classified state.
 #   - An ambiguous or unreadable endpoint state refuses; only a positively
 #     classified state acts.
 #
@@ -158,6 +161,8 @@
 #   FM_CONTROL_LAUNCH_WAIT       dead->alive wait after a relaunch (90)
 #   FM_CONTROL_EXIT_RETRIES      Enter retries for the exit command (3)
 #   FM_CONTROL_NM_TIMEOUT        bound on revive's `no-mistakes axi status` (15)
+#   FM_CONTROL_HERDR_RESTORE_WAIT wait for a herdr endpoint to leave `unreadable`
+#                                once revive has started its server (10)
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -218,6 +223,7 @@ EXIT_WAIT=${FM_CONTROL_EXIT_WAIT:-30}
 LAUNCH_WAIT=${FM_CONTROL_LAUNCH_WAIT:-90}
 EXIT_RETRIES=${FM_CONTROL_EXIT_RETRIES:-3}
 NM_TIMEOUT=${FM_CONTROL_NM_TIMEOUT:-15}
+HERDR_RESTORE_WAIT=${FM_CONTROL_HERDR_RESTORE_WAIT:-10}
 
 die() {  # <message>
   echo "error: $1" >&2
@@ -1451,6 +1457,18 @@ revive_agent_view() {
   fi
 }
 
+# herdr_restore_settle: a Herdr endpoint lives in a server a reboot leaves
+# stopped, and Herdr restores the task's pane only once that server runs again.
+# Start it (the same guarded start every pane-reading path makes) and give the
+# restore HERDR_RESTORE_WAIT seconds to settle out of `unreadable` before the
+# endpoint is classified.
+herdr_restore_settle() {
+  if ! fm_backend_source herdr || ! fm_backend_herdr_target_ready "$T"; then
+    die "could not start the Herdr server that task $ID's endpoint $T lives in; nothing was changed"
+  fi
+  wait_agent_state "$HERDR_RESTORE_WAIT" alive dead missing >/dev/null || true
+}
+
 do_revive() {
   require_state_verified_backend revive
   case "$KIND" in
@@ -1458,6 +1476,7 @@ do_revive() {
     secondmate) die "task $ID is a secondmate; the startup secondmate check brings back a secondmate whose agent stopped, so revive leaves it to the secondmate recovery path" ;;
     *) die "task $ID records kind '$KIND', which has no defined revive shape" ;;
   esac
+  [ "$BACKEND" != herdr ] || herdr_restore_settle
   WINDOW_STATE=$(window_state)
   case "$WINDOW_STATE" in
     alive|dead|missing) ;;

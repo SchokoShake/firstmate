@@ -33,6 +33,10 @@
 #      worktree by the next revive.
 #   5. fm-send refuses an exited agent's shell, and relaunch clears a shell
 #      wedged in quote continuation before it launches.
+#   6. A Herdr pane restored after a restart with no agent in it counts as
+#      stopped, so session start lists it with the bring-back command and its
+#      endpoint line reads dead, against a stand-in herdr; the same pane holding
+#      an agent is neither listed nor dead.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -687,6 +691,78 @@ test_other_backends_cannot_reopen_an_endpoint() {
   pass "fm-backend: reopening a gone endpoint is tmux-only, and every other backend is refused by name"
 }
 
+# Herdr restores a stopped worker's pane as an agent-free shell rather than
+# losing it, so the pane still exists after the restart. The stand-in herdr
+# answers for one such pane; $herdr_dir/agent holds `none` for an agent-free
+# pane or an agent status. The endpoint line must say the pane exists ("no
+# agent in it"), so the listing cannot pass on the gone-endpoint path.
+test_an_agent_free_herdr_pane_counts_as_stopped() {
+  local hid="rrh$$" hhome="$LAB/herdr-home" herdr_dir="$LAB/herdr" out
+  mkdir -p "$hhome/state" "$hhome/data/$hid" "$hhome/config" "$herdr_dir/bin"
+  printf '%s\n' "$$" > "$hhome/state/.lock"
+  printf '%s off\n' "$$" > "$hhome/state/.trace-context-effective"
+  touch "$hhome/state/.last-watcher-beat"
+  printf '# brief for %s\n' "$hid" > "$hhome/data/$hid/brief.md"
+  {
+    echo "window=rrlab:w1:p2"
+    echo "endpoint_task_id=$hid"
+    echo "backend=herdr"
+    echo "herdr_session=rrlab"
+    echo "herdr_workspace_id=w1"
+    echo "herdr_tab_id=w1:t2"
+    echo "herdr_pane_id=w1:p2"
+    echo "worktree=$WT_DIR"
+    echo "project=$PROJ_DIR"
+    echo "harness=claude"
+    echo "kind=ship"
+    echo "mode=no-mistakes"
+    echo "yolo=off"
+    echo "busy_gen=g1"
+  } > "$hhome/state/$hid.meta"
+  printf 'g1\n' > "$hhome/state/$hid.busy-gen"
+  cat > "$herdr_dir/bin/herdr" <<'SH'
+#!/usr/bin/env bash
+D=$FM_FAKE_HERDR_DIR
+case "${1:-} ${2:-}" in
+  "status --json") printf '{"client":{"version":"0.9.5","protocol":22},"server":{"running":true}}\n' ;;
+  "pane get") printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}" ;;
+  "agent get")
+    if [ "$(cat "$D/agent")" = none ]; then
+      printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "${3:-}"
+    else
+      printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "$(cat "$D/agent")"
+    fi ;;
+esac
+exit 0
+SH
+  chmod +x "$herdr_dir/bin/herdr"
+  herdr_start() {
+    env -u FM_ROOT_OVERRIDE FM_HOME="$hhome" FM_ROOT_OVERRIDE="$SS_ROOT" \
+      FM_BOOT_ID_FILE="$herdr_dir/boot-id" FM_FAKE_HARNESS_PID=$$ FM_STARTUP_NETWORK_TIMEOUT=10 \
+      FM_RESTART_NM_TIMEOUT=5 FM_FAKE_HERDR_DIR="$herdr_dir" PATH="$LAB/ssbin:$herdr_dir/bin:$PATH" \
+      "$ROOT/bin/fm-session-start.sh" 2>&1
+  }
+  printf 'none\n' > "$herdr_dir/agent"
+  printf 'herdr-boot-a\n' > "$herdr_dir/boot-id"
+  herdr_start >/dev/null
+  printf 'herdr-boot-b\n' > "$herdr_dir/boot-id"
+  out=$(herdr_start)
+  assert_contains "$out" "endpoint: dead (backend=herdr window=rrlab:w1:p2, no agent in it)" \
+    "an agent-free Herdr pane that still exists must read dead"$'\n'"$out"
+  assert_contains "$out" "MACHINE RESTART" "the restart section is missing for an agent-free Herdr pane"$'\n'"$out"
+  assert_contains "$out" "- $hid: ship no-mistakes" "the restored agent-free Herdr pane is not listed as stopped"
+  assert_contains "$out" "bring every one back: FM_HOME=" "the bring-back command is missing for the restored Herdr pane"
+  grep -qx "task=$hid" "$hhome/state/.restart-stopped" || fail "the stopped list must name the restored Herdr worker"
+
+  printf 'idle\n' > "$herdr_dir/agent"
+  out=$(herdr_start)
+  assert_contains "$out" "endpoint: alive (backend=herdr window=rrlab:w1:p2)" \
+    "a Herdr pane holding an agent must read alive"$'\n'"$out"
+  assert_not_contains "$out" "MACHINE RESTART" "a Herdr worker whose agent runs again must retire the list"
+  [ ! -e "$hhome/state/.restart-stopped" ] || fail "the stopped list must retire once the Herdr worker runs again"
+  pass "fm-session-start: a Herdr pane restored with no agent in it is listed as stopped with the bring-back command and reads dead"
+}
+
 test_spawn_records_the_conversation
 test_only_the_worker_and_its_generation_record
 test_first_start_records_the_boot
@@ -704,4 +780,5 @@ test_relaunch_over_a_wedged_shell_still_launches
 test_a_worker_stopped_before_the_restart_stays_stopped
 test_exit_after_the_agent_ended_stays_stopped
 test_other_backends_cannot_reopen_an_endpoint
+test_an_agent_free_herdr_pane_counts_as_stopped
 echo "# all fm-restart-recovery tests passed"

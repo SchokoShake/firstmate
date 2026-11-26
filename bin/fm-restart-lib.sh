@@ -13,7 +13,7 @@
 # Linux (WSL included) and kern.bootsessionuuid on macOS. A boot id that differs
 # from the recorded one proves a restart; uptime and process ages only guess.
 # A host offering neither has no restart detection, and the session-start
-# digest still shows each gone endpoint as dead. FM_BOOT_ID_FILE replaces the
+# digest still shows each stopped endpoint as dead. FM_BOOT_ID_FILE replaces the
 # kernel source with a file, so a test can simulate a restart.
 #
 # state/.boot-id - the boot id the last LOCKED session start saw. A read-only
@@ -27,17 +27,17 @@
 #   detected=<ISO-8601 UTC>
 #   previous_boot=<boot id>
 #   boot=<boot id>
-#   task=<id>                     one per task whose recorded endpoint was gone
-#                                 and whose agent's busy generation was still
+#   task=<id>                     one per task whose recorded endpoint was
+#                                 stopped and whose agent's busy generation was still
 #                                 armed, so it was not deliberately stopped:
 #                                 the restart stopped it
-#   stopped_before=<id>           one per task whose recorded endpoint was gone
-#                                 and whose agent's busy generation had been
+#   stopped_before=<id>           one per task whose recorded endpoint was
+#                                 stopped and whose agent's busy generation had been
 #                                 retired, as a deliberate stop
 #                                 (bin/fm-control.sh exit) retires it: it was
 #                                 already stopped before the restart
-#   unarmed=<id>                  one per task whose recorded endpoint was gone
-#                                 and whose agent never had a busy generation
+#   unarmed=<id>                  one per task whose recorded endpoint was
+#                                 stopped and whose agent never had a busy generation
 #                                 (its adapter arms none), so which of the two
 #                                 it was cannot be told
 #   validation.<id>=<run>,<next>  for a no-mistakes ship task listed as task or
@@ -46,8 +46,10 @@
 #                                 none), and the branch_sync.next_action code
 #                                 no-mistakes reports (or none); `unchecked`
 #                                 when the bounded probe below did not reach it
-# A listed task counts as still stopped while its metadata exists and its
-# recorded endpoint is still gone (bin/fm-backend.sh fm_backend_target_exists).
+# An endpoint is stopped when it is gone (bin/fm-backend.sh
+# fm_backend_target_exists) or still there with no agent in it
+# (fm_backend_endpoint_agentless), and a listed task counts as still stopped
+# while its metadata exists and its endpoint is still stopped.
 # Only task= entries are what `revive --stopped-by-restart` brings back; a
 # stopped_before or unarmed task comes back only by its own id. A remotely
 # placed secondmate's endpoint lives on another host, so it is never listed.
@@ -132,7 +134,9 @@ fm_restart_write_boot() {  # <state-dir> <boot-id>
 }
 
 # fm_restart_task_stopped: 0 when task <id> still has its metadata and its
-# recorded endpoint is gone.
+# recorded endpoint is stopped: gone, or still there with no agent in it
+# (bin/fm-backend.sh fm_backend_endpoint_agentless; Herdr restores a stopped
+# worker's pane agent-free).
 fm_restart_task_stopped() {  # <state-dir> <id>
   local meta="$1/$2.meta" window target backend
   case "$2" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
@@ -142,7 +146,8 @@ fm_restart_task_stopped() {  # <state-dir> <id>
   [ -n "$window" ] || return 1
   backend=$(fm_backend_of_meta "$meta")
   target=$(fm_backend_target_of_meta "$meta")
-  ! fm_backend_target_exists "$backend" "${target:-$window}" "fm-$2"
+  fm_backend_target_exists "$backend" "${target:-$window}" "fm-$2" || return 0
+  fm_backend_endpoint_agentless "$backend" "${target:-$window}"
 }
 
 # fm_restart_validation_read: ask no-mistakes, bounded, about the validation
@@ -194,7 +199,7 @@ fm_restart_validation_probe() {  # <meta-file> <timeout-seconds>
   fi
 }
 
-# fm_restart_record_write: list every task whose recorded endpoint is gone
+# fm_restart_record_write: list every task whose recorded endpoint is stopped
 # under the key its busy generation decides (see the format above), probe each
 # no-mistakes ship task the restart may have stopped within the bounds above,
 # and publish the record atomically. Locked callers only.

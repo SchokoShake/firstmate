@@ -132,6 +132,9 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   A gone endpoint is reopened under its recorded identity with its shell in the recorded worktree, on tmux alone (`fm_backend_recreate_task` in `bin/fm-backend.sh`); every other backend refuses a gone endpoint by name.
   The new shell starts beside the worktree and is moved in with a typed `cd`, as a fresh spawn's is, and nothing launches until it reads idle there twice in a row, because a new shell can read idle and still have a program from its startup files to run.
   An endpoint that is still there with no agent in it is reused, and when its idle shell is outside the worktree, as after a reopen whose typed `cd` a startup program swallowed, its line is cleared and the same `cd` is typed and waited for.
+  On Herdr that is the normal case after a restart: Herdr restores the task's pane in its worktree with no agent in it, and the restart list counts such a pane as stopped.
+  A reboot leaves the Herdr server stopped, so revive first starts the server the endpoint lives in and waits up to `FM_CONTROL_HERDR_RESTORE_WAIT` seconds for the restored pane to read as a classified state, which lets the printed bring-back command work before anything else has started the server.
+  Herdr never brings a Claude worker back itself, because firstmate starts it without the variable Herdr's resume needs ([`herdr-backend.md`](herdr-backend.md) "Restart and liveness behavior").
 - **What it proves first.**
   Relaunch's checkpoint runs unchanged before anything is reopened, written, or launched, so a worktree whose lease is released or unproven is refused with the same deliberate paths.
 - **Idempotent and recoverable.**
@@ -192,3 +195,4 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 - `tests/fm-agent-view-pilot-live-e2e.test.sh` - the same lifecycle against the installed Claude Code, opted in with `FM_AGENT_VIEW_PILOT_LIVE=1`.
 - `tests/fm-restart-recovery.test.sh` - restart recovery on real tmux against a stand-in Claude Code: the record the hooks keep, the restart digest after a killed server, the printed bring-back command, resume with the restart note, idempotence, the fresh fallbacks, and the refusals.
 - `tests/fm-restart-recovery-live-e2e.test.sh` - the same restart and resume against the installed Claude Code, opted in with `FM_RESTART_RECOVERY_LIVE=1`.
+- `tests/fm-restart-recovery-herdr-live-e2e.test.sh` - the Herdr counterpart against the installed Claude Code and Herdr on an isolated lab session, for a simulated machine restart after which the Herdr server is started again or left stopped, opted in with `FM_RESTART_RECOVERY_HERDR_LIVE=1`.
