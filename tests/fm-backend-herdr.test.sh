@@ -538,6 +538,30 @@ test_container_ensure_reuses_existing_workspace() {
   pass "fm_backend_herdr_container_ensure: reuses an existing firstmate workspace without recreating it, and reports no seeded default tab (adopted, not created)"
 }
 
+# Every Herdr pane inherits the server's environment, so the stub server records
+# its own environment as the one each pane would see.
+test_server_ensure_keeps_primary_session_env_from_panes() {
+  local dir fb pane_env
+  dir="$TMP_ROOT/server-env"; fb="$dir/fakebin"; pane_env="$dir/pane.env"; mkdir -p "$fb"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+out="$(dirname "$0")/../pane.env"
+case "${1:-}" in
+  status) if [ -s "$out" ]; then running=true; else running=false; fi
+          printf '{"server":{"running":%s}}\n' "$running" ;;
+  server) env > "$out.tmp" && mv "$out.tmp" "$out" ;;
+esac
+SH
+  chmod +x "$fb/herdr"
+  PATH="$fb:$PATH" https_proxy=http://proxy.example:3128 CLAUDE_CODE_MESSAGING_SOCKET=/run/primary.sock \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_server_ensure fmtest' "$ROOT" \
+    || fail "server_ensure did not start the stub server"
+  assert_no_grep "CLAUDE_CODE_MESSAGING_SOCKET=" "$pane_env" "the primary's messaging socket reached the server every pane inherits from"
+  grep -qxF -- "HOME=$HOME" "$pane_env" || fail "the server lost HOME"
+  grep -qxF -- "https_proxy=http://proxy.example:3128" "$pane_env" || fail "the server lost the proxy"
+  pass "fm_backend_herdr_server_ensure: panes keep HOME and the proxy but never the primary's messaging socket"
+}
+
 test_create_task_refuses_duplicate_label() {
   local dir log resp fb out status
   dir="$TMP_ROOT/dup-task"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -4456,6 +4480,7 @@ test_workspace_ensure_other_home_ignores_the_launcher_identity
 test_container_ensure_refuses_an_ambiguous_home_label
 test_container_ensure_starts_server_and_workspace
 test_container_ensure_reuses_existing_workspace
+test_server_ensure_keeps_primary_session_env_from_panes
 test_container_ensure_creates_with_no_focus_flag
 test_container_ensure_uses_secondmate_home_label
 test_workspace_ensure_prunes_default_tab
