@@ -39,8 +39,8 @@ make_herdr_fakebin() {  # <dir> -> echoes fakebin dir
 #!/usr/bin/env bash
 set -u
 # `herdr server` starts from a scrubbed environment, so it finds them by layout.
-LOG="${FM_HERDR_LOG:-$(dirname "$0")/../log}"
-RESP="${FM_HERDR_RESPONSES:-$(dirname "$0")/../responses}"
+LOG="${FM_HERDR_LOG:-${0%/*}/../log}"
+RESP="${FM_HERDR_RESPONSES:-${0%/*}/../responses}"
 COUNT_FILE="$RESP/.count"
 next=$(( $(cat "$COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
 {
