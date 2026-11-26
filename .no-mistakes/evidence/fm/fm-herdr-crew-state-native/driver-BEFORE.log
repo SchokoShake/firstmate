@@ -1,0 +1,22 @@
+# root=/tmp/fm-cs-base.VUQ3lv
+# herdr 0.9.5 lab session=fm-lab-csdrv-395875-24318; tmux tmux 3.4 private socket under /tmp/fm-csdrv.vLBV6c/tmux
+--- Herdr, pane with no registered agent (w1:p1)
+H1 ship/claude busy record + 'working:' log                | native=agent_not_found | absorb=working | state: working · source: pane · harness busy (claude-hook)
+H2 ship/claude no record, no log                           | native=agent_not_found | absorb=none    | state: unknown · source: pane · harness state unavailable (unknown missing)
+H3 ship/claude busy record + 'done:' log                   | native=agent_not_found | absorb=working | state: working · source: pane · harness busy (claude-hook)
+H4 ship/claude busy record + 'failed:' log                 | native=agent_not_found | absorb=working | state: working · source: pane · harness busy (claude-hook)
+H5 ship/claude busy record + 'needs-decision:' log         | native=agent_not_found | absorb=working | state: working · source: pane · harness busy (claude-hook)
+H6 scout/claude busy record + 'working:' log               | native=agent_not_found | absorb=working | state: working · source: pane · harness busy (claude-hook)
+H7 secondmate agent-less + 'paused:' log                   | native=agent_not_found | absorb=paused  | state: paused · source: status-log · holding for the upstream release
+--- Herdr, pane whose agent state is reported as claude (w2:p1)
+N1 native idle + FRESH busy claude-hook record             | native=idle            | absorb=working | state: working · source: pane · harness busy (claude-hook)
+N2 native idle + busy record aged 60s (interrupted)        | native=idle            | absorb=working | state: working · source: pane · harness busy (claude-hook)
+N3 native idle + aged record + 'working:' log              | native=idle            | absorb=working | state: working · source: pane · harness busy (claude-hook)
+N4 native working + aged record                            | native=working         | absorb=working | state: working · source: pane · harness busy (claude-hook)
+N5 native blocked + busy record (claude)                   | native=blocked         | absorb=working | state: working · source: pane · harness busy (claude-hook)
+N6 native blocked + busy record (cursor)                   | native=blocked         | absorb=none    | state: unknown · source: pane · harness state unavailable (unknown cursor-transcript)
+N7 native blocked, secondmate + 'working:' log             | native=blocked         | absorb=none    | state: working · source: status-log · supervising
+--- tmux (private server, no native state)
+T1 tmux ship/claude aged busy record + 'working:' log      | native=                | absorb=working | state: working · source: pane · harness busy (claude-hook)
+T2 tmux ship/claude fresh busy record                      | native=                | absorb=working | state: working · source: pane · harness busy (claude-hook)
+T3 tmux ship/claude no record, no log                      | native=                | absorb=none    | state: unknown · source: pane · harness state unavailable (unknown missing)

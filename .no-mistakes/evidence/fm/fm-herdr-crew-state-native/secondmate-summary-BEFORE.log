@@ -1,0 +1,3 @@
+# root=/tmp/fm-cs-base.TeSVeX  child pane fm-lab-cssum-616847-12188:w1:p1 native=agent_not_found
+# crew-state: state: working · source: pane · harness busy (claude-hook)
+{"schema":"fm-secondmate-home-summary.v1","valid":true,"state":"active_child_work","reason":null,"invalidity":{"kind":null,"ids":[]},"active_children":["gone-child"]}

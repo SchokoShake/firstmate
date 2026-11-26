@@ -1,0 +1,17 @@
+2026-11-26T14:53:57+01:00
+# harness claude 2.1.332 (Claude Code) on herdr 0.9.5
+ok - real worker idles after its first turn and does not read working
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ok - a long foreground tool call reads working throughout, natively and in crew state
+ok - an interrupted worker stops reading working although its busy record remains
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+ok - an open question reads blocked, not working
+ok - an exited worker reads exited
+exit=0
+2026-11-26T14:54:33+01:00

@@ -1,0 +1,36 @@
+2026-11-26T14:54:59+01:00
+# tree: base dd944979 (pre-change code) with the new live guard copied in
+# harness claude 2.1.332 (Claude Code) on herdr 0.9.5
+ok - real worker idles after its first turn and does not read working
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the requested message WILL still be sent.
+●  repair missing watcher supervision according to the session-start block for this harness; do not use shell &.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ok - a long foreground tool call reads working throughout, natively and in crew state
+not ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: an interrupted worker's leftover busy record did not yield to Herdr's idle
+native=idle busy=busy claude-hook record=busy claude-hook
+crew-state: state: working · source: pane · harness busy (claude-hook)
+Herdr's reading:
+agent: claude
+state: idle
+manifest: remote:~/.local/state/herdr/agent-detection/remote/claude.toml 2026.10.11.1
+rule: live_prompt_box (region=prompt_box_body priority=950)
+evidence: "❯\n"
+Screen:
+  Do not read, run, or change anything, and use no tool unless a later message asks for one.
+  Reply with the single word noted.
+● noted
+✻ Brewed for 2s · done 14:55
+❯ Run exactly this command with the Bash tool in the foreground, not in the background: ./hold.sh ; when it returns,
+  reply with the single word reached.
+● Bash(./hold.sh)
+  ⎿  Interrupted · What should Claude do instead?
+───────────────────────────────────────────────────────────────────────────────────────────────────── fm-cslive271902 ─
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+exit=1
+2026-11-26T14:55:42+01:00

@@ -1,0 +1,3 @@
+# root={run-worktree}  child pane fm-lab-cssum-614867-9565:w1:p1 native=agent_not_found
+# crew-state: state: exited · source: pane · no agent in its Herdr pane
+{"schema":"fm-secondmate-home-summary.v1","valid":false,"state":"unknown","reason":"child current state unavailable: gone-child","invalidity":{"kind":"child_current_unavailable","ids":["gone-child"]},"active_children":[]}
