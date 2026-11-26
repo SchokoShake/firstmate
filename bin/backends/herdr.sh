@@ -1449,8 +1449,8 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # call. Bounded poll for the server to report running.
 # Every pane inherits the server's environment, never the creating client's
 # (verified, Herdr 0.9.5), so this start alone keeps the starting agent's
-# session variables (CLAUDE_CODE_MESSAGING_SOCKET, CLAUDE_PID, ...) away from
-# workers: only a user shell's basics pass.
+# session variables (CLAUDE_CODE_MESSAGING_SOCKET, CLAUDE_PID, ...) and the
+# harness markers fm-harness.sh detects away from workers; everything else passes.
 fm_backend_herdr_server_ensure() {  # <session>
   local session=$1 running out i
   running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)
@@ -1458,8 +1458,7 @@ fm_backend_herdr_server_ensure() {  # <session>
   (
     for name in $(compgen -e); do
       case "$name" in
-        HOME|USER|LOGNAME|SHELL|PATH|LANG|LANGUAGE|LC_*|TZ|TMPDIR|XDG_*|DBUS_SESSION_BUS_ADDRESS|SSH_AUTH_SOCK|DISPLAY|XAUTHORITY|WAYLAND_DISPLAY|HERDR_CONFIG_PATH) ;;
-        *) export -n "${name?}" ;;
+        CLAUDE_*|CLAUDECODE|AI_AGENT|CURSOR_AGENT|CURSOR_INVOKED_AS|PI_CODING_AGENT|FM_PI_HARNESS|GROK_AGENT|TMUX|TMUX_PANE) export -n "${name?}" ;;
       esac
     done
     fm_backend_herdr_cli "$session" server >/dev/null 2>&1 &

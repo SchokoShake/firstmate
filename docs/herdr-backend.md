@@ -204,7 +204,7 @@ Workspace and tab ids support verification and cleanup but are not inferred from
 ## Current transport behavior
 
 The adapter starts and polls a named server before workspace, tab, pane, or agent calls.
-Every pane inherits that server's environment, so the adapter starts it with only the basics a user's shell needs, never the starting agent's session variables; the keep-list lives in `fm_backend_herdr_server_ensure`, and anything else a worker needs must come from the user's shell startup files.
+Every pane inherits that server's environment, so the adapter starts it without the starting agent's session variables (`CLAUDE_*`, `CLAUDECODE`, the other harness markers, `TMUX`); the drop-list lives in `fm_backend_herdr_server_ensure`, and everything else, such as proxy and CA settings, passes through.
 A Herdr server started some other way keeps whatever environment it was started with.
 Every Herdr invocation goes through `fm_backend_herdr_cli`, which sets the environment and passes an explicit trailing `--session <name>`.
 An environment variable alone is not reliable when another Herdr server is running.
