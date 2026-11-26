@@ -26,7 +26,7 @@ Absorbing a declared wait follows the authoritative verdict itself and does not 
 `crew_absorb_class`'s done-reconciliation rule extends that cadence to a crew whose attributed run reports `done` while its status log's last line still declares the wait, such as one holding its own open PR until the captain merges it; that one rule reconciles `done` alone, because a `parked` gate and a `failed` run both need firstmate.
 The watcher's per-window recheck cache is a separate and wider bound: once a window whose last status line declares a wait has surfaced a stale wake, the cache replays `paused` for that window regardless of the verdict just classed, so even a live crew parked at a gate re-surfaces only once per `FM_STALE_ESCALATE_SECS`, the same cadence as the wedge timer.
 An authoritative `working` verdict returns the window to the `FM_STALE_ESCALATE_SECS` wedge timer.
-A backend that confidently reports the agent dead restores the declared-wait cadence for an unchanged `paused:` or durable `captain-held` endpoint once `bin/fm-crew-state.sh` reports a state that absorbs nothing on its own, typically `unknown` after the endpoint reads as a bare shell.
+A backend that confidently reports the agent dead restores the declared-wait cadence for an unchanged `paused:` or durable `captain-held` endpoint once `bin/fm-crew-state.sh` reports a state that absorbs nothing on its own, typically `unknown`, or `exited` on Herdr, after the endpoint reads as a bare shell.
 The secondmate idle-endpoint exemption is unchanged.
 Its initial normal-mode status signal still surfaces through the no-verb path, while away mode self-handles that routine signal and owns the later recheck.
 Fresh stale panes use the same current-state read before trusting the status log, so an active run or a proven busy worker outranks an old captain-relevant status-log line left behind before validation.
@@ -53,6 +53,7 @@ The script header owns the exact attribution rules.
 During no-mistakes' `ci` monitor phase, it also reads the ci step log tail because `axi status` reports both "still waiting on checks" and "checks green, waiting on merge" as `ci,running`.
 The most recent recognized ci log marker wins, so checks-green monitoring reports done while a later re-arm, failed-check, or issue marker returns the crew to working.
 Only when no matching run exists does it consult semantic busy state; exact busy reports working, exact idle permits fallback to a status-log event whose verb maps to a recognized run-state, and unknown or a dead pane stays unknown instead of trusting a stale log.
+On Herdr it first asks the pane itself, for every crew but a secondmate: a pane with no registered agent reports `exited` unless its status log reads a state other than working, and a Claude worker's open question or prompt reports `blocked`.
 Decision-only events such as `resolved` never become current state or leak their prose into the current-state detail.
 In that status-log fallback, a declared external wait reports the distinct `paused` state with its reason.
 The semantic branch reports working only on an exact busy verdict and names the source that produced it; an unknown verdict never becomes working, never permits the status-log fallback, and never becomes a silent idle.
@@ -144,7 +145,7 @@ Runtime auto-detection is innermost-first: `$TMUX` wins over `HERDR_ENV=1`, whic
 Unknown backend names fail loudly.
 For compatibility, default tmux tasks do not write `backend=tmux`; every reader treats a missing `backend=` field as `tmux`.
 `fm-watch.sh` decides each window's busy state through the semantic contract above rather than by polling the backend for rendered text.
-Herdr's native `agent.get` verdict still participates, but only as evidence of activity: a native `busy` is accepted when the task has no record of its own, while a native `idle` is not, because `agent.get` reports generation state and reads idle while a worker blocks on its own long-running foreground tool call.
+Herdr's native `agent.get` verdict also participates: a native `busy` is accepted when the task has no record of its own, and a native `idle` ends only a Claude busy record left behind by an interrupted turn ([`herdr-backend.md`](herdr-backend.md#current-transport-behavior)).
 tmux, zellij, orca, and cmux expose no native busy primitive at all, so a task on those backends is classified purely from its adapter's own lifecycle record.
 That poll loop is still the default event source for backends with no native push events, so this stays an extraction of the abstraction rather than a watcher rewrite.
 For capable Herdr sessions, the same watcher replaces its terminal sleep with a bounded native event wait that immediately surfaces `blocked`; [Push events and polling fallback](herdr-backend.md#push-events-and-polling-fallback) owns the current mechanism and capability gates, while [runtime backend verification](verification/runtime-backends.md#native-blocked-event) owns the active evidence.

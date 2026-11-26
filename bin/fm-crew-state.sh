@@ -16,7 +16,7 @@
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
 # token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|exited|unknown> · source: <run-step|pane|status-log|none> · <detail>
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta.
@@ -54,7 +54,11 @@
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
 #      recorded backend's pane busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
-#      `resolved` never become current state or detail.
+#      `resolved` never become current state or detail. On Herdr, a crew other
+#      than a secondmate whose pane has no registered agent reports its status
+#      log's state when that is neither working nor absent, and exited
+#      otherwise; a Claude crew whose native state is blocked (an open question
+#      or prompt) reports blocked.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
@@ -159,10 +163,8 @@ pane_readable() {  # <target>
 # crew_busy_verdict: the crew's semantic busy state from the one contract
 # owner (bin/fm-busy-lib.sh), as "<busy|idle|unknown> <source>". A converted
 # adapter answers from its own lifecycle record; Grok answers from its
-# isolated rendered-tail fallback; a herdr crew's native `busy` is accepted
-# when no record exists, but its native `idle` is NOT, because agent.get
-# reports generation state (idle while a crew blocks on its own long-running
-# foreground tool call) rather than turn state.
+# isolated rendered-tail fallback; that owner also decides how far a herdr
+# crew's native verdict is trusted.
 crew_busy_verdict() {  # <target>
   local tail40=''
   case "$HARNESS" in
@@ -439,6 +441,26 @@ fi
 # unknown rather than trusting a possibly-stale status log as the current state.
 [ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
 pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+
+# Herdr sees the agent in the pane itself: a pane with no registered agent is a
+# worker that exited, unless its status log already says how it stopped, and
+# Claude's native blocked is an open question or prompt that its busy record
+# cannot tell apart from work.
+if [ "$TASK_BACKEND" = herdr ] && [ "$KIND" != secondmate ]; then
+  if [ "$(fm_backend_agent_state herdr "$BACKEND_TARGET")" = dead ]; then
+    LOG_STATE=$(map_log_state "$LOG_LINE")
+    case "$LOG_STATE" in
+      working|unknown) emit exited pane "no agent in its Herdr pane" ;;
+      *) emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")" ;;
+    esac
+  fi
+  case "$HARNESS" in
+    claude*)
+      [ "$(fm_backend_agent_status herdr "$BACKEND_TARGET")" != blocked ] \
+        || emit blocked pane "waiting on a question or prompt (herdr-native)"
+      ;;
+  esac
+fi
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
 # state is not meaningful for them; read their state from the status log only.

@@ -230,8 +230,9 @@ The poll density bounds the residual possibility of an extremely fast complete t
 The capture owner requests at least 200 lines from Herdr and trims locally to the caller's bound.
 This generous floor is required for small composer and peek reads.
 
-Herdr's native agent state can read idle while a harness waits on its own long foreground tool.
-The shared crew-state path therefore accepts a native `busy` as evidence of activity but never a native `idle` as evidence that a worker has stopped; the task's own semantic busy state (`bin/fm-busy-lib.sh`) decides that.
+For Claude, Herdr's native agent state follows the whole turn, long foreground tool calls included, and reads `blocked` while a question or prompt waits on an answer.
+Claude fires no hook when a turn is interrupted, so a Claude busy record older than the moment Herdr needs to see a new turn yields to a native `idle` or `done`; for every other harness a native `busy` is evidence of activity and a native `idle` never proves a worker stopped (`bin/fm-busy-lib.sh`).
+[Runtime backend verification](verification/runtime-backends.md#claude-worker-state) records the verified versions, and `tests/fm-crew-state-herdr-live-e2e.test.sh` refreshes them.
 A human-blocked permission dialog has no busy banner and still surfaces.
 
 ## Composer and injection safety

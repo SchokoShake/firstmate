@@ -107,6 +107,10 @@ case "${1:-}" in
     exit 0 ;;
   pane)
     case "${2:-}" in
+      get)
+        [ "${FM_FAKE_HERDR_MISSING:-0}" = 1 ] && { printf '{"error":{"code":"pane_not_found"}}\n'; exit 1; }
+        printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}"
+        exit 0 ;;
       read)
         [ "${FM_FAKE_HERDR_MISSING:-0}" = 1 ] && exit 1
         if [ "${FM_FAKE_HERDR_BUSY:-0}" = 1 ]; then printf 'work in progress\nesc to interrupt\n'
@@ -116,7 +120,11 @@ case "${1:-}" in
   agent)
     case "${2:-}" in
       get)
-        [ -n "${FM_FAKE_HERDR_AGENT_STATUS:-}" ] || exit 1
+        # none: the pane holds no registered agent, as after the harness exits.
+        case "${FM_FAKE_HERDR_AGENT_STATUS:-}" in
+          '') exit 1 ;;
+          none) printf '{"error":{"code":"agent_not_found"}}\n'; exit 1 ;;
+        esac
         printf '{"result":{"agent":{"agent_status":"%s"}}}\n' "$FM_FAKE_HERDR_AGENT_STATUS"
         exit 0 ;;
     esac ;;
@@ -958,37 +966,97 @@ test_no_run_herdr_unknown_uses_backend_capture() {
   pass "herdr's native busy verdict reads working with no record present"
 }
 
-# Regression (2026-07 herdr false-surface incident, now solved semantically):
-# herdr's agent.get reports generation state ("working" only while the model is
-# actively streaming - docs/herdr-backend.md "Busy state"), not "this crew's
-# turn is still in progress". A crew blocked on its own long-running foreground
-# `no-mistakes axi run` (no --yes; blocks until a gate or outcome) is not
-# generating for that whole span, so agent.get reads idle. The crew's own
-# semantic lifecycle record still says busy for the whole turn, and it outranks
-# the narrower native verdict - so the crew is no longer misread as not-working.
-test_no_run_herdr_idle_agent_status_outranked_by_record() {
-  command -v jq >/dev/null 2>&1 || { pass "herdr idle corroboration skipped without jq"; return; }
+# Herdr reads a Claude turn only a moment after its UserPromptSubmit hook has
+# written busy, so a fresh busy record outranks a native idle. An older one
+# yields to it: Claude fires no hook when a turn is interrupted, and that
+# leftover record would otherwise keep an idle worker reading working.
+test_no_run_herdr_idle_ends_only_a_settled_claude_record() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr idle record test skipped without jq"; return; }
   reset_fakes
   local d; d=$(new_case herdr-idle-busy-record)
   make_repo_on_branch "$d/wt" fm/feat-herdr-idle
   make_fakebin "$d" >/dev/null
   fm_write_meta "$d/state/feat-herdr-idle.meta" "window=default:w1:p3" "worktree=$d/wt" "kind=ship" \
     "backend=herdr" "harness=claude"
-  # No run attributable (mirrors a no-mistakes run-step lookup that found no
-  # run for this branch and current code): the crew's semantic busy state is
-  # the only remaining signal.
   FM_FAKE_AXI_STATUS=""
   FM_FAKE_RUNS_LIST=""
   FM_FAKE_TMUX_MISSING=1
   FM_FAKE_HERDR_AGENT_STATUS=idle
-  FM_FAKE_HERDR_BUSY=0
   local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-herdr-idle)
   "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-herdr-idle busy --gen "$gen" \
     --source claude-hook --event user-prompt-submit
   local out; out=$(run_crew_state "$d" feat-herdr-idle)
-  assert_contains "$out" "state: working" "a busy record with herdr idle agent_status -> working"
-  assert_contains "$out" "claude-hook" "the record's source outranks herdr's narrower native verdict"
-  pass "a mid-tool-call crew stays working because its record outranks herdr's generation state"
+  assert_contains "$out" "state: working" "a turn that just opened stays working while herdr still reads idle"
+  assert_contains "$out" "claude-hook" "the fresh record decides"
+  printf 'v1 gen=%s seq=9 state=busy source=claude-hook event=user-prompt-submit ts=%s\n' \
+    "$gen" "$(( $(date +%s) - 60 ))" > "$d/state/feat-herdr-idle.busy-state"
+  out=$(run_crew_state "$d" feat-herdr-idle)
+  assert_not_contains "$out" "state: working" "an interrupted turn's leftover busy record must not read working"
+  assert_contains "$out" "state: unknown" "with no status log the idle worker reads unknown"
+  pass "herdr's idle ends a Claude busy record only once it is past the turn-start lag"
+}
+
+# An open question or permission prompt keeps Claude's turn, and so its busy
+# record, open; only Herdr's native blocked tells it apart from work. Herdr
+# reports a Cursor pane blocked in every state, so the reading is Claude's only.
+test_no_run_herdr_claude_question_reads_blocked() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr blocked test skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case herdr-blocked)
+  make_repo_on_branch "$d/wt" fm/feat-herdr-q
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-herdr-q.meta" "window=default:w1:p5" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=claude"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_HERDR_AGENT_STATUS=blocked
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-herdr-q)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-herdr-q busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  local out; out=$(run_crew_state "$d" feat-herdr-q)
+  assert_contains "$out" "state: blocked" "an open Claude question reads blocked, not working"
+  assert_contains "$out" "source: pane" "the verdict comes from the pane"
+  fm_write_meta "$d/state/feat-herdr-q.meta" "window=default:w1:p5" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=cursor"
+  out=$(run_crew_state "$d" feat-herdr-q)
+  assert_not_contains "$out" "state: blocked" "herdr's constant blocked for a Cursor pane is not a question"
+  pass "a Claude worker with an open question reads blocked, a Cursor pane's constant blocked does not"
+}
+
+# A Herdr pane that outlives its agent (the harness exited or was killed) is an
+# exited worker, even while a leftover busy record or status log says working.
+# A log that already says how the worker stopped still wins, so a reported
+# outcome is never hidden. A secondmate keeps its status-log reading, so its
+# watcher still re-surfaces a declared pause.
+test_no_run_herdr_agentless_pane_reads_exited() {
+  command -v jq >/dev/null 2>&1 || { pass "herdr exited test skipped without jq"; return; }
+  reset_fakes
+  local d; d=$(new_case herdr-exited)
+  make_repo_on_branch "$d/wt" fm/feat-herdr-x
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-herdr-x.meta" "window=default:w1:p6" "worktree=$d/wt" "kind=ship" \
+    "backend=herdr" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/feat-herdr-x.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_HERDR_AGENT_STATUS=none
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-herdr-x)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-herdr-x busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  local out; out=$(run_crew_state "$d" feat-herdr-x)
+  assert_contains "$out" "state: exited" "a pane with no agent reads exited"
+  assert_contains "$out" "source: pane" "the verdict comes from the pane"
+  printf 'done: report ready\n' >> "$d/state/feat-herdr-x.status"
+  out=$(run_crew_state "$d" feat-herdr-x)
+  assert_contains "$out" "state: done" "an agent-less pane whose log says done still reads done"
+  assert_contains "$out" "source: status-log" "the reported outcome comes from the status log"
+  fm_write_meta "$d/state/feat-herdr-x.meta" "window=default:w1:p6" "worktree=$d/wt" "kind=secondmate" \
+    "backend=herdr" "harness=claude" "home=$d/wt"
+  printf 'paused: holding for the upstream tool release\n' > "$d/state/feat-herdr-x.status"
+  out=$(run_crew_state "$d" feat-herdr-x)
+  assert_contains "$out" "state: paused" "an agent-less secondmate pane keeps its status-log pause"
+  assert_contains "$out" "source: status-log" "a secondmate is read from its status log"
+  pass "an agent-less Herdr pane reads exited, never working from a leftover record or log; a reported outcome or a secondmate keeps its log"
 }
 
 # The record must not mask a genuinely idle or human-blocked agent: an idle
@@ -1529,7 +1597,9 @@ test_no_run_busy_pane
 test_no_run_footer_text_alone_is_not_working
 test_no_run_grok_uses_isolated_fallback
 test_no_run_herdr_unknown_uses_backend_capture
-test_no_run_herdr_idle_agent_status_outranked_by_record
+test_no_run_herdr_idle_ends_only_a_settled_claude_record
+test_no_run_herdr_claude_question_reads_blocked
+test_no_run_herdr_agentless_pane_reads_exited
 test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
 test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log

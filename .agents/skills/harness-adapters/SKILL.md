@@ -212,7 +212,7 @@ The one case it does not cover is a board whose card carries no such branch row;
 
 | Fact | Value |
 |---|---|
-| Busy state | Owned lifecycle hooks: `UserPromptSubmit` opens a turn, while `Stop`, `StopFailure`, and `SessionEnd` close it; because Claude fires no hook for a manual interrupt, `bin/fm-control.sh interrupt` reports only delivered keys and the verified endpoint or live agent, publishes no idle event, makes no cancellation claim, and leaves adapter-observed state unchanged, so a mid-turn worker typically remains busy via `claude-hook`. |
+| Busy state | Owned lifecycle hooks: `UserPromptSubmit` opens a turn, while `Stop`, `StopFailure`, and `SessionEnd` close it; because Claude fires no hook for a manual interrupt, `bin/fm-control.sh interrupt` reports only delivered keys and the verified endpoint or live agent, publishes no idle event, makes no cancellation claim, and leaves adapter-observed state unchanged, so a mid-turn worker typically remains busy via `claude-hook`; on Herdr, once that record is older than `FM_BUSY_HERDR_IDLE_SETTLE_SECS`, a native `idle` or `done` classifies the worker `idle herdr-native` instead. |
 | Presence beat | All four states, the only adapter that reaches them: `working` on `UserPromptSubmit`, `waiting` on both `Stop` and `StopFailure`, and `end` on `SessionEnd`, which retires the row at once instead of waiting out the board's TTL. |
 | Exit command | `/exit` |
 | Interrupt | single Escape |

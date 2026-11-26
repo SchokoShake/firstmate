@@ -339,6 +339,33 @@ test_herdr_native_busy_only() {
   pass "herdr's native verdict is trusted for busy only, and records outrank it"
 }
 
+# Claude fires no hook when a turn is interrupted. On Herdr, a busy Claude
+# record past the turn-start lag yields to Herdr's own idle; an open question
+# (blocked) keeps the turn busy, and tmux has no native state to consult.
+test_herdr_native_idle_ends_settled_claude_turn() {
+  local state gen out
+  state=$(new_state_dir herdr-idle-settle)
+  # shellcheck disable=SC2329 # invoked indirectly through fm_busy_classify
+  fm_backend_agent_status() { printf '%s' "$FAKE_STATUS"; }
+  gen=$("$EV" arm "$state" t1)
+  "$EV" apply "$state" t1 busy --gen "$gen" --source claude-hook --event user-prompt-submit
+  FAKE_STATUS=idle
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "busy claude-hook" ] || fail "a fresh busy record must outlast herdr's turn-start idle, got '$out'"
+  printf 'v1 gen=%s seq=9 state=busy source=claude-hook event=user-prompt-submit ts=%s\n' \
+    "$gen" "$(( $(date +%s) - 60 ))" > "$state/t1.busy-state"
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "idle herdr-native" ] || fail "herdr's idle must end a settled Claude busy record, got '$out'"
+  FAKE_STATUS=blocked
+  out=$(fm_busy_classify herdr s:p claude t1 "$state")
+  [ "$out" = "busy claude-hook" ] || fail "an open question must keep the turn busy, got '$out'"
+  FAKE_STATUS=idle
+  out=$(fm_busy_classify tmux w1 claude t1 "$state")
+  [ "$out" = "busy claude-hook" ] || fail "tmux has no native state and must keep the record, got '$out'"
+  unset -f fm_backend_agent_status
+  pass "herdr's idle ends a Claude busy record only past the turn-start lag"
+}
+
 # The record parser runs inside sourcing callers (the watcher, the daemon, the
 # crew-state reader), so it must not disturb their shell: no clobbered
 # positional parameters and no changed glob setting.
@@ -400,6 +427,7 @@ test_kimi_unverified_gate
 test_cursor_ignores_rendered_and_native_signals
 test_dead_endpoint_overrides
 test_herdr_native_busy_only
+test_herdr_native_idle_ends_settled_claude_turn
 test_record_read_leaves_caller_shell_intact
 test_boolean_view_never_promotes_unknown
 

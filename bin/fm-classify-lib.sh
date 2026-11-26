@@ -1101,7 +1101,7 @@ signal_reason_is_actionable() {  # <file> ...
 #   paused  - the crew's authoritative current state is a declared external-wait
 #             pause (paused:), which is EXPECTED to idle, or it is `done` while
 #             the optional <declared-line> still declares that wait (below);
-#   none    - neither, so the wake must surface (a parked/failed/blocked/unknown
+#   none    - neither, so the wake must surface (a parked/failed/blocked/exited/unknown
 #             crew, an undeclared `done`, or an unreadable verdict).
 # One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
