@@ -1463,15 +1463,10 @@ revive_agent_view() {
 # restore HERDR_RESTORE_WAIT seconds to settle out of `unreadable` before the
 # endpoint is classified.
 herdr_restore_settle() {
-  local elapsed=0
   if ! fm_backend_source herdr || ! fm_backend_herdr_target_ready "$T"; then
     die "could not start the Herdr server that task $ID's endpoint $T lives in; nothing was changed"
   fi
-  while [ "$(window_state)" = unreadable ]; do
-    awk -v e="$elapsed" -v t="$HERDR_RESTORE_WAIT" 'BEGIN{exit !(e < t)}' || break
-    sleep "$POLL"
-    elapsed=$(awk -v e="$elapsed" -v p="$POLL" 'BEGIN{printf "%.3f", e + p}')
-  done
+  wait_agent_state "$HERDR_RESTORE_WAIT" alive dead missing >/dev/null || true
 }
 
 do_revive() {

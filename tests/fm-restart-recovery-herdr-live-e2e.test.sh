@@ -19,10 +19,15 @@
 # given a random token. Then one case runs:
 #
 #   restart  the lab server is stopped and started again (bin/fm-herdr-lab.sh
-#            stop, then provision), as a Herdr crash, an update, or the captain
-#            starting Herdr again after a reboot does.
+#            stop, then provision), as the captain starting Herdr again after
+#            a machine restart does.
 #   stopped  the lab server is stopped and left stopped, as a reboot leaves it
 #            until something starts it.
+#
+# Both cases are machine restarts: restart detection reads the kernel boot id
+# alone, as on tmux. A Herdr-only restart without a reboot leaves the worker
+# stopped until `bin/fm-control.sh revive <id>`, exactly like a tmux server
+# crash.
 #
 # FM_HERDR_RR_CASE picks one; unset, both run, each with its own worker and lab.
 # The boot id file is flipped to simulate a machine restart, and every case must

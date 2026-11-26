@@ -268,6 +268,7 @@ A secondmate keeps `HERDR_ENV`, which its own runtime and supervisor-pane detect
 Other harnesses keep `HERDR_ENV` too, because their Herdr integrations also report the native agent state firstmate reads; none of them is verified against Herdr's resume.
 
 The restart list in `bin/fm-restart-lib.sh` counts a pane that still exists with no agent in it as stopped, so session start lists such a worker after a machine restart and prints the bring-back command, and its endpoint line reads dead.
+A Herdr-only restart without a reboot leaves the worker stopped until `bin/fm-control.sh revive <id>`, exactly like a tmux server crash.
 A reboot leaves the server stopped, and session start does not start it.
 `bin/fm-control.sh revive` starts the server its endpoint lives in before reading the endpoint, waits a bounded time for the restored pane to read as a classified state, and then resumes the worker in that pane.
 Reading a pane through crew state, peek, send, or the watcher also starts a stopped server, which is harmless now that Herdr restores the pane agent-free.
