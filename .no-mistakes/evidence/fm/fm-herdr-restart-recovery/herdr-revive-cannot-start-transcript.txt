@@ -1,0 +1,9 @@
+# lab session fm-lab-fm-rv-nostart-1871251-15240 stopped: running=false; task rvns1871211 endpoint fm-lab-fm-rv-nostart-1871251-15240:w1:p1
+# revive rc=1 output:
+#   error: herdr server for session 'fm-lab-fm-rv-nostart-1871251-15240' did not report running within 10s
+error: could not start the Herdr server that task rvns1871211's endpoint fm-lab-fm-rv-nostart-1871251-15240:w1:p1 lives in; nothing was changed
+# server start attempts: 1
+#   server start attempted (refused by the wrapper: simulated server that will not start)
+# lab running after revive: false
+ok - revive into a stopped Herdr server that cannot start refuses by name, tried the start, and left the home byte-identical
+exit=0

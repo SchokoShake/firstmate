@@ -1,0 +1,17 @@
+FM_TEST_BEGIN 2026-11-26T17:58:01Z tests/fm-restart-recovery-herdr-live-e2e.test.sh family=live-harness-optin expected_gate_skip=optin-env
+# case restart: claude 2.1.332 (Claude Code) on herdr 0.9.5
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case restart: a real worker on the Herdr lab runs without HERDR_ENV, detected natively, under conversation 614e2588-5942-4a21-ada5-75f253ec6022
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case restart: session start lists the stopped Herdr worker and prints the bring-back command
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case restart: the printed command resumes session 614e2588-5942-4a21-ada5-75f253ec6022 with firstmate's full launch line
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case restart: the revived worker answers from its original conversation 614e2588-5942-4a21-ada5-75f253ec6022
+# case stopped: claude 2.1.332 (Claude Code) on herdr 0.9.5
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case stopped: a real worker on the Herdr lab runs without HERDR_ENV, detected natively, under conversation 8f490561-98c3-4e51-b997-e416aac23cd3
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case stopped: session start lists the stopped Herdr worker and prints the bring-back command
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case stopped: the printed command resumes session 8f490561-98c3-4e51-b997-e416aac23cd3 with firstmate's full launch line
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case stopped: the revived worker answers from its original conversation 8f490561-98c3-4e51-b997-e416aac23cd3
+# all fm-restart-recovery herdr live cases passed
+FM_TEST_END 2026-11-26T17:58:47Z tests/fm-restart-recovery-herdr-live-e2e.test.sh exit=0 duration_ms=45813 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=45831
+FM_TEST_SUMMARY_FAMILY family=live-harness-optin count=1 duration_ms=45813 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-restart-recovery-herdr-live-e2e.test.sh duration_ms=45813
+exit=0

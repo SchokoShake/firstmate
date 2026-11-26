@@ -1,0 +1,14 @@
+fm-herdr-lab: run forbids a leading option before the Herdr subcommand; it could shift a server or session lifecycle operation past the guard or subvert session isolation
+# claude 2.1.332 (Claude Code) on , lab session fm-lab-fm-hdrenv-bnd-1797168-7036
+# claude scout on herdr spawn: spawned hbscout1797148 harness=claude kind=scout window=fm-lab-fm-hdrenv-bnd-1797168-7036:w1:p2 worktree=/tmp/fm-hdrenv-bnd.V90pcX/pool/1/wt
+# claude scout on herdr launch typed into Herdr pane w1:p2:
+#   env -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u HERDR_ENV CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_AGENT_VIEW=1 claude --dangerously-skip-permissions --model 'haiku' --name 'fm-hbscout1797148' "$('{run-worktree}/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-hdrenv-bnd.V90pcX/fmhome/data/hbscout1797148/brief.md')"
+# claude scout on herdr claude pid 1798096 environment: (no HERDR_ENV)
+ok - claude scout on herdr: launched without HERDR_ENV (env -u HERDR_ENV in the launch line, absent from the claude process)
+# claude secondmate on herdr spawn: spawned hbsm1797148 harness=claude kind=secondmate mode=secondmate yolo=off window=fm-lab-fm-hdrenv-bnd-1797168-7036:w2:p2 worktree=/tmp/fm-hdrenv-bnd.V90pcX/smhome
+# claude secondmate on herdr launch typed into Herdr pane w2:p2:
+#   FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME='/tmp/fm-hdrenv-bnd.V90pcX/fmhome' FM_HOME='/tmp/fm-hdrenv-bnd.V90pcX/smhome' FM_TRACE_CONTEXT=off FM_SUPERVISION_MODEL=autoarm env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_AGENT_VIEW=1 claude --dangerously-skip-permissions --model 'haiku' --name 'fm-hbsm1797148' "$('{run-worktree}/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-hdrenv-bn
+# claude secondmate on herdr claude pid 1798553 environment: HERDR_ENV=1
+ok - claude secondmate on herdr: keeps HERDR_ENV (no -u HERDR_ENV in the launch line, HERDR_ENV=1 in the claude process)
+# all HERDR_ENV boundary checks passed
+exit=0
