@@ -260,6 +260,19 @@ No Herdr-specific copy of that protocol exists.
 ## Restart and liveness behavior
 
 Stopping and restarting a named Herdr server preserves workspace, tab, pane, and label ids, but the underlying harness processes and live agent registrations do not survive.
+With its default `[session] resume_agents_on_restore`, Herdr 0.9.5 relaunches into its restored pane every agent whose session id its own agent integration reported, as a bare `claude --resume <session-id>` that drops firstmate's launch flags, environment, and restart note.
+Herdr's Claude integration reports a session only from a process that carries `HERDR_ENV=1`, so `bin/fm-spawn.sh` starts every Claude crewmate and scout on Herdr without it, and revive's launch reuses that line.
+Herdr then restores such a worker's pane as a plain shell in its worktree, and firstmate stays the one owner of bringing the worker back, as on tmux.
+Herdr still detects the agent natively from its process, so firstmate's native state reads are unaffected.
+A secondmate keeps `HERDR_ENV`, which its own runtime and supervisor-pane detection read, and Herdr may relaunch it its own way.
+Other harnesses keep `HERDR_ENV` too, because their Herdr integrations also report the native agent state firstmate reads; none of them is verified against Herdr's resume.
+
+The restart list in `bin/fm-restart-lib.sh` counts a pane that still exists with no agent in it as stopped, so session start lists such a worker after a machine restart and prints the bring-back command, and its endpoint line reads dead.
+A reboot leaves the server stopped, and session start does not start it.
+`bin/fm-control.sh revive` starts the server its endpoint lives in before reading the endpoint, waits a bounded time for the restored pane to read as a classified state, and then resumes the worker in that pane.
+Reading a pane through crew state, peek, send, or the watcher also starts a stopped server, which is harmless now that Herdr restores the pane agent-free.
+`tests/fm-restart-recovery.test.sh` and `tests/fm-control.test.sh` pin both against a stand-in herdr, and `tests/fm-restart-recovery-herdr-live-e2e.test.sh` re-checks the whole chain against the installed Claude Code and Herdr.
+
 A restored same-labeled tab with a missing pane or no registered agent is a husk.
 Create replaces only a confidently dead or no-agent husk, creates the replacement before closing the old tab, and refuses live or unknown states.
 This prevents closing the workspace's last tab before a replacement exists.

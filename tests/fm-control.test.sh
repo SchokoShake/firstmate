@@ -15,6 +15,8 @@
 #   5. Lifecycle states: busy interrupts first, idle does not, already-stopped
 #      is idempotent success, an agent that does not stop fails closed, and a
 #      herdr composer that already holds unsent text gets no exit command.
+#      revive starts the stopped Herdr server a herdr endpoint lives in and
+#      waits for the restored pane before classifying it.
 #   6. Marker non-regression: a control command to a kind=secondmate task
 #      carries NO from-firstmate marker and opens no pending-reply expectation,
 #      while fm-send's marking of the same task is untouched.
@@ -866,6 +868,89 @@ test_herdr_exit_refuses_a_composer_holding_unsent_text() {
   pass "fm-control exit (herdr): a composer holding unsent text gets no exit command and the exit refuses"
 }
 
+# A stateful herdr stub for revive after a reboot: $D/herdr-server holds
+# `stopped` or `running`, and a `server` start makes it `running` only while
+# $D/herdr-can-start exists. While stopped every pane read fails as Herdr's
+# does; once running, the first $D/herdr-settle reads still fail, as a restore
+# that has not settled yet, and then the restored pane reads agent-free.
+make_herdr_restore_stub() {  # <case-dir>
+  cat > "$1/fakebin/herdr" <<'SH'
+#!/usr/bin/env bash
+set -u
+D=$FM_FAKE_DIR
+running() { [ "$(cat "$D/herdr-server")" = running ]; }
+case "${1:-} ${2:-}" in
+  "status --json")
+    if running; then r=true; else r=false; fi
+    printf '{"client":{"version":"0.9.5","protocol":22},"server":{"running":%s}}\n' "$r" ;;
+  "server --session")
+    echo start >> "$D/herdr-starts"
+    [ ! -e "$D/herdr-can-start" ] || printf 'running' > "$D/herdr-server" ;;
+  "pane get"|"agent get")
+    if ! running; then
+      printf '{"error":{"code":"server_not_running","message":"server not running"}}\n'
+      exit 1
+    fi
+    left=$(cat "$D/herdr-settle")
+    if [ "$left" -gt 0 ]; then
+      printf '%s' "$((left - 1))" > "$D/herdr-settle"
+      printf '{"error":{"code":"session_restoring","message":"restoring"}}\n'
+      exit 1
+    fi
+    if [ "$1" = pane ]; then
+      printf '{"result":{"pane":{"pane_id":"%s"}}}\n' "${3:-}"
+    else
+      printf '{"error":{"code":"agent_not_found","message":"agent target %s not found"}}\n' "${3:-}"
+    fi ;;
+esac
+exit 0
+SH
+  chmod +x "$1/fakebin/herdr"
+}
+
+# After a reboot the Herdr server is stopped, so a herdr endpoint reads
+# unreadable; revive starts that server and waits out the restore before it
+# classifies the pane. The instructions are removed, so revive stops at the
+# first step after that classification and its refusal names them, which only
+# a pane that read agent-free can reach. A server that cannot start refuses
+# before anything else and names the server.
+test_herdr_revive_starts_the_server_its_endpoint_needs() {
+  local dir out rc
+  dir=$(new_case herdr-revive)
+  add_task "$dir" t1 claude ship herdr "default:w1:p2"
+  printf '%s\n' "herdr_session=default" "herdr_workspace_id=w1" "herdr_tab_id=w1:t2" "herdr_pane_id=w1:p2" \
+    >> "$dir/home/state/t1.meta"
+  rm -f "$dir/home/data/t1/brief.md"
+  make_herdr_restore_stub "$dir"
+  printf 'stopped' > "$dir/fake/herdr-server"
+  printf '0' > "$dir/fake/herdr-settle"
+
+  out=$(FM_CONTROL_HERDR_RESTORE_WAIT=1 run_control "$dir" t1 revive); rc=$?
+  expect_code 1 "$rc" "revive with a Herdr server that cannot start should refuse"$'\n'"$out"
+  assert_contains "$out" "could not start the Herdr server that task t1's endpoint default:w1:p2 lives in" \
+    "the refusal should name the server it could not start"
+  [ -s "$dir/fake/herdr-starts" ] || fail "revive should have asked Herdr to start the server"
+
+  : > "$dir/fake/herdr-starts"
+  touch "$dir/fake/herdr-can-start"
+  printf '3' > "$dir/fake/herdr-settle"
+  out=$(FM_CONTROL_HERDR_RESTORE_WAIT=5 run_control "$dir" t1 revive); rc=$?
+  expect_code 1 "$rc" "revive should stop at the missing instructions"$'\n'"$out"
+  assert_contains "$out" "task t1 has no instructions" \
+    "revive should classify the restored pane as agent-free once the server runs"$'\n'"$out"
+  assert_not_contains "$out" "unreadable" "revive must not refuse the endpoint as unreadable once it started the server"
+  [ "$(cat "$dir/fake/herdr-server")" = running ] || fail "revive should leave the Herdr server running"
+  [ "$(wc -l < "$dir/fake/herdr-starts" | tr -d ' ')" = 1 ] || fail "revive should start the server exactly once"
+  [ "$(cat "$dir/fake/herdr-settle")" = 0 ] \
+    || fail "divergence lost: the restore must have read unreadable before it settled"
+
+  : > "$dir/fake/herdr-starts"
+  out=$(FM_CONTROL_HERDR_RESTORE_WAIT=1 run_control "$dir" t1 revive); rc=$?
+  assert_contains "$out" "task t1 has no instructions" "revive into a running server should classify the pane directly"
+  [ ! -s "$dir/fake/herdr-starts" ] || fail "revive must not start a server that is already running"
+  pass "fm-control revive (herdr): starts the stopped server its endpoint lives in and waits for the restored pane"
+}
+
 test_grok_interrupt_without_acknowledgement_reports_unconfirmed() {
   local dir out rc
   dir=$(new_case nosettle)
@@ -969,6 +1054,7 @@ test_interrupt_revalidates_agent_after_acknowledgement_wait
 test_exit_accepts_agent_stopped_by_busy_interrupt
 test_agent_that_does_not_stop_fails_closed
 test_herdr_exit_refuses_a_composer_holding_unsent_text
+test_herdr_revive_starts_the_server_its_endpoint_needs
 test_grok_interrupt_without_acknowledgement_reports_unconfirmed
 test_grok_idle_footer_does_not_confirm_cancellation
 test_secondmate_control_command_carries_no_marker

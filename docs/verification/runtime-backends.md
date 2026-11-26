@@ -971,6 +971,41 @@ ok - real herdr: an agent that does not stop fails closed instead of being repor
 The registry read through `herdr pane report-agent` is the same source `fm_backend_herdr_agent_state` classifies, so registering and not registering an agent on a plain shell pane exercises exactly the gate every lifecycle verb depends on, with no real agent launched.
 That command is the guard that refreshes this record; run it after every Herdr upgrade rather than trusting the version above.
 
+### Restart recovery on Herdr
+
+[Restart recovery](../agent-control.md#revive-after-a-stop) on Herdr ([herdr-backend.md](../herdr-backend.md#restart-and-liveness-behavior)) was verified on 2026-11-26 with Claude Code 2.1.332 on haiku and Herdr 0.9.5 on Linux x86_64, with Herdr's default `[session] resume_agents_on_restore` and Claude integration version 11.
+The live guard spawns a real Claude worker through `bin/fm-spawn.sh` onto an isolated lab session, in a scratch firstmate home and repository, gives it a random token, and stops the lab server through `bin/fm-herdr-lab.sh`.
+In the `restart` case it starts the server again at once, and in the `stopped` case it leaves it stopped, as a reboot does.
+Both cases then flip the simulated boot id and run session start and the bring-back command it printed.
+Observed in both cases: the worker's Claude process carried no `HERDR_ENV`, Herdr still detected the agent natively, and Herdr relaunched nothing, restoring the pane as a plain `/bin/bash` that read agent-free.
+Session start listed the worker and printed the bring-back command, and in the `stopped` case made no server start.
+The printed command started the server itself in the `stopped` case, and in both resumed the original session id with the pane running `claude --dangerously-skip-permissions --model haiku --name fm-<id> --resume <session-id> "Restart note from firstmate ..."`.
+The revived worker answered with the token in lowercase.
+In two of five earlier runs Haiku garbled that last answer (`owsprey-<digits>`, `othering`) although its conversation held the token, so the guard accepts the lowercase word with the exact random digits and asks at most twice.
+`tests/fm-restart-recovery.test.sh` and `tests/fm-control.test.sh` are the portable half that CI runs.
+Run the guard after every Claude Code or Herdr update and before refreshing this record:
+
+```sh
+FM_RESTART_RECOVERY_HERDR_LIVE=1 bin/fm-test-run.sh tests/fm-restart-recovery-herdr-live-e2e.test.sh
+```
+
+Bounded output from the run that produced this record:
+
+```text
+# case restart: claude 2.1.332 (Claude Code) on herdr 0.9.5
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case restart: a real worker on the Herdr lab runs without HERDR_ENV, detected natively, under conversation <session-id>
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case restart: session start lists the stopped Herdr worker and prints the bring-back command
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case restart: the printed command resumes session <session-id> with firstmate's full launch line
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case restart: the revived worker answers from its original conversation <session-id>
+# case stopped: claude 2.1.332 (Claude Code) on herdr 0.9.5
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case stopped: a real worker on the Herdr lab runs without HERDR_ENV, detected natively, under conversation <session-id>
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case stopped: session start lists the stopped Herdr worker and prints the bring-back command
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case stopped: the printed command resumes session <session-id> with firstmate's full launch line
+ok - claude 2.1.332 (Claude Code) on herdr 0.9.5: case stopped: the revived worker answers from its original conversation <session-id>
+# all fm-restart-recovery herdr live cases passed
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=47143
+```
+
 ### Away-mode transport
 
 The Pi/Herdr return and injection path was reverified on Herdr 0.7.3 and Pi 0.80.7:

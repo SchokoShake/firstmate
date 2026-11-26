@@ -227,6 +227,7 @@ Claude Code 2.1.316 preselects `No, exit` on the workspace trust prompt for a pa
 A claude crewmate's own `UserPromptSubmit` and `Stop` hooks save its session id, conversation file, and working directory from the hook payload at every turn, so the last turn before a machine stop is what survives; `bin/fm-harness-session.sh` owns that record, and only the worker's own agent, the process carrying the task's `GOTMPDIR`, writes it.
 Run in the worktree, `claude --resume <session-id> "<prompt>"` continues that conversation under the same session id and submits the prompt as its next turn, and an unknown id prints `No conversation found with session ID: <id>` and exits 1.
 `bin/fm-control.sh revive` resumes a stopped claude worker exactly that way, with its restart note as the prompt; [`docs/verification/runtime-backends.md`](../../../docs/verification/runtime-backends.md#restart-recovery) holds the evidence.
+On Herdr a claude crewmate or scout launches without `HERDR_ENV`, so Herdr never relaunches it on its own after a server restart and revive stays the one way back ([`docs/herdr-backend.md`](../../../docs/herdr-backend.md#restart-and-liveness-behavior) "Restart and liveness behavior").
 
 Claude renders a predicted-next-prompt suggestion as dim/faint text inside an otherwise-empty composer after a turn completes.
 A plain `tmux capture-pane` cannot tell that ghost text apart from typed text.
