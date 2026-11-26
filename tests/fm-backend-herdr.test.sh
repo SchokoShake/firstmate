@@ -38,8 +38,9 @@ make_herdr_fakebin() {  # <dir> -> echoes fakebin dir
   cat > "$fb/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
-LOG="${FM_HERDR_LOG:?}"
-RESP="${FM_HERDR_RESPONSES:?}"
+# `herdr server` starts from a scrubbed environment, so it finds them by layout.
+LOG="${FM_HERDR_LOG:-$(dirname "$0")/../log}"
+RESP="${FM_HERDR_RESPONSES:-$(dirname "$0")/../responses}"
 COUNT_FILE="$RESP/.count"
 next=$(( $(cat "$COUNT_FILE" 2>/dev/null || echo 0) + 1 ))
 {
@@ -536,6 +537,32 @@ test_container_ensure_reuses_existing_workspace() {
   [ "$out" = $'fmtest:w9\t' ] || fail "container_ensure should reuse the existing firstmate workspace id with an EMPTY seeded-tab field (an ADOPTED workspace is never a prune candidate), got '$out'"
   assert_not_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create' "container_ensure should not create a workspace that already exists"
   pass "fm_backend_herdr_container_ensure: reuses an existing firstmate workspace without recreating it, and reports no seeded default tab (adopted, not created)"
+}
+
+# Every Herdr pane inherits the server's environment, so the stub server records
+# its own environment as the one each pane would see.
+test_server_ensure_keeps_primary_session_env_from_panes() {
+  local dir fb pane_env
+  dir="$TMP_ROOT/server-env"; fb="$dir/fakebin"; pane_env="$dir/pane.env"; mkdir -p "$fb"
+  cat > "$fb/herdr" <<'SH'
+#!/usr/bin/env bash
+out="$(dirname "$0")/../pane.env"
+case "${1:-}" in
+  status) if [ -s "$out" ]; then running=true; else running=false; fi
+          printf '{"server":{"running":%s}}\n' "$running" ;;
+  server) env > "$out.tmp" && mv "$out.tmp" "$out" ;;
+esac
+SH
+  chmod +x "$fb/herdr"
+  PATH="$fb:$PATH" LANG=C.UTF-8 CLAUDE_CODE_MESSAGING_SOCKET=/run/primary.sock CLAUDE_PID=4242 \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_server_ensure fmtest' "$ROOT" \
+    || fail "server_ensure did not start the stub server"
+  assert_no_grep "CLAUDE_CODE_MESSAGING_SOCKET=" "$pane_env" "the primary's messaging socket reached the server every pane inherits from"
+  assert_no_grep "CLAUDE_PID=" "$pane_env" "the primary's pid reached the server every pane inherits from"
+  assert_grep "HOME=$HOME" "$pane_env" "the server lost HOME"
+  assert_grep "PATH=$fb:" "$pane_env" "the server lost PATH"
+  assert_grep "LANG=C.UTF-8" "$pane_env" "the server lost the locale"
+  pass "fm_backend_herdr_server_ensure: panes get HOME, PATH and the locale but never the primary's session variables"
 }
 
 test_create_task_refuses_duplicate_label() {
@@ -4456,6 +4483,7 @@ test_workspace_ensure_other_home_ignores_the_launcher_identity
 test_container_ensure_refuses_an_ambiguous_home_label
 test_container_ensure_starts_server_and_workspace
 test_container_ensure_reuses_existing_workspace
+test_server_ensure_keeps_primary_session_env_from_panes
 test_container_ensure_creates_with_no_focus_flag
 test_container_ensure_uses_secondmate_home_label
 test_workspace_ensure_prunes_default_tab
