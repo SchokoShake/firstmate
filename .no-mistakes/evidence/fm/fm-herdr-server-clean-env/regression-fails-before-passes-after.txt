@@ -1,0 +1,6 @@
+## new regression vs fixed adapter (a2d464c)
+ok - fm_backend_herdr_server_ensure: panes keep HOME and the proxy but never the primary's messaging socket
+rc=0
+## new regression vs base adapter (dd94497)
+not ok - the primary's messaging socket reached the server every pane inherits from
+rc=1

@@ -1,0 +1,15 @@
+lab session: fm-lab-envfix-3958931-11703   adapter: {run-worktree}/bin/backends/herdr.sh
+starter (primary) env has: AI_AGENT CLAUDECODE CLAUDE_CODE_CHILD_NOTES_DIR CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_DISABLE_AGENT_VIEW CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_SESSION_ID CLAUDE_EFFORT CLAUDE_PID CLAUDEX TMUX TMUX_PANE 
+server_ensure under set -e with readonly exported CLAUDE_PID: rc=0
+container=fm-lab-envfix-3958931-11703:w1 task tab/pane=w1:t2 w1:p2
+--- worker pane sees (names only) matching CLAUDE*/AI_AGENT/CURSOR*/PI_*/FM_PI_HARNESS/GROK*/TMUX*/FM_CLIENT_ONLY:
+  CLAUDEX
+--- pass-through checks (whole-line match in pane env):
+  present HOME
+  present https_proxy
+  present SSL_CERT_FILE
+  present XAUTHORITY
+  present FM_ENVTEST_ORDINARY
+  present NOT_CLAUDE_VAR
+  present CLAUDEX
+teardown: fm-lab-envfix-3958931-11703 removed, default-session tripwire intact

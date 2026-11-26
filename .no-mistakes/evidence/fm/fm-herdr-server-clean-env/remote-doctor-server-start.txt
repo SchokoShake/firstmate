@@ -1,0 +1,38 @@
+## tests/fm-remote-doctor.test.sh (real bin/fm-remote-doctor.sh; doctor --fix on linux starts the server via fm_backend_herdr_server_ensure)
+### exported base tree dd94497 + this branch's bin/backends/herdr.sh:
+ok - a missing herdr CLI is a human gap that --fix never claims to close
+ok - an absent launch agent is a fixable gap and the read-only run changes nothing
+ok - --fix installs the dedicated fm-remote launch agent without touching default
+ok - --fix is idempotent once the host is ready
+ok - a loaded and running launch agent must match the complete owned contract
+ok - a failed reload leaves stale effective launch-agent state unready
+ok - a launch agent outside the Aqua session scope is rewritten in place
+ok - launchd failures are reported and delayed server readiness is awaited
+ok - human gaps are reported with their operator step and never claimed as fixed
+ok - a non-darwin host skips launch agents and starts its herdr server directly
+ok - --fix creates only owned version-manager wrappers and never clobbers an operator file
+not ok - --fix did not replace the stale worker identity: expected exit 0, got 1
+### exported base tree dd94497 unchanged (same pre-existing failure, remote-job-probe, unrelated to herdr-server):
+ok - a missing herdr CLI is a human gap that --fix never claims to close
+ok - an absent launch agent is a fixable gap and the read-only run changes nothing
+ok - --fix installs the dedicated fm-remote launch agent without touching default
+ok - --fix is idempotent once the host is ready
+ok - a loaded and running launch agent must match the complete owned contract
+ok - a failed reload leaves stale effective launch-agent state unready
+ok - a launch agent outside the Aqua session scope is rewritten in place
+ok - launchd failures are reported and delayed server readiness is awaited
+ok - human gaps are reported with their operator step and never claimed as fixed
+ok - a non-darwin host skips launch agents and starts its herdr server directly
+ok - --fix creates only owned version-manager wrappers and never clobbers an operator file
+not ok - --fix did not replace the stale worker identity: expected exit 0, got 1
+### stale-worker case output with this branch's adapter (herdr-server applied+ok; failure is remote-job-probe):
+fix herdr-server=applied: started the herdr server for session fm-remote
+check remote-job-probe=fixable: the remote job worker returned an invalid required-tool probe result
+check herdr-server=ok: session fm-remote is running
+### in this gate worktree the Darwin --fix case fails identically with the BASE adapter and with this branch's adapter (remote-job-worker-loaded not loaded; herdr-server=ok) - environmental, pre-existing:
+  base adapter: ok - a missing herdr CLI is a human gap that --fix never claims to close
+  base adapter: ok - an absent launch agent is a fixable gap and the read-only run changes nothing
+  base adapter: not ok - --fix left a repairable host unready: expected exit 0, got 1
+  branch adapter: ok - a missing herdr CLI is a human gap that --fix never claims to close
+  branch adapter: ok - an absent launch agent is a fixable gap and the read-only run changes nothing
+  branch adapter: not ok - --fix left a repairable host unready: expected exit 0, got 1
