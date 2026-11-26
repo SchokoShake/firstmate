@@ -7,6 +7,7 @@
 #   fm-herdr-lab.sh prepare <session>
 #   fm-herdr-lab.sh provision <session>
 #   fm-herdr-lab.sh run <session> <herdr arguments...>
+#   fm-herdr-lab.sh attach <session>
 #   fm-herdr-lab.sh stop <session>
 #   fm-herdr-lab.sh teardown <session>
 #
@@ -17,12 +18,19 @@
 # The run command rejects caller-supplied --session flags, any leading option
 # before the subcommand, all session lifecycle operations, and every server
 # operation.
+# The attach command runs only `herdr --session <session>`, a full UI client,
+# and only when that lab session exists, is non-default, and is running, so it
+# never starts or creates one.
+# There is no remote attach: Herdr's `--remote` client can offer, on the same
+# terminal, to stop a remote server it judges incompatible, and it acts on the
+# remote host's own sessions, which this helper's checks never see.
 # Session stop is available only through guarded stop or teardown, and session
 # delete is available only through teardown.
 # Both paths perform a fresh refuse-default check immediately before each
 # destructive call.
-# Provision records the running default session as a fleet-state tripwire and
-# teardown requires that record to be identical afterward.
+# Provision records the default session's state, running or stopped, as a
+# fleet-state tripwire and teardown requires the identical record afterward.
+# No default session, more than one, or an unreadable list refuses.
 set -u
 
 fm_herdr_lab_error() {
@@ -66,13 +74,13 @@ fm_herdr_lab_fleet_state() { # <session>
   }
   snapshot=$(printf '%s' "$sessions" | jq -c '
     [.sessions[]? | select(.default == true)]
-    | if length == 1 and .[0].name == "default" and .[0].running == true
+    | if length == 1 and .[0].name == "default" and (.[0].running | type) == "boolean"
       then .[0] | {name, default, running, socket_path}
       else empty
       end
   ' 2>/dev/null)
   [ -n "$snapshot" ] || {
-    fm_herdr_lab_error "fleet-state tripwire requires exactly one running default session"
+    fm_herdr_lab_error "fleet-state tripwire requires exactly one default session, running or stopped"
     return 1
   }
   printf '%s\n' "$snapshot"
@@ -151,6 +159,18 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
       ;;
   esac
   fm_herdr_lab_raw "$name" "$@"
+}
+
+fm_herdr_lab_attach() { # <session>
+  local name=$1 state
+  fm_herdr_lab_validate_name "$name" || return 1
+  state=$(fm_herdr_lab_session_list "$name" 2>/dev/null | jq -r --arg name "$name" \
+    '.sessions[]? | select(.name == $name) | "default=\(.default) running=\(.running)"' 2>/dev/null)
+  [ "$state" = "default=false running=true" ] || {
+    fm_herdr_lab_error "attach requires the lab session '$name' to exist, be non-default, and be running (${state:-not found})"
+    return 1
+  }
+  fm_herdr_lab_raw "$name"
 }
 
 fm_herdr_lab_cancel_provision() { # <pid>
@@ -299,7 +319,7 @@ fm_herdr_lab_name() { # <label>
 }
 
 fm_herdr_lab_usage() {
-  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 fm_herdr_lab_main() {
@@ -321,6 +341,10 @@ fm_herdr_lab_main() {
       [ "$#" -ge 3 ] || { fm_herdr_lab_usage >&2; return 2; }
       shift
       fm_herdr_lab_cli "$@"
+      ;;
+    attach)
+      [ "$#" -eq 2 ] || { fm_herdr_lab_usage >&2; return 2; }
+      fm_herdr_lab_attach "$2"
       ;;
     stop)
       [ "$#" -eq 2 ] || { fm_herdr_lab_usage >&2; return 2; }

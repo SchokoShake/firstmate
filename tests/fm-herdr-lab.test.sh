@@ -13,6 +13,7 @@ TRIPWIRES="$TMP_ROOT/tripwires"
 REAL_SLEEP=$(command -v sleep)
 mkdir -p "$FAKE_STATE"
 printf '%s\n' '/home/test/.config/herdr/herdr.sock' > "$FAKE_STATE/default-socket"
+printf '%s\n' true > "$FAKE_STATE/default-running"
 : > "$FAKE_LOG"
 
 cat > "$FAKEBIN/herdr" <<'SH'
@@ -33,14 +34,22 @@ lab_state=absent
 
 case "$1 ${2:-}" in
   "session list")
-    if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
-      jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
-    else
+    # default-running holds true, false, none (no default), or two (two defaults).
+    default_running=$(cat "$state/default-running")
+    case "$default_running" in
+      none) defaults='[]' ;;
+      two) defaults='[{"default":true,"name":"default","running":true},{"default":true,"name":"other","running":true}]' ;;
+      *) defaults=$(jq -nc --arg socket "$default_socket" --argjson running "$default_running" \
+        '[{default:true,name:"default",running:$running,socket_path:$socket}]') ;;
+    esac
+    lab='[]'
+    if [ "$lab_state" != absent ] && [ "$lab_state" != deleted ]; then
       running=false
       [ "$lab_state" = running ] && running=true
-      jq -nc --arg socket "$default_socket" --arg name "$session" --argjson running "$running" \
-        '{sessions:[{default:true,name:"default",running:true,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
+      lab=$(jq -nc --arg name "$session" --argjson running "$running" \
+        '[{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]')
     fi
+    jq -nc --argjson defaults "$defaults" --argjson lab "$lab" '{sessions:($defaults + $lab)}'
     ;;
   "server --session")
     if [ "${FM_FAKE_HERDR_SERVER_DELAY:-0}" != 0 ]; then
@@ -181,6 +190,64 @@ test_changed_default_trips_after_teardown() {
   pass "fm-herdr-lab: changed default fleet state is a hard failure"
 }
 
+test_tripwire_keeps_default_running_or_stopped() {
+  local pair before after want name status
+  for pair in true:true:0 false:false:0 true:false:1 false:true:1; do
+    IFS=: read -r before after want <<< "$pair"
+    name="fm-lab-default-$before-$after-$$"
+    printf '%s\n' "$before" > "$FAKE_STATE/default-running"
+    run_with_fake fm_herdr_lab_provision "$name" || fail "provision with default running=$before failed"
+    printf '%s\n' "$after" > "$FAKE_STATE/default-running"
+    status=0
+    run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
+    expect_code "$want" "$status" "teardown with default running=$before -> $after"
+    rm -f "$TRIPWIRES/$name.fleet-state.json"
+  done
+  printf '%s\n' true > "$FAKE_STATE/default-running"
+  pass "fm-herdr-lab: a running or stopped default provisions, and must keep that state through teardown"
+}
+
+test_ambiguous_default_refuses_provision() {
+  local default_running name status
+  for default_running in none two; do
+    name="fm-lab-ambiguous-$default_running-$$"
+    printf '%s\n' "$default_running" > "$FAKE_STATE/default-running"
+    status=0
+    run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "provision with default sessions '$default_running' must refuse"
+    assert_absent "$TRIPWIRES/$name.fleet-state.json" "refused provision left a tripwire"
+    [ ! -f "$FAKE_STATE/$name" ] || fail "refused provision started the lab session"
+  done
+  printf '%s\n' true > "$FAKE_STATE/default-running"
+  pass "fm-herdr-lab: no default session or more than one refuses provisioning"
+}
+
+test_attach_runs_only_a_client_on_a_running_lab() {
+  local name="fm-lab-attach-$$" status
+  for bad in default arbitrary-session; do
+    status=0
+    : > "$FAKE_LOG"
+    run_with_fake fm_herdr_lab_attach "$bad" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "attach to '$bad' must be refused"
+    [ ! -s "$FAKE_LOG" ] || fail "attach to '$bad' reached Herdr"
+  done
+  run_with_fake fm_herdr_lab_provision "$name" || fail "attach fixture provision failed"
+  run_with_fake fm_herdr_lab_stop "$name" >/dev/null || fail "attach fixture stop failed"
+  : > "$FAKE_LOG"
+  status=0
+  run_with_fake fm_herdr_lab_attach "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "attach to a stopped lab must be refused"
+  [ "$(cat "$FAKE_LOG")" = "session list --json --session $name" ] \
+    || fail "attach to a stopped lab did more than read the session list: $(cat "$FAKE_LOG")"
+  run_with_fake fm_herdr_lab_provision "$name" || fail "attach fixture re-provision failed"
+  : > "$FAKE_LOG"
+  run_with_fake fm_herdr_lab_attach "$name" >/dev/null || fail "attach to a running lab failed"
+  [ "$(tail -n 1 "$FAKE_LOG")" = "--session $name" ] \
+    || fail "attach did not run exactly herdr --session $name: $(tail -n 1 "$FAKE_LOG")"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "attach fixture teardown failed"
+  pass "fm-herdr-lab: attach runs only a client on a running lab and refuses default, non-lab, and stopped sessions"
+}
+
 test_stopped_owned_lab_can_reprovision() {
   local name="fm-lab-reprovision-$$"
   : > "$FAKE_LOG"
@@ -238,6 +305,9 @@ test_refuses_unsafe_names
 test_provision_run_and_guarded_teardown
 test_missing_tripwire_blocks_destruction
 test_changed_default_trips_after_teardown
+test_tripwire_keeps_default_running_or_stopped
+test_ambiguous_default_refuses_provision
+test_attach_runs_only_a_client_on_a_running_lab
 test_stopped_owned_lab_can_reprovision
 test_failed_delete_retains_tripwire
 test_timed_out_provision_cancels_late_launch
