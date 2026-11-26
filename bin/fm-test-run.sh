@@ -193,7 +193,7 @@ family_for_basename() {
     fm-agent-view-pilot-live-e2e.test.sh|fm-restart-recovery-live-e2e.test.sh|\
     fm-board-session-live-e2e.test.sh|fm-inbox-post-live-e2e.test.sh|\
     fm-muse-signals-live-e2e.test.sh|\
-    fm-herdr-version-floor-live-e2e.test.sh|\
+    fm-herdr-version-floor-live-e2e.test.sh|fm-crew-state-herdr-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
     fm-sessionstart-hook-live-e2e.test.sh|fm-sessionstart-instruction-refresh-live-e2e.test.sh|\
     fm-session-start-replay-live-e2e.test.sh|\

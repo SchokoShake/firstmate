@@ -555,7 +555,7 @@ The CLI matrix was checked directly:
 | Literal send | `herdr pane send-text <pane> <text> --session <name>` | Left text unsubmitted until Enter. |
 | Keys | `herdr pane send-keys <pane> enter|escape|ctrl+c --session <name>` | Enter and Escape worked; Ctrl-C interrupted foreground work. |
 | Capture | `herdr pane read <pane> --source recent --lines N` | Small N could return empty below viewport height; a 200-line request plus local trim was stable. |
-| Native state | `herdr agent get <pane>` | Working and done transitions were visible; native `busy` remains positive activity evidence, while native `idle` cannot close a turn and the adapter's semantic lifecycle decides worker state. |
+| Native state | `herdr agent get <pane>` | Working, blocked, and done transitions were visible; native `busy` remains positive activity evidence, and native `idle` closes only a Claude turn its busy record left open ([Claude worker state](#claude-worker-state)). |
 | Restart | guarded named-session stop then start | Workspace, tab, pane, and labels persisted; the agent process and registration did not. |
 | Close | `herdr pane close <pane> --session <name>` | The exact one-pane task tab closed; closing a final tab could remove the workspace. |
 
@@ -917,6 +917,38 @@ ok - real herdr: the watcher fast-path enqueues a stale wake naming the task win
 ```
 
 Polling remained active and is covered as the fallback for capability, connect, subscribe, and repeated reader failure.
+
+### Claude worker state
+
+Measured on 2026-11-26 with Herdr 0.9.5 protocol 22 on Linux x86_64, Herdr's Claude detection rules 2026.10.11.1, and Claude Code 2.1.332 on haiku, against one real worker in an isolated lab session:
+
+| Case | Herdr native | Crew state before | Crew state after |
+| --- | --- | --- | --- |
+| Open question (AskUserQuestion) | `blocked` | `working`, from the busy record | `blocked` |
+| Interrupted turn | `idle` | `working`, from the busy record the interrupt left behind | not `working` |
+| Exited, or killed mid-turn | no agent | `unknown`, or `working` from a leftover record or status log | `exited` |
+| 75-second foreground tool call | `working` | `working` | `working` |
+
+The earlier caveat that Herdr reads idle during a long foreground tool call did not reproduce for Claude: 30 of 30 one-second samples during a 75-second tool call read `working`, and a turn of six separate tool calls, sampled about 250 times a second, read `working` without a single idle sample from the moment Herdr first saw it until it ended.
+Herdr first saw that turn about 0.15 seconds after the UserPromptSubmit hook wrote busy; `FM_BUSY_HERDR_IDLE_SETTLE_SECS` in `bin/fm-busy-lib.sh` covers that lag with a wide margin.
+A tmux worker driven through the same question, interrupt, and exit read exactly as Herdr did before the change, because tmux has no native state to correct the record.
+On a settled watcher, the open question woke it 0.1 seconds after Herdr read `blocked`.
+
+The guard that refreshes this record passed on 2026-11-26:
+
+```sh
+FM_CREW_STATE_HERDR_LIVE=1 HERDR_LAB_HELPER=bin/fm-herdr-lab.sh \
+  tests/fm-crew-state-herdr-live-e2e.test.sh
+```
+
+```text
+# harness claude 2.1.332 (Claude Code) on herdr 0.9.5
+ok - real worker idles after its first turn and does not read working
+ok - a long foreground tool call reads working throughout, natively and in crew state
+ok - an interrupted worker stops reading working although its busy record remains
+ok - an open question reads blocked, not working
+ok - an exited worker reads exited
+```
 
 ### Agent lifecycle control
 

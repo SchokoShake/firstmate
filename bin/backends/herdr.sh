@@ -2984,6 +2984,12 @@ fm_backend_herdr_agent_status_raw() {  # <session> <pane_id>
   printf '%s' "$out" | jq -r '.result.agent.agent_status // empty' 2>/dev/null
 }
 
+# fm_backend_herdr_agent_status: <target>'s raw agent_status, or empty.
+fm_backend_herdr_agent_status() {  # <target>
+  fm_backend_herdr_parse_target "$1" || return 0
+  fm_backend_herdr_agent_status_raw "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE"
+}
+
 # fm_backend_herdr_busy_state: semantic busy state from herdr's native
 # agent-state detection (agent.get), the "first backend where fm_session_busy_state
 # gets real semantics" per the design report. See

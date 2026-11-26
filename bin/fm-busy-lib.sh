@@ -47,9 +47,12 @@
 # with the producing source as the second token. Precedence:
 #   1. dead endpoint (fm_busy_classify_live only) -> dead endpoint-gone
 #   2. standalone Kimi before verification       -> unknown kimi-unverified
-#   3. a valid, gen-matching, source-trusted record -> its state and source
+#   3. a valid, gen-matching, source-trusted record -> its state and source,
+#      except that on herdr a busy claude-hook record older than
+#      FM_BUSY_HERDR_IDLE_SETTLE_SECS yields to Herdr's native idle or done
+#      -> idle herdr-native (Claude fires no hook for an interrupted turn)
 #   4. no record at all: herdr's native busy verdict is trusted as busy
-#      (generation state is sufficient for busy, not for idle), then the
+#      (native idle alone is not), then the
 #      muse session-log and cursor transcript pull sources, then the Grok-only
 #      temporary regex fallback classifies a grok task from its rendered tail,
 #      then unknown missing
@@ -87,6 +90,10 @@
 # Sourcing: set -u and set -e safe; no subshell-unfriendly globals.
 
 FM_BUSY_LIB_VERSION=v1
+
+# How old a busy Claude record must be before Herdr's native idle may end it:
+# Herdr reads the turn a fraction of a second after UserPromptSubmit fires.
+FM_BUSY_HERDR_IDLE_SETTLE_SECS=10
 
 # Standalone-Kimi verification gate. Empty means no installed Kimi version
 # has passed live verification, so every standalone Kimi task classifies
@@ -211,7 +218,7 @@ fm_busy_source_trusted() {  # <harness> <source>
 }
 
 # fm_busy_record_read: parse and validate state/<id>.busy-state against the
-# armed gen. Prints "<state> <source> <event> <seq>" for a valid record.
+# armed gen. Prints "<state> <source> <event> <seq> <ts>" for a valid record.
 # Non-zero returns name the reason on stdout instead:
 #   missing      no record file (or no armed gen and no record)
 #   malformed    unparseable line, bad tokens, or a missing armed gen for an
@@ -262,7 +269,7 @@ fm_busy_record_read() {  # <state-dir> <id>
     printf 'gen-mismatch'
     return 1
   fi
-  printf '%s %s %s %s' "$r_state" "$r_source" "$r_event" "$r_seq"
+  printf '%s %s %s %s %s' "$r_state" "$r_source" "$r_event" "$r_seq" "$r_ts"
 }
 
 # ---------------------------------------------------------------------------
@@ -839,7 +846,7 @@ fm_busy_grok_tail_busy() {
 # if available, else reports unknown capture-failed.
 fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   local backend=$1 target=$2 harness=$3 id=$4 state=$5 tail40=${6-}
-  local out rc r_state r_source native log
+  local out rc r_state r_source r_ts native log
   case "$harness" in
     kimi*)
       if ! fm_busy_kimi_verified; then
@@ -874,14 +881,21 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   esac
   out=$(fm_busy_record_read "$state" "$id") && rc=0 || rc=$?
   if [ "$rc" = 0 ]; then
-    r_state=${out%% *}
-    out=${out#* }
-    r_source=${out%% *}
-    if fm_busy_source_trusted "$harness" "$r_source"; then
-      printf '%s %s' "$r_state" "$r_source"
-    else
+    read -r r_state r_source _ _ r_ts <<< "$out"
+    if ! fm_busy_source_trusted "$harness" "$r_source"; then
       printf 'unknown source-mismatch'
+      return 0
     fi
+    # Claude fires no hook when a turn is interrupted, so its busy record can
+    # outlive the turn; once Herdr has had time to see the turn, Herdr's own
+    # idle ends it (docs/herdr-backend.md "Current transport behavior").
+    if [ "$backend" = herdr ] && [ "$r_state $r_source" = "busy claude-hook" ] \
+      && [ $(( $(date +%s) - r_ts )) -ge "$FM_BUSY_HERDR_IDLE_SETTLE_SECS" ]; then
+      case "$(fm_backend_agent_status herdr "$target" 2>/dev/null)" in
+        idle|done) printf 'idle herdr-native'; return 0 ;;
+      esac
+    fi
+    printf '%s %s' "$r_state" "$r_source"
     return 0
   fi
   case "$out" in
@@ -890,10 +904,8 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
       return 0
       ;;
   esac
-  # No record at all. A native herdr busy verdict is semantic enough to trust
-  # for BUSY (streaming means a turn is running); native idle is narrower
-  # than turn state (a long foreground tool call reads idle) and stays
-  # unknown here.
+  # No record at all: a native herdr busy is trusted as a running turn, but a
+  # native idle alone stays unknown.
   if [ "$backend" = herdr ] && command -v fm_backend_busy_state >/dev/null 2>&1; then
     native=$(fm_backend_busy_state "$backend" "$target" 2>/dev/null || true)
     if [ "$native" = busy ]; then
