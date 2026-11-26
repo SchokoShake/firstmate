@@ -1447,12 +1447,10 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
 # has-session || tmux new-session -d`. Verified: a bare socket CLI call does
 # NOT auto-start the server, so this must run before any workspace/tab/pane
 # call. Bounded poll for the server to report running.
-# Every pane inherits the server's environment for the server's whole life, so
-# the server starts with only what a user's shell needs: the starting agent's
-# session identity and messaging variables (CLAUDE_CODE_MESSAGING_SOCKET,
-# CLAUDE_PID, ...) must never reach a worker. A pane does not inherit the
-# environment of the client that creates it (verified, Herdr 0.9.5), so this is
-# the one place it is decided.
+# Every pane inherits the server's environment, never the creating client's
+# (verified, Herdr 0.9.5), so this start alone keeps the starting agent's
+# session variables (CLAUDE_CODE_MESSAGING_SOCKET, CLAUDE_PID, ...) away from
+# workers: only a user shell's basics pass.
 fm_backend_herdr_server_ensure() {  # <session>
   local session=$1 running out i
   running=$(fm_backend_herdr_cli "$session" status --json 2>/dev/null | jq -r '.server.running // false' 2>/dev/null)

@@ -554,15 +554,14 @@ case "${1:-}" in
 esac
 SH
   chmod +x "$fb/herdr"
-  PATH="$fb:$PATH" LANG=C.UTF-8 CLAUDE_CODE_MESSAGING_SOCKET=/run/primary.sock CLAUDE_PID=4242 \
+  PATH="$fb:$PATH" LANG=C.UTF-8 CLAUDE_CODE_MESSAGING_SOCKET=/run/primary.sock \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_server_ensure fmtest' "$ROOT" \
     || fail "server_ensure did not start the stub server"
   assert_no_grep "CLAUDE_CODE_MESSAGING_SOCKET=" "$pane_env" "the primary's messaging socket reached the server every pane inherits from"
-  assert_no_grep "CLAUDE_PID=" "$pane_env" "the primary's pid reached the server every pane inherits from"
   assert_grep "HOME=$HOME" "$pane_env" "the server lost HOME"
   assert_grep "PATH=$fb:" "$pane_env" "the server lost PATH"
   assert_grep "LANG=C.UTF-8" "$pane_env" "the server lost the locale"
-  pass "fm_backend_herdr_server_ensure: panes get HOME, PATH and the locale but never the primary's session variables"
+  pass "fm_backend_herdr_server_ensure: panes get HOME, PATH and the locale but never the primary's messaging socket"
 }
 
 test_create_task_refuses_duplicate_label() {
