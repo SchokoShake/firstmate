@@ -558,7 +558,7 @@ SH
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_server_ensure fmtest' "$ROOT" \
     || fail "server_ensure did not start the stub server"
   assert_no_grep "CLAUDE_CODE_MESSAGING_SOCKET=" "$pane_env" "the primary's messaging socket reached the server every pane inherits from"
-  assert_grep "HOME=$HOME" "$pane_env" "the server lost HOME"
+  grep -qxF -- "HOME=$HOME" "$pane_env" || fail "the server lost HOME"
   assert_grep "PATH=$fb:" "$pane_env" "the server lost PATH"
   assert_grep "LANG=C.UTF-8" "$pane_env" "the server lost the locale"
   pass "fm_backend_herdr_server_ensure: panes get HOME, PATH and the locale but never the primary's messaging socket"
