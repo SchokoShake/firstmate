@@ -54,9 +54,10 @@
 #   4. No run for this crew (pre-validation, or kind=scout): fall back to the
 #      recorded backend's pane busy state, then the status log's last line only
 #      when its verb maps to a recognized run-state. Decision-only events such as
-#      `resolved` never become current state or detail. On Herdr, a pane with no
-#      registered agent reports exited first, and a Claude crew whose native
-#      state is blocked (an open question or prompt) reports blocked.
+#      `resolved` never become current state or detail. On Herdr, a crew other
+#      than a secondmate reports exited first when its pane has no registered
+#      agent, and a Claude crew whose native state is blocked (an open question
+#      or prompt) reports blocked.
 #   5. Missing meta or torn-down worktree: report unknown · none. If no run is
 #      attributed to this crew, a dead endpoint also reports unknown · none rather
 #      than trusting a stale status log.
@@ -443,12 +444,11 @@ pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACK
 # Herdr sees the agent in the pane itself: a pane with no registered agent is a
 # worker that exited, and Claude's native blocked is an open question or prompt
 # that its busy record cannot tell apart from work.
-if [ "$TASK_BACKEND" = herdr ]; then
+if [ "$TASK_BACKEND" = herdr ] && [ "$KIND" != secondmate ]; then
   [ "$(fm_backend_agent_state herdr "$BACKEND_TARGET")" != dead ] \
     || emit exited pane "no agent in its Herdr pane"
-  case "$KIND:$HARNESS" in
-    secondmate:*) ;;
-    *:claude*)
+  case "$HARNESS" in
+    claude*)
       [ "$(fm_backend_agent_status herdr "$BACKEND_TARGET")" != blocked ] \
         || emit blocked pane "waiting on a question or prompt (herdr-native)"
       ;;

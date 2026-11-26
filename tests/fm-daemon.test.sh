@@ -523,8 +523,8 @@ test_housekeeping_herdr_persistent_stale_resolves_meta() {
   pass "persistent herdr stale resolves the target from metadata and escalates"
 }
 
-# A herdr crew whose native agent.get reads idle (generation state) but whose
-# own semantic busy-state record says busy is still working, so its stale
+# A herdr crew whose native agent.get reads idle but whose own semantic
+# busy-state record is fresh and says busy is still working, so its stale
 # marker clears without escalating. The record - not the pane's rendered
 # footer - is what proves it.
 test_housekeeping_herdr_idle_busy_record_clears_stale() {

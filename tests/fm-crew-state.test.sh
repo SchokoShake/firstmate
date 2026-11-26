@@ -1025,6 +1025,8 @@ test_no_run_herdr_claude_question_reads_blocked() {
 
 # A Herdr pane that outlives its agent (the harness exited or was killed) is an
 # exited worker, even while a leftover busy record or status log says working.
+# A secondmate keeps its status-log reading, so its watcher still re-surfaces a
+# declared pause.
 test_no_run_herdr_agentless_pane_reads_exited() {
   command -v jq >/dev/null 2>&1 || { pass "herdr exited test skipped without jq"; return; }
   reset_fakes
@@ -1043,7 +1045,13 @@ test_no_run_herdr_agentless_pane_reads_exited() {
   local out; out=$(run_crew_state "$d" feat-herdr-x)
   assert_contains "$out" "state: exited" "a pane with no agent reads exited"
   assert_contains "$out" "source: pane" "the verdict comes from the pane"
-  pass "an agent-less Herdr pane reads exited, never working from a leftover record or log"
+  fm_write_meta "$d/state/feat-herdr-x.meta" "window=default:w1:p6" "worktree=$d/wt" "kind=secondmate" \
+    "backend=herdr" "harness=claude" "home=$d/wt"
+  printf 'paused: holding for the upstream tool release\n' > "$d/state/feat-herdr-x.status"
+  out=$(run_crew_state "$d" feat-herdr-x)
+  assert_contains "$out" "state: paused" "an agent-less secondmate pane keeps its status-log pause"
+  assert_contains "$out" "source: status-log" "a secondmate is read from its status log"
+  pass "an agent-less Herdr pane reads exited, never working from a leftover record or log; a secondmate keeps its log"
 }
 
 # The record must not mask a genuinely idle or human-blocked agent: an idle
