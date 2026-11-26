@@ -161,12 +161,9 @@ SH
   done
 
   if [ "$want_herdr" = with-herdr ]; then
-    cat > "$CASE_BIN/herdr" <<SH
+    cat > "$CASE_BIN/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
-FM_FAKE_HERDR_RUNNING='$CASE_HERDR_RUNNING'
-SH
-    cat >> "$CASE_BIN/herdr" <<'SH'
 running=$(cat "$FM_FAKE_HERDR_RUNNING" 2>/dev/null || printf 'false')
 case "${1:-} ${2:-}" in
   "status --json")
