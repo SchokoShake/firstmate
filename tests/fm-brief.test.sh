@@ -297,10 +297,6 @@ ROWS
   pass "fm-brief.sh: --yolo, scout/secondmate --mode, and --stack outside direct-PR ship briefs are refused"
 }
 
-# Dependent work that ships as a chain gets the stacked-chain variant: its done
-# gate is a native GitHub stack proven by bin/fm-stack-check.sh, never chained
-# bases, and its contract line is what bin/fm-pr-check.sh reads to refuse a
-# single-PR record.
 # Every ship variant must have the worker look for a colleague's PR or branch on the
 # same problem twice - right after setup and again just before its PR (local-only:
 # before reporting ready) - and stop with needs-decision on a real overlap rather
@@ -330,11 +326,14 @@ test_ship_briefs_check_colleagues_work() {
     assert_grep "\`git ls-remote --heads origin\`" "$brief" "$variant brief lost the remote-branch search example"
     assert_grep "append \`needs-decision: {that PR's URL or branch} overlaps: {how}\` instead of continuing or opening a competing PR" "$brief" \
       "$variant brief does not stop on a colleague's overlapping work"
+    case "$variant" in
+      local-only) note="name it in your \`done:\` line as a possible conflict" ;;
+      no-mistakes) note="name it as a possible conflict in a comment on your PR once /no-mistakes opens it" ;;
+      *) note="mention it in your PR body as a possible conflict" ;;
+    esac
     if [ "$variant" = local-only ]; then
-      note="name it in your \`done:\` line as a possible conflict"
       assert_grep "If the project has no remote, skip this check." "$brief" "local-only brief has no no-remote escape"
     else
-      note="mention it in your PR body as a possible conflict"
       assert_no_grep "If the project has no remote" "$brief" "$variant brief opens a PR, so a remote always exists"
     fi
     assert_grep "An unrelated PR that only touches the same files is not a reason to stop; $note" "$brief" \
@@ -348,6 +347,10 @@ test_ship_briefs_check_colleagues_work() {
   pass "fm-brief.sh: every ship variant checks colleagues' open PRs and branches before and during"
 }
 
+# Dependent work that ships as a chain gets the stacked-chain variant: its done
+# gate is a native GitHub stack proven by bin/fm-stack-check.sh, never chained
+# bases, and its contract line is what bin/fm-pr-check.sh reads to refuse a
+# single-PR record.
 test_stack_brief_requires_a_proven_native_stack() {
   local home id brief plain out
   home="$TMP_ROOT/stack-home"

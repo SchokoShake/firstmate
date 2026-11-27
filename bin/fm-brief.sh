@@ -432,11 +432,11 @@ SCREENSHOTS="Screenshots or recordings you capture yourself go on the PR as one 
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
-PEER_NOTE="mention it in your PR body"
 PEER_SKIP=""
 case "$MODE" in
   direct-PR)
     SETUP2=""
+    PEER_NOTE="mention it in your PR body as a possible conflict"
     if [ "$STACK" -eq 1 ]; then
       PEER_WHEN="just before you run \`gh stack submit\` or \`gh stack link\` for the first time"
       RULE1="1. Never push to the default branch or to any branch outside this task's stack. Never merge a PR, and never run \`gh stack merge\`."
@@ -477,7 +477,7 @@ EOF
   local-only)
     SETUP2=""
     PEER_WHEN="just before you report the branch ready"
-    PEER_NOTE="name it in your \`done:\` line"
+    PEER_NOTE="name it in your \`done:\` line as a possible conflict"
     PEER_SKIP="
 If the project has no remote, skip this check."
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
@@ -493,6 +493,7 @@ EOF
     ;;
   *)  # no-mistakes
     PEER_WHEN="just before you start /no-mistakes, which opens your PR"
+    PEER_NOTE="name it as a possible conflict in a comment on your PR once /no-mistakes opens it"
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
@@ -531,7 +532,7 @@ Someone else may already be working on the same problem.
 Right after setup, and again $PEER_WHEN, search the project's open PRs and remote branches for work on the same bug, feature, or files, excluding your own branch.
 For example, scan \`gh-axi pr list --state open\` and \`git ls-remote --heads origin\` for the key terms, and check candidates' touched paths with \`gh-axi pr view <number> --fields files\`.
 If someone else's open PR or branch already addresses the same problem, stop: append \`needs-decision: {that PR's URL or branch} overlaps: {how}\` instead of continuing or opening a competing PR.
-An unrelated PR that only touches the same files is not a reason to stop; $PEER_NOTE as a possible conflict.$PEER_SKIP
+An unrelated PR that only touches the same files is not a reason to stop; $PEER_NOTE.$PEER_SKIP
 EOF
 PEER_SECTION=${PEER_SECTION%$'\n'}
 
