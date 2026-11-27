@@ -51,6 +51,10 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# Every ship variant also has the worker search open PRs and remote branches for a
+# colleague's work on the same problem, right after setup and again just before its
+# PR (local-only: before reporting ready), and raise needs-decision on a real overlap
+# instead of opening a competing PR.
 # Both crewmate scaffolds carry two standing commit-hygiene rules that survive the per-repo
 # rewriting the Setup/branch step invites: the never-add-an-agent-co-author ban (AGENTS.md
 # section 1) as rule 2, and the never-override-the-git-identity ban as rule 3.
@@ -428,10 +432,13 @@ SCREENSHOTS="Screenshots or recordings you capture yourself go on the PR as one 
 # delivery mode, validated above. The generated DOD opens with the fixed
 # "Delivery contract: mode=<mode>" line that bin/fm-spawn.sh checks against its own
 # explicit --mode before launching.
+PEER_SKIP=""
 case "$MODE" in
   direct-PR)
     SETUP2=""
+    PEER_NOTE="mention it in your PR body as a possible conflict"
     if [ "$STACK" -eq 1 ]; then
+      PEER_WHEN="just before you run \`gh stack submit\` or \`gh stack link\` for the first time"
       RULE1="1. Never push to the default branch or to any branch outside this task's stack. Never merge a PR, and never run \`gh stack merge\`."
       IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
@@ -454,6 +461,7 @@ Never report done without that passing output.
 The captain merges the stack; firstmate never merges a stacked PR and relays the outcome.
 EOF
     else
+      PEER_WHEN="just before you open your PR"
       RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
       IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
@@ -468,6 +476,10 @@ EOF
     ;;
   local-only)
     SETUP2=""
+    PEER_WHEN="just before you report the branch ready"
+    PEER_NOTE="name it in your \`done:\` line as a possible conflict"
+    PEER_SKIP="
+If the project has no remote, skip this check."
     RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
@@ -480,6 +492,8 @@ The configured merge authority approves the ready branch, then firstmate merges 
 EOF
     ;;
   *)  # no-mistakes
+    PEER_WHEN="just before you start /no-mistakes, which opens your PR"
+    PEER_NOTE="name it as a possible conflict in a comment on your PR once /no-mistakes opens it"
     SETUP2="
 2. Run \`no-mistakes doctor\`; if it reports the repo is not initialized here, run \`no-mistakes init\`."
     RULE1='1. Never push to the default branch. Never merge a PR.'
@@ -507,6 +521,20 @@ After /no-mistakes reports CI green (the CI-ready return point - do not wait for
 EOF
     ;;
 esac
+
+# Every ship variant checks for a colleague already working the same problem, at
+# setup and again just before its PR (local-only: before reporting ready), so a
+# competing duplicate PR is caught before it exists; the case above sets the
+# mode-specific timing (PEER_WHEN), overlap note (PEER_NOTE) and no-remote skip.
+IFS= read -r -d '' PEER_SECTION <<EOF || true
+# Colleagues' work
+Someone else may already be working on the same problem.
+Right after setup, and again $PEER_WHEN, search the project's open PRs and remote branches for work on the same bug, feature, or files, excluding your own branch.
+For example, scan \`gh-axi pr list --state open\` and \`git ls-remote --heads origin\` for the key terms, and check candidates' touched paths with \`gh-axi pr view <number> --fields files\`.
+If someone else's open PR or branch already addresses the same problem, stop: append \`needs-decision: {that PR's URL or branch} overlaps: {how}\` instead of continuing or opening a competing PR.
+An unrelated PR that only touches the same files is not a reason to stop; $PEER_NOTE.$PEER_SKIP
+EOF
+PEER_SECTION=${PEER_SECTION%$'\n'}
 
 # read -r -d '' preserves the heredoc's trailing newline that the removed
 # $(...) command substitution used to strip. Drop that one newline so generated
@@ -557,6 +585,8 @@ $IDENTITY_RULE
 9. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+
+$PEER_SECTION
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.

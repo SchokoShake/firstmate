@@ -51,3 +51,6 @@ Before acting on the report, verify that its claimed cause explains the end-user
 If a load-bearing element is missing, route a focused follow-up investigation instead of treating confidence or implementation detail as proof.
 A diagnosis or implementation-ready recommendation is evidence, not authorization to change code.
 Implementation still requires the captain's request or another existing lifecycle authority, and the reproduction should become the regression test when a fix is authorized.
+A bug-fix brief should ask for the right fix, not the smallest one: state the correct user-visible end result, never only the absence of the symptom.
+It should require the worker to compare at least two credible fixes against the project's existing conventions and the platform's guidance, and to name the chosen fix and why in the PR.
+The diff itself still stays minimal: what the comparison changes is which fix is chosen, not how much code is written.
