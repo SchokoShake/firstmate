@@ -1,0 +1,18 @@
+warning: remote HEAD refers to nonexistent ref, unable to checkout
+$ git ls-remote --heads origin        # run from the worker clone, as the brief suggests
+<sha>	refs/heads/docs/readme
+<sha>	refs/heads/fix/notification-icon-crash
+<sha>	refs/heads/fm/peer-dpr
+<sha>	refs/heads/main
+exit=0
+$ git ls-remote --heads origin | grep -i -e notification -e icon | grep -v "refs/heads/fm/peer-dpr$"   # key terms, own branch excluded
+<sha>	refs/heads/fix/notification-icon-crash
+$ git fetch -q origin && git diff --name-only origin/main...origin/fix/notification-icon-crash   # touched paths of the candidate
+res/ic_stat_notify.xml
+$ ls-remote for a project with no remote (local-only skip case)
+fatal: 'origin' does not appear to be a git repository
+fatal: Could not read from remote repository.
+
+Please make sure you have the correct access rights
+and the repository exists.
+exit=128

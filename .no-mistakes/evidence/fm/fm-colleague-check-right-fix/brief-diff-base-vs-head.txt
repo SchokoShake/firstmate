@@ -1,0 +1,131 @@
+===== diff base(21f40b6) -> head(8ca418e) generated brief: nm =====
+--- base/nm/brief.md
++++ head/nm/brief.md
+@@ -39,7 +39,7 @@
+ 4. Stay inside this worktree; modify nothing outside it.
+ 5. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+ 6. Report status by appending one line:
+-   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-base/state/cmp-nm.status'`
++   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-head/state/cmp-nm.status'`
+    States: working, needs-decision, blocked, paused, done, failed.
+    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
+    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
+@@ -60,6 +60,13 @@
+    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
+    daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.
+ 
++# Colleagues' work
++Someone else may already be working on the same problem.
++Right after setup, and again just before you start /no-mistakes, which opens your PR, search the project's open PRs and remote branches for work on the same bug, feature, or files, excluding your own branch.
++For example, scan `gh-axi pr list --state open` and `git ls-remote --heads origin` for the key terms, and check candidates' touched paths with `gh-axi pr view <number> --fields files`.
++If someone else's open PR or branch already addresses the same problem, stop: append `needs-decision: {that PR's URL or branch} overlaps: {how}` instead of continuing or opening a competing PR.
++An unrelated PR that only touches the same files is not a reason to stop; name it as a possible conflict in a comment on your PR once /no-mistakes opens it.
++
+ # Project memory
+ If `AGENTS.md` or `CLAUDE.md` already exists, or if this task produced durable project-intrinsic knowledge, run `$FM_ROOT/bin/fm-ensure-agents-md.sh .` in the worktree.
+ Record only project knowledge useful to almost every future session.
+diff exit=1
+===== diff base(21f40b6) -> head(8ca418e) generated brief: dpr =====
+--- base/dpr/brief.md
++++ head/dpr/brief.md
+@@ -38,7 +38,7 @@
+ 4. Stay inside this worktree; modify nothing outside it.
+ 5. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+ 6. Report status by appending one line:
+-   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-base/state/cmp-dpr.status'`
++   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-head/state/cmp-dpr.status'`
+    States: working, needs-decision, blocked, paused, done, failed.
+    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
+    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
+@@ -59,6 +59,13 @@
+    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
+    daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.
+ 
++# Colleagues' work
++Someone else may already be working on the same problem.
++Right after setup, and again just before you open your PR, search the project's open PRs and remote branches for work on the same bug, feature, or files, excluding your own branch.
++For example, scan `gh-axi pr list --state open` and `git ls-remote --heads origin` for the key terms, and check candidates' touched paths with `gh-axi pr view <number> --fields files`.
++If someone else's open PR or branch already addresses the same problem, stop: append `needs-decision: {that PR's URL or branch} overlaps: {how}` instead of continuing or opening a competing PR.
++An unrelated PR that only touches the same files is not a reason to stop; mention it in your PR body as a possible conflict.
++
+ # Project memory
+ If `AGENTS.md` or `CLAUDE.md` already exists, or if this task produced durable project-intrinsic knowledge, run `$FM_ROOT/bin/fm-ensure-agents-md.sh .` in the worktree.
+ Record only project knowledge useful to almost every future session.
+diff exit=1
+===== diff base(21f40b6) -> head(8ca418e) generated brief: stack =====
+--- base/stack/brief.md
++++ head/stack/brief.md
+@@ -38,7 +38,7 @@
+ 4. Stay inside this worktree; modify nothing outside it.
+ 5. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+ 6. Report status by appending one line:
+-   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-base/state/cmp-stack.status'`
++   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-head/state/cmp-stack.status'`
+    States: working, needs-decision, blocked, paused, done, failed.
+    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
+    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
+@@ -59,6 +59,13 @@
+    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
+    daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.
+ 
++# Colleagues' work
++Someone else may already be working on the same problem.
++Right after setup, and again just before you run `gh stack submit` or `gh stack link` for the first time, search the project's open PRs and remote branches for work on the same bug, feature, or files, excluding your own branch.
++For example, scan `gh-axi pr list --state open` and `git ls-remote --heads origin` for the key terms, and check candidates' touched paths with `gh-axi pr view <number> --fields files`.
++If someone else's open PR or branch already addresses the same problem, stop: append `needs-decision: {that PR's URL or branch} overlaps: {how}` instead of continuing or opening a competing PR.
++An unrelated PR that only touches the same files is not a reason to stop; mention it in your PR body as a possible conflict.
++
+ # Project memory
+ If `AGENTS.md` or `CLAUDE.md` already exists, or if this task produced durable project-intrinsic knowledge, run `$FM_ROOT/bin/fm-ensure-agents-md.sh .` in the worktree.
+ Record only project knowledge useful to almost every future session.
+diff exit=1
+===== diff base(21f40b6) -> head(8ca418e) generated brief: local =====
+--- base/local/brief.md
++++ head/local/brief.md
+@@ -38,7 +38,7 @@
+ 4. Stay inside this worktree; modify nothing outside it.
+ 5. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+ 6. Report status by appending one line:
+-   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-base/state/cmp-local.status'`
++   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-head/state/cmp-local.status'`
+    States: working, needs-decision, blocked, paused, done, failed.
+    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
+    would act on (setup done, bug reproduced, fix implemented, validation passed) and the
+@@ -59,6 +59,14 @@
+    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
+    daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.
+ 
++# Colleagues' work
++Someone else may already be working on the same problem.
++Right after setup, and again just before you report the branch ready, search the project's open PRs and remote branches for work on the same bug, feature, or files, excluding your own branch.
++For example, scan `gh-axi pr list --state open` and `git ls-remote --heads origin` for the key terms, and check candidates' touched paths with `gh-axi pr view <number> --fields files`.
++If someone else's open PR or branch already addresses the same problem, stop: append `needs-decision: {that PR's URL or branch} overlaps: {how}` instead of continuing or opening a competing PR.
++An unrelated PR that only touches the same files is not a reason to stop; name it in your `done:` line as a possible conflict.
++If the project has no remote, skip this check.
++
+ # Project memory
+ If `AGENTS.md` or `CLAUDE.md` already exists, or if this task produced durable project-intrinsic knowledge, run `$FM_ROOT/bin/fm-ensure-agents-md.sh .` in the worktree.
+ Record only project knowledge useful to almost every future session.
+diff exit=1
+===== diff base(21f40b6) -> head(8ca418e) generated brief: scout =====
+--- base/scout/brief.md
++++ head/scout/brief.md
+@@ -35,7 +35,7 @@
+ 4. Stay inside this worktree; the only files you may write outside it are the report and the status file below.
+ 5. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+ 6. Report status by appending one line:
+-   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-base/state/cmp-scout.status'`
++   `echo "{state}: {one short line}" >> '$SANDBOX/cmp-head/state/cmp-scout.status'`
+    States: working, needs-decision, blocked, paused, done, failed.
+    Each append wakes firstmate, so report sparingly: only phase changes a supervisor
+    would act on and the needs-decision/blocked/paused/done/failed states. No step-by-step
+@@ -54,7 +54,7 @@
+    daemon error, append `blocked: {the daemon error}` and stop; only firstmate manages the daemon.
+ 
+ # Definition of done
+-Write your findings to `$SANDBOX/cmp-base/data/cmp-scout/report.md`.
++Write your findings to `$SANDBOX/cmp-head/data/cmp-scout/report.md`.
+ The report must stand alone: what you did, what you found, the evidence (commands run, output, file:line references), and what you recommend.
+ Before reporting done, read and follow `$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md` and pass its shared completion gate for the report and any visual review.
+ When the report is complete, append `done: {one-line conclusion}` to the status file and stop.
+diff exit=1

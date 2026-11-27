@@ -1,0 +1,18 @@
+$ FM_HOME=$SANDBOX/home bin/fm-brief.sh peer-nm demo-proj --mode no-mistakes
+scaffolded: $SANDBOX/home/data/peer-nm/brief.md (ship, mode=no-mistakes; replace {TASK})
+exit=0
+$ FM_HOME=$SANDBOX/home bin/fm-brief.sh peer-dpr demo-proj --mode direct-PR
+scaffolded: $SANDBOX/home/data/peer-dpr/brief.md (ship, mode=direct-PR; replace {TASK})
+exit=0
+$ FM_HOME=$SANDBOX/home bin/fm-brief.sh peer-stack demo-proj --mode direct-PR --stack
+scaffolded: $SANDBOX/home/data/peer-stack/brief.md (ship, mode=direct-PR, native stack; replace {TASK})
+exit=0
+$ FM_HOME=$SANDBOX/home bin/fm-brief.sh peer-local demo-proj --mode local-only
+scaffolded: $SANDBOX/home/data/peer-local/brief.md (ship, mode=local-only; replace {TASK})
+exit=0
+$ FM_HOME=$SANDBOX/home bin/fm-brief.sh peer-scout demo-proj --scout
+scaffolded: $SANDBOX/home/data/peer-scout/brief.md (scout; replace {TASK})
+exit=0
+$ FM_HOME=$SANDBOX/home bin/fm-brief.sh peer-herdr demo-proj --mode direct-PR --herdr-lab
+scaffolded: $SANDBOX/home/data/peer-herdr/brief.md (ship, mode=direct-PR; replace {TASK})
+exit=0

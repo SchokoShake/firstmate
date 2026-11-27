@@ -1,0 +1,54 @@
+$ cat state/scout-direct-pr.meta (before)
+window=fm-scout-direct-pr
+kind=scout
+worktree=/tmp/wt
+$ FM_HOME=$SANDBOX/promote-home bin/fm-promote.sh scout-direct-pr --mode direct-PR --yolo off
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+promoted scout-direct-pr to ship mode=direct-PR yolo=off (teardown protection restored)
+next: FM_HOME=$SANDBOX/promote-home bin/fm-send.sh fm-scout-direct-pr '<ship instructions for mode=direct-PR: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/scout-direct-pr; search open PRs and remote branches for work by others on the same problem (needs-decision on an overlap, never a competing PR); implement; repeat that search just before delivering; report done>'
+exit=0
+$ cat state/scout-direct-pr.meta (after)
+window=fm-scout-direct-pr
+worktree=/tmp/wt
+kind=ship
+mode=direct-PR
+yolo=off
+
+$ cat state/scout-no-mistakes.meta (before)
+window=fm-scout-no-mistakes
+kind=scout
+worktree=/tmp/wt
+$ FM_HOME=$SANDBOX/promote-home bin/fm-promote.sh scout-no-mistakes --mode no-mistakes --yolo off
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+promoted scout-no-mistakes to ship mode=no-mistakes yolo=off (teardown protection restored)
+next: FM_HOME=$SANDBOX/promote-home bin/fm-send.sh fm-scout-no-mistakes '<ship instructions for mode=no-mistakes: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/scout-no-mistakes; search open PRs and remote branches for work by others on the same problem (needs-decision on an overlap, never a competing PR); implement; repeat that search just before delivering; report done>'
+exit=0
+$ cat state/scout-no-mistakes.meta (after)
+window=fm-scout-no-mistakes
+worktree=/tmp/wt
+kind=ship
+mode=no-mistakes
+yolo=off
+
+$ cat state/scout-local-only.meta (before)
+window=fm-scout-local-only
+kind=scout
+worktree=/tmp/wt
+$ FM_HOME=$SANDBOX/promote-home bin/fm-promote.sh scout-local-only --mode local-only --yolo off
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+promoted scout-local-only to ship mode=local-only yolo=off (teardown protection restored)
+next: FM_HOME=$SANDBOX/promote-home bin/fm-send.sh fm-scout-local-only '<ship instructions for mode=local-only: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/scout-local-only; search open PRs and remote branches for work by others on the same problem (needs-decision on an overlap, never a competing PR); implement; repeat that search just before delivering; report done>'
+exit=0
+$ cat state/scout-local-only.meta (after)
+window=fm-scout-local-only
+worktree=/tmp/wt
+kind=ship
+mode=local-only
+yolo=off
+

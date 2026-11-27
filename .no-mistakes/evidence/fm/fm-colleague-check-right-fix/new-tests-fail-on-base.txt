@@ -1,0 +1,5 @@
+# head tests run against base (21f40b6) scripts - expected to FAIL on the new checks
+not ok - no-mistakes brief must carry the colleagues'-work section exactly once
+fm-brief.test.sh exit=1
+not ok - promotion hint did not carry the colleague check a ship brief has (missing: 'create branch fm/promote-d1; search open PRs and remote branches for work by others on the same problem (needs-decision on an overlap, never a competing PR); implement; repeat that search just before delivering;')
+fm-task-delivery.test.sh exit=1
